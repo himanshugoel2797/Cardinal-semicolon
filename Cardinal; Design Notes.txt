@@ -1,0 +1,96 @@
+Module system notes:
+
+Signature Generation Process:
+    - DEFLATE compress the ELF
+    - compute the hash, encrypt with kernel hash private key
+    - encrypt the ELF with the kernel executable private key
+    - put ELF into container structure
+
+
+Signature Verification Process:
+    - copy the hash into a buffer
+    - 0 the hash field in the container
+    - decrypt the ELF
+    - compute the hash from the ELF
+    - decrypt the hash from the buffer
+    - compare the two hashes for equality
+
+- the ELF signature prevents modification
+- encrypting the ELF also just prevents modification, perhaps not necessary?
+- kernel could be modified to disable signature checks, defeating the entire security system. Therefore, kernel itself needs to be verified.
+    - if a module checked the kernel, a loop could be bypassed by editing the kernel and the module to not perform checks
+    - if modules are encrypted, they cannot be edited, allowing them to securely verify the kernel, they could be replaced with a fake module though
+        - if this module stores the actual kernel public key and handles all crypto functions after it is loaded, then the module cannot be replaced
+            - the keys could be extracted from the module though
+                - at this point we're getting into replacing core components, we should probably assume that the battle is lost if the kernel gets modified.
+    
+- Kernel is protected through a chain of trust on UEFI systems. grub2 boots through secure boot, and only loads the kernel and components if they pass the signature check.
+    - On BIOS systems, grub still performs the signature check, but the environment before that cannot be trusted.
+
+Modules:
+    - Have names
+    - Have NIDs = first 64-bits of sha256(name + 128 bits of random data)
+    - Have hash check, sha256 hash of the module if the hash field were 0, encrypt hash with private key
+    - Kernel includes a public key for verifying the modules before loading and linking.
+
+    - Each module has module_start, module_stop, module_resolve functions.
+    - module_resolve provides a list of imports and exports to the kernel, kernel resolves them.
+        struct {
+            uint64_t NID;
+            uint64_t **dest_addr;   //Pointer to a function pointer
+        }   Import;
+
+        struct {
+            uint64_t NID;
+            uint64_t *func_ptr; //Function Pointer
+        }   Export;
+
+Kernel:
+    - Elf loader
+    - Module verification
+    - Initrd parser
+    - Bootstrap memory allocator
+
+SysUser:
+    - Userspace support services
+        - Syscall table
+    - Userspace zoning management (restricting syscalls to userspace interface libraries only)
+    
+SysReg:
+    - System information management
+    - Parses ACPI tables, boot information
+    - Provides convenient registry-like API for accessing system properties
+    - Also manages actual system registries, boot time registry present in Initrd, loaded at start
+
+SysPhysicalMemory:
+    - Physical memory management
+
+SysVirtualMemory:
+    - Virtual memory management
+
+SysInterrupts:
+    - Interrupt and Exception Management
+
+SysMemory:
+    - Convenience functions for working with virtual and physical memory
+
+SysTimer:
+    - Timer initialization
+
+SysMP:
+    - Hardware threading management
+
+SysTaskMgr:
+    - Thread and Process Management
+
+Load order:
+    Kernel
+    SysUser
+    SysReg
+    SysPhysicalMemory
+    SysVirtualMemory
+    SysInterrupts
+    SysMemory
+    SysTimer
+    SysMP
+    SysTaskMgr
