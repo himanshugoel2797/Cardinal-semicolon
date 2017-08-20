@@ -1,0 +1,6 @@
+#ifndef CARDINAL_x86_64_PC_TYPES_H
+#define CARDINAL_x86_64_PC_TYPES_H
+
+
+
+#endif
