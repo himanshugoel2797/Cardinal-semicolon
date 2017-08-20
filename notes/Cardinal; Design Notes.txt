@@ -51,6 +51,10 @@ Kernel:
     - Initrd parser
     - Bootstrap memory allocator
 
+SysLibc:
+    - Common C functions
+    - Debug output driver
+
 SysUser:
     - Userspace support services
         - Syscall table
@@ -85,6 +89,7 @@ SysTaskMgr:
 
 Load order:
     Kernel
+    SysLibc
     SysUser
     SysReg
     SysPhysicalMemory

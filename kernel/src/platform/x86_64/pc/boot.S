@@ -61,6 +61,8 @@ multiboot_start:
 .long 8
 
 multiboot_end:
+#else
+#error "Define MULTIBOOT spec version"
 #endif
 
                                .section .bootstrap_code, "ax", @progbits
