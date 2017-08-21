@@ -1,4 +1,4 @@
-#include "types.h"
+#include <types.h>
 
 int32_t main() {
   while (1)
