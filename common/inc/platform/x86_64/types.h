@@ -1,6 +1,4 @@
-#ifndef CARDINAL_x86_64_TYPES_H
-#define CARDINAL_x86_64_TYPES_H
-
+#ifndef NEED_SIZE_T_ONLY
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
@@ -12,7 +10,6 @@ typedef signed int int32_t;
 typedef signed long int int64_t;
 
 typedef long int off_t;
-typedef long int size_t;
 
 typedef long int intptr_t;
 typedef unsigned long int uintptr_t;
@@ -23,5 +20,6 @@ typedef int bool;
 #define false 0
 
 #define CUR_ENDIAN LE_ENDIAN
-
+#else
+typedef long int size_t;
 #endif
