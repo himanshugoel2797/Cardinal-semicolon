@@ -1,7 +1,12 @@
 #include <types.h>
 
 int32_t main() {
-    while (1)
-        ;
-    return 0;
+
+  // Initialize linear memory allocator
+  // Initialize crypto functions
+  // Retrieve builtin SysReg module
+
+  while (1)
+    ;
+  return 0;
 }
