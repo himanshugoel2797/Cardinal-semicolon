@@ -1,6 +1,10 @@
 #ifndef CARDINAL_TYPES_H
 #define CARDINAL_TYPES_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define S(x) #x
 #define S_(x) S(x)
 #define S__LINE__ S_(__LINE__)
@@ -59,5 +63,9 @@ void set_trap_str(const char *str);
 #else
 #define ASSERT(x)
 #endif /* end of include guard: _OS_TYPES_H_ */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
