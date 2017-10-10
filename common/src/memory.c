@@ -53,3 +53,13 @@ int WEAK strncmp(const char *s1, const char *s2, size_t n) {
 
   return 0;
 }
+
+char *WEAK strncpy(char *restrict dest, const char *restrict src, size_t n) {
+  unsigned char *d = (unsigned char *)dest;
+  unsigned char *s = (unsigned char *)src;
+
+  for (size_t i = 0; i < n && s[i] != 0; i++)
+    d[i] = s[i];
+
+  return dest;
+}

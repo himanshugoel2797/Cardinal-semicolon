@@ -1,10 +1,4 @@
-#include "aes_hmac.h"
-#include "sha256.h"
-
-struct hmac_ctx {
-  uint8_t o_key_pad[256 / 8];
-  SHA256_CTX hash_ctx;
-};
+#include "hmac.h"
 
 int hmac_init(hmac_ctx *ctx, uint8_t *key) {
 

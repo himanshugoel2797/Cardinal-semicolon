@@ -1,3 +1,4 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
 
 ADD_LIBRARY(cardinal_module STATIC module.c)
+TARGET_INCLUDE_DIRECTORIES(cardinal_module PUBLIC "${LIBS_DIR}/crypto")

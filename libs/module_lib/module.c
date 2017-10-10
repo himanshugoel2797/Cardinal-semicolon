@@ -51,7 +51,13 @@ int VerifyModule(ModuleHeader *hdr, uint8_t *key) {
 
   ModuleHeader m_hdr;
   memcpy(&m_hdr, hdr, sizeof(ModuleHeader));
-  memset(m_hdr->hash, 0, 256 / 8);
+  memset(m_hdr.hash, 0, 256 / 8);
+
+  {
+    if (strncmp(hdr->magic, MODULE_HEADER_MAGIC, sizeof(MODULE_HEADER_MAGIC)) !=
+        0)
+      return -1;
+  }
 
   // Compute the key hash first to determine we're working with the right key
   {
@@ -73,7 +79,7 @@ int VerifyModule(ModuleHeader *hdr, uint8_t *key) {
 
     hmac_ctx ctx;
     hmac_init(&ctx, key);
-    hmac_update(&ctx, &m_hdr, sizeof(ModuleHeader));
+    hmac_update(&ctx, (uint8_t *)&m_hdr, sizeof(ModuleHeader));
     hmac_update(&ctx, hdr->data, hdr->elf_len);
     hmac_final(&ctx, hash);
 
@@ -121,14 +127,14 @@ int BuildModuleHeader(ModuleHeader *hdr, const char *module_name,
 
     SHA256_CTX ctx;
     sha256_init(&ctx);
-    sha256_update(&ctx, hdr->module_name, 256);
-    sha256_update(&ctx, hdr->dev_name, 256);
-    sha256_update(&ctx, hdr->dev_name2, 256);
-    sha256_update(&ctx, hdr->minor_ver, sizeof(hdr->minor_ver));
-    sha256_update(&ctx, hdr->major_ver, sizeof(hdr->major_ver));
+    sha256_update(&ctx, (uint8_t *)hdr->module_name, 256);
+    sha256_update(&ctx, (uint8_t *)hdr->dev_name, 256);
+    sha256_update(&ctx, (uint8_t *)hdr->dev_name2, 256);
+    sha256_update(&ctx, (uint8_t *)&hdr->minor_ver, sizeof(hdr->minor_ver));
+    sha256_update(&ctx, (uint8_t *)&hdr->major_ver, sizeof(hdr->major_ver));
     sha256_final(&ctx, tmp_hash);
 
-    for (int i = 0 i < sizeof(hdr->module_nid); i++) {
+    for (size_t i = 0; i < sizeof(hdr->module_nid); i++) {
       hdr->module_nid = hdr->module_nid << 8;
       hdr->module_nid |= tmp_hash[i];
     }
@@ -139,7 +145,7 @@ int BuildModuleHeader(ModuleHeader *hdr, const char *module_name,
   {
     hmac_ctx ctx;
     hmac_init(&ctx, key_i);
-    hmac_update(&ctx, hdr, sizeof(ModuleHeader));
+    hmac_update(&ctx, (uint8_t *)hdr, sizeof(ModuleHeader));
     hmac_update(&ctx, elf, elf_len);
     hmac_final(&ctx, hdr->hash);
   }

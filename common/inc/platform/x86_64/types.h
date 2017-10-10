@@ -21,5 +21,5 @@ typedef int bool;
 
 #define CUR_ENDIAN LE_ENDIAN
 #else
-typedef long int size_t;
+typedef unsigned long int size_t;
 #endif
