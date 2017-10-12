@@ -7,7 +7,7 @@ uint16_t str2short(const char *val) {
 
   uint16_t res = 0;
 
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 4 && val[i] != 0; i++) {
     uint8_t res0 = 0;
 
     res = res << 4;
@@ -29,7 +29,7 @@ uint8_t str2byte(const char *val) {
 
   uint8_t res = 0;
 
-  for (int i = 0; i < 2; i++) {
+  for (int i = 0; i < 2 && val[i] != 0; i++) {
     uint8_t res0 = 0;
 
     res = res << 4;
@@ -94,7 +94,7 @@ int VerifyModule(ModuleHeader *hdr, uint8_t *key) {
 int BuildModuleHeader(ModuleHeader *hdr, const char *module_name,
                       const char *dev_name, const char *dev_name2,
                       const char *min_ver, const char *maj_ver, const char *key,
-                      uint8_t *elf, size_t elf_len) {
+                      uint8_t *elf, size_t elf_len, size_t uncompressed_len) {
 
   memset(hdr, 0, sizeof(ModuleHeader));
   strncpy(hdr->magic, MODULE_HEADER_MAGIC, sizeof(MODULE_HEADER_MAGIC));
@@ -104,6 +104,7 @@ int BuildModuleHeader(ModuleHeader *hdr, const char *module_name,
   hdr->minor_ver = str2short(min_ver);
   hdr->major_ver = str2short(maj_ver);
   hdr->elf_len = elf_len;
+  hdr->uncompressed_len = uncompressed_len;
 
   uint8_t key_i[256 / 8];
   int idx = 0;

@@ -30,6 +30,7 @@ typedef struct {
   uint16_t major_ver;
   uint16_t minor_ver;
   uint32_t elf_len;
+  uint32_t uncompressed_len;
   uint64_t module_nid;
   uint8_t key_hash[256 / 8];
   uint8_t hash[256 / 8];
@@ -41,6 +42,6 @@ int VerifyModule(ModuleHeader *hdr, uint8_t *key);
 int BuildModuleHeader(ModuleHeader *hdr, const char *module_name,
                       const char *dev_name, const char *dev_name2,
                       const char *min_ver, const char *maj_ver, const char *key,
-                      uint8_t *elf, size_t elf_len);
+                      uint8_t *elf, size_t elf_len, size_t uncompressed_len);
 
 #endif
