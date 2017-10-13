@@ -63,6 +63,7 @@ static int Elf64_PerformRelocation(Elf64_Ehdr *hdr, Elf64_Addr offset, Elf64_Xwo
         case R_AMD64_NONE:
         break;
         case R_AMD64_32:
+            DEBUG_ECHO("R_AMD64_32");
             *(uint32_t*)ref = (uint32_t)(symval + *(uint32_t*)ref + addend);
         break;
         case R_AMD64_32S:

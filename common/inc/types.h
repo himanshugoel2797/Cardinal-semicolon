@@ -53,7 +53,10 @@ extern "C" {
 #endif
 
 #define PANIC(msg)                                                             \
-  set_trap_str(__FILE__ "," S__LINE__ ":" msg), __builtin_trap()
+  set_trap_str(__FILE__ "," S__LINE__ ":" msg "\r\n"), __builtin_trap()
+
+int print_str(const char *s);
+#define DEBUG_ECHO(msg) print_str(__FILE__ "," S__LINE__ ":" msg "\r\n")
 
 #if defined(DEBUG)
 // First set the trap message, then raise the trap
