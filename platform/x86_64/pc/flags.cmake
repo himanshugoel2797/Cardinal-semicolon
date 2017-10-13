@@ -12,7 +12,7 @@ COMMAND mkdir -p "ISO"
 COMMAND mkdir -p "ISO/isodir"
 COMMAND mkdir -p "ISO/isodir/boot"
 COMMAND cp "kernel/kernel.bin" "ISO/isodir/boot/kernel.bin"
-#COMMAND cp "build/$(CONF)/initrd" ISO/isodir/boot/initrd
+COMMAND tar cvf "ISO/isodir/boot/initrd" "${INITRD_CONTENTS}"
 COMMAND mkdir -p "ISO/isodir/boot/grub"
 COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
 COMMAND grub2-mkrescue -o "ISO/os.iso" "ISO/isodir"
