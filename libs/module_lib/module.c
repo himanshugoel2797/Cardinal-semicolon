@@ -131,7 +131,6 @@ int BuildModuleHeader(ModuleHeader *hdr, const char *module_name,
     sha256_update(&ctx, (uint8_t *)hdr->module_name, 256);
     sha256_update(&ctx, (uint8_t *)hdr->dev_name, 256);
     sha256_update(&ctx, (uint8_t *)hdr->dev_name2, 256);
-    sha256_update(&ctx, (uint8_t *)&hdr->minor_ver, sizeof(hdr->minor_ver));
     sha256_update(&ctx, (uint8_t *)&hdr->major_ver, sizeof(hdr->major_ver));
     sha256_final(&ctx, tmp_hash);
 

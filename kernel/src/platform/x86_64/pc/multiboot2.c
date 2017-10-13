@@ -9,6 +9,7 @@
 
 #include "platform/x86_64/pc/multiboot2.h"
 #include "boot_information.h"
+#include "bootstrap_alloc.h"
 
 #include <cardinal/boot_info.h>
 #include <stdint.h>
