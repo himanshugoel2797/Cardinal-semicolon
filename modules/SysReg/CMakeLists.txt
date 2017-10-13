@@ -6,6 +6,6 @@ ADD_EXECUTABLE(SysReg.elf "${SYSREG_SRCS}")
 
 ADD_CUSTOM_TARGET(SysReg.celf ALL
     DEPENDS SysReg.elf
-    COMMAND ${CELF_GEN} Cardinal_SysReg Himanshu Goel 0000 0000 00 SysReg.elf -o SysReg.celf
+    COMMAND ${CELF_GEN} Cardinal_SysReg Himanshu Goel 0000 0000 ${KMOD_HMAC_Key} SysReg.elf -o SysReg.celf
 )
 SET_TARGET_PROPERTIES(SysReg.elf PROPERTIES LINK_FLAGS "-r ${ISA_LINKER_FLAGS} ${PLATFORM_LINKER_FLAGS}")
