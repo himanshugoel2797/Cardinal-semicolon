@@ -26,6 +26,7 @@ extern "C" {
   if (!x)                                                                      \
   __builtin_trap()
 
+#define SECTION(x) __attribute__((section(x)))
 #define PACKED __attribute__((packed))
 #define NORETURN __attribute__((noreturn))
 #define NONNULL_RETURN __attribute__((returns_nonnull))
@@ -61,7 +62,7 @@ void set_trap_str(const char *str);
   if (!(x))                                                                    \
   PANIC(msg)
 #else
-#define ASSERT(x)
+#define ASSERT(x, msg)
 #endif /* end of include guard: _OS_TYPES_H_ */
 
 #ifdef __cplusplus
