@@ -6,7 +6,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceRoot}/utils_build/sign_exec/sign_exec",
-            "args": [ "m", "d", "d2", "0000", "0000", "FF", "README.md", "-o", "signed_sign_exec"],
+            "args": [ "m", "d", "d2", "0000", "0000", "FF", "build/modules/SysReg/SysReg.elf", "-o", "signed_sign_exec"],
             "stopAtEntry": false,
             "cwd": "${workspaceRoot}",
             "environment": [],

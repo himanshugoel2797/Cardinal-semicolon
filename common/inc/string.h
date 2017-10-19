@@ -18,6 +18,8 @@ int strncmp(const char *s1, const char *s2, size_t n);
 
 char *strncpy(char *restrict dest, const char *restrict src, size_t len);
 
+char *strncat(char *restrict dest, const char *restrict src, size_t count);
+
 #ifdef __cplusplus
 }
 #endif

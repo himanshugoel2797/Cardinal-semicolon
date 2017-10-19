@@ -90,24 +90,26 @@ static int Elf64_PerformRelocation(Elf64_Ehdr *hdr, Elf64_Addr offset, Elf64_Xwo
 
 int Elf64Load(void *elf, size_t elf_len) {
 
-  if(elf == NULL)
+    if(elf == NULL)
     return -1;
-
-  if(elf_len == 0)
+    
+    if(elf_len == 0)
     return -1;
-
-  Elf64_Ehdr *hdr = elf;
-
-  // Verify the header
-  Elf_CommonEhdr *c_hdr = &hdr->e_hdr;
-  if (c_hdr->e_ident[EI_MAG0] != ELF_MAG0)
+    
+    Elf64_Ehdr *hdr = elf;
+    
+    // Verify the header
+    Elf_CommonEhdr *c_hdr = &hdr->e_hdr;
+    if (c_hdr->e_ident[EI_MAG0] != ELF_MAG0)
     return -1;
-  if (c_hdr->e_ident[EI_MAG1] != ELF_MAG1)
+    if (c_hdr->e_ident[EI_MAG1] != ELF_MAG1)
     return -1;
-  if (c_hdr->e_ident[EI_MAG2] != ELF_MAG2)
+    if (c_hdr->e_ident[EI_MAG2] != ELF_MAG2)
     return -1;
-  if (c_hdr->e_ident[EI_MAG3] != ELF_MAG3)
+    if (c_hdr->e_ident[EI_MAG3] != ELF_MAG3)
     return -1;
+    
+    DEBUG_ECHO("TEST");
 
   if (c_hdr->e_ident[EI_DATA] != ELFDATA2MSB)
     return -2;

@@ -57,6 +57,7 @@ extern "C" {
 
 int print_str(const char *s);
 #define DEBUG_ECHO(msg) print_str(__FILE__ "," S__LINE__ ":" msg "\r\n")
+#define DEBUG_PRINT(msg) print_str(msg);
 
 #if defined(DEBUG)
 // First set the trap message, then raise the trap

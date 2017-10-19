@@ -27,6 +27,6 @@ add_custom_target(disk.img
     COMMAND qemu-img create -f raw disk.img 32M)
 
 add_custom_target(run 
-    COMMAND qemu-system-x86_64 --enable-kvm -m 1024M -machine q35, -cpu Haswell,+invtsc,+xsave,+aes -smp 2 -d int,cpu_reset,guest_errors -drive id=disk,file=disk.img,if=none -device ahci,id=ahci -device ide-drive,drive=disk,bus=ahci.0 -net nic,model=rtl8139, -net dump,file=../dump.pcap -net user -soundhw hda -device ich9-usb-uhci3 -device usb-mouse -device usb-kbd -vga vmware -cdrom "ISO/os.iso" -boot d
+    COMMAND qemu-system-x86_64 -m 1024M -machine q35, -cpu Haswell,+invtsc,+xsave,+aes -smp 2 -d int,cpu_reset,guest_errors -drive id=disk,file=disk.img,if=none -device ahci,id=ahci -device ide-drive,drive=disk,bus=ahci.0 -net nic,model=rtl8139, -net dump,file=../dump.pcap -net user -soundhw hda -device ich9-usb-uhci3 -device usb-mouse -device usb-kbd -vga vmware -cdrom "ISO/os.iso" -boot d
     DEPENDS image
     DEPENDS disk.img)

@@ -53,6 +53,7 @@ int main(int argc, char *argv[]) {
   fread(src_buffer, 1, elf_sz, elf_file);
   fclose(elf_file);
 
+  /*
   size_t cmp_len = elf_sz;
   uint8_t *dst_buffer = malloc(cmp_len);
 
@@ -70,22 +71,23 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  status = tdefl_compress(&g_deflator, src_buffer, &elf_sz, dst_buffer,
+  size_t rem_elf_sz = elf_sz;
+  status = tdefl_compress(&g_deflator, src_buffer, &rem_elf_sz, dst_buffer,
                           &cmp_len, TDEFL_FINISH);
   if (status != TDEFL_STATUS_DONE) {
     printf("tdefl_compress() failed!\n");
     return -1;
-  }
+  }*/
 
   // Call into the module library to generate the final output
   ModuleHeader hdr;
   BuildModuleHeader(&hdr, module_name, dev_name, dev_name2, minor_ver,
-                    major_ver, key, dst_buffer, cmp_len, elf_sz);
+                    major_ver, key, src_buffer, elf_sz, elf_sz);
 
   FILE *fd = fopen(output_file, "wb");
   fwrite(&hdr, 1, sizeof(hdr), fd);
   fwrite(dst_buffer, 1, cmp_len, fd);
   fclose(fd);
-
+  
   return 0;
 }

@@ -63,3 +63,17 @@ char *WEAK strncpy(char *restrict dest, const char *restrict src, size_t n) {
 
   return dest;
 }
+
+char *WEAK strncat(char *restrict dest, const char *restrict src,
+                   size_t count) {
+  char *ret = dest;
+  while (*dest)
+    dest++;
+
+  while (count--)
+    if (!(*dest++ = *src++))
+      return ret;
+
+  *dest = 0;
+  return ret;
+}
