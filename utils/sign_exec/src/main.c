@@ -86,8 +86,8 @@ int main(int argc, char *argv[]) {
 
   FILE *fd = fopen(output_file, "wb");
   fwrite(&hdr, 1, sizeof(hdr), fd);
-  fwrite(dst_buffer, 1, cmp_len, fd);
+  fwrite(src_buffer, 1, elf_sz, fd);
   fclose(fd);
-  
+
   return 0;
 }

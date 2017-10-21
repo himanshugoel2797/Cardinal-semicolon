@@ -15,6 +15,8 @@ extern "C" {
 #include S_(ISA_TYPES_H)
 #include S_(PLATFORM_TYPES_H)
 
+int debug_handle_trap();
+
 #define KiB(x) (x * 1024ull)
 #define MiB(x) (KiB(1) * 1024ull * x)
 #define GiB(x) (uint64_t)(MiB(1) * 1024ull * x)
@@ -24,7 +26,7 @@ extern "C" {
 #define PURE __attribute__((pure))
 #define IS_NULL(x)                                                             \
   if (!x)                                                                      \
-  __builtin_trap()
+  debug_handle_trap()
 
 #define SECTION(x) __attribute__((section(x)))
 #define PACKED __attribute__((packed))
@@ -53,11 +55,11 @@ extern "C" {
 #endif
 
 #define PANIC(msg)                                                             \
-  set_trap_str(__FILE__ "," S__LINE__ ":" msg "\r\n"), __builtin_trap()
+  set_trap_str(__FILE__ "," S__LINE__ ":" msg "\r\n"), debug_handle_trap()
 
 int print_str(const char *s);
 #define DEBUG_ECHO(msg) print_str(__FILE__ "," S__LINE__ ":" msg "\r\n")
-#define DEBUG_PRINT(msg) print_str(msg);
+#define DEBUG_PRINT(msg) print_str(msg)
 
 #if defined(DEBUG)
 // First set the trap message, then raise the trap

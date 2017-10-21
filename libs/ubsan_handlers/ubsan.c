@@ -108,36 +108,55 @@ static void handle_lhs_rhs_funcs(struct source_location *loc, uintptr_t lhs,
   lhs = 0;
   rhs = 0;
 
-  char *conv_buf = "0123456789";
   char conv_str[11];
 
+  memset(temp_ubsan_str_buf, 0, ubsan_str_buf_len);
   strncpy(temp_ubsan_str_buf, ubsan_type_strs[t], ubsan_str_buf_len);
   strncat(temp_ubsan_str_buf, loc->filename, ubsan_str_buf_len);
 
   {
     uint32_t line = loc->line;
-    conv_str[9] = ':';
-    conv_str[10] = 0;
-    for (int i = 8; i >= 0; i--) {
-      conv_str[i] = line % 10;
+    for (int i = 0; i < 10; i++) {
+      conv_str[i] = (line % 10) + '0';
       line = line / 10;
-      if (line == 0)
+      if (line == 0) {
+
+        for (int j = 0; j <= i / 2; j++) {
+          conv_str[j] ^= conv_str[i - j];
+          conv_str[i - j] ^= conv_str[j];
+          conv_str[j] ^= conv_str[i - j];
+        }
+
+        conv_str[i + 1] = ':';
+        conv_str[i + 2] = 0;
         break;
+      }
     }
     strncat(temp_ubsan_str_buf, conv_str, ubsan_str_buf_len);
   }
 
   {
     uint32_t line = loc->column;
-    conv_str[9] = 0;
-    for (int i = 8; i >= 0; i--) {
-      conv_str[i] = line % 10;
+    for (int i = 0; i < 9; i++) {
+      conv_str[i] = (line % 10) + '0';
       line = line / 10;
-      if (line == 0)
+      if (line == 0) {
+
+        for (int j = 0; j <= i / 2; j++) {
+          conv_str[j] ^= conv_str[i - j];
+          conv_str[i - j] ^= conv_str[j];
+          conv_str[j] ^= conv_str[i - j];
+        }
+
+        conv_str[i + 1] = 0;
         break;
+      }
     }
     strncat(temp_ubsan_str_buf, conv_str, ubsan_str_buf_len);
   }
+
+  DEBUG_PRINT(temp_ubsan_str_buf);
+  __asm__("hlt");
 }
 
 void __ubsan_handle_add_overflow(struct overflow_data *data, uintptr_t lhs,
