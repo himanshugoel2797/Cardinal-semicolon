@@ -7,7 +7,15 @@ void *WEAK memset(void *s, int c, size_t n) {
   unsigned long int c64 = (c32 << 32) | (c32);
 
   unsigned char *s8 = (unsigned char *)s;
-  while (n % 8 > 0) {
+  while (true) {
+    bool ptr_aligned = ((uintptr_t)s8 % 8) == 0;
+    bool n_aligned = (n % 8) == 0;
+
+    if (ptr_aligned && n_aligned)
+      break;
+    if (n == 0)
+      break;
+
     *s8 = c8;
     s8++;
     n--;
@@ -31,6 +39,17 @@ void *WEAK memcpy(void *restrict dest, const void *restrict src, size_t n) {
     d[i] = s[i];
 
   return dest;
+}
+
+size_t WEAK strlen(const char *s) {
+  if (s == NULL)
+    return 0;
+
+  size_t n = 0;
+  while (s[n] != 0)
+    n++;
+
+  return n;
 }
 
 size_t WEAK strnlen(const char *string, size_t maxLen) {

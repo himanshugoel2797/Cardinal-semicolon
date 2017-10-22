@@ -9,6 +9,7 @@
 #include "initrd.h"
 #include "miniz.h"
 #include "module_def.h"
+#include "symbol_db.h"
 
 static char priv_s[2048];
 int debug_handle_trap() {
@@ -26,7 +27,8 @@ int print_str(const char *s) {
 
 void set_trap_str(const char *s) { strncpy(priv_s, s, 2048); }
 
-int Elf64Load(void *elf, size_t elf_len);
+int Elf64InstallKernelSymbols();
+int Elf64Load(void *elf, size_t elf_len, uintptr_t *entry_pt);
 
 tinfl_decompressor g_inflator;
 
@@ -39,7 +41,7 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
 
   CardinalBootInfo *b_info = GetBootInfo();
   b_info->InitrdStartAddress += 0xffffffff80000000;
-
+  
   // Retrieve modules from initrd and start verification and loading based on
   // the supplied boot script, do this in HAL code
 
@@ -48,7 +50,8 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
   // CALL commands tell the kernel to call a function with a certain NID from
   // the specified module name
 
-  tinfl_init(&g_inflator);
+  symboldb_init();
+  Elf64InstallKernelSymbols();
 
   void *sysreg_loc = NULL;
   size_t len = 0;
@@ -57,17 +60,13 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
 
   // decompress celf's elf section
   ModuleHeader *hdr = (ModuleHeader *)sysreg_loc;
-  /*size_t u_len = hdr->uncompressed_len, c_len = hdr->elf_len;
 
-  void *dst = bootstrap_malloc(u_len);
-  void *next_out = dst;
-  tinfl_status status = tinfl_decompress(&g_inflator, hdr->data, &c_len, dst,
-  dst, &u_len, TINFL_FLAG_PARSE_ZLIB_HEADER |
-  TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
-  */
-
-  if (Elf64Load(hdr->data, hdr->uncompressed_len))
+  uintptr_t entry_pt;
+  if (Elf64Load(hdr->data, hdr->uncompressed_len, &entry_pt))
     PANIC("ELF LOAD FAILED");
+
+  int (*e_main)(int) = (int (*)(int))entry_pt;
+  __asm__("hlt" ::"a"(e_main(1)));
 
   PANIC("KERNEL END REACHED.");
   while (1)

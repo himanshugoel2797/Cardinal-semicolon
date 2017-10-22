@@ -1,0 +1,2 @@
+Modules are just elf relocatable files. The kernel first finds its own symbol table, resolving imports against it. 
+Modules must be loaded in a manner such that all entries can be resolved.

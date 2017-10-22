@@ -39,24 +39,7 @@ Modules:
         - Export order does not change.
 
     - Each module has module_start, module_stop, module_resolve functions.
-    - module_resolve provides a list of imports and exports to the kernel, kernel resolves them.
-        - remember to verify that the provided import addresses are within the module's allocated address space.
-
-        struct {
-            uint64_t **dest_addr; //Pointer to function pointer
-            uint32_t idx;
-        } ImportFunction;
-        
-        struct {
-            uint64_t module_nid;
-            uint32_t function_cnt;
-            ImportFunction *functions;
-        }   Import;
-
-        struct {
-            uint16_t min_ver;
-            uint64_t *func_ptr; //Function Pointer
-        }   Export;
+    - Modules are just object files, so the kernel links them in directly, resolving function calls in the PLT relocations
 
     struct {
         char magic[4];  'CELF'
