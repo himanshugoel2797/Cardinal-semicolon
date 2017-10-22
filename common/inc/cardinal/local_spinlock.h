@@ -9,15 +9,15 @@
 #include <types.h>
 
 static inline void local_spinlock_lock(int *x) {
-  while (__sync_lock_test_and_set(x, 1)) {
-    while (*x)
-      __asm__ volatile("pause");
-  }
+    while (__sync_lock_test_and_set(x, 1)) {
+        while (*x)
+            __asm__ volatile("pause");
+    }
 }
 
 static inline void local_spinlock_unlock(int *x) {
-  __sync_synchronize();
-  *x = 0;
+    __sync_synchronize();
+    *x = 0;
 }
 
 #endif

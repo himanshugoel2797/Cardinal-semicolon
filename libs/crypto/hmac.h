@@ -6,8 +6,8 @@
 #include <stdint.h>
 
 typedef struct {
-  uint8_t o_key_pad[256 / 8];
-  SHA256_CTX hash_ctx;
+    uint8_t o_key_pad[256 / 8];
+    SHA256_CTX hash_ctx;
 } hmac_ctx;
 
 int hmac_init(hmac_ctx *ctx, uint8_t *key);
