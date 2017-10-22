@@ -66,7 +66,7 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
     PANIC("ELF LOAD FAILED");
 
   int (*e_main)(int) = (int (*)(int))entry_pt;
-  __asm__("hlt" ::"a"(e_main(1)));
+  e_main(1);
 
   PANIC("KERNEL END REACHED.");
   while (1)

@@ -168,9 +168,9 @@ int Elf64Load(void *elf, size_t elf_len, uintptr_t *entry_pt) {
   if (c_hdr->e_ident[EI_MAG3] != ELF_MAG3)
     return -1;
 
-  if (c_hdr->e_ident[EI_DATA] == ELFDATA2MSB)
+  if (c_hdr->e_ident[EI_DATA] != ELFDATA2LSB)
     return -2;
-  if (c_hdr->e_type == ET_NONE)
+  if (c_hdr->e_type != ET_REL)
     return -2;
   if (c_hdr->e_machine == ET_NONE)
     return -2;
@@ -206,55 +206,60 @@ int Elf64Load(void *elf, size_t elf_len, uintptr_t *entry_pt) {
 
     } else if (shdr->sh_type == SHT_SYMTAB) {
       
-      Elf64_Shdr *sec_shdr = &shdr_root[shdr->sh_info];
       Elf64_Sym *sym = (Elf64_Sym *)((uint8_t *)hdr + shdr->sh_offset);
       shdr->sh_addr = (uintptr_t)hdr + shdr->sh_offset;
-
+      
       for (uint32_t j = 0; j < shdr->sh_size / shdr->sh_entsize; j++) {
+        
+        if ((sym[j].st_shndx == SHN_ABS) | (sym[j].st_shndx == SHN_UNDEF))
+          continue;
+
+        Elf64_Shdr *sec_shdr = &shdr_root[sym[j].st_shndx];
+
         if (ELF64_ST_TYPE(sym[j].st_info) == STT_FUNC) {
           Elf64_Shdr *strtab = (Elf64_Shdr *)((uint8_t *)shdr_root + shdr->sh_link * hdr->e_shentsize);
           sym->st_value += sec_shdr->sh_addr;
           symboldb_add(strtab, shdr, sym);
         }
-      }
 
+      }
     }
+
   }
 
   // perform relocations for remaining symbols
   for (uint64_t i = 0; i < hdr->e_shnum; i++) {
     Elf64_Shdr *shdr = &shdr_root[i];
 
-    void *rel_root = (void *)((uint8_t *)hdr + shdr->sh_offset);
     if (shdr->sh_type == SHT_REL) {
+      Elf64_Rel *rel = (Elf64_Rel *)((uint8_t*)hdr + shdr->sh_offset);
 
       for (uint64_t j = 0; j < shdr->sh_size / shdr->sh_entsize; j++) {
           
-        Elf64_Rel *rel = (Elf64_Rel *)rel_root + j;
         Elf64_Shdr *target_shdr = &shdr_root[shdr->sh_link];
         Elf64_Shdr *dest_shdr = &shdr_root[shdr->sh_info];
 
         // Do relocation
-        if (Elf64_PerformRelocation(hdr, rel->r_offset, rel->r_info, 0, target_shdr, dest_shdr))
+        if (Elf64_PerformRelocation(hdr, rel[j].r_offset, rel[j].r_info, 0, target_shdr, dest_shdr))
           PANIC("Failed Rel relocation!");
 
       }
     } else if (shdr->sh_type == SHT_RELA) {
+      Elf64_Rela *rel = (Elf64_Rela *)((uint8_t*)hdr + shdr->sh_offset);
       
       for (uint64_t j = 0; j < shdr->sh_size / shdr->sh_entsize; j++) {
 
-        Elf64_Rela *rel = (Elf64_Rela *)rel_root + j;
         Elf64_Shdr *sym_shdr = &shdr_root[shdr->sh_link];
         Elf64_Shdr *sec_shdr = &shdr_root[shdr->sh_info];
 
         // Do relocation
-        if (Elf64_PerformRelocation(hdr, rel->r_offset, rel->r_info, rel->r_addend, sym_shdr, sec_shdr))
+        if (Elf64_PerformRelocation(hdr, rel[j].r_offset, rel[j].r_info, rel[j].r_addend, sym_shdr, sec_shdr))
            PANIC("Failed Rela relocation!");
 
       }
     }
   }
 
-  *entry_pt = shdr_root[1].sh_addr + 0xe0;
+  *entry_pt = shdr_root[1].sh_addr;
   return 0;
 }
