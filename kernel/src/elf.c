@@ -157,9 +157,12 @@ void *elf_resolvefunction(const char *name) {
   return NULL;
 }
 
-int elf_load(void *elf, size_t elf_len) {
+int elf_load(void *elf, size_t elf_len, void **entry_point) {
 
   if (elf == NULL)
+    return -1;
+
+  if (entry_point == NULL)
     return -1;
 
   if (elf_len == 0)
@@ -232,7 +235,12 @@ int elf_load(void *elf, size_t elf_len) {
         if (ELF64_ST_TYPE(sym[j].st_info) == STT_FUNC) {
           Elf64_Shdr *strtab = &shdr_root[shdr->sh_link];
           sym[j].st_value += sec_shdr->sh_addr;
-          symboldb_add(strtab, shdr, &sym[j]);
+
+          if (strcmp((char *)strtab->sh_addr + sym[j].st_name, "module_init") ==
+              0) {
+            *entry_point = (void *)sym[j].st_value;
+          } else
+            symboldb_add(strtab, shdr, &sym[j]);
         }
       }
     }

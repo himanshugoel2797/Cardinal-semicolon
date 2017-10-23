@@ -1,6 +1,6 @@
 #include <types.h>
 
-int sysreg_init() {
+int module_init() {
   print_str("TEST");
   return 0;
 }

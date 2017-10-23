@@ -56,11 +56,11 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
   // decompress celf's elf section
   ModuleHeader *hdr = (ModuleHeader *)sysreg_loc;
 
-  uintptr_t entry_pt;
-  if (elf_load(hdr->data, hdr->uncompressed_len))
+  void *entry_pt = NULL;
+  if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
     PANIC("ELF LOAD FAILED");
 
-  int (*e_main)() = (int (*)())elf_resolvefunction("sysreg_init");
+  int (*e_main)() = (int (*)())entry_pt;
   e_main();
 
   PANIC("KERNEL END REACHED.");

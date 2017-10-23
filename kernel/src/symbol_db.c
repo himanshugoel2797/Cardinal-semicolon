@@ -54,7 +54,7 @@ static int symboldb_addentry(uint32_t idx, Elf64_Shdr *strhdr, Elf64_Shdr *hdr,
     char *orig_sym_str = (char *)strhdr->sh_addr + sym->st_name;
     char *ent_sym_str = (char *)n_strtab->sh_addr + n_sym->st_name;
 
-    if (strncmp(orig_sym_str, ent_sym_str, strlen(orig_sym_str)) != 0)
+    if (strcmp(orig_sym_str, ent_sym_str) != 0)
       return -1;
 
     // check if symbol is weak and replace if so
@@ -86,7 +86,7 @@ static int symboldb_entrymatch(uint32_t idx, Elf64_Shdr *strhdr,
   char *n_str = (char *)strhdr->sh_addr + sym->st_name;
   char *sym_str = (char *)n_strtab->sh_addr + n_sym->st_name;
 
-  if (strncmp(sym_str, n_str, strlen(sym_str)) == 0) {
+  if (strcmp(sym_str, n_str) == 0) {
     *r_hdr = n_shdr;
     *r_sym = n_sym;
     return 0;
@@ -148,7 +148,7 @@ int symboldb_findfunc(const char *str, Elf64_Shdr **r_hdr, Elf64_Sym **r_sym) {
     Elf64_Sym *n_sym = TO_SYM(idx);
     char *sym_str = (char *)n_strtab->sh_addr + n_sym->st_name;
 
-    if (strncmp(str, sym_str, strlen(str)) == 0) {
+    if (strcmp(str, sym_str) == 0) {
       *r_hdr = n_shdr;
       *r_sym = n_sym;
       return 0;
@@ -164,7 +164,7 @@ int symboldb_findfunc(const char *str, Elf64_Shdr **r_hdr, Elf64_Sym **r_sym) {
     Elf64_Sym *n_sym = TO_SYM(idx);
     char *sym_str = (char *)n_strtab->sh_addr + n_sym->st_name;
 
-    if (strncmp(str, sym_str, strlen(str)) == 0) {
+    if (strcmp(str, sym_str) == 0) {
       *r_hdr = n_shdr;
       *r_sym = n_sym;
       return 0;
