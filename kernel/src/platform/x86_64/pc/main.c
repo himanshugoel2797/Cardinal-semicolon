@@ -26,7 +26,8 @@ int WEAK print_str(const char *s) {
     return print_str_handler(s);
 
   while (*s != 0)
-    __asm__ volatile("outb %1, %0" ::"dN"((uint16_t)0x3f8), "a"(*(s++)));
+    outb(0x3f8, *(s++));
+
   return 0;
 }
 

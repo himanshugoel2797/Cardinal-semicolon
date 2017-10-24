@@ -7,5 +7,6 @@
 #define CARDINAL_SYSDEBUG_SERIALIO_H
 
 int init_serial_debug();
+int debug_shell(char (*input_stream)(), void (*output_stream)(char));
 
 #endif

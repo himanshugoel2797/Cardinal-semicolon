@@ -52,7 +52,6 @@ int loadscript_execute() {
 
       print_str("LOADED\r\n");
 
-      //__asm__("hlt" ::"a"(entry_pt));
       entry_pt();
     } else if (mode == 1) {
       print_str("CALL FUNCTION:");

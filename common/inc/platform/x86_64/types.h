@@ -1,4 +1,5 @@
 #ifndef NEED_SIZE_T_ONLY
+
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
@@ -20,6 +21,8 @@ typedef int bool;
 #define false 0
 
 #define CUR_ENDIAN LE_ENDIAN
+
+#include "native.h"
 #else
 typedef unsigned long int size_t;
 #endif

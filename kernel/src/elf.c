@@ -49,6 +49,12 @@ static int Elf64_GetSymbolValue(Elf64_Ehdr *hdr NONNULL,
   } else if (ELF64_ST_TYPE(sym->st_info) == STT_FUNC) {
     *ret = sym->st_value;
     return 0;
+  } else if (ELF64_ST_TYPE(sym->st_info) == STT_OBJECT) {
+    *ret = sym->st_value;
+    return 0;
+  } else if (ELF64_ST_TYPE(sym->st_info) == STT_SECTION) {
+    *ret = sym->st_value;
+    return 0;
   } else {
     *ret = (uint64_t)hdr + sym->st_value + shdr_root[sym->st_shndx].sh_offset;
     return 0;
@@ -238,6 +244,10 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)()) {
             *entry_point = (int (*)())sym[j].st_value;
           } else
             symboldb_add(strtab, shdr, &sym[j]);
+        } else if (ELF64_ST_TYPE(sym[j].st_info) == STT_SECTION) {
+          sym[j].st_value += sec_shdr->sh_addr;
+        } else if (ELF64_ST_TYPE(sym[j].st_info) == STT_OBJECT) {
+          sym[j].st_value += sec_shdr->sh_addr;
         }
       }
     }
