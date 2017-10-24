@@ -24,6 +24,8 @@ char *strncpy(char *restrict dest, const char *restrict src, size_t len);
 
 char *strncat(char *restrict dest, const char *restrict src, size_t count);
 
+const char *strstr(const char *haystack, const char *needle);
+
 #ifdef __cplusplus
 }
 #endif
