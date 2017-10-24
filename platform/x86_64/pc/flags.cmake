@@ -7,14 +7,14 @@ SET(PLATFORM_DEFINITIONS "-DMULTIBOOT2")
 SET(PLATFORM_C_FLAGS "")
 SET(PLATFORM_ASM_FLAGS "")
 
-add_custom_target(image
-COMMAND mkdir -p "ISO"
-COMMAND mkdir -p "ISO/isodir"
-COMMAND mkdir -p "ISO/isodir/boot"
+SET(PLATFORM_CELF_DIR "${CMAKE_CURRENT_BINARY_DIR}/ISO/isodir/boot/")
 
-COMMAND rm -rf "ISO/isodir/boot/*"
+add_custom_target(image
+COMMAND mkdir -p "ISO/isodir/boot"
 COMMAND rm -rf "ISO/isodir/boot/initrd"
-COMMAND cp "${INITRD_CONTENTS}" "ISO/isodir/boot"
+COMMAND rm -rf "ISO/isodir/boot/kernel.bin"
+COMMAND rm -rf "ISO/isodir/boot/grub"
+
 COMMAND tar -cvf "ISO/isodir/boot/initrd" -C "ISO/isodir/boot" .
 
 COMMAND cp "kernel/kernel.bin" "ISO/isodir/boot/kernel.bin"

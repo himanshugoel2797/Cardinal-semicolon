@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include <types.h>
 
-void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) NONNULL(1);
+void ParseAndSaveBootInformation(void *boot_info NONNULL, uint32_t magic);
 
 CardinalBootInfo *GetBootInfo(void);
 

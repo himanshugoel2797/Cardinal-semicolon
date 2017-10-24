@@ -12,20 +12,19 @@
 #include "symbol_db.h"
 
 static char priv_s[2048];
-int debug_handle_trap() {
+int WEAK debug_handle_trap() {
   const char *p = priv_s;
-  while (*p != 0)
-    __asm__("outb %1, %0" ::"dN"((uint16_t)0x3f8), "a"(*(p++)));
+  print_str(p);
   __asm__("cli\n\thlt");
   return 0;
 }
-int print_str(const char *s) {
+int WEAK print_str(const char *s) {
   while (*s != 0)
-    __asm__("outb %1, %0" ::"dN"((uint16_t)0x3f8), "a"(*(s++)));
+    __asm__ volatile("outb %1, %0" ::"dN"((uint16_t)0x3f8), "a"(*(s++)));
   return 0;
 }
 
-void set_trap_str(const char *s) { strncpy(priv_s, s, 2048); }
+void WEAK set_trap_str(const char *s) { strncpy(priv_s, s, 2048); }
 
 SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
 
@@ -56,12 +55,11 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
   // decompress celf's elf section
   ModuleHeader *hdr = (ModuleHeader *)sysreg_loc;
 
-  void *entry_pt = NULL;
+  int (*entry_pt)() = NULL;
   if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
     PANIC("ELF LOAD FAILED");
 
-  int (*e_main)() = (int (*)())entry_pt;
-  e_main();
+  entry_pt();
 
   PANIC("KERNEL END REACHED.");
   while (1)

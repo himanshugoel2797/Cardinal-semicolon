@@ -22,7 +22,7 @@ int debug_handle_trap();
 #define GiB(x) (uint64_t)(MiB(1) * 1024ull * x)
 
 #define UNUSED(x) UNUSED_##x __attribute__((__unused__))
-#define NONNULL(...) __attribute__((nonnull(__VA_ARGS__)))
+#define NONNULL __attribute__((nonnull))
 #define PURE __attribute__((pure))
 #define IS_NULL(x)                                                             \
   if (!x)                                                                      \
@@ -54,21 +54,24 @@ int debug_handle_trap();
 #define TO_LE_32(x) SWAP_ENDIAN_32(x)
 #endif
 
-#define PANIC(msg)                                                             \
-  set_trap_str(__FILE__ "," S__LINE__ ":" msg "\r\n"), debug_handle_trap()
-
 int print_str(const char *s);
 #define DEBUG_ECHO(msg) print_str(__FILE__ "," S__LINE__ ":" msg "\r\n")
 #define DEBUG_PRINT(msg) print_str(msg)
 
-#if defined(DEBUG)
+#if !defined(NDEBUG)
 // First set the trap message, then raise the trap
 void set_trap_str(const char *str);
+
+#define PANIC(msg)                                                             \
+  set_trap_str(__FILE__ "," S__LINE__ ":" msg "\r\n"), debug_handle_trap()
+
 #define ASSERT(x, msg)                                                         \
   if (!(x))                                                                    \
   PANIC(msg)
+
 #else
 #define ASSERT(x, msg)
+#define PANIC(msg) debug_handle_trap()
 #endif /* end of include guard: _OS_TYPES_H_ */
 
 #ifdef __cplusplus

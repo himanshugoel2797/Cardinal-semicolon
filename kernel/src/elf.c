@@ -12,9 +12,11 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <types.h>
 
-static int Elf64_GetSymbolValue(Elf64_Ehdr *hdr, Elf64_Shdr *shdr, int symbol,
-                                uint64_t *ret) {
+static int Elf64_GetSymbolValue(Elf64_Ehdr *hdr NONNULL,
+                                Elf64_Shdr *shdr NONNULL, int symbol,
+                                uint64_t *ret NONNULL) {
   if (symbol == SHN_UNDEF) {
     *ret = 0;
     return 0;
@@ -52,18 +54,10 @@ static int Elf64_GetSymbolValue(Elf64_Ehdr *hdr, Elf64_Shdr *shdr, int symbol,
   return -1;
 }
 
-static int Elf64_PerformRelocation(Elf64_Ehdr *hdr, Elf64_Addr offset,
+static int Elf64_PerformRelocation(Elf64_Ehdr *hdr NONNULL, Elf64_Addr offset,
                                    Elf64_Xword info, Elf64_Sxword addend,
-                                   Elf64_Shdr *sym_shdr, Elf64_Shdr *sec_shdr) {
-
-  if (hdr == NULL)
-    return -1;
-
-  if (sym_shdr == NULL)
-    return -1;
-
-  if (sec_shdr == NULL)
-    return -1;
+                                   Elf64_Shdr *sym_shdr NONNULL,
+                                   Elf64_Shdr *sec_shdr NONNULL) {
 
   uintptr_t addr = (uintptr_t)hdr + sec_shdr->sh_offset;
   uintptr_t ref_val = addr + offset;
@@ -157,7 +151,7 @@ void *elf_resolvefunction(const char *name) {
   return NULL;
 }
 
-int elf_load(void *elf, size_t elf_len, void **entry_point) {
+int elf_load(void *elf, size_t elf_len, int (**entry_point)()) {
 
   if (elf == NULL)
     return -1;
@@ -238,7 +232,7 @@ int elf_load(void *elf, size_t elf_len, void **entry_point) {
 
           if (strcmp((char *)strtab->sh_addr + sym[j].st_name, "module_init") ==
               0) {
-            *entry_point = (void *)sym[j].st_value;
+            *entry_point = (int (*)())sym[j].st_value;
           } else
             symboldb_add(strtab, shdr, &sym[j]);
         }

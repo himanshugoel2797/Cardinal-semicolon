@@ -424,6 +424,6 @@ typedef enum ElfLimitations {
 
 int elf_installkernelsymbols();
 void *elf_resolvefunction(const char *name);
-int elf_load(void *elf, size_t elf_len, void **entry_point);
+int elf_load(void *elf, size_t elf_len, int (**entry_point)());
 
 #endif

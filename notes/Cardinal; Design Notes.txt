@@ -61,8 +61,12 @@ Kernel:
     - Bootstrap memory allocator
 
 SysLibc:
+    - OBSOLETE: libc is linked into kernel and automatically hooked.
     - Common C functions
-    - Debug output driver
+
+SysDebug:
+    - OPTIONAL: not mandatory in release builds.
+    - Debug shell and output functionality
 
 SysUser:
     - Userspace support services
@@ -100,6 +104,7 @@ SysTaskMgr:
 Load order:
     Kernel
     SysLibc
+    SysDebug
     SysUser
     SysReg
     SysPhysicalMemory

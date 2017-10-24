@@ -1,0 +1,1 @@
+int module_init() { return 0; }
