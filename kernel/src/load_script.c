@@ -50,6 +50,9 @@ int loadscript_execute() {
       if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
         PANIC("ELF LOAD FAILED");
 
+      print_str("LOADED\r\n");
+
+      //__asm__("hlt" ::"a"(entry_pt));
       entry_pt();
     } else if (mode == 1) {
       print_str("CALL FUNCTION:");
