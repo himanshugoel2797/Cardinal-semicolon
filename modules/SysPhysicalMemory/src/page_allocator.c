@@ -4,12 +4,12 @@
 
 int pagealloc_init() {
 
-  // obtain NUMA domain info and divide memory among the domains
-  // allow allocations only within domains
+    // obtain NUMA domain info and divide memory among the domains
+    // allow allocations only within domains
 
-  // allocate the number of 128MiB pages
-  // when an allocation is requested, subdivide a block if the requested amount
-  // of space is not available.
+    // allocate the number of 128MiB pages
+    // when an allocation is requested, subdivide a block if the requested amount
+    // of space is not available.
 
-  return 0;
+    return 0;
 }

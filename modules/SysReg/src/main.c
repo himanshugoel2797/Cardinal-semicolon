@@ -8,4 +8,6 @@
 // Get the system's complete information, PCI, NUMA, ACPI etc
 // Use this to initialize the entire system in one go
 
-int module_init() { return 0; }
+int module_init() {
+    return 0;
+}
