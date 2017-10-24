@@ -102,15 +102,15 @@ SysTaskMgr:
     - Thread and Process Management
 
 Load order:
-    Kernel
-    SysLibc
-    SysDebug
-    SysUser
-    SysReg
-    SysPhysicalMemory
-    SysVirtualMemory
-    SysInterrupts
-    SysMemory
-    SysTimer
-    SysMP
-    SysTaskMgr
+    Kernel                  DONE
+    SysLibc                 OBSOLETE
+    SysDebug                INPROGRESS
+    SysReg                  DESIGN
+    SysInterrupts           PLANNING
+    SysMP                   PLANNING
+    SysPhysicalMemory       DESIGN
+    SysVirtualMemory        
+    SysMemory               
+    SysTimer                
+    SysUser                 
+    SysTaskMgr              
