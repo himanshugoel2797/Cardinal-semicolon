@@ -12,6 +12,10 @@ void *memset(void *s, int c, size_t n);
 
 void *memcpy(void *restrict dest, const void *restrict src, size_t n);
 
+int memcmp(const void *__s1, const void *__s2, size_t __n);
+
+void *memmove(void *restrict dest, const void *restrict src, size_t n);
+
 size_t strlen(const char *s);
 
 size_t strnlen(const char *string, size_t maxlen);

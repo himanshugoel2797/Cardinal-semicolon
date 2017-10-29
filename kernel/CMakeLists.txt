@@ -7,7 +7,7 @@ SET(COMMON_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/inc" "${LIBS_DIR}/module_li
 #Build order setup so that platform srcs are last, to override weak methods in first common, then isa
 ADD_EXECUTABLE(kernel.bin "${COMMON_SRCS}" "${ISA_SRCS}" "${PLATFORM_SRCS}")
 SET_TARGET_PROPERTIES(kernel.bin PROPERTIES LINKER_LANGUAGE C)
-SET_TARGET_PROPERTIES(kernel.bin PROPERTIES LINK_FLAGS "-Wl,--script=${PLATFORM_LAYOUT} -Wl,--omagic ${ISA_LINKER_FLAGS} ${PLATFORM_LINKER_FLAGS} ")
+SET_TARGET_PROPERTIES(kernel.bin PROPERTIES LINK_FLAGS "-Wl,--whole-archive -Wl,--script=${PLATFORM_LAYOUT} -Wl,--omagic ${ISA_LINKER_FLAGS} ${PLATFORM_LINKER_FLAGS} ")
 #SET_TARGET_PROPERTIES(kernel.bin PROPERTIES COMPILE_OPTIONS )
 TARGET_INCLUDE_DIRECTORIES(kernel.bin PUBLIC "${ISA_INCLUDE_DIRS}" "${PLATFORM_INCLUDE_DIRS}" "${COMMON_INCLUDE_DIRS}")
 TARGET_LINK_LIBRARIES(kernel.bin PUBLIC c crypto cardinal_module ubsan_handlers)

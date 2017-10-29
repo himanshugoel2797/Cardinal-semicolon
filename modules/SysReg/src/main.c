@@ -1,3 +1,6 @@
+#include "kvs.h"
+#include <stddef.h>
+#include <stdint.h>
 #include <types.h>
 
 // Parse tables and store them in a registry
@@ -19,6 +22,12 @@
 // Initialization task is executed, loading in drivers and starting services
 // User mode handoff
 
-// Registry is a json database
+// Registry is an in-memory database
 
-int module_init() { return 0; }
+static kvs_t *kern_registry;
+
+int module_init() {
+  if (kvs_create(&kern_registry) != kvs_ok)
+    PANIC("Registry init failed.");
+  return 0;
+}

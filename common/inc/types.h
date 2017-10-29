@@ -15,13 +15,27 @@ extern "C" {
 #include S_(ISA_TYPES_H)
 #include S_(PLATFORM_TYPES_H)
 
+#define MAX(a, b)                                                              \
+  ({                                                                           \
+    __typeof__(a) _a = (a);                                                    \
+    __typeof__(b) _b = (b);                                                    \
+    _a > _b ? _a : _b;                                                         \
+  })
+
+#define MIN(a, b)                                                              \
+  ({                                                                           \
+    __typeof__(a) _a = (a);                                                    \
+    __typeof__(b) _b = (b);                                                    \
+    _a < _b ? _a : _b;                                                         \
+  })
+
 int debug_handle_trap();
 
 #define KiB(x) (x * 1024ull)
 #define MiB(x) (KiB(1) * 1024ull * x)
 #define GiB(x) (uint64_t)(MiB(1) * 1024ull * x)
 
-#define UNUSED(x) UNUSED_##x __attribute__((__unused__))
+#define UNUSED __attribute__((__unused__))
 #define NONNULL __attribute__((nonnull))
 #define PURE __attribute__((pure))
 #define IS_NULL(x)                                                             \
@@ -31,6 +45,7 @@ int debug_handle_trap();
 #define SECTION(x) __attribute__((section(x)))
 #define PACKED __attribute__((packed))
 #define NORETURN __attribute__((noreturn))
+#define NULLABLE
 #define NONNULL_RETURN __attribute__((returns_nonnull))
 #define WEAK __attribute__((weak))
 

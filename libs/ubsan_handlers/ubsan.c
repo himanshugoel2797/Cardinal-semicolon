@@ -91,7 +91,7 @@ typedef enum {
   nonnull_arg,
 } ubsan_type_names;
 
-const char *ubsan_type_strs[] = {
+static const char *ubsan_type_strs[] = {
     "add_overflow:",       "sub_overflow:",
     "mul_overflow:",       "divrem_overflow:",
     "negate_overflow:",    "shift_out_of_bounds:",
@@ -103,11 +103,6 @@ const char *ubsan_type_strs[] = {
 
 #define ubsan_str_buf_len 1024
 static char temp_ubsan_str_buf[ubsan_str_buf_len];
-
-int WEAK test_ubsan_strs() {
-  DEBUG_PRINT(ubsan_type_strs[0]);
-  return 0;
-}
 
 static void handle_lhs_rhs_funcs(struct source_location *loc, uintptr_t lhs,
                                  uintptr_t rhs, ubsan_type_names t) {

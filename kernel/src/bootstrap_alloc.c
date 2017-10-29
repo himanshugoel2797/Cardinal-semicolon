@@ -88,6 +88,14 @@ void WEAK free(void *ptr) {
   bootstrap_free(ptr, sz);
 }
 
+void *WEAK realloc(void *ptr, size_t size) {
+  ptr = NULL;
+  size = 0;
+
+  PANIC("realloc unimplmented!");
+  return NULL;
+}
+
 int kernel_updatememhandlers() {
   malloc_hndl = (void *(*)(size_t))elf_resolvefunction("malloc");
   if (malloc_hndl == malloc)
