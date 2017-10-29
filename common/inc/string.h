@@ -30,6 +30,10 @@ char *strncat(char *restrict dest, const char *restrict src, size_t count);
 
 const char *strstr(const char *haystack, const char *needle);
 
+const char *WEAK strchr(const char *__s, int __c);
+
+const char *WEAK strrchr(const char *__s, int __c);
+
 #ifdef __cplusplus
 }
 #endif

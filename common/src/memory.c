@@ -135,6 +135,41 @@ char *WEAK strncat(char *restrict dest, const char *restrict src,
   return ret;
 }
 
+const char *WEAK strchr(const char *__s, int __c) {
+  if (__s == NULL)
+    return NULL;
+
+  char c = (char)__c;
+
+  while (*__s != c && *__s != 0)
+    __s++;
+
+  if (*__s == c)
+    return __s;
+
+  return NULL;
+}
+
+const char *WEAK strrchr(const char *__s, int __c) {
+  if (__s == NULL)
+    return NULL;
+
+  char c = (char)__c;
+  const char *prev_s = NULL;
+
+  while (true) {
+    __s++;
+
+    if (*__s == 0)
+      return prev_s;
+
+    if (*__s == c)
+      prev_s = __s;
+  }
+
+  return NULL;
+}
+
 const char *WEAK strstr(const char *haystack, const char *needle) {
 
   if (needle == NULL)

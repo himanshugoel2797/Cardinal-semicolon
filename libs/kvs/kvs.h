@@ -23,10 +23,13 @@ typedef enum {
   kvs_error_outofmemory = 2,
   kvs_error_invalidargs = 3,
   kvs_error_notfound = 4,
+  kvs_error_exists = 5,
 } kvs_error;
 
+#define key_len 232
+
 typedef struct kvs {
-  char key[232];
+  char key[key_len];
   uint32_t key_hash;
   int val_type;
   union {

@@ -35,12 +35,14 @@ int kvs_create(kvs_t **r NULLABLE) {
   return kvs_ok;
 }
 
-#define key_len 232
 static int kvs_add_internal(kvs_t *r NULLABLE, const char *key, void *val,
                             kvs_val_type val_type) {
 
   if (r == NULL)
     return kvs_error_invalidargs;
+
+  if (kvs_find(r, key, NULL) == kvs_ok)
+    return kvs_error_exists;
 
   uint32_t key_hash = hash(key, strnlen(key, key_len));
 
@@ -84,17 +86,15 @@ int kvs_find(kvs_t *r NULLABLE, const char *key, kvs_t **res) {
   if (r == NULL)
     return kvs_error_invalidargs;
 
-  if (res == NULL)
-    return kvs_error_invalidargs;
-
   uint32_t key_hash = hash(key, strnlen(key, key_len));
 
   kvs_t *iter = r;
   do {
-    if (iter->key_hash == key_hash) {
+    if (iter->key_hash == key_hash && iter->val_type != kvs_val_uninit) {
       if (strncmp(key, iter->key, MIN(strnlen(iter->key, key_len),
                                       strnlen(key, key_len))) == 0) {
-        *res = iter;
+        if (res != NULL)
+          *res = iter;
         return kvs_ok;
       }
     }
