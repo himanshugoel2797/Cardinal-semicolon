@@ -31,6 +31,7 @@ int kvs_create(kvs_t **r NULLABLE) {
     return kvs_error_outofmemory;
 
   k->val_type = kvs_val_uninit;
+  k->next = NULL;
   *r = k;
   return kvs_ok;
 }
@@ -86,6 +87,9 @@ int kvs_find(kvs_t *r NULLABLE, const char *key, kvs_t **res) {
   if (r == NULL)
     return kvs_error_invalidargs;
 
+  if (key == NULL)
+    return kvs_error_invalidargs;
+
   uint32_t key_hash = hash(key, strnlen(key, key_len));
 
   kvs_t *iter = r;
@@ -98,7 +102,7 @@ int kvs_find(kvs_t *r NULLABLE, const char *key, kvs_t **res) {
         return kvs_ok;
       }
     }
-    iter = r->next;
+    iter = iter->next;
   } while (iter != NULL);
 
   return kvs_error_notfound;

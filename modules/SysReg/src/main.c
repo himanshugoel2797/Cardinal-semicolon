@@ -1,5 +1,7 @@
-#include "SysReg/registry.h"
+#include "common.h"
 #include "kvs.h"
+#include "priv_reg.h"
+#include "registry.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -44,7 +46,7 @@ static int registry_getkvs(const char *path, kvs_t **k NONNULL) {
   do {
     n_part = strchr(path, '/');
     if (n_part == NULL)
-      n_part = path + strlen(path);
+      n_part = strchr(path, 0);
 
     if (n_part - path > MAX_REGISTRY_KEYLEN)
       return registry_err_dne;
@@ -52,12 +54,13 @@ static int registry_getkvs(const char *path, kvs_t **k NONNULL) {
     memset(kvs_key, 0, key_len);
     strncpy(kvs_key, path, n_part - path);
 
-    DEBUG_PRINT(kvs_key);
-    DEBUG_PRINT("\r\n");
-
     if (kvs_find(cur_kvs, kvs_key, &cur_kvs) != kvs_ok) {
       *k = cur_kvs;
       return registry_err_dne;
+    }
+
+    if (kvs_get_child(cur_kvs, cur_kvs, &cur_kvs) != kvs_ok) {
+      PANIC("Unexpected error!");
     }
 
     *k = cur_kvs;
@@ -292,23 +295,33 @@ int registry_removedirectory(const char *path, const char *dirname) {
   return registry_removekey(path, dirname);
 }
 
+#define REG_INIT_FAIL_STR "Failed to initialize registry."
+
 int module_init() {
   if (kvs_create(&kern_registry) != kvs_ok)
-    PANIC("Registry init failed.");
+    PANIC(REG_INIT_FAIL_STR);
 
-  // add functions for easily accessing specific keys and directories and
-  // adding/removing them
-  registry_createdirectory("", "HW_BOOTINFO");
+  if (registry_createdirectory("", "HW") != registry_err_ok)
+    PANIC(REG_INIT_FAIL_STR);
 
-  // first store the cardinal boot information structure
+  if (registry_createdirectory("HW", "BOOTINFO") != registry_err_ok)
+    PANIC(REG_INIT_FAIL_STR);
 
-  // parse ACPI tables
+  if (registry_createdirectory("HW", "PHYS_MEM") != registry_err_ok)
+    PANIC(REG_INIT_FAIL_STR);
 
-  // parse and place CPUID information
+  if (registry_createdirectory("HW", "VIRT_MEM") != registry_err_ok)
+    PANIC(REG_INIT_FAIL_STR);
+
+  // TODO: move the following directory into platform
+  if (add_bootinfo() != 0)
+    PANIC("Registry: HW/BOOTINFO initialization failure.");
+
+  if (add_platform_info() != 0)
+    PANIC("Registry: platform information initialization failure.");
 
   // TODO: eventually also load any registry info saved in the initrd,
-  // contains
-  // info such as primary partition information
+  // contains info such as primary partition information
 
   return 0;
 }

@@ -6,6 +6,7 @@
 #define CARDINAL_KVS_LIB_H
 
 #include <stdint.h>
+#include <types.h>
 
 typedef enum {
   kvs_val_uninit = -1,

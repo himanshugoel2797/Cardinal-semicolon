@@ -37,7 +37,10 @@ int debug_handle_trap();
 
 #define UNUSED __attribute__((__unused__))
 #define NONNULL __attribute__((nonnull))
+#define PUBLIC __attribute__((visibility("default")))
+#define PRIVATE __attribute__((visibility("hidden")))
 #define PURE __attribute__((pure))
+#define CONST __attribute__((const))
 #define IS_NULL(x)                                                             \
   if (!x)                                                                      \
   debug_handle_trap()
@@ -76,6 +79,8 @@ int print_str(const char *s);
 #if !defined(NDEBUG)
 // First set the trap message, then raise the trap
 void set_trap_str(const char *str);
+
+#define WARN(msg) print_str(__FILE__ "," S__LINE__ ":" msg "\r\n")
 
 #define PANIC(msg)                                                             \
   set_trap_str(__FILE__ "," S__LINE__ ":" msg "\r\n"), debug_handle_trap()
