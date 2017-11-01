@@ -13,12 +13,12 @@
 #define MAX_REGISTRY_STRLEN (4096)
 
 typedef enum {
-  registry_err_ok = 0,
-  registry_err_invalidargs = 1,
-  registry_err_dne = 2,
-  registry_err_exists = 3,
-  registry_err_failure = 4,
-  registry_err_typematchfailure = 5,
+    registry_err_ok = 0,
+    registry_err_invalidargs = 1,
+    registry_err_dne = 2,
+    registry_err_exists = 3,
+    registry_err_failure = 4,
+    registry_err_typematchfailure = 5,
 } registry_error;
 
 int registry_createdirectory(const char *path, const char *dirname);

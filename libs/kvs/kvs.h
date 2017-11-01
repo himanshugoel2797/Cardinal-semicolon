@@ -9,38 +9,38 @@
 #include <types.h>
 
 typedef enum {
-  kvs_val_uninit = -1,
-  kvs_val_none = 0,
-  kvs_val_sint = 1,
-  kvs_val_uint = 2,
-  kvs_val_str = 3,
-  kvs_val_ptr = 4,
-  kvs_val_child = 5,
+    kvs_val_uninit = -1,
+    kvs_val_none = 0,
+    kvs_val_sint = 1,
+    kvs_val_uint = 2,
+    kvs_val_str = 3,
+    kvs_val_ptr = 4,
+    kvs_val_child = 5,
 } kvs_val_type;
 
 typedef enum {
-  kvs_ok = 0,
-  kvs_error_unkwn = 1,
-  kvs_error_outofmemory = 2,
-  kvs_error_invalidargs = 3,
-  kvs_error_notfound = 4,
-  kvs_error_exists = 5,
+    kvs_ok = 0,
+    kvs_error_unkwn = 1,
+    kvs_error_outofmemory = 2,
+    kvs_error_invalidargs = 3,
+    kvs_error_notfound = 4,
+    kvs_error_exists = 5,
 } kvs_error;
 
 #define key_len 232
 
 typedef struct kvs {
-  char key[key_len];
-  uint32_t key_hash;
-  int val_type;
-  union {
-    int64_t s_val;
-    uint64_t u_val;
-    char *str;
-    void *ptr;
-    struct kvs *child;
-  };
-  struct kvs *next;
+    char key[key_len];
+    uint32_t key_hash;
+    int val_type;
+    union {
+        int64_t s_val;
+        uint64_t u_val;
+        char *str;
+        void *ptr;
+        struct kvs *child;
+    };
+    struct kvs *next;
 } kvs_t;
 
 int kvs_create(kvs_t **r);
