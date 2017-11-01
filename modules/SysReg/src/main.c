@@ -78,6 +78,9 @@ int registry_createdirectory(const char *path, const char *dirname) {
   if (path == NULL)
     return registry_err_invalidargs;
 
+  if (dirname == NULL)
+    return registry_err_invalidargs;
+
   // Get the parent kvs
   int err = registry_getkvs(path, &parent_kvs);
   if (err != registry_err_ok)

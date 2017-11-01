@@ -6,6 +6,8 @@
  */
 #include "boot_information.h"
 #include "registry.h"
+#include <stdlib.h>
+#include <string.h>
 #include <types.h>
 
 PRIVATE int add_bootinfo() {
@@ -33,7 +35,30 @@ PRIVATE int add_bootinfo() {
   }
 
   // Physical memory info
-  {}
+  {
+    for (uint32_t i = 0; i < bInfo->CardinalMemoryMapCount; i++) {
+
+      if (bInfo->CardinalMemoryMap[i].type != CardinalMemoryRegionType_Free)
+        continue;
+
+      char idx_str[10];
+      char key_str[256] = "HW/PHYS_MEM/";
+      char *key_idx = strncat(key_str, itoa(i, idx_str, 16), 255);
+
+      if (registry_createdirectory("HW/PHYS_MEM", idx_str) != registry_err_ok)
+        return -1;
+
+      if (registry_addkey_uint(key_idx, "ADDR",
+                               bInfo->CardinalMemoryMap[i].addr) !=
+          registry_err_ok)
+        return -1;
+
+      if (registry_addkey_uint(key_idx, "LEN",
+                               bInfo->CardinalMemoryMap[i].len) !=
+          registry_err_ok)
+        return -1;
+    }
+  }
 
   // Boot time framebuffer
   {
