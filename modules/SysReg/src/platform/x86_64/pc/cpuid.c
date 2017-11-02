@@ -6,6 +6,7 @@
  */
 #include "registry.h"
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <types.h>
 
@@ -75,10 +76,10 @@ typedef enum { CPUID_ECX_IGNORE = 0, CPUID_EAX_FIRST_PAGE = 1 } CPUID_REQUESTS;
 static uint32_t eax, ebx, ecx, edx;
 static uint32_t cache_line_size = 0;
 
-static void CPUID_RequestInfo(uint32_t page, uint32_t *eax, uint32_t *ebx,
-                              uint32_t *ecx, uint32_t *edx) {
+static void CPUID_RequestInfo(uint32_t page, uint32_t idx, uint32_t *eax,
+                              uint32_t *ebx, uint32_t *ecx, uint32_t *edx) {
 
-  uint32_t ax = page, bx = *ebx, cx = *ecx, dx = *edx;
+  uint32_t ax = page, bx = *ebx, cx = idx, dx = *edx;
 
   __asm__ volatile("cpuid\n\t"
                    : "=a"(ax), "=b"(bx), "=c"(cx), "=d"(dx)
@@ -95,7 +96,7 @@ int add_cpuid() {
 
   // Processor manufacturer identification string
   {
-    CPUID_RequestInfo(0, &eax, &ebx, &ecx, &edx);
+    CPUID_RequestInfo(0, 0, &eax, &ebx, &ecx, &edx);
 
     char proc_str[13];
     proc_str[12] = 0;
@@ -110,7 +111,7 @@ int add_cpuid() {
 
   // Processor model identification
   {
-    CPUID_RequestInfo(1, &eax, &ebx, &ecx, &edx);
+    CPUID_RequestInfo(1, 0, &eax, &ebx, &ecx, &edx);
     uint32_t stepping = eax & 0x0F;
     uint32_t model = (eax & 0xF0) >> 4;
     uint32_t family = (eax & 0xF00) >> 8;
@@ -136,5 +137,76 @@ int add_cpuid() {
       return -1;
   }
 
+  // Memory information
+  {
+    CPUID_RequestInfo(2, 0, &eax, &ebx, &ecx, &edx);
+    uint32_t phys_bits = (eax & 0xFF);
+    uint32_t virt_bits = (eax >> 8) & 0xFF;
+
+    if (registry_addkey_uint("HW/PHYS_MEM", "BITS", phys_bits) !=
+        registry_err_ok)
+      return -1;
+
+    if (registry_addkey_uint("HW/VIRT_MEM", "BITS", virt_bits) !=
+        registry_err_ok)
+      return -1;
+  }
+
+  // TODO: Determine initial cache parameters to configure the page allocator
+  {
+    uint32_t cache_idx = 0, cache_type, cache_level, apic_id_cnt, thread_cnt,
+             line_size, associativity, partition_cnt, set_cnt;
+    bool fully_associative;
+    do {
+      char idx_str[10];
+      char dir_str[256] = "HW/CACHE/";
+      CPUID_RequestInfo(4, cache_idx, &eax, &ebx, &ecx, &edx);
+
+      cache_type = (eax & 0x1F);
+      if (cache_type == 0)
+        break;
+
+      apic_id_cnt = ((eax >> 26) & 0x3F) + 1;
+      thread_cnt = ((eax >> 14) & 0xFFF) + 1;
+      fully_associative = (eax >> 9) & 1;
+      cache_level = (eax >> 5) & 0x7;
+
+      associativity = ((ebx >> 22) + 1);
+      partition_cnt = ((ebx >> 12) & 0x3FF) + 1;
+      line_size = (ebx & 0xFFF) + 1;
+      set_cnt = ecx + 1;
+
+      strncat(dir_str, itoa(cache_idx, idx_str, 16), 255);
+
+      if (registry_createdirectory("HW/CACHE", idx_str) != registry_err_ok)
+        return -1;
+
+      if (registry_addkey_uint(dir_str, "ASSOCIATIVITY", associativity) !=
+          registry_err_ok)
+        return -1;
+
+      if (registry_addkey_uint(dir_str, "PARITITIONS", partition_cnt) !=
+          registry_err_ok)
+        return -1;
+
+      if (registry_addkey_uint(dir_str, "LINE_SZ", line_size) !=
+          registry_err_ok)
+        return -1;
+
+      if (registry_addkey_uint(dir_str, "SET_CNT", set_cnt) != registry_err_ok)
+        return -1;
+
+      cache_idx++;
+    } while (true);
+  }
+
+  // TODO: Setup proper IDT and GDT
+
+  // TODO: Come back after virtual memory and physical memory have been
+  // initialized
+
+  // TODO: Parse ACPI tables
+
+  // TODO: Parse PCI device tree
   return 0;
 }
