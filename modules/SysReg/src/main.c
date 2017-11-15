@@ -322,6 +322,9 @@ int module_init() {
   if (registry_createdirectory("HW", "CACHE") != registry_err_ok)
     PANIC(REG_INIT_FAIL_STR);
 
+  if (registry_createdirectory("HW/CACHE", "TLB") != registry_err_ok)
+    PANIC(REG_INIT_FAIL_STR);
+
   // TODO: move the following directory into platform
   if (add_bootinfo() != 0)
     PANIC("Registry: HW/BOOTINFO initialization failure.");

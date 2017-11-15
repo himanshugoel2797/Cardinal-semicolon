@@ -200,6 +200,13 @@ int add_cpuid() {
     } while (true);
   }
 
+  {
+    //Get descriptors
+    CPUID_RequestInfo(2, 0, &eax, &ebx, &ecx, &edx);
+    __asm__("hlt" :: "a"(eax), "b"(ebx), "c"(ecx), "d"(edx));
+    
+  }
+
   // TODO: Setup proper IDT and GDT
 
   // TODO: Come back after virtual memory and physical memory have been

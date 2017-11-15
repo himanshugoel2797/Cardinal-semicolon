@@ -36,10 +36,8 @@ PRIVATE int add_bootinfo() {
 
   // Physical memory info
   {
-    if (registry_addkey_uint("HW/PHYS_MEM", "ENTRY_COUNT",
-                             bInfo->CardinalMemoryMapCount) != registry_err_ok)
-      return -1;
 
+    uint32_t j = 0;
     for (uint32_t i = 0; i < bInfo->CardinalMemoryMapCount; i++) {
 
       if (bInfo->CardinalMemoryMap[i].type != CardinalMemoryRegionType_Free)
@@ -47,7 +45,7 @@ PRIVATE int add_bootinfo() {
 
       char idx_str[10];
       char key_str[256] = "HW/PHYS_MEM/";
-      char *key_idx = strncat(key_str, itoa(i, idx_str, 16), 255);
+      char *key_idx = strncat(key_str, itoa(j, idx_str, 16), 255);
 
       if (registry_createdirectory("HW/PHYS_MEM", idx_str) != registry_err_ok)
         return -1;
@@ -61,7 +59,13 @@ PRIVATE int add_bootinfo() {
                                bInfo->CardinalMemoryMap[i].len) !=
           registry_err_ok)
         return -1;
+
+      j++;
     }
+
+    if (registry_addkey_uint("HW/PHYS_MEM", "ENTRY_COUNT", j) !=
+        registry_err_ok)
+      return -1;
   }
 
   // Boot time framebuffer

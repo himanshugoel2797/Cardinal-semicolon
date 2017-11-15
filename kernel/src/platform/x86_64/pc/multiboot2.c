@@ -24,10 +24,20 @@ typedef struct multiboot_tag_new_acpi multiboot_tag_new_acpi;
 typedef struct multiboot_tag_elf_sections multiboot_tag_elf_sections;
 typedef struct multiboot_tag_module multiboot_tag_module;
 
+extern uint64_t _region_kernel_start_, _region_kernel_end_,
+       _bootstrap_region_start, _bootstrap_region_end,
+       _trampoline_region_start, _trampoline_region_end;
+extern uint64_t KERNEL_VADDR;
+
+static uint64_t kernel_start_phys, kernel_end_phys;
+
 void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
 
     if (magic != MULTIBOOT_MAGIC)
         PANIC("Multiboot2 magic number check failed.");
+
+    kernel_start_phys = (uint64_t)(&_region_kernel_start_) - KERNEL_VADDR;
+    kernel_end_phys = (uint64_t)(&_region_kernel_end_) - KERNEL_VADDR;
 
     uint8_t *hdr_8 = (uint8_t *)boot_info;
     uint32_t total_size = *(uint32_t *)boot_info;
@@ -43,16 +53,41 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
             multiboot_tag_mmap *mmap = (multiboot_tag_mmap *)&hdr_8[i];
             int entryCount = (mmap->size - 16) / mmap->entry_size;
             CardinalMemMap *map =
-                bootstrap_malloc(sizeof(CardinalMemMap) * entryCount);
-
+                bootstrap_malloc(sizeof(CardinalMemMap) * (entryCount) );
+            
+                uint32_t mmap_entry = 0;
             for (uint32_t j = 0; j < (mmap->size - 16); j += mmap->entry_size) {
                 multiboot_memory_map_t *mmap_e =
                     (multiboot_memory_map_t *)((uint8_t *)mmap->entries + j);
                 bootInfo.MemorySize = mmap_e->addr + mmap_e->len;
 
-                map[j / mmap->entry_size].addr = mmap_e->addr;
-                map[j / mmap->entry_size].len = mmap_e->len;
-                map[j / mmap->entry_size].type = (CardinalMemoryRegionType)mmap_e->type;
+                //Check the address range and insert a split if necessary
+                //Reserve everything below 2M
+                if (mmap_e->addr < MiB(2)) {
+                    uint64_t diff = MiB(2) - mmap_e->addr;
+                    if(diff >= mmap_e->len) {
+                        //skip this entry
+                        continue;
+                    }
+
+                    mmap_e->addr += diff;
+                    mmap_e->len -= diff;
+                }
+
+                //Reserve kernel memory
+                if (mmap_e->addr >= kernel_start_phys) {
+                    uint64_t diff = kernel_end_phys - mmap_e->addr;
+                    if (mmap_e->addr + mmap_e->len < kernel_end_phys)
+                        continue;   //Skip this entry
+
+                    mmap_e->addr += diff;
+                    mmap_e->len -= diff;
+                }
+
+                map[mmap_entry].addr = mmap_e->addr;
+                map[mmap_entry].len = mmap_e->len;
+                map[mmap_entry].type = (CardinalMemoryRegionType)mmap_e->type;
+                mmap_entry++;
             }
 
             bootInfo.CardinalMemoryMap = map;
