@@ -1,3 +1,4 @@
 LOAD:./SysDebug.celf
 LOAD:./SysReg.celf
 LOAD:./SysPhysicalMemory.celf
+LOAD:./SysVirtualMemory.celf

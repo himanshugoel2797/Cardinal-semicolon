@@ -105,12 +105,28 @@ Load order:
     Kernel                  DONE
     SysLibc                 OBSOLETE
     SysDebug                INPROGRESS
-    SysReg                  DESIGN
-    SysInterrupts           PLANNING
+    SysReg                  DONE/NEEDREVIEW
+    SysPhysicalMemory       DONE/NEEDREVIEW
     SysMP                   PLANNING
-    SysPhysicalMemory       DESIGN
-    SysVirtualMemory        
-    SysMemory               
+    SysVirtualMemory        PLANNING
+    SysMemory               PLANNING            
+    SysInterrupts           PLANNING
     SysTimer                
     SysUser                 
     SysTaskMgr              
+
+Call order:
+    Kernel                  main
+    SysDebug                module_init
+    SysReg                  module_init
+    SysPhysicalMemory       module_init
+    SysMP                   module_init
+    SysVirtualMemory        module_init
+    SysMemory               module_init
+    SysReg                  acpi_init
+    SysInterrupts           module_init
+    SysMP                   mp_init
+    SysVirtualMemory        vmem_mp_init
+    SysTimer                module_init
+    SysUser                 module_init
+    SysTaskMgr              module_init
