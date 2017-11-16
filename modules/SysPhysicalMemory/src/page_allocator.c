@@ -180,7 +180,7 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
 }
 
 int pagealloc_init() {
-
+  //TODO: use registry to allocate memory for the queue, ensuring enough is available
   // initialize allocator as normal
   mem_size = 0;
   if (registry_readkey_uint("HW/BOOTINFO", "MEMSIZE", &mem_size) !=

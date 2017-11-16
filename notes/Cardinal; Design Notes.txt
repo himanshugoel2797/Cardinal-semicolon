@@ -65,7 +65,8 @@ SysLibc:
     - Common C functions
 
 SysDebug:
-    - OPTIONAL: not mandatory in release builds.
+    - ~~OPTIONAL: not mandatory in release builds.~~
+        - MANDATORY: Used in kernel PANIC situation
     - Debug shell and output functionality
 
 SysUser:
@@ -97,16 +98,21 @@ SysTimer:
 
 SysMP:
     - Hardware threading management
+    - TLS
 
 SysTaskMgr:
     - Thread and Process Management
+
+SysModMgr:
+    - Module manager meant to replace kernel bootstrap
+    - Copies over symbols in kernel table
 
 Load order:
     Kernel                  DONE
     SysLibc                 OBSOLETE
     SysDebug                INPROGRESS
-    SysReg                  DONE/NEEDREVIEW
-    SysPhysicalMemory       DONE/NEEDREVIEW
+    SysReg                  DONE/NEEDREVIEW/NEEDMP
+    SysPhysicalMemory       DONE/NEEDREVIEW/NEEDMP
     SysMP                   PLANNING
     SysVirtualMemory        PLANNING
     SysMemory               PLANNING            
@@ -114,19 +120,46 @@ Load order:
     SysTimer                
     SysUser                 
     SysTaskMgr              
+    SysModMgr               
 
 Call order:
     Kernel                  main
     SysDebug                module_init
     SysReg                  module_init
     SysPhysicalMemory       module_init
-    SysMP                   module_init
+    SysMP                   module_init     -init TLS
     SysVirtualMemory        module_init
     SysMemory               module_init
-    SysReg                  acpi_init
-    SysInterrupts           module_init
-    SysMP                   mp_init
-    SysVirtualMemory        vmem_mp_init
-    SysTimer                module_init
-    SysUser                 module_init
-    SysTaskMgr              module_init
+    SysReg                  acpi_init       -parse and store acpi tables
+    SysInterrupts           module_init     -initialize IDT/APIC/IOAPIC
+    SysTimer                module_init     -configure local timers
+    SysMP                   mp_init         -boot APs and setup TLS
+    SysUser                 module_init     -setup syscall handling
+    SysTaskMgr              module_init     -setup process management
+    SysModMgr               module_init     -replace bootstrap kernel
+    SysMP                   mp_waitready    -wait for APs to finish booting
+    SysTaskMgr              task_enter      -enter scheduler
+
+AP script:
+    SysVirtualMemory        vmem_mp_init    -setup virtual memory for APs
+    SysMemory               mem_mp_init     -setup memory for APs
+    SysTimer                timer_mp_init   -setup timers for APs
+    SysMP                   mp_signalready  -pause APs for further setup
+    SysTaskMgr              task_enter      -enter scheduler
+
+Task load script:                           -determines which tasks to create to start setting up the userspace
+    SysTerminal             module_init     -sets up root system terminal device
+    SysHw                   module_init     -handles standard busses
+    SysStdInputDev          module_init     -manages standard input devices
+    SysStdDisplay           module_init     -manages display devices/loads primary display driver
+    SysBtrfs                module_init     -handles btrfs implementation
+    SysDisk                 module_init     -handles standard disk drivers
+    SysUsb                  module_init     -handles standard usb hubs
+    SysUsb                  usb_load_init   -loads initial devices: keyboard
+    SysReg                  reg_load        -loads registries from disk
+    SysStdGraphics          module_init     -load graphics API
+    SysStdSound             module_init     -load sound API
+    SysStdNet               module_init     -load networking API
+    SysHw                   hw_load_init    -load drivers as from registries
+    SysUserMan              module_init     -initialize user management,ask for user credentials, use credentials to decrypt associated registries
+    SysGUI                  module_init     -initialize GUI based on user registries
