@@ -8,6 +8,6 @@
 #include "page_allocator.h"
 
 int module_init() {
-  pagealloc_init();
-  return 0;
+    pagealloc_init();
+    return 0;
 }

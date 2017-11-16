@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2017 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -12,9 +12,9 @@
 int queue_init(queue_t *q, int32_t sz) {
     if(q == NULL)
         return -1;
-    
+
     q->queue = malloc(sz * sizeof(uint64_t));
-    
+
     if(q->queue == NULL)
         return -1;
 

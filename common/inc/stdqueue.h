@@ -1,5 +1,5 @@
 // Copyright (c) 2017 Himanshu Goel
-// 
+//
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
@@ -10,11 +10,11 @@
 #include <stddef.h>
 
 typedef struct {
-  uint64_t *queue;
-  int32_t size;
-  _Atomic int32_t ent_cnt;
-  _Atomic volatile int32_t head;
-  _Atomic volatile int32_t tail;
+    uint64_t *queue;
+    int32_t size;
+    _Atomic int32_t ent_cnt;
+    _Atomic volatile int32_t head;
+    _Atomic volatile int32_t tail;
 } queue_t;
 
 int queue_init(queue_t *q, int32_t sz);

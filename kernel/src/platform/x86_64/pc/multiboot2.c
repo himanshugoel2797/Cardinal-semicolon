@@ -54,8 +54,8 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
             int entryCount = (mmap->size - 16) / mmap->entry_size;
             CardinalMemMap *map =
                 bootstrap_malloc(sizeof(CardinalMemMap) * (entryCount) );
-            
-                uint32_t mmap_entry = 0;
+
+            uint32_t mmap_entry = 0;
             for (uint32_t j = 0; j < (mmap->size - 16); j += mmap->entry_size) {
                 multiboot_memory_map_t *mmap_e =
                     (multiboot_memory_map_t *)((uint8_t *)mmap->entries + j);
