@@ -159,7 +159,7 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
     if(queue_trydequeue(&btm_level, &deq) == false)
       PANIC("Out of Memory!");
 
-    if(GET_PG_CNT(deq) >= pg_cnt) {
+    if((int32_t)GET_PG_CNT(deq) >= pg_cnt) {
       uint64_t ret_addr = GET_ADDR(deq);
       uint64_t n_addr = ret_addr + pg_cnt * BTM_LEVEL;
       int32_t n_pg_cnt = GET_PG_CNT(deq) - pg_cnt;
@@ -223,8 +223,6 @@ int pagealloc_init() {
   instr_multiple = 1;
   pagetable_multiple = 1;
   // TODO: Load these with actual data
-
-  __asm__("hlt" :: "a"(btm_level.queue));
 
   return 0;
 }
