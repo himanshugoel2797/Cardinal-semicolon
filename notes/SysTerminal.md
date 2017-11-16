@@ -15,3 +15,6 @@ exit    - close current terminal
 A terminal device is simply a state machine, it inputs/outputs Mana render structures, which the GUI must interpret to present a device
 
 All programs simply read/write input from this device
+
+All programs are executed in a terminal mode, they can use a syscall to request a ui renderer
+They then submit their structural description to the ui renderer and register event handlers

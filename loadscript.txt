@@ -2,3 +2,14 @@ LOAD:./SysDebug.celf
 LOAD:./SysReg.celf
 LOAD:./SysPhysicalMemory.celf
 LOAD:./SysVirtualMemory.celf
+LOAD:./SysMemory.celf
+LOAD:./SysInterrupts.celf
+LOAD:./SysMP.celf
+CALL:mp_tls_setup
+CALL:vmem_init
+CALL:mem_init
+CALL:acpi_init
+CALL:intr_init
+LOAD:./SysTimer.celf
+LOAD:./SysUser.celf
+LOAD:./SysTaskMgr.celf

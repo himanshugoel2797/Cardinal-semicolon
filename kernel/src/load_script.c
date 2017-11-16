@@ -59,6 +59,9 @@ int loadscript_execute() {
             print_str("\r\n");
 
             int (*entry_pt)() = (int (*)())elf_resolvefunction(name);
+            if(entry_pt == NULL)
+                PANIC("FAILED TO RESOLVE FUNCTION!");
+                
             entry_pt();
         } else if (mode == -1)
             break;

@@ -53,12 +53,11 @@ Initrd_GetFile(const char *file,
     while(file_entry->filename[0] != 0) {
         uint32_t len = strnlen(file_entry->filename, 100);
 
-        if(strncmp(file_entry->filename + len - file_param_len, file, len - file_param_len) == 0) {
+        if(strcmp(file_entry->filename, file) == 0) {
             *loc = (void*)((uint64_t)file_entry + 512);
             *size = getsize(file_entry->size);
             break;
         }
-
 
         file_entry = (TARHeader*)((uint64_t)file_entry + 512 + getsize(file_entry->size));
 
