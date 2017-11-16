@@ -36,8 +36,8 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
     if (magic != MULTIBOOT_MAGIC)
         PANIC("Multiboot2 magic number check failed.");
 
-    kernel_start_phys = (uint64_t)(&_region_kernel_start_) - KERNEL_VADDR;
-    kernel_end_phys = (uint64_t)(&_region_kernel_end_) - KERNEL_VADDR;
+    kernel_start_phys = (uint64_t)(&_region_kernel_start_);
+    kernel_end_phys = (uint64_t)(&_region_kernel_end_);
 
     uint8_t *hdr_8 = (uint8_t *)boot_info;
     uint32_t total_size = *(uint32_t *)boot_info;

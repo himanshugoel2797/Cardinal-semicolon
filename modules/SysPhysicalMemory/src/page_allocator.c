@@ -1,9 +1,10 @@
-#include "SysReg/registry.h"
 #include "SysPhysicalMemory/phys_mem.h"
+#include "SysReg/registry.h"
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdqueue.h>
 #include <string.h>
 #include <types.h>
 
@@ -17,28 +18,96 @@
 
 // If SUBMP_ABSENT, may touch, further state depends on FREE/USED
 
-#define DISTRIBUTE(x) ((x == 0) ? 0 : ~0)
+#define BTM_LEVEL (KiB(4))
+#define ADDR_SHAMT (8)
+#define MAX_ENTRIES (1 << (12 + ADDR_SHAMT))
 
-#define FREE (0)
-#define USED (1)
+#define BUILD_ADDR(addr) ( (addr & ~(BTM_LEVEL - 1)) << ADDR_SHAMT )
+#define BUILD_PAGES(pages) ((pages - 1) & (MAX_ENTRIES - 1))
+#define BUILD_ENTRY(addr, pages)                                               \
+  ( BUILD_ADDR(addr) | BUILD_PAGES(pages) )
 
-#define GET_BIT(src, bit_idx) ((src[bit_idx / 64] >> (bit_idx % 64)) & 1)
-#define SET_BIT(src, bit_idx, bit)                                             \
-  src[bit_idx / 64] &= ~(1ul << (bit_idx % 64));                               \
-  src[bit_idx / 64] |= (1ul << (bit_idx % 64))
+#define GET_ADDR(e) ((e >> ADDR_SHAMT) & ~(BTM_LEVEL - 1))
+#define GET_PG_CNT(e) ((e & (MAX_ENTRIES - 1)) + 1)
 
-static uint64_t *btm_level_bmp;
+static queue_t btm_level;
 
-// Bit sizes
-static uint32_t btm_level_sz;
-
-// Byte sizes
-static uint32_t btm_sz;
-
-static uint64_t btm_prev_pos = 0;
+static uint64_t data_multiple;
+static uint64_t instr_multiple;
+static uint64_t pagetable_multiple;
 
 static uint64_t roundUp_po2(uint64_t val, uint64_t mult) {
   return (val + (mult - 1)) & ~(mult - 1);
+}
+static int32_t partition_pgs(uint64_t *data, int32_t lo, int32_t hi,
+                             int32_t sz) {
+  int32_t piv_loc = (lo + hi) / 2;
+  uint64_t pivot = GET_ADDR(data[piv_loc % sz]);
+  int32_t i = lo - 1;
+  int32_t j = hi + 1;
+  while (true) {
+    do
+      j--;
+    while (GET_ADDR(data[j % sz]) > pivot);
+    do
+      i++;
+    while (GET_ADDR(data[i % sz]) < pivot);
+
+    if (i >= j)
+      return j;
+
+    data[i % sz] ^= data[j % sz];
+    data[j % sz] ^= data[i % sz];
+    data[i % sz] ^= data[j % sz];
+  }
+}
+static void quicksort_pgs(uint64_t *data, int32_t lo, int32_t hi, int32_t sz) {
+  while (hi > lo) {
+    int32_t p = partition_pgs(data, lo, hi, sz);
+
+    // Ensure log(n) stack usage by always recursing the smaller partition
+    if (p - lo > hi - p) {
+      quicksort_pgs(data, lo, p, sz);
+      lo = p + 1;
+    } else {
+      quicksort_pgs(data, p + 1, hi, sz);
+      hi = p;
+    }
+  }
+}
+
+static void compact_queue() {
+  int32_t lo = btm_level.head;
+  int32_t hi = btm_level.tail - 1;
+  if (hi < lo)
+    hi += btm_level.size;
+
+  quicksort_pgs(btm_level.queue, lo, hi, btm_level.size);
+
+  for (; lo < hi - 1; lo++) {
+    int32_t pg_cnt = GET_PG_CNT(btm_level.queue[lo % btm_level.size]);
+    uint64_t pg_addr = GET_ADDR(btm_level.queue[lo % btm_level.size]);
+    uint64_t n_pg_addr = GET_ADDR(btm_level.queue[(lo + 1) % btm_level.size]);
+    int32_t n_pg_cnt =
+        pg_cnt + GET_PG_CNT(btm_level.queue[(lo + 1) % btm_level.size]);
+
+    if (pg_cnt * BTM_LEVEL + pg_addr == n_pg_addr && n_pg_cnt < MAX_ENTRIES) {
+      uint64_t n_ent = BUILD_ENTRY(pg_addr, n_pg_cnt);
+      btm_level.queue[(lo + 1) % btm_level.size] = n_ent;
+      btm_level.queue[lo % btm_level.size] = 0;
+      btm_level.head = (btm_level.head + 1) % btm_level.size;
+      btm_level.ent_cnt--;
+    }
+  }
+}
+
+static void insert_queue(uint64_t val) {
+    if (!queue_tryenqueue(&btm_level, val)) {
+      compact_queue();
+
+      if (!queue_tryenqueue(&btm_level, val))
+        PANIC("Failed to enqueue entry.");
+    }
 }
 
 void pagealloc_free(uint64_t addr, uint64_t size) {
@@ -49,75 +118,59 @@ void pagealloc_free(uint64_t addr, uint64_t size) {
   if (size % BTM_LEVEL != 0)
     PANIC("Misaligned size");
 
-  btm_prev_pos = addr / BTM_LEVEL;
+  int32_t page_cnt = size / BTM_LEVEL;
 
-  while (size > 0) {
-    if ((addr % BTM_LEVEL == 0) && (size >= BTM_LEVEL)) {
-      // Mark free at the btm level
-      SET_BIT(btm_level_bmp, addr / BTM_LEVEL, FREE);
+  for (int32_t pg_0 = 0; pg_0 < page_cnt; pg_0 += MAX_ENTRIES) {
+    int32_t cur_pg = 0;
+    if (page_cnt - pg_0 >= MAX_ENTRIES)
+      cur_pg = MAX_ENTRIES;
+    else
+      cur_pg = page_cnt - pg_0;
 
-      addr += BTM_LEVEL;
-      size -= BTM_LEVEL;
-      continue;
-    }
-
-    PANIC("Error: Unexpected path.\r\n");
+    uint64_t val = BUILD_ENTRY(addr, cur_pg);
+    addr += cur_pg * BTM_LEVEL;
+    insert_queue(val);
   }
 }
 
-static uint64_t data_multiple;
-static uint64_t instr_multiple;
-static uint64_t pagetable_multiple;
-
-uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags, uint64_t size) { 
+uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
+                          uint64_t size) {
 
   domain = 0;
+  color = 0;
+  flags = 0;
 
-  //determine how to compute cache coloring
+  // determine how to compute cache coloring
   // Get associated cache size
   // Divide by page size to get the number of slots
   // Divide by the number of associativity to get the number of colors
   // Page index % number of colors to get the page color
   // Thus, change the page increment appropriately
   // Coloring only matters for single page allocations of cache age size
-  
-  uint64_t page_multiple = 1;     //Depends on the color
-  uint64_t page_base_offset = 0;  //Depends on the domain
-  uint64_t cache_unit_sz = 0;
 
-    //allocations are multiples of BTM_LEVEL pages
-    size = roundUp_po2(size, BTM_LEVEL);
-    cache_unit_sz = BTM_LEVEL;
+  // allocations are multiples of BTM_LEVEL pages
+  size = roundUp_po2(size, BTM_LEVEL);
+  int32_t pg_cnt = size / BTM_LEVEL;
   
-  //Determine search rules
-  if(flags & physmem_alloc_flags_data) {
-    page_multiple = data_multiple;
-  } else if(flags & physmem_alloc_flags_instr) {
-    page_multiple = instr_multiple;
-  } else if(flags & physmem_alloc_flags_pagetable) {
-    page_multiple = pagetable_multiple;
+  //dequeue and enqueue until a unit large enough for this allocation is found
+  int32_t max_iter = queue_entcnt(&btm_level);
+  for(int32_t i = 0; i < max_iter; i++) {
+    uint64_t deq = 0;
+    if(queue_trydequeue(&btm_level, &deq) == false)
+      PANIC("Out of Memory!");
+
+    if(GET_PG_CNT(deq) >= pg_cnt) {
+      uint64_t ret_addr = GET_ADDR(deq);
+      uint64_t n_addr = ret_addr + pg_cnt * BTM_LEVEL;
+      int32_t n_pg_cnt = GET_PG_CNT(deq) - pg_cnt;
+      if(n_pg_cnt > 0)
+        insert_queue(BUILD_ENTRY(n_addr, n_pg_cnt));
+
+      return ret_addr;
+    }
   }
 
-  int32_t btm_pg_off = -1;
-  if(cache_unit_sz == BTM_LEVEL){
-    
-    uint64_t u64_pos = page_base_offset / 64;
-    uint64_t bit_pos = page_base_offset % 64;
-
-    uint64_t score = 0;
-
-    //Use a queue of 2MiB pages
-    //8 bytes: page address | number of continuous pages
-
-    //Break a 2MiB page into 4KiB pages when more 4KiB pages are needed
-
-    //Sort and merge page sets when enough pages have been freed
-    //Commit any 4KiB blocks that reach 2MiB in size to 2MiB queue
-
-    return (uintptr_t)btm_pg_off * BTM_LEVEL;
-  }
-
-  return 0; 
+  return -1;
 }
 
 int pagealloc_init() {
@@ -129,17 +182,13 @@ int pagealloc_init() {
     PANIC("Failed to read registry.");
 
   // Compute the number of bits
-  btm_sz = roundUp_po2(mem_size, BTM_LEVEL) / BTM_LEVEL;
-  btm_level_sz = (uint32_t)btm_sz;
-
-  // Convert bits to uint64 for allocation
-  btm_sz = roundUp_po2(btm_sz, 64) / 64;
+  int32_t btm_sz = roundUp_po2(mem_size, BTM_LEVEL) / BTM_LEVEL;
 
   // Allocate the blocks
-  btm_level_bmp = malloc(btm_sz * sizeof(uint64_t));
-
-  // Mark all memory as 'in-use'
-  memset(btm_level_bmp, DISTRIBUTE(USED), btm_sz * sizeof(uint64_t));
+  if (queue_init(&btm_level,
+                 btm_sz / 2 + 1) !=
+      0) // Worst case requires half the number of entries as are pages
+    PANIC("Queue init failure!");
 
   // parse each memory map entry and free the regions
   {
@@ -165,50 +214,17 @@ int pagealloc_init() {
       if (len % BTM_LEVEL != 0)
         len -= len % BTM_LEVEL;
 
+      addr = roundUp_po2(addr, BTM_LEVEL);
       pagealloc_free(addr, len);
     }
   }
 
-  // allow color and NUMA information to be supplied later
-
-  // allocate the number of 128MiB pages
-  // when an allocation is requested, subdivide a block if the requested
-  // amount
-  // of space is not available.
-
-  // allocator requirements: coloring, NUMA, contiguous, 32-bit/64-bit,
-  // emergency reclaimable allocation
-
-  // need to be able to mix and match any of the above requirements
-
-  // NUMA and 32/64 provide address range
-  // coloring and contiguous provide page arrangement
-  // allocator also needs to be multithreaded
-
-  // Allocation is binning search, NUMA and 32/64 control bin choice
-  // Coloring and contiguous-ness provide the search criteria
-
-  // Bins based on NUMA and 32/64
-  // Each free block is a binary tree node
-  // Contiguous-ness can be satisfied using a simple tree traversal
-  // Coloring can be satisfied by searching for the best fit of the coloring
-  // optimizations first
-
-  // A binary tree traversal would be very deep for this, it may be more
-  // suitable to do a b-tree traversal
-
-  // Each b-tree node tracks the total memory available to its children
-  // B-tree nodes are interleaved addresses to handle coloring? -Kills
-  // contiguous allocation
-
-  // With coloring optimizations, the objective is to NOT choose a page with
-  // a
-  // given color, we may want to be able to specify multiple colors to avoid
-
   data_multiple = 1;
   instr_multiple = 1;
   pagetable_multiple = 1;
-  //TODO: Load these with actual data
+  // TODO: Load these with actual data
+
+  __asm__("hlt" :: "a"(btm_level.queue));
 
   return 0;
 }

@@ -203,7 +203,7 @@ int add_cpuid() {
   {
     //Get descriptors
     CPUID_RequestInfo(2, 0, &eax, &ebx, &ecx, &edx);
-    __asm__("hlt" :: "a"(eax), "b"(ebx), "c"(ecx), "d"(edx));
+    //__asm__("hlt" :: "a"(eax), "b"(ebx), "c"(ecx), "d"(edx));
     
   }
 
