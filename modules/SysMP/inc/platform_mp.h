@@ -10,10 +10,4 @@
 
 int mp_init();
 
-int mp_tls_setup();
-
-int mp_tls_alloc(int bytes);
-
-void* mp_tls_get(int off);
-
 #endif

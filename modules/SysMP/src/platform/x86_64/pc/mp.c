@@ -6,6 +6,7 @@
  */
 
 #include "platform_mp.h"
+#include "SysMP/mp.h"
 #include <types.h>
 #include <stdlib.h>
 #include <cardinal/local_spinlock.h>
@@ -16,7 +17,7 @@
 
 static int mp_loc = 0;
 static _Atomic volatile int pos = 0;
-static __attribute__((address_space(256))) uint64_t* g_tls;
+static TLS uint64_t* g_tls;
 
 int mp_init() {
 
@@ -28,7 +29,8 @@ int mp_tls_setup() {
     if(tls == 0)
         return -1;
 
-    wrmsr(GS_BASE_MSR, tls - (uint64_t)&g_tls);
+    g_tls = NULL;   //Set the g_tls internal offset to 0, so it refers to GS_BASE_MSR+0
+    wrmsr(GS_BASE_MSR, tls);
     return 0;
 }
 
@@ -45,8 +47,7 @@ int mp_tls_alloc(int bytes) {
     return p;
 }
 
-void* mp_tls_get(int off) {
-    off = 0;
-    PANIC("Unimplemented!");
-    return NULL;
+TLS void* mp_tls_get(int off) {
+    if(off >= TLS_SIZE)return NULL;
+    return (TLS void*)(uintptr_t)off;
 }

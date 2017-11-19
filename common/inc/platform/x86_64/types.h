@@ -21,6 +21,7 @@ typedef int bool;
 #define false 0
 
 #define CUR_ENDIAN LE_ENDIAN
+#define TLS __attribute__((address_space(256)))
 
 #include "native.h"
 #else

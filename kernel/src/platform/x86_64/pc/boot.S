@@ -121,20 +121,6 @@ multiboot_end:
                                rep stosl
                                mov $4096, %ecx
                                rep stosl
-                               #mov $4096, %ecx
-                               #rep stosl
-                               #mov $4096, %ecx
-                               #rep stosl
-                               #mov $4096, %ecx
-                               #rep stosl
-                               #mov $4096, %ecx
-                               #rep stosl
-                               #mov $4096, %ecx
-                               #rep stosl
-                               #mov $4096, %ecx
-                               #rep stosl
-                               #mov $4096, %ecx
-                               #rep stosl
                                mov %cr3, %edi
                                movl $0x2003, (%edi)
                                movl $0x5003, 0xFF8(%edi)
@@ -152,24 +138,8 @@ multiboot_end:
                                movl $0x0, 0x1FF8(%edi)
 
                                #Map the bottom of the memory space
-                               movl $0x16003, 0x1FC0(%edi)
-                               movl $0x17003, 0x1FC8(%edi)
-                               movl $0x18003, 0x1FD0(%edi)
-                               movl $0x19003, 0x1FD8(%edi)
-                               movl $0x18003, 0x1FE0(%edi)
-                               movl $0x19003, 0x1FE8(%edi)
                                movl $0x16003, 0x1FF0(%edi)
                                movl $0x17003, 0x1FF8(%edi)
-
-                               #movl $0x108B, 0x1FC0(%edi)
-                               #movl $0x4000108B, 0x1FC8(%edi)
-                               #movl $0x8000108B, 0x1FD0(%edi)
-                               #movl $0xC000108B, 0x1FD8(%edi)
-
-                               #movl $0x8000108B, 0x1FE0(%edi)
-                               #movl $0xC000108B, 0x1FE8(%edi)
-                               #movl $0x108B, 0x1FF0(%edi)
-                               #movl $0x4000108B, 0x1FF8(%edi)
 
                                mov $0x16000, %edi
                                mov $0x108B, %ebx
@@ -223,8 +193,8 @@ multiboot_end:
                                mov %ax, %fs
                                mov %ax, %gs
                                mov %ax, %ss
-                               mov $0xfffffffe00000000, %rsp
-                               mov $0xfffffffe00000000, %rdi
+                               mov $0xffffffff80000000, %rsp
+                               mov $0xffffffff80000000, %rdi
                                add $stack_top, %rsp
                                mov (temp_stor_magic), %rsi
                                add (temp_stor_info), %rdi
