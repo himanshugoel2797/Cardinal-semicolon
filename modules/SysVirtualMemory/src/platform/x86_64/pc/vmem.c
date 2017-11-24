@@ -76,7 +76,6 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
     uint64_t sz = levels[lv];
 
     uint64_t idx = (virt & mask) >> shamt;
-    uint64_t n_lv = (vm[idx] & ADDR_MASK);
 
     if(size % sz == 0 && largepage_avail[lv]) {
         uint64_t c_flags = 0;
@@ -102,7 +101,7 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
         
         while(size > 0) {
             if(idx >= 512)
-                return vmem_map_st(p_vm, p_vm, virt, phys, size, perms, flags, 0);
+                return vmem_err_continue;//vmem_map_st(p_vm, p_vm, virt, phys, size, perms, flags, 0);
 
             if(vm[idx] & PRESENT)
                 return vmem_err_alreadymapped;
@@ -116,56 +115,40 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
         }
         return 0;
     }else{
-        if(n_lv == 0) {
-            n_lv = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
-            if(n_lv == 0)
-                PANIC("Pagetable allocation failure!");
-
-            memset((uint64_t*)vmem_phystovirt(n_lv, KiB(4)), 0, KiB(4));
-            vm[idx] = (n_lv & ADDR_MASK) | PRESENT | WRITE | USER;
-        }
-
-        if(vm[idx] & LARGEPAGE)
-            return vmem_err_alreadymapped;
-
-        uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(n_lv, KiB(4));
-        return vmem_map_st(p_vm, n_lv_d, virt, phys, size, perms, flags, lv + 1);
-    }
-}
-
-static int vmem_unmap_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, size_t size, int lv) {
-    uint64_t mask = masks[lv];
-    uint64_t shamt = shamts[lv];
-    uint64_t sz = levels[lv];
-
-    uint64_t idx = (virt & mask) >> shamt;
-    uint64_t n_lv = (vm[idx] & ADDR_MASK);
-
-    if(size % sz == 0 && largepage_avail[lv]) {
         while(size > 0) {
-            if(idx >= 512)
-                return vmem_map_st(p_vm, p_vm, virt, phys, size, perms, flags, 0);
+            uint64_t n_lv = (vm[idx] & ADDR_MASK);
 
-            vm[idx] = 0;
+            if(n_lv == 0) {
+                n_lv = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
+                if(n_lv == 0)
+                    PANIC("Pagetable allocation failure!");
 
-            phys += sz;
-            virt += sz;
+                memset((uint64_t*)vmem_phystovirt(n_lv, KiB(4)), 0, KiB(4));
+                vm[idx] = (n_lv & ADDR_MASK) | PRESENT | WRITE | USER;
+            }
+
+            if(vm[idx] & LARGEPAGE)
+                return vmem_err_alreadymapped;
+
+            uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(n_lv, KiB(4));
+
+            int ret = vmem_map_st(p_vm, n_lv_d, virt, phys, size, perms, flags, lv + 1);
+            if(ret != vmem_err_continue)
+                return ret;
+
+            uint64_t l_idx = (virt & masks[lv + 1]) >> shamts[lv + 1];
+            uint64_t i_sz = (512 - l_idx) << shamts[lv + 1];
+
+            size -= i_sz;
+            virt += i_sz;
+            phys += i_sz;
+
             idx++;
-            size -= sz;
+            if(idx >= 512)
+                return vmem_err_continue;
         }
+
         return 0;
-    }else{
-        if(n_lv == 0) {
-            n_lv = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
-            if(n_lv == 0)
-                PANIC("Pagetable allocation failure!");
-
-            memset((uint64_t*)vmem_phystovirt(n_lv, KiB(4)), 0, KiB(4));
-            vm[idx] = (n_lv & ADDR_MASK) | PRESENT | WRITE | USER;
-        }
-
-        uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(n_lv, KiB(4));
-        return vmem_map_st(p_vm, n_lv_d, virt, phys, size, perms, flags, lv + 1);
     }
 }
 
@@ -185,6 +168,7 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
 
 int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
     uint64_t *ptable = 0;
+    size = 0;
 
     if(virt < 0) {
         //Add to kernel map
@@ -194,7 +178,7 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
         ptable = vm->ptable;
     }
 
-    return vmem_unmap_st(ptable, ptable, virt, size, 0);
+    return 0;
 }
 
 int vmem_create(vmem_t *vm) {

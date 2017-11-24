@@ -33,11 +33,17 @@ typedef enum {
     vmem_flags_rw = (vmem_flags_read | vmem_flags_write),
 } vmem_flags;
 
+typedef enum {
+    vmem_err_none = 0,
+    vmem_err_alreadymapped = -1,
+    vmem_err_continue = -2,
+} vmem_errs;
+
 int vmem_init();
 
 int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, int flags);
 
-int vmem_unmap(vmem_t *vm, intptr_t virt);
+int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size);
 
 int vmem_create(vmem_t *vm);
 
