@@ -37,6 +37,7 @@ typedef enum {
     vmem_err_none = 0,
     vmem_err_alreadymapped = -1,
     vmem_err_continue = -2,
+    vmem_err_nomapping = -3,
 } vmem_errs;
 
 int vmem_init();

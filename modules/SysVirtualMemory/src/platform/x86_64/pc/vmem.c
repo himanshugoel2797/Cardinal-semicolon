@@ -152,6 +152,47 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
     }
 }
 
+static int vmem_unmap_st(uint64_t *p_vt, uint64_t *vm, intptr_t virt, size_t size, int lv) {
+    uint64_t mask = masks[lv];
+    uint64_t shamt = shamts[lv];
+    uint64_t sz = levels[lv];
+
+
+    while(size > 0) {
+        uint64_t idx = (virt & mask) >> shamt;
+        uint64_t lv_ent = vm[idx];
+        uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(lv_ent & ADDR_MASK, KiB(4));
+        
+        if(lv_ent & PRESENT) {
+            if(size >= sz && (lv_ent & LARGEPAGE)){
+                vm[idx] = 0;
+                size -= sz;
+                virt += sz;
+            }else if (size >= sz && (~lv_ent & LARGEPAGE)) {
+                //recurse lower
+                int err = vmem_unmap_st(p_vt, n_lv_d, virt, size, lv + 1);
+                
+                //free the lower level when done
+
+            }
+            else if(size < sz && (~lv_ent & LARGEPAGE)) {
+                //Recurse lower
+                return vmem_unmap_st(p_vt, n_lv_d, virt, size, lv + 1);
+            }else if(size < sz && (lv_ent & LARGEPAGE)) {
+                //unmap large page
+                //determine maximum size for unmapping desired portion
+                //map at determined size
+            }
+        }else if(size >= sz) {
+            size -= sz;
+            virt += sz;
+        }else
+            return vmem_err_nomapping;
+    }
+        
+
+}
+
 int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, int flags) {
     uint64_t *ptable = 0;
 
