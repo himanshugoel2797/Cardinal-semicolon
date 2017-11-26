@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <types.h>
 
 #define PRESENT (1ull << 0)
@@ -17,7 +18,8 @@
 #define ADDR_MASK (0x000ffffffffff000)
 
 struct vmem {
-    uint64_t *ptable;
+    uint64_t ptable[256];
+    int flags;
     int lock;
 };
 
@@ -54,8 +56,8 @@ static bool largepage_avail[] = {
     true,
 };
 
-static uint64_t *ktable;
 static TLS struct lcl_data *lcl;
+static vmem_t kmem;
 
 void *elf_resolvefunction(const char *name);
 
@@ -67,12 +69,18 @@ int vmem_init(){
     int (*mp_tls_alloc)(int) = (int (*)(int))elf_resolvefunction("mp_tls_alloc");
 
     uintptr_t ktable_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
-    ktable = (uint64_t*)vmem_phystovirt(ktable_phys, KiB(4));
+    uint64_t *ktable = (uint64_t*)vmem_phystovirt(ktable_phys, KiB(4));
     memset(ktable, 0, KiB(4));
 
     if(lcl == NULL)
         lcl = (TLS struct lcl_data*)mp_tls_get(mp_tls_alloc(sizeof(struct lcl_data)));
     lcl->ktable = ktable_phys;
+    {
+        kmem.flags = vmem_flags_kernel;
+        kmem.lock = 0;
+        memset(kmem.ptable, 0, sizeof(uint64_t) * 256);
+    }
+
     lcl->cur_vmem = NULL;
 
     uint64_t cur_ptable = 0;
@@ -219,7 +227,8 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
 
     if(virt < 0) {
         //Add to kernel map
-        ptable = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+        local_spinlock_lock(&kmem.lock);
+        ptable = kmem.ptable - 256;
     } else {
         //Add to user map
         local_spinlock_lock(&vm->lock);
@@ -227,7 +236,9 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
     }
 
     int rVal = vmem_map_st(ptable, ptable, virt, phys, size, perms, flags, 0);
-    if(virt > 0) local_spinlock_unlock(&vm->lock);
+    if (virt >= 0) local_spinlock_unlock(&vm->lock);
+    else local_spinlock_unlock(&kmem.lock);
+
     return rVal;
 }
 
@@ -237,7 +248,8 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
 
     if(virt < 0) {
         //Add to kernel map
-        ptable = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+        local_spinlock_lock(&kmem.lock);
+        ptable = kmem.ptable - 256;
     } else {
         //Add to user map
         local_spinlock_lock(&vm->lock);
@@ -245,7 +257,9 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
     }
 
     int rVal = vmem_unmap_st(ptable, ptable, virt, size, 0);
-    if (virt > 0) local_spinlock_unlock(&vm->lock);
+    if (virt >= 0) local_spinlock_unlock(&vm->lock);
+    else local_spinlock_unlock(&kmem.lock);
+
     return rVal;
 }
 
@@ -255,20 +269,40 @@ int vmem_create(vmem_t *vm) {
     return 0;
 }
 
-int vmem_setactive(vmem_t *vm) {
-    vm = NULL;
-    PANIC("Unimplemented!");
-    return 0;
-}
-
-int vmem_getactive(vmem_t **vm) {
+static void vmem_savestate(){
     if(lcl->cur_vmem != NULL) {
         vmem_t* vmem = lcl->cur_vmem;
         local_spinlock_lock(&vmem->lock);
         //copy state from ktable
+        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+        memcpy(vmem->ptable, p_table, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&vmem->lock);
     }
 
+    {
+        local_spinlock_lock(&kmem.lock);
+        //copy state from ktable
+        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+        memcpy(kmem.ptable, p_table + 256, 256 * sizeof(uint64_t));
+        local_spinlock_unlock(&kmem.lock);
+    }
+}
+
+int vmem_setactive(vmem_t *vm) {
+    vmem_savestate();
+
+    //copy state to ktable
+    local_spinlock_lock(&vm->lock);
+    uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+    memcpy(p_table, vm->ptable, 256 * sizeof(uint64_t));
+    local_spinlock_unlock(&vm->lock);
+
+    lcl->cur_vmem = vm;
+    return 0;
+}
+
+int vmem_getactive(vmem_t **vm) {
+    vmem_savestate();
     *vm = lcl->cur_vmem;
     return 0;
 }
@@ -278,6 +312,7 @@ int vmem_flush(vmem_t *vm, intptr_t virt, int pg_cnt) {
     virt = 0;
     pg_cnt = 0;
     PANIC("Unimplemented!");
+    //TODO: shootdown cores when kmem flushed/
     return 0;
 }
 
