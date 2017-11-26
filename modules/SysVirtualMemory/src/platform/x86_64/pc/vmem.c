@@ -1,6 +1,6 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
-#include "SysMP/mp.h"
+#include <cardinal/local_spinlock.h>
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
@@ -18,6 +18,12 @@
 
 struct vmem {
     uint64_t *ptable;
+    int lock;
+};
+
+struct lcl_data {
+    uintptr_t ktable;
+    vmem_t *cur_vmem;
 };
 
 static uint64_t levels[] = {
@@ -49,14 +55,25 @@ static bool largepage_avail[] = {
 };
 
 static uint64_t *ktable;
+static TLS struct lcl_data *lcl;
+
+void *elf_resolvefunction(const char *name);
 
 int vmem_init(){
 
     //Virt: 0xffffffff800000000 Phys: 0x0 Size: GiB(1) RWX
 
+    TLS void* (*mp_tls_get)(int) = (TLS void* (*)(int))elf_resolvefunction("mp_tls_get");
+    int (*mp_tls_alloc)(int) = (int (*)(int))elf_resolvefunction("mp_tls_alloc");
+
     uintptr_t ktable_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
     ktable = (uint64_t*)vmem_phystovirt(ktable_phys, KiB(4));
     memset(ktable, 0, KiB(4));
+
+    if(lcl == NULL)
+        lcl = (TLS struct lcl_data*)mp_tls_get(mp_tls_alloc(sizeof(struct lcl_data)));
+    lcl->ktable = ktable_phys;
+    lcl->cur_vmem = NULL;
 
     uint64_t cur_ptable = 0;
     __asm__ volatile("mov %%cr3, %0" : "=r"(cur_ptable) ::);
@@ -164,15 +181,18 @@ static int vmem_unmap_st(uint64_t *p_vt, uint64_t *vm, intptr_t virt, size_t siz
         uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(lv_ent & ADDR_MASK, KiB(4));
         
         if(lv_ent & PRESENT) {
-            if(size >= sz && (lv_ent & LARGEPAGE)){
+            if(size >= sz && ( (lv_ent & LARGEPAGE) | (sz == KiB(4) ))){
                 vm[idx] = 0;
                 size -= sz;
                 virt += sz;
             }else if (size >= sz && (~lv_ent & LARGEPAGE)) {
                 //recurse lower
                 int err = vmem_unmap_st(p_vt, n_lv_d, virt, size, lv + 1);
-                
+                if(err != 0)
+                    return err;
+
                 //free the lower level when done
+                pagealloc_free(lv_ent & ADDR_MASK, KiB(4));
 
             }
             else if(size < sz && (~lv_ent & LARGEPAGE)) {
@@ -182,6 +202,7 @@ static int vmem_unmap_st(uint64_t *p_vt, uint64_t *vm, intptr_t virt, size_t siz
                 //unmap large page
                 //determine maximum size for unmapping desired portion
                 //map at determined size
+                PANIC("Unimplemented!");
             }
         }else if(size >= sz) {
             size -= sz;
@@ -189,8 +210,8 @@ static int vmem_unmap_st(uint64_t *p_vt, uint64_t *vm, intptr_t virt, size_t siz
         }else
             return vmem_err_nomapping;
     }
-        
-
+    
+    return 0;
 }
 
 int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, int flags) {
@@ -198,13 +219,16 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
 
     if(virt < 0) {
         //Add to kernel map
-        ptable = ktable;
+        ptable = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
     } else {
         //Add to user map
+        local_spinlock_lock(&vm->lock);
         ptable = vm->ptable;
     }
 
-    return vmem_map_st(ptable, ptable, virt, phys, size, perms, flags, 0);
+    int rVal = vmem_map_st(ptable, ptable, virt, phys, size, perms, flags, 0);
+    if(virt > 0) local_spinlock_unlock(&vm->lock);
+    return rVal;
 }
 
 int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
@@ -213,13 +237,16 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
 
     if(virt < 0) {
         //Add to kernel map
-        ptable = ktable;
+        ptable = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
     } else {
         //Add to user map
+        local_spinlock_lock(&vm->lock);
         ptable = vm->ptable;
     }
 
-    return 0;
+    int rVal = vmem_unmap_st(ptable, ptable, virt, size, 0);
+    if (virt > 0) local_spinlock_unlock(&vm->lock);
+    return rVal;
 }
 
 int vmem_create(vmem_t *vm) {
@@ -235,8 +262,14 @@ int vmem_setactive(vmem_t *vm) {
 }
 
 int vmem_getactive(vmem_t **vm) {
-    vm = NULL;
-    PANIC("Unimplemented!");
+    if(lcl->cur_vmem != NULL) {
+        vmem_t* vmem = lcl->cur_vmem;
+        local_spinlock_lock(&vmem->lock);
+        //copy state from ktable
+        local_spinlock_unlock(&vmem->lock);
+    }
+
+    *vm = lcl->cur_vmem;
     return 0;
 }
 

@@ -111,7 +111,7 @@ static void insert_queue(uint64_t val) {
   }
 }
 
-void pagealloc_free(uint64_t addr, uint64_t size) {
+void pagealloc_free(uintptr_t addr, uint64_t size) {
 
   if (addr % BTM_LEVEL != 0)
     PANIC("Misaligned address");

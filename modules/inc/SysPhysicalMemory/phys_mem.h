@@ -18,7 +18,7 @@ typedef enum {
 
 uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags, uint64_t size);
 
-void pagealloc_free(uint64_t addr, uint64_t size);
+void pagealloc_free(uintptr_t addr, uint64_t size);
 
 
 #endif
