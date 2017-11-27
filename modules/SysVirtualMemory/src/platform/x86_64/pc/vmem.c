@@ -1,6 +1,7 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysReg/registry.h"
+#include "elf.h"
 #include <cardinal/local_spinlock.h>
 #include <stdint.h>
 #include <string.h>
@@ -17,6 +18,9 @@
 #define GLOBALPAGE (1ull << 8)
 #define NOEXEC (1ull << 63)
 #define ADDR_MASK (0x000ffffffffff000)
+
+#define KERN_TOP_BASE (0xffffffff80000000)
+#define KERN_PHYSMAP_BASE (0xFFFF800000000000)
 
 struct vmem {
     uint64_t ptable[256];
@@ -59,8 +63,7 @@ static bool largepage_avail[] = {
 
 static TLS struct lcl_data *lcl;
 static vmem_t kmem;
-
-void *elf_resolvefunction(const char *name);
+static size_t phys_map_sz;
 
 int vmem_init(){
 
@@ -88,12 +91,11 @@ int vmem_init(){
     __asm__ volatile("mov %%cr3, %0" : "=r"(cur_ptable) ::);
     uint64_t *cur_ptable_d = (uint64_t*)vmem_phystovirt(cur_ptable, KiB(4));
 
-    //vmem_map(NULL, 0, 0, MiB(2), vmem_flags_kernel | vmem_flags_rw | vmem_flags_exec | vmem_flags_cachewriteback, 0);
-    vmem_map(NULL, 0xffffffff80000000, 0x0, GiB(2), vmem_flags_kernel | vmem_flags_rw | vmem_flags_exec | vmem_flags_cachewriteback, 0);
+    vmem_map(NULL, KERN_TOP_BASE, 0x0, GiB(2), vmem_flags_kernel | vmem_flags_rw | vmem_flags_exec | vmem_flags_cachewriteback, 0);
     
-    uint64_t phys_map = 0;
-    registry_readkey_uint("HW/BOOTINFO", "MEMSIZE", &phys_map);
-    vmem_map(NULL, 0xFFFF800000000000, 0x0, phys_map, vmem_flags_kernel | vmem_flags_rw | vmem_flags_cachewriteback, 0);
+    //Setup full physical to virtual map to simplify later accesses
+    registry_readkey_uint("HW/BOOTINFO", "MEMSIZE", &phys_map_sz);
+    vmem_map(NULL, KERN_PHYSMAP_BASE, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_cachewriteback, 0);
 
     __asm__ volatile("mov %0, %%cr3" :: "r"(ktable_phys) :);
 
@@ -276,8 +278,10 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
 }
 
 int vmem_create(vmem_t *vm) {
-    vm = NULL;
-    PANIC("Unimplemented!");
+    vm->flags = vmem_flags_user;
+    vm->lock = 0;
+    memset(vm->ptable, 0, 256 * sizeof(uint64_t));
+    
     return 0;
 }
 
@@ -337,16 +341,43 @@ int vmem_flush(intptr_t virt, size_t sz) {
     return 0;
 }
 
-uint64_t vmem_virttophys(uint64_t virt) {
-    virt = 0;
-    PANIC("Unimplemented!");
-    return 0;
+static int vmem_virttophys_st(uint64_t *pg, uint64_t virt, intptr_t *phys, int lv) {
+    uint64_t shamt = shamts[lv];
+    uint64_t mask = masks[lv];
+
+    uint64_t idx = (virt & mask) >> shamt;
+    uint64_t ent = pg[idx];
+
+    if(ent & PRESENT) {
+
+        if((ent & LARGEPAGE) && largepage_avail[lv]){
+            *phys = (ent & ADDR_MASK);
+            return 0;
+        }
+
+        if(levels[lv] == KiB(4)) {
+            *phys = (ent & ADDR_MASK);
+            return 0;
+        }
+
+        uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(ent & ADDR_MASK, KiB(4));
+        return vmem_virttophys_st(n_lv_d, virt, phys, lv + 1);
+    }else
+        return -1;
+}
+
+int vmem_virttophys(intptr_t virt, intptr_t *phys) {
+    uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+    return vmem_virttophys_st(n_lv_d, (uint64_t)virt, phys, 0);
 }
 
 intptr_t vmem_phystovirt(intptr_t phys, size_t sz){
     if(phys < (intptr_t)GiB(2) && (phys + sz) < (intptr_t)GiB(2))
-        return (phys + 0xffffffff80000000);
+        return (phys + KERN_TOP_BASE);
 
-    PANIC("Unimplemented!");
+    if(phys < (intptr_t)phys_map_sz && (phys + sz) < phys_map_sz)
+        return (phys + KERN_PHYSMAP_BASE);
+
+    PANIC("Invalid Address Detected!");
     return phys;
 }
