@@ -12,6 +12,8 @@
 #include "acpi/mcfg.h"
 
 #include "registry.h"
+#include "SysVirtualMemory/vmem.h"
+
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -20,7 +22,7 @@
 
 #include "elf.h"
 
-static intptr_t (*vmem_phystovirt)(intptr_t, size_t);
+static intptr_t (*vmem_phystovirt_ptr)(intptr_t, size_t, int);
 static RSDPDescriptor20 *rsdp;
 
 static bool ACPITables_ValidateChecksum(ACPISDTHeader *header) {
@@ -37,7 +39,7 @@ static void* ACPITables_FindTable(const char *table_name, int index) {
 
 
     if(rsdp->firstPart.Revision != ACPI_VERSION_1 && rsdp->XsdtAddress) {
-        XSDT *xsdt = (XSDT*)vmem_phystovirt((intptr_t)rsdp->XsdtAddress, MiB(2));
+        XSDT *xsdt = (XSDT*)vmem_phystovirt_ptr((intptr_t)rsdp->XsdtAddress, MiB(2), vmem_flags_cachewriteback);
         if (!ACPITables_ValidateChecksum((ACPISDTHeader*)xsdt)) return (void*)-1;
 
         int entries = XSDT_GET_POINTER_COUNT((xsdt->h));
@@ -45,7 +47,7 @@ static void* ACPITables_FindTable(const char *table_name, int index) {
 
         for (int i = 0; i < entries; i++) {
             if(xsdt->PointerToOtherSDT[i] == 0)continue;
-            ACPISDTHeader *h = (ACPISDTHeader *)vmem_phystovirt((intptr_t)xsdt->PointerToOtherSDT[i], MiB(2));
+            ACPISDTHeader *h = (ACPISDTHeader *)vmem_phystovirt_ptr((intptr_t)xsdt->PointerToOtherSDT[i], MiB(2), vmem_flags_cachewriteback);
             if (!strncmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h)) {
                 if (cur_index == index)
                     return (void *) h;
@@ -54,14 +56,14 @@ static void* ACPITables_FindTable(const char *table_name, int index) {
             }
         }
     } else if ((rsdp->firstPart.Revision == ACPI_VERSION_1) | (!rsdp->XsdtAddress)) {
-        RSDT *rsdt = (RSDT*)vmem_phystovirt((intptr_t)rsdp->firstPart.RsdtAddress, MiB(2));
+        RSDT *rsdt = (RSDT*)vmem_phystovirt_ptr((intptr_t)rsdp->firstPart.RsdtAddress, MiB(2), vmem_flags_cachewriteback);
         if (!ACPITables_ValidateChecksum((ACPISDTHeader*)rsdt)) return NULL;
 
         int entries = RSDT_GET_POINTER_COUNT((rsdt->h));
         int cur_index = 0;
 
         for (int i = 0; i < entries; i++) {
-            ACPISDTHeader *h = (ACPISDTHeader*)vmem_phystovirt((intptr_t)rsdt->PointerToOtherSDT[i], MiB(2));
+            ACPISDTHeader *h = (ACPISDTHeader*)vmem_phystovirt_ptr((intptr_t)rsdt->PointerToOtherSDT[i], MiB(2), vmem_flags_cachewriteback);
             if (!strncmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h)) {
                 if (cur_index == index)
                     return (void *) h;
@@ -75,7 +77,7 @@ static void* ACPITables_FindTable(const char *table_name, int index) {
 }
 
 static int save_lapic(uint32_t idx, MADT_EntryLAPIC *lapic) {
-    char idx_str[10];
+    char idx_str[10] = "";
     char key_str[256] = "HW/LAPIC/";
     char *key_idx = strncat(key_str, itoa(idx, idx_str, 16), 255);
 
@@ -92,7 +94,7 @@ static int save_lapic(uint32_t idx, MADT_EntryLAPIC *lapic) {
 }
 
 static int save_ioapic(uint32_t idx, MADT_EntryIOAPIC *ioapic) {
-    char idx_str[10];
+    char idx_str[10] = "";
     char key_str[256] = "HW/IOAPIC/";
     char *key_idx = strncat(key_str, itoa(idx, idx_str, 16), 255);
 
@@ -116,7 +118,7 @@ static int save_isaovr(uint32_t ioapic_cnt, MADT_EntryISAOVR *isaovr) {
     uint64_t prev_closest_idx = 0;
     {
         for(uint32_t i = 0; i < ioapic_cnt; i++) {
-            char idx_str[10];
+            char idx_str[10] = "";
             char key_str[256] = "HW/IOAPIC/";
             char *key_idx = strncat(key_str, itoa(i, idx_str, 16), 255);
 
@@ -129,12 +131,13 @@ static int save_isaovr(uint32_t ioapic_cnt, MADT_EntryISAOVR *isaovr) {
         }
     }
 
-    char idx_str[10];
-    char idx2_str[10];
+    char idx_str[10] = "";
+    char idx2_str[10] = "";
     char key_str[256] = "HW/IOAPIC/";
     char *key_idx = strncat(key_str, itoa(prev_closest_idx, idx_str, 16), 255);
 
-    if(registry_createdirectory(key_idx, "OVERRIDE") != registry_err_ok)
+    int err = registry_createdirectory(key_idx, "OVERRIDE");
+    if(err != registry_err_ok && err != registry_err_exists)
         return -1;
 
     key_idx = strncat(key_str, "/OVERRIDE", 255);
@@ -146,6 +149,10 @@ static int save_isaovr(uint32_t ioapic_cnt, MADT_EntryISAOVR *isaovr) {
 
     key_idx = strncat(key_str, "/", 255);
     key_idx = strncat(key_str, idx2_str, 255);
+
+    DEBUG_PRINT(key_idx);
+    DEBUG_PRINT("\r\n");
+
 
     if(registry_addkey_uint(key_idx, "IRQ", isaovr->irq_src) != registry_err_ok)
         return -1;
@@ -164,7 +171,7 @@ static int save_isaovr(uint32_t ioapic_cnt, MADT_EntryISAOVR *isaovr) {
 
 int acpi_init() {
 
-    vmem_phystovirt = elf_resolvefunction("vmem_phystovirt");
+    vmem_phystovirt_ptr = elf_resolvefunction("vmem_phystovirt");
 
     intptr_t rsdp_addr = 0;
     registry_readkey_uint("HW/BOOTINFO", "RSDPADDR", (uint64_t*)&rsdp_addr);
@@ -219,6 +226,13 @@ int acpi_init() {
             i += hdr->entry_size;
             if(hdr->entry_size == 0) i += 8;
         }
+
+        if(registry_addkey_uint("HW/IOAPIC", "COUNT", ioapic_cnt) != registry_err_ok)
+            return -1;
+
+
+        if(registry_addkey_uint("HW/LAPIC", "COUNT", lapic_cnt) != registry_err_ok)
+            return -1;
     }
 
     {

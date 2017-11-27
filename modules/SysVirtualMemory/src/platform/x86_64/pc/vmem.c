@@ -25,6 +25,7 @@
 
 #define KERN_TOP_BASE (0xffffffff80000000)
 #define KERN_PHYSMAP_BASE (0xFFFF800000000000)
+#define KERN_PHYSMAP_BASE_UC (0xFFFFFF8000000000)
 
 struct vmem {
     uint64_t ptable[256];
@@ -105,7 +106,7 @@ int vmem_init() {
 
 
     uintptr_t ktable_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
-    uint64_t *ktable = (uint64_t*)vmem_phystovirt(ktable_phys, KiB(4));
+    uint64_t *ktable = (uint64_t*)vmem_phystovirt(ktable_phys, KiB(4), vmem_flags_cachewriteback);
     memset(ktable, 0, KiB(4));
 
     if(lcl == NULL)
@@ -121,13 +122,14 @@ int vmem_init() {
 
     uint64_t cur_ptable = 0;
     __asm__ volatile("mov %%cr3, %0" : "=r"(cur_ptable) ::);
-    uint64_t *cur_ptable_d = (uint64_t*)vmem_phystovirt(cur_ptable, KiB(4));
+    uint64_t *cur_ptable_d = (uint64_t*)vmem_phystovirt(cur_ptable, KiB(4), vmem_flags_cachewriteback);
 
     vmem_map(NULL, KERN_TOP_BASE, 0x0, GiB(2), vmem_flags_kernel | vmem_flags_rw | vmem_flags_exec | vmem_flags_cachewriteback, 0);
 
     //Setup full physical to virtual map to simplify later accesses
     registry_readkey_uint("HW/BOOTINFO", "MEMSIZE", &phys_map_sz);
     vmem_map(NULL, KERN_PHYSMAP_BASE, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_cachewriteback, 0);
+    vmem_map(NULL, KERN_PHYSMAP_BASE_UC, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_uncached, 0);
 
     __asm__ volatile("mov %0, %%cr3" :: "r"(ktable_phys) :);
 
@@ -153,14 +155,11 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
 
         if(perms & vmem_flags_cachewritethrough)
             c_flags |= WRITETHROUGH;
-
-        if(perms & vmem_flags_uncached)
+        else if(perms & vmem_flags_uncached)
             c_flags |= CACHEDISABLE;
-
-        if(perms & vmem_flags_cachewritecomplete)
+        else if(perms & vmem_flags_cachewritecomplete)
             c_flags |= WRITECOMPLETE;
-
-        if(perms & vmem_flags_cachewriteback)
+        else if(perms & vmem_flags_cachewriteback)
             c_flags |= WRITEBACK;
 
         if(perms & vmem_flags_user)
@@ -193,14 +192,14 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
                 if(n_lv == 0)
                     PANIC("Pagetable allocation failure!");
 
-                memset((uint64_t*)vmem_phystovirt(n_lv, KiB(4)), 0, KiB(4));
+                memset((uint64_t*)vmem_phystovirt(n_lv, KiB(4), vmem_flags_cachewriteback), 0, KiB(4));
                 vm[idx] = (n_lv & ADDR_MASK) | PRESENT | WRITE | USER;
             }
 
             if(vm[idx] & LARGEPAGE)
                 return vmem_err_alreadymapped;
 
-            uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(n_lv, KiB(4));
+            uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(n_lv, KiB(4), vmem_flags_cachewriteback);
 
             int ret = vmem_map_st(p_vm, n_lv_d, virt, phys, size, perms, flags, lv + 1);
             if(ret != vmem_err_continue)
@@ -231,7 +230,7 @@ static int vmem_unmap_st(uint64_t *p_vt, uint64_t *vm, intptr_t virt, size_t siz
     while(size > 0) {
         uint64_t idx = (virt & mask) >> shamt;
         uint64_t lv_ent = vm[idx];
-        uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(lv_ent & ADDR_MASK, KiB(4));
+        uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(lv_ent & ADDR_MASK, KiB(4), vmem_flags_cachewriteback);
 
         if(lv_ent & PRESENT) {
             if(size >= sz && ( (lv_ent & LARGEPAGE) | (sz == KiB(4) ))) {
@@ -282,7 +281,7 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
     int rVal = vmem_map_st(ptable, ptable, virt, phys, size, perms, flags, 0);
     if (virt >= 0) local_spinlock_unlock(&vm->lock);
     else {
-        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
         memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&kmem.lock);
     }
@@ -306,7 +305,7 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
     int rVal = vmem_unmap_st(ptable, ptable, virt, size, 0);
     if (virt >= 0) local_spinlock_unlock(&vm->lock);
     else {
-        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
         memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&kmem.lock);
     }
@@ -327,7 +326,7 @@ static void vmem_savestate() {
         vmem_t* vmem = lcl->cur_vmem;
         local_spinlock_lock(&vmem->lock);
         //copy state from ktable
-        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
         memcpy(vmem->ptable, p_table, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&vmem->lock);
     }
@@ -335,7 +334,7 @@ static void vmem_savestate() {
     {
         local_spinlock_lock(&kmem.lock);
         //copy state from ktable
-        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
         memcpy(kmem.ptable, p_table + 256, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&kmem.lock);
     }
@@ -346,7 +345,7 @@ int vmem_setactive(vmem_t *vm) {
 
     //copy state to ktable
     local_spinlock_lock(&vm->lock);
-    uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+    uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
     memcpy(p_table, vm->ptable, 256 * sizeof(uint64_t));
     local_spinlock_unlock(&vm->lock);
 
@@ -397,23 +396,29 @@ static int vmem_virttophys_st(uint64_t *pg, uint64_t virt, intptr_t *phys, int l
             return 0;
         }
 
-        uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(ent & ADDR_MASK, KiB(4));
+        uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(ent & ADDR_MASK, KiB(4), vmem_flags_cachewriteback);
         return vmem_virttophys_st(n_lv_d, virt, phys, lv + 1);
     } else
         return -1;
 }
 
 int vmem_virttophys(intptr_t virt, intptr_t *phys) {
-    uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+    uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
     return vmem_virttophys_st(n_lv_d, (uint64_t)virt, phys, 0);
 }
 
-intptr_t vmem_phystovirt(intptr_t phys, size_t sz) {
-    if(phys < (intptr_t)GiB(2) && (phys + sz) < (intptr_t)GiB(2))
-        return (phys + KERN_TOP_BASE);
+intptr_t vmem_phystovirt(intptr_t phys, size_t sz, int flags) {
 
-    if(phys < (intptr_t)phys_map_sz && (phys + sz) < phys_map_sz)
-        return (phys + KERN_PHYSMAP_BASE);
+    if(flags & vmem_flags_cachewriteback){
+        if(phys < (intptr_t)GiB(2) && (phys + sz) < (intptr_t)GiB(2))
+            return (phys + KERN_TOP_BASE);
+
+        if(phys < (intptr_t)phys_map_sz && (phys + sz) < phys_map_sz)
+            return (phys + KERN_PHYSMAP_BASE);
+    }else if(flags & vmem_flags_uncached) {
+        if(phys < (intptr_t)phys_map_sz && (phys + sz) < phys_map_sz)
+            return (phys + KERN_PHYSMAP_BASE_UC);
+    }
 
     PANIC("Invalid Address Detected!");
     return phys;
