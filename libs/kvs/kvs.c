@@ -66,6 +66,10 @@ int kvs_add_sint(kvs_t *r, const char *key, int64_t sval) {
     return kvs_add_internal(r, key, (void *)sval, kvs_val_sint);
 }
 
+int kvs_add_bool(kvs_t *r, const char *key, bool sval) {
+    return kvs_add_internal(r, key, (void *)(uint64_t)sval, kvs_val_bool);
+}
+
 int kvs_add_uint(kvs_t *r NULLABLE, const char *key, uint64_t uval) {
     return kvs_add_internal(r, key, (void *)uval, kvs_val_uint);
 }
@@ -128,6 +132,17 @@ int kvs_get_sint(kvs_t *r UNUSED, kvs_t *idx NULLABLE, int64_t *sval NULLABLE) {
         return kvs_error_invalidargs;
 
     *sval = idx->s_val;
+    return kvs_ok;
+}
+
+int kvs_get_bool(kvs_t *r UNUSED, kvs_t *idx NULLABLE, bool *sval NULLABLE) {
+    if (idx == NULL)
+        return kvs_error_invalidargs;
+
+    if (sval == NULL)
+        return kvs_error_invalidargs;
+
+    *sval = idx->b_val;
     return kvs_ok;
 }
 

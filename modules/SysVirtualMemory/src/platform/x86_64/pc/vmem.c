@@ -12,8 +12,12 @@
 #define PRESENT (1ull << 0)
 #define WRITE (1ull << 1)
 #define USER (1ull << 2)
+
 #define WRITETHROUGH (1ull << 3)
 #define CACHEDISABLE (1ull << 4)
+#define WRITEBACK (0)
+#define WRITECOMPLETE (3ull << 3)
+
 #define LARGEPAGE (1ull << 7)
 #define GLOBALPAGE (1ull << 8)
 #define NOEXEC (1ull << 63)
@@ -66,11 +70,39 @@ static vmem_t kmem;
 static size_t phys_map_sz;
 
 int vmem_init(){
-
-    //Virt: 0xffffffff800000000 Phys: 0x0 Size: GiB(1) RWX
-
     TLS void* (*mp_tls_get)(int) = (TLS void* (*)(int))elf_resolvefunction("mp_tls_get");
     int (*mp_tls_alloc)(int) = (int (*)(int))elf_resolvefunction("mp_tls_alloc");
+
+
+    //Enable No Execute bit
+    wrmsr(EFER_MSR, rdmsr(EFER_MSR) | (1 << 11));
+
+
+    //Detect and enable SMEP/SMAP
+    bool smep = false;
+    registry_readkey_bool("HW/PROC", "SMEP", &smep);
+    bool smap = false;
+    registry_readkey_bool("HW/PROC", "SMAP", &smap);
+    
+    uint64_t cr4 = 0;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4) :: );
+    if(smep) cr4 |= (1 << 20);
+    if(smap) cr4 |= (1 << 21);
+    __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
+
+    //Detect and enable 1GiB page support
+    bool hugepage = false;
+    registry_readkey_bool("HW/PROC", "HUGEPAGE", &hugepage);
+    if(hugepage) largepage_avail[1] = true;
+
+    //Setup PAT
+    uint64_t pat = 0;
+    pat |= 0x6;                   //PAT0 WB
+    pat |= ((uint64_t)0x4) << 8;  //PAT1 WT
+    pat |= ((uint64_t)0x0) << 16; //PAT2 UC
+    pat |= ((uint64_t)0x1) << 24;  //PAT3 WC
+    wrmsr(PAT_MSR, pat);
+
 
     uintptr_t ktable_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
     uint64_t *ktable = (uint64_t*)vmem_phystovirt(ktable_phys, KiB(4));
@@ -124,6 +156,12 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
 
         if(perms & vmem_flags_uncached)
             c_flags |= CACHEDISABLE;
+
+        if(perms & vmem_flags_cachewritecomplete)
+            c_flags |= WRITECOMPLETE;
+
+        if(perms & vmem_flags_cachewriteback)
+            c_flags |= WRITEBACK;
 
         if(perms & vmem_flags_user)
             c_flags |= USER;
@@ -281,7 +319,7 @@ int vmem_create(vmem_t *vm) {
     vm->flags = vmem_flags_user;
     vm->lock = 0;
     memset(vm->ptable, 0, 256 * sizeof(uint64_t));
-    
+
     return 0;
 }
 

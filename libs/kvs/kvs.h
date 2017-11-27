@@ -5,6 +5,7 @@
 #ifndef CARDINAL_KVS_LIB_H
 #define CARDINAL_KVS_LIB_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <types.h>
 
@@ -16,6 +17,7 @@ typedef enum {
     kvs_val_str = 3,
     kvs_val_ptr = 4,
     kvs_val_child = 5,
+    kvs_val_bool = 6,
 } kvs_val_type;
 
 typedef enum {
@@ -38,6 +40,7 @@ typedef struct kvs {
         uint64_t u_val;
         char *str;
         void *ptr;
+        bool b_val;
         struct kvs *child;
     };
     struct kvs *next;
@@ -46,6 +49,7 @@ typedef struct kvs {
 int kvs_create(kvs_t **r);
 
 int kvs_add_sint(kvs_t *r, const char *key, int64_t sval);
+int kvs_add_bool(kvs_t *r, const char *key, bool sval);
 int kvs_add_uint(kvs_t *r, const char *key, uint64_t uval);
 int kvs_add_str(kvs_t *r, const char *key, char *strval);
 int kvs_add_ptr(kvs_t *r, const char *key, void *ptrval);
@@ -56,6 +60,7 @@ int kvs_find(kvs_t *r, const char *key, kvs_t **res);
 int kvs_get_type(kvs_t *r, kvs_t *idx, kvs_val_type *val_type);
 
 int kvs_get_sint(kvs_t *r, kvs_t *idx, int64_t *sval);
+int kvs_get_bool(kvs_t *r, kvs_t *idx, bool *sval);
 int kvs_get_uint(kvs_t *r, kvs_t *idx, uint64_t *sval);
 int kvs_get_str(kvs_t *r, kvs_t *idx, char **sval);
 int kvs_get_ptr(kvs_t *r, kvs_t *idx, void **sval);

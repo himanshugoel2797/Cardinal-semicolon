@@ -25,10 +25,11 @@ typedef enum {
     vmem_flags_exec = (1 << 1),
     vmem_flags_cachewritethrough = (1 << 2),
     vmem_flags_cachewriteback = (1 << 3),
-    vmem_flags_uncached = (1 << 4),
+    vmem_flags_cachewritecomplete = (1 << 4),
+    vmem_flags_uncached = (1 << 5),
 
-    vmem_flags_kernel = (1 << 5),
-    vmem_flags_user = (1 << 6),
+    vmem_flags_kernel = (1 << 10),
+    vmem_flags_user = (1 << 11),
 
     vmem_flags_rw = (vmem_flags_read | vmem_flags_write),
 } vmem_flags;

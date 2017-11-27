@@ -173,6 +173,26 @@ int registry_addkey_str(const char *path, const char *keyname,
     return registry_err_ok;
 }
 
+int registry_addkey_bool(const char *path, const char *keyname, bool val) {
+    kvs_t *parent_kvs = NULL;
+
+    if (path == NULL)
+        return registry_err_invalidargs;
+
+    if (keyname == NULL)
+        return registry_err_invalidargs;
+
+    int err = registry_getkvs(path, &parent_kvs);
+    if (err != registry_err_ok)
+        return err;
+
+    err = kvs_add_bool(parent_kvs, keyname, val);
+    if (err != kvs_ok)
+        return registry_err_failure;
+
+    return registry_err_ok;
+}
+
 int registry_readkey_uint(const char *path, const char *keyname,
                           uint64_t *val) {
     kvs_t *parent_kvs = NULL;
@@ -267,6 +287,36 @@ int registry_readkey_str(const char *path, const char *keyname, char *val,
         strncpy(val, strval, *val_len);
         *val_len = strlen(strval);
     }
+
+    return registry_err_ok;
+}
+
+int registry_readkey_bool(const char *path, const char *keyname, bool *val) {
+    kvs_t *parent_kvs = NULL;
+    kvs_t *key_kvs = NULL;
+    kvs_val_type valtype = kvs_val_uninit;
+
+    if (path == NULL)
+        return registry_err_invalidargs;
+
+    if (keyname == NULL)
+        return registry_err_invalidargs;
+
+    int err = registry_getkvs(path, &parent_kvs);
+    if (err != registry_err_ok)
+        return err;
+
+    if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
+        return registry_err_dne;
+
+    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+        return registry_err_failure;
+
+    if (valtype != kvs_val_bool)
+        return registry_err_typematchfailure;
+
+    if (val != NULL && kvs_get_bool(parent_kvs, key_kvs, val) != kvs_ok)
+        return registry_err_failure;
 
     return registry_err_ok;
 }

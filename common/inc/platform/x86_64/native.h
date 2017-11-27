@@ -6,6 +6,9 @@
 #ifndef CARDINAL_X86_64_NATIVE_H
 #define CARDINAL_X86_64_NATIVE_H
 
+#define PAT_MSR (0x00000277)
+#define EFER_MSR (0xC0000080)
+
 static __inline void outb(const uint16_t port, const uint8_t val) {
     __asm__ volatile("outb %1, %0" : : "dN"(port), "a"(val));
 }

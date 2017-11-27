@@ -7,6 +7,7 @@
 #include "registry.h"
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <types.h>
 
@@ -205,6 +206,32 @@ int add_cpuid() {
         CPUID_RequestInfo(2, 0, &eax, &ebx, &ecx, &edx);
         //__asm__("hlt" :: "a"(eax), "b"(ebx), "c"(ecx), "d"(edx));
 
+    }
+
+    {
+        CPUID_RequestInfo(7, 0, &eax, &ebx, &ecx, &edx);
+
+        //SMEP
+        bool smep = (ebx >> 7) & 1;
+        if (registry_addkey_bool("HW/PROC", "SMEP", smep) !=
+                registry_err_ok)
+            return -1;
+
+        //SMAP
+        bool smap = (ebx >> 20) & 1;
+        if (registry_addkey_bool("HW/PROC", "SMAP", smap) !=
+                registry_err_ok)
+            return -1;
+    }
+
+    {
+        CPUID_RequestInfo(0x80000001, 0, &eax, &ebx, &ecx, &edx);
+
+        //1GB pages
+        bool gibibyte_pages = (edx >> 26) & 1;
+        if (registry_addkey_bool("HW/PROC", "HUGEPAGE", gibibyte_pages) !=
+                registry_err_ok)
+            return -1;
     }
 
     // TODO: Setup proper IDT and GDT
