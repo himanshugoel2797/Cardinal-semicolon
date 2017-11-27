@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2017 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -101,10 +101,10 @@ static int save_ioapic(uint32_t idx, MADT_EntryIOAPIC *ioapic) {
 
     if(registry_addkey_uint(key_idx, "ID", ioapic->io_apic_id) != registry_err_ok)
         return -1;
-                    
+
     if(registry_addkey_uint(key_idx, "BASE_ADDR", ioapic->io_apic_base_addr) != registry_err_ok)
         return -1;
-                    
+
     if(registry_addkey_uint(key_idx, "GLOBAL_INTR_BASE", ioapic->global_sys_int_base) != registry_err_ok)
         return -1;
 
@@ -119,7 +119,7 @@ static int save_isaovr(uint32_t ioapic_cnt, MADT_EntryISAOVR *isaovr) {
             char idx_str[10];
             char key_str[256] = "HW/IOAPIC/";
             char *key_idx = strncat(key_str, itoa(i, idx_str, 16), 255);
-        
+
             uint64_t intr_base = 0;
             if(registry_readkey_uint(key_idx, "GLOBAL_INTR_BASE", &intr_base) != registry_err_ok)
                 return -1;
@@ -169,14 +169,14 @@ int acpi_init() {
     intptr_t rsdp_addr = 0;
     registry_readkey_uint("HW/BOOTINFO", "RSDPADDR", (uint64_t*)&rsdp_addr);
     rsdp = (RSDPDescriptor20*)rsdp_addr;
-    
+
     if(registry_createdirectory("HW", "ACPI") != registry_err_ok)
         return -1;
 
     {
         if(registry_createdirectory("HW", "LAPIC") != registry_err_ok)
             return -1;
-        
+
         if(registry_createdirectory("HW", "IOAPIC") != registry_err_ok)
             return -1;
 
@@ -192,28 +192,28 @@ int acpi_init() {
             MADT_EntryHeader *hdr = (MADT_EntryHeader*)&madt->entries[i];
 
             switch(hdr->type) {
-                case MADT_LAPIC_ENTRY_TYPE: {
-                    int err = save_lapic(lapic_cnt++, (MADT_EntryLAPIC*)hdr);
-                    if(err != 0)
-                        return err;
-                }
-                break;
-                case MADT_IOAPIC_ENTRY_TYPE: {
-                    int err = save_ioapic(ioapic_cnt++, (MADT_EntryIOAPIC*)hdr);
-                    if(err != 0)
-                        return err;
-                }
-                break;
-                case MADT_ISAOVER_ENTRY_TYPE: {
-                    int err = save_isaovr(ioapic_cnt, (MADT_EntryISAOVR*)hdr);
-                    if(err != 0)
-                        return err;
-                }
-                break;
-                case MADT_APIC_NMI_ENTRY_TYPE: {
+            case MADT_LAPIC_ENTRY_TYPE: {
+                int err = save_lapic(lapic_cnt++, (MADT_EntryLAPIC*)hdr);
+                if(err != 0)
+                    return err;
+            }
+            break;
+            case MADT_IOAPIC_ENTRY_TYPE: {
+                int err = save_ioapic(ioapic_cnt++, (MADT_EntryIOAPIC*)hdr);
+                if(err != 0)
+                    return err;
+            }
+            break;
+            case MADT_ISAOVER_ENTRY_TYPE: {
+                int err = save_isaovr(ioapic_cnt, (MADT_EntryISAOVR*)hdr);
+                if(err != 0)
+                    return err;
+            }
+            break;
+            case MADT_APIC_NMI_ENTRY_TYPE: {
 
-                }
-                break;
+            }
+            break;
             }
 
             i += hdr->entry_size;
@@ -231,25 +231,25 @@ int acpi_init() {
 
         if(registry_createdirectory("HW", "HPET") != registry_err_ok)
             return -1;
-        
+
         if(registry_addkey_uint("HW/HPET", "REVISION", hpet->RevisionID) != registry_err_ok)
             return -1;
-        
+
         if(registry_addkey_uint("HW/HPET", "COMPARATOR_COUNT", hpet->ComparatorCount) != registry_err_ok)
             return -1;
-        
+
         if(registry_addkey_bool("HW/HPET", "COUNTER_64BIT", hpet->CounterIs64Bit) != registry_err_ok)
             return -1;
-        
+
         if(registry_addkey_bool("HW/HPET", "LEGACY_REPLACEMENT", hpet->LegacyReplacement) != registry_err_ok)
             return -1;
-        
+
         if(registry_addkey_uint("HW/HPET", "VENDOR", hpet->VendorID) != registry_err_ok)
             return -1;
-        
+
         if(registry_addkey_uint("HW/HPET", "ADDRESS", hpet->Address.address) != registry_err_ok)
             return -1;
-        
+
         if(registry_addkey_uint("HW/HPET", "MINIMUM_TICK", hpet->MinimumTick) != registry_err_ok)
             return -1;
     }

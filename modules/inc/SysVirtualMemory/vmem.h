@@ -1,18 +1,18 @@
 // Copyright (c) 2017 Himanshu Goel
-// 
+//
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
 #ifndef CARDINAL_VMEM_H
 #define CARDINAL_VMEM_H
 
-    //vmem_map
-    //vmem_unmap
-    //vmem_create
-    //vmem_setactive
-    //vmem_virttophys
-    //vmem_phystovirt
-    //vmem_init
+//vmem_map
+//vmem_unmap
+//vmem_create
+//vmem_setactive
+//vmem_virttophys
+//vmem_phystovirt
+//vmem_init
 
 #include <stdint.h>
 #include <stddef.h>

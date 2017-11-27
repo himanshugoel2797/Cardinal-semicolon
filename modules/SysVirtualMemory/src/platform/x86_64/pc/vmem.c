@@ -69,7 +69,7 @@ static TLS struct lcl_data *lcl;
 static vmem_t kmem;
 static size_t phys_map_sz;
 
-int vmem_init(){
+int vmem_init() {
     TLS void* (*mp_tls_get)(int) = (TLS void* (*)(int))elf_resolvefunction("mp_tls_get");
     int (*mp_tls_alloc)(int) = (int (*)(int))elf_resolvefunction("mp_tls_alloc");
 
@@ -83,7 +83,7 @@ int vmem_init(){
     registry_readkey_bool("HW/PROC", "SMEP", &smep);
     bool smap = false;
     registry_readkey_bool("HW/PROC", "SMAP", &smap);
-    
+
     uint64_t cr4 = 0;
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr4) :: );
     if(smep) cr4 |= (1 << 20);
@@ -124,7 +124,7 @@ int vmem_init(){
     uint64_t *cur_ptable_d = (uint64_t*)vmem_phystovirt(cur_ptable, KiB(4));
 
     vmem_map(NULL, KERN_TOP_BASE, 0x0, GiB(2), vmem_flags_kernel | vmem_flags_rw | vmem_flags_exec | vmem_flags_cachewriteback, 0);
-    
+
     //Setup full physical to virtual map to simplify later accesses
     registry_readkey_uint("HW/BOOTINFO", "MEMSIZE", &phys_map_sz);
     vmem_map(NULL, KERN_PHYSMAP_BASE, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_cachewriteback, 0);
@@ -144,13 +144,13 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
     if(size % sz == 0 && largepage_avail[lv]) {
         uint64_t c_flags = 0;
         c_flags |= PRESENT;
-        
+
         if(perms & vmem_flags_write)
             c_flags |= WRITE;
 
         if(~perms & vmem_flags_exec)
             c_flags |= NOEXEC;
-        
+
         if(perms & vmem_flags_cachewritethrough)
             c_flags |= WRITETHROUGH;
 
@@ -168,7 +168,7 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
 
         if (sz != KiB(4))
             c_flags |= LARGEPAGE;
-        
+
         while(size > 0) {
             if(idx >= 512)
                 return vmem_err_continue;//vmem_map_st(p_vm, p_vm, virt, phys, size, perms, flags, 0);
@@ -184,7 +184,7 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
             size -= sz;
         }
         return 0;
-    }else{
+    } else {
         while(size > 0) {
             uint64_t n_lv = (vm[idx] & ADDR_MASK);
 
@@ -232,13 +232,13 @@ static int vmem_unmap_st(uint64_t *p_vt, uint64_t *vm, intptr_t virt, size_t siz
         uint64_t idx = (virt & mask) >> shamt;
         uint64_t lv_ent = vm[idx];
         uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(lv_ent & ADDR_MASK, KiB(4));
-        
+
         if(lv_ent & PRESENT) {
-            if(size >= sz && ( (lv_ent & LARGEPAGE) | (sz == KiB(4) ))){
+            if(size >= sz && ( (lv_ent & LARGEPAGE) | (sz == KiB(4) ))) {
                 vm[idx] = 0;
                 size -= sz;
                 virt += sz;
-            }else if (size >= sz && (~lv_ent & LARGEPAGE)) {
+            } else if (size >= sz && (~lv_ent & LARGEPAGE)) {
                 //recurse lower
                 int err = vmem_unmap_st(p_vt, n_lv_d, virt, size, lv + 1);
                 if(err != 0)
@@ -247,23 +247,22 @@ static int vmem_unmap_st(uint64_t *p_vt, uint64_t *vm, intptr_t virt, size_t siz
                 //free the lower level when done
                 pagealloc_free(lv_ent & ADDR_MASK, KiB(4));
 
-            }
-            else if(size < sz && (~lv_ent & LARGEPAGE)) {
+            } else if(size < sz && (~lv_ent & LARGEPAGE)) {
                 //Recurse lower
                 return vmem_unmap_st(p_vt, n_lv_d, virt, size, lv + 1);
-            }else if(size < sz && (lv_ent & LARGEPAGE)) {
+            } else if(size < sz && (lv_ent & LARGEPAGE)) {
                 //unmap large page
                 //determine maximum size for unmapping desired portion
                 //map at determined size
                 PANIC("Unimplemented!");
             }
-        }else if(size >= sz) {
+        } else if(size >= sz) {
             size -= sz;
             virt += sz;
-        }else
+        } else
             return vmem_err_nomapping;
     }
-    
+
     return 0;
 }
 
@@ -282,11 +281,11 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
 
     int rVal = vmem_map_st(ptable, ptable, virt, phys, size, perms, flags, 0);
     if (virt >= 0) local_spinlock_unlock(&vm->lock);
-    else{
+    else {
         uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
         memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&kmem.lock);
-    } 
+    }
     return rVal;
 }
 
@@ -306,11 +305,11 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
 
     int rVal = vmem_unmap_st(ptable, ptable, virt, size, 0);
     if (virt >= 0) local_spinlock_unlock(&vm->lock);
-    else{
+    else {
         uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
         memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&kmem.lock);
-    } 
+    }
 
     return rVal;
 }
@@ -323,7 +322,7 @@ int vmem_create(vmem_t *vm) {
     return 0;
 }
 
-static void vmem_savestate(){
+static void vmem_savestate() {
     if(lcl->cur_vmem != NULL) {
         vmem_t* vmem = lcl->cur_vmem;
         local_spinlock_lock(&vmem->lock);
@@ -372,7 +371,7 @@ int vmem_flush(intptr_t virt, size_t sz) {
 
     if(sz > GiB(1))
         __asm__ volatile("mov %0, %%cr3" :: "r"(lcl->ktable) :);
-    else{
+    else {
         for(size_t n = 0; n < sz; n += KiB(4), virt += KiB(4))
             __asm__ ("invlpg (%0)" :: "r"(virt) :);
     }
@@ -388,7 +387,7 @@ static int vmem_virttophys_st(uint64_t *pg, uint64_t virt, intptr_t *phys, int l
 
     if(ent & PRESENT) {
 
-        if((ent & LARGEPAGE) && largepage_avail[lv]){
+        if((ent & LARGEPAGE) && largepage_avail[lv]) {
             *phys = (ent & ADDR_MASK);
             return 0;
         }
@@ -400,7 +399,7 @@ static int vmem_virttophys_st(uint64_t *pg, uint64_t virt, intptr_t *phys, int l
 
         uint64_t *n_lv_d = (uint64_t*)vmem_phystovirt(ent & ADDR_MASK, KiB(4));
         return vmem_virttophys_st(n_lv_d, virt, phys, lv + 1);
-    }else
+    } else
         return -1;
 }
 
@@ -409,7 +408,7 @@ int vmem_virttophys(intptr_t virt, intptr_t *phys) {
     return vmem_virttophys_st(n_lv_d, (uint64_t)virt, phys, 0);
 }
 
-intptr_t vmem_phystovirt(intptr_t phys, size_t sz){
+intptr_t vmem_phystovirt(intptr_t phys, size_t sz) {
     if(phys < (intptr_t)GiB(2) && (phys + sz) < (intptr_t)GiB(2))
         return (phys + KERN_TOP_BASE);
 

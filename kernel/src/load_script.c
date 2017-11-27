@@ -61,7 +61,7 @@ int loadscript_execute() {
             int (*entry_pt)() = (int (*)())elf_resolvefunction(name);
             if(entry_pt == NULL)
                 PANIC("FAILED TO RESOLVE FUNCTION!");
-                
+
             entry_pt();
         } else if (mode == -1)
             break;

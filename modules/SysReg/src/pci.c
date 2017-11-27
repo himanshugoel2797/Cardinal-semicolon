@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2017 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -144,7 +144,7 @@ PCI_GetBARSize(PCI_Device *device,
     return ~val + 1;
 }
 
-int pci_reg_init(){
+int pci_reg_init() {
 
     uint32_t bus = 0;
     uint32_t device = 0;
@@ -159,7 +159,7 @@ int pci_reg_init(){
 
         //Store device info
         uint32_t funcs = PCI_GetFuncCount(bus, device);
-        for(uint32_t f = 0; f < funcs; f++){
+        for(uint32_t f = 0; f < funcs; f++) {
             char idx_str[10];
             char key_str[256] = "HW/PCI/";
             char *key_idx = strncat(key_str, itoa(idx, idx_str, 16), 255);

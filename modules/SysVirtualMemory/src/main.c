@@ -1,11 +1,11 @@
 /**
  * Copyright (c) 2017 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
 
-int module_init(){
+int module_init() {
     //virtual memory code is platform specific recursive implementation for 64-bit
     //vmem_map
     //vmem_unmap
