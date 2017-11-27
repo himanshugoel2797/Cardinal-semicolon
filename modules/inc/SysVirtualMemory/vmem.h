@@ -52,7 +52,7 @@ int vmem_setactive(vmem_t *vm);
 
 int vmem_getactive(vmem_t **vm);
 
-int vmem_flush(vmem_t *vm, intptr_t virt, int pg_cnt);
+int vmem_flush(intptr_t virt, size_t sz);
 
 uint64_t vmem_virttophys(uint64_t virt);
 

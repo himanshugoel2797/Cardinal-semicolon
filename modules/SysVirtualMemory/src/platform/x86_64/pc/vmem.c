@@ -1,5 +1,6 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
+#include "SysReg/registry.h"
 #include <cardinal/local_spinlock.h>
 #include <stdint.h>
 #include <string.h>
@@ -90,7 +91,11 @@ int vmem_init(){
     //vmem_map(NULL, 0, 0, MiB(2), vmem_flags_kernel | vmem_flags_rw | vmem_flags_exec | vmem_flags_cachewriteback, 0);
     vmem_map(NULL, 0xffffffff80000000, 0x0, GiB(2), vmem_flags_kernel | vmem_flags_rw | vmem_flags_exec | vmem_flags_cachewriteback, 0);
     
-    __asm__ volatile("mov %0, %%cr3\r\nhlt" :: "r"(ktable_phys) :);
+    uint64_t phys_map = 0;
+    registry_readkey_uint("HW/BOOTINFO", "MEMSIZE", &phys_map);
+    vmem_map(NULL, 0xFFFF800000000000, 0x0, phys_map, vmem_flags_kernel | vmem_flags_rw | vmem_flags_cachewriteback, 0);
+
+    __asm__ volatile("mov %0, %%cr3" :: "r"(ktable_phys) :);
 
     return 0;
 }
@@ -228,7 +233,7 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
     if(virt < 0) {
         //Add to kernel map
         local_spinlock_lock(&kmem.lock);
-        ptable = kmem.ptable - 256;
+        ptable = (uint64_t*)kmem.ptable - 256;
     } else {
         //Add to user map
         local_spinlock_lock(&vm->lock);
@@ -237,8 +242,11 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
 
     int rVal = vmem_map_st(ptable, ptable, virt, phys, size, perms, flags, 0);
     if (virt >= 0) local_spinlock_unlock(&vm->lock);
-    else local_spinlock_unlock(&kmem.lock);
-
+    else{
+        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+        memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
+        local_spinlock_unlock(&kmem.lock);
+    } 
     return rVal;
 }
 
@@ -249,7 +257,7 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
     if(virt < 0) {
         //Add to kernel map
         local_spinlock_lock(&kmem.lock);
-        ptable = kmem.ptable - 256;
+        ptable = (uint64_t*)kmem.ptable - 256;
     } else {
         //Add to user map
         local_spinlock_lock(&vm->lock);
@@ -258,7 +266,11 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
 
     int rVal = vmem_unmap_st(ptable, ptable, virt, size, 0);
     if (virt >= 0) local_spinlock_unlock(&vm->lock);
-    else local_spinlock_unlock(&kmem.lock);
+    else{
+        uint64_t *p_table = (uint64_t*)vmem_phystovirt(lcl->ktable, KiB(4));
+        memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
+        local_spinlock_unlock(&kmem.lock);
+    } 
 
     return rVal;
 }
@@ -298,6 +310,8 @@ int vmem_setactive(vmem_t *vm) {
     local_spinlock_unlock(&vm->lock);
 
     lcl->cur_vmem = vm;
+    __asm__ volatile("mov %0, %%cr3" :: "r"(lcl->ktable) :);
+
     return 0;
 }
 
@@ -307,12 +321,19 @@ int vmem_getactive(vmem_t **vm) {
     return 0;
 }
 
-int vmem_flush(vmem_t *vm, intptr_t virt, int pg_cnt) {
-    vm = NULL;
-    virt = 0;
-    pg_cnt = 0;
-    PANIC("Unimplemented!");
-    //TODO: shootdown cores when kmem flushed/
+int vmem_flush(intptr_t virt, size_t sz) {
+    //TODO: shootdown cores when kmem flushed
+    // Alternatively, every 'thread' has its own memory space, so changes don't affect other cores
+    //Thus, kernel can be flushed once every task switch
+
+    vmem_savestate();
+
+    if(sz > GiB(1))
+        __asm__ volatile("mov %0, %%cr3" :: "r"(lcl->ktable) :);
+    else{
+        for(size_t n = 0; n < sz; n += KiB(4), virt += KiB(4))
+            __asm__ ("invlpg (%0)" :: "r"(virt) :);
+    }
     return 0;
 }
 
