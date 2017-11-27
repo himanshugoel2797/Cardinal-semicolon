@@ -7,6 +7,7 @@
 
 #include "acpi_tables.h"
 #include <stdint.h>
+#include <types.h>
 
 /**
  * \addtogroup acpi_tables ACPI Tables
@@ -14,7 +15,7 @@
 */
 
 //! The MADT
-typedef struct {
+typedef struct PACKED {
     ACPISDTHeader h;
     uint32_t local_controller_addr;
     uint32_t flags;
@@ -28,7 +29,7 @@ typedef struct {
 } MADT_EntryHeader;
 
 //! A Local APIC entry in the MADT
-typedef struct {
+typedef struct PACKED {
     MADT_EntryHeader h;
     uint8_t processor_id;
     uint8_t apic_id;
@@ -37,7 +38,7 @@ typedef struct {
 #define MADT_LAPIC_ENTRY_TYPE 0 //!< The type ID describing a Local APIC entry
 
 //! An IO APIC entry in the MADT
-typedef struct {
+typedef struct PACKED {
     MADT_EntryHeader h;
     uint8_t io_apic_id;
     uint8_t reserved;
@@ -47,7 +48,7 @@ typedef struct {
 #define MADT_IOAPIC_ENTRY_TYPE 1 //!< The type ID describing an IO APIC entry
 
 //! An ISA override entry in the MADT
-typedef struct {
+typedef struct PACKED {
     MADT_EntryHeader h;
     uint8_t bus_src;
     uint8_t irq_src;
@@ -58,7 +59,7 @@ typedef struct {
   2 //!< The type ID describing an ISA override entry
 
 //! An IO APIC Non-Maskable Interrupt mapping entry in the MADT
-typedef struct {
+typedef struct PACKED {
     MADT_EntryHeader h;
     uint16_t flags;
     uint32_t global_sys_int;
@@ -67,7 +68,7 @@ typedef struct {
   3 //!< The type ID describing an IO APIC NMI mapping entry
 
 //! A Local APIC Non-Maskable Interrupt mapping entry in the MADT
-typedef struct {
+typedef struct PACKED {
     MADT_EntryHeader h;
     uint8_t apic_id;
     uint16_t flags;

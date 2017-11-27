@@ -78,8 +78,6 @@ typedef struct {
 #define XSDT_GET_POINTER_COUNT(h) ((h.Length - sizeof(h)) / sizeof(uint64_t))
 #define RSDT_GET_POINTER_COUNT(h) ((h.Length - sizeof(h)) / sizeof(uint32_t))
 
-bool ACPITables_ValidateChecksum(ACPISDTHeader *header);
-
 int acpi_init();
 
 /**@}*/
