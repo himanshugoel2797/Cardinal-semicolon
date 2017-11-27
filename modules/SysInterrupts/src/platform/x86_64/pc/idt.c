@@ -6,10 +6,12 @@
  */
 
 #include <stdint.h>
+#include <string.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <types.h>
 #include "elf.h"
+#include "SysInterrupts/interrupts.h"
 
 #define IDT_ENTRY_COUNT (256)
 #define IDT_ENTRY_HANDLER_SIZE (64)
@@ -35,15 +37,57 @@ typedef struct PACKED {
 }idtr_t;
 
 typedef struct {
+    uint64_t rsp;
+    uint64_t r15;
+    uint64_t r14;
+    uint64_t r13;
+    uint64_t r12;
+    uint64_t r11;
+    uint64_t r10;
+    uint64_t r9;
+    uint64_t r8;
+    uint64_t rdi;
+    uint64_t rsi;
+    uint64_t rbp;
+    uint64_t rdx;
+    uint64_t rcx;
+    uint64_t rbx;
+    uint64_t rax;
+    uint64_t int_no;
+    uint64_t err_code;
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t rflags;
+    uint64_t useresp;
+    uint64_t ss;
+} regs_t;
+
+typedef struct {
     idt_t *idt;
+    regs_t *reg_state;
 } tls_idt_t;
 
 static TLS tls_idt_t *idt = NULL;
 static char idt_handlers[IDT_ENTRY_COUNT][IDT_ENTRY_HANDLER_SIZE];
+static InterruptHandler interrupt_funcs[IDT_ENTRY_COUNT];
 
-UNUSED
-void idt_mainhandler(){
-    __asm__("hlt");
+void interrupt_registerhandler(int idx, InterruptHandler hndlr) {
+    interrupt_funcs[idx] = hndlr;
+}
+
+void idt_mainhandler(regs_t *regs){
+    //Store the registers in the processor interrupt state
+    memcpy(idt->reg_state, regs, sizeof(regs_t));
+
+    if(interrupt_funcs[regs->int_no] != NULL) {
+        interrupt_funcs[regs->int_no]();
+    }else{
+        char msg[256] = "Unhandled Interrupt: ";
+        char int_num[10];
+        char *msg_ptr = strncat(msg, itoa(regs->int_no, int_num, 16), 255);
+        DEBUG_PRINT(msg_ptr);
+        PANIC("Failure!");
+    }
 }
 
 NAKED NORETURN
@@ -126,7 +170,8 @@ int idt_init() {
         idt = (TLS tls_idt_t*)mp_tls_get(mp_tls_alloc(sizeof(tls_idt_t)));
     }
     idt->idt = malloc(IDT_ENTRY_COUNT * sizeof(idt_t));
-    
+    idt->reg_state = malloc(sizeof(regs_t));
+
     //Fill the IDT
     idt_t *idt_lcl = idt->idt;
 
@@ -135,6 +180,8 @@ int idt_init() {
         //Setup the hardware interrupts
         if(i == 8 || (i >= 10 && i <= 14)) pushesToStack = 0;
         idt_fillswinterrupthandler(idt_handlers[i], i, pushesToStack);  //If pushesToStack is non-zero, the value will be pushed to stack
+        
+        interrupt_funcs[i] = NULL;
 
         idt_lcl[i].offset0 = (uint64_t)idt_handlers[i] & 0xFFFF;
         idt_lcl[i].offset1 = ((uint64_t)idt_handlers[i] >> 16) & 0xFFFF;
