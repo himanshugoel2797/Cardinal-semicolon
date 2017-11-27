@@ -113,8 +113,8 @@ Load order:
     SysDebug                INPROGRESS
     SysReg                  DONE/NEEDREVIEW/NEEDMP
     SysPhysicalMemory       DONE/NEEDREVIEW/NEEDMP
-    SysVirtualMemory        PLANNING
-    SysMemory               PLANNING            
+    SysVirtualMemory        DONE/NEEDREVIEW/MPREVIEW
+    SysMemory               PLANNING/POSTPONED            
     SysInterrupts           PLANNING
     SysMP                   PLANNING
     SysTimer                
@@ -129,9 +129,11 @@ Call order:
     SysPhysicalMemory       module_init
     SysMP                   mp_tls_init     -init TLS
     SysVirtualMemory        vmem_init
-    SysMemory               mem_init
+    SysReg                  pci_reg_init    -Enumerate and store PCI devices
     SysReg                  acpi_init       -parse and store acpi tables
     SysInterrupts           intr_init       -initialize IDT/APIC/IOAPIC
+    SysInterrupts           gdt_init        -initialize GDT
+    SysMemory               mem_init
     SysTimer                module_init     -configure local timers
     SysMP                   mp_init         -boot APs and setup TLS
     SysUser                 module_init     -setup syscall handling
