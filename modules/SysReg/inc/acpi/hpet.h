@@ -8,7 +8,7 @@
 #include "acpi_tables.h"
 #include <types.h>
 
-typedef struct {
+typedef struct PACKED {
     ACPISDTHeader h;
     uint8_t RevisionID;
     uint8_t ComparatorCount : 5;
@@ -20,6 +20,6 @@ typedef struct {
     uint8_t HPETNumber;
     uint16_t MinimumTick;
     uint8_t PageProtection;
-} PACKED HPET;
+} HPET;
 
 #endif
