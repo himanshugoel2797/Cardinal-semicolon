@@ -1,6 +1,7 @@
 #include "common.h"
 #include "kvs.h"
 #include "priv_reg.h"
+#include "acpi/acpi_tables.h"
 #include "registry.h"
 
 #include <stddef.h>

@@ -7,7 +7,6 @@ LOAD:./SysInterrupts.celf
 LOAD:./SysMP.celf
 CALL:mp_tls_setup
 CALL:vmem_init
-CALL:mem_init
 CALL:acpi_init
 CALL:intr_init
 LOAD:./SysTimer.celf
