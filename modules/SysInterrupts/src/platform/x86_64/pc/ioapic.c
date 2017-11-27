@@ -5,3 +5,6 @@
  * https://opensource.org/licenses/MIT
  */
 
+int ioapic_init(){
+    return 0;
+}

@@ -5,3 +5,7 @@
  * https://opensource.org/licenses/MIT
  */
 
+int apic_init(){
+
+    return 0;
+}

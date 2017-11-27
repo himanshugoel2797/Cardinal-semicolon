@@ -48,6 +48,7 @@ int debug_handle_trap();
 #define SECTION(x) __attribute__((section(x)))
 #define PACKED __attribute__((packed))
 #define NORETURN __attribute__((noreturn))
+#define NAKED __attribute__((naked))
 #define NULLABLE
 #define NONNULL_RETURN __attribute__((returns_nonnull))
 #define WEAK __attribute__((weak))
