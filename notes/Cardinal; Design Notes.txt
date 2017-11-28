@@ -133,9 +133,9 @@ Call order:
     SysReg                  acpi_init       -parse and store acpi tables
     SysInterrupts           intr_init       -initialize IDT/APIC/IOAPIC
     SysInterrupts           gdt_init        -initialize GDT
-    SysMemory               mem_init
     SysTimer                module_init     -configure local timers
     SysMP                   mp_init         -boot APs and setup TLS
+    SysMemory               mem_init        -initialize slab allocator, kernel malloc
     SysUser                 module_init     -setup syscall handling
     SysTaskMgr              module_init     -setup process management
     SysModMgr               module_init     -replace bootstrap kernel
