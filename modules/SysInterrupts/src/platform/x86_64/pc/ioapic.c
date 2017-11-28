@@ -42,7 +42,7 @@ static void ioapic_map(uint32_t idx, uint32_t irq_pin, uint32_t irq, bool active
 
     uint32_t high = ioapic_read(idx, high_index);
     high &= ~0xff000000;
-    high |= 0xff << 24;
+    high |= (0xff000000);
     ioapic_write(idx, high_index, high);
             
     uint32_t low = ioapic_read(idx, low_index);
@@ -66,8 +66,23 @@ static void ioapic_map(uint32_t idx, uint32_t irq_pin, uint32_t irq, bool active
     low &= ~0x700;
     low |= 1 << 8;
 
+    // unmask the interrupt
+    low &= ~(1<<16);
+
     ioapic_write(idx, low_index, low);
 }
+/*
+void interrupt_unmask(int irq) {
+
+    int ioapic_idx = 0;
+    uint32_t ioapic_close_intr_base = 0;
+
+    for(int i = 0; i < ioapic_cnt; i++)
+        if(ioapics[i].global_intr_base < irq && ioapics[i].global_intr_base > ioapic_close_intr_base){
+            ioapic_close_intr_base = ioapics[i].global_intr_base;
+            ioapic_idx = i;
+        }
+}*/
 
 int ioapic_init(){
     //Read the registry
@@ -119,7 +134,7 @@ int ioapic_init(){
             int err = registry_readkey_uint(key2_idx, "IRQ", &irq);
             if(err == registry_err_dne){
                 //Configure this entry as normal
-                ioapic_map(i, j, j + intr_base, false, false);
+                ioapic_map(i, j, j + intr_base + 0x20, false, false);
                 continue;
             }
 
@@ -130,7 +145,7 @@ int ioapic_init(){
             registry_readkey_bool(key2_idx, "ACTIVE_LOW", &active_low);
             registry_readkey_bool(key2_idx, "LEVEL_TRIGGER", &level_trigger);
             
-            ioapic_map(i, j, irq, active_low, level_trigger);
+            ioapic_map(i, j, irq + 0x20, active_low, level_trigger);
         }
     }
 
