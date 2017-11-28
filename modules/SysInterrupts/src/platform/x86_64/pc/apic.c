@@ -70,8 +70,6 @@ int apic_init(){
     apic_write(APIC_TPR, 0);
     apic_write(APIC_SVR, (1 << 8) | 0xFF);
 
-    __asm__("sti");
-
     return 0;
 }
 

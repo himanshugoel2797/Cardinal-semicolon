@@ -115,9 +115,9 @@ Load order:
     SysPhysicalMemory       DONE/NEEDREVIEW/NEEDMP
     SysVirtualMemory        DONE/NEEDREVIEW/MPREVIEW
     SysMemory               PLANNING/POSTPONED            
-    SysInterrupts           PLANNING
+    SysInterrupts           MINIMUMFEATURECOMPLETE/NEEDREVIEW
     SysMP                   PLANNING
-    SysTimer                
+    SysTimer                PLANNING
     SysUser                 
     SysTaskMgr              
     SysModMgr               
