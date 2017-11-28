@@ -52,7 +52,15 @@ int loadscript_execute() {
 
             print_str("LOADED\r\n");
 
-            entry_pt();
+            int err = entry_pt();
+            if(err != 0){
+                char idx_str[10];
+                print_str("RETURN VALUE:");
+                print_str(itoa(err, idx_str, 16));
+                print_str("\r\n");
+                PANIC("module_init FAILED");
+            }
+
         } else if (mode == 1) {
             print_str("CALL FUNCTION:");
             print_str(name);
@@ -62,7 +70,14 @@ int loadscript_execute() {
             if(entry_pt == NULL)
                 PANIC("FAILED TO RESOLVE FUNCTION!");
 
-            entry_pt();
+            int err = entry_pt();
+            if(err != 0){
+                char idx_str[10];
+                print_str("RETURN VALUE:");
+                print_str(itoa(err, idx_str, 16));
+                print_str("\r\n");
+                PANIC("CALL FAILED");
+            }
         } else if (mode == -1)
             break;
     }
