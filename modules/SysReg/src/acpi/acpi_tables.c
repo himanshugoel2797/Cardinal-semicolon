@@ -150,10 +150,6 @@ static int save_isaovr(uint32_t ioapic_cnt, MADT_EntryISAOVR *isaovr) {
     key_idx = strncat(key_str, "/", 255);
     key_idx = strncat(key_str, idx2_str, 255);
 
-    DEBUG_PRINT(key_idx);
-    DEBUG_PRINT("\r\n");
-
-
     if(registry_addkey_uint(key_idx, "IRQ", isaovr->irq_src) != registry_err_ok)
         return -1;
 

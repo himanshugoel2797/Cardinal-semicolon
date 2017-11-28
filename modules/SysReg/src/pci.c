@@ -160,9 +160,10 @@ int pci_reg_init() {
         //Store device info
         uint32_t funcs = PCI_GetFuncCount(bus, device);
         for(uint32_t f = 0; f < funcs; f++) {
-            char idx_str[10];
+            char idx_str[10] = "";
             char key_str[256] = "HW/PCI/";
             char *key_idx = strncat(key_str, itoa(idx, idx_str, 16), 255);
+            idx++;
 
             if(registry_createdirectory("HW/PCI", idx_str) != registry_err_ok)
                 return -1;
@@ -171,38 +172,38 @@ int pci_reg_init() {
             PCI_GetPCIDevice(bus, device, f, &devInfo);
 
             if(registry_addkey_uint(key_idx, "BUS", bus) != registry_err_ok)
-                return -1;
+                return -2;
 
             if(registry_addkey_uint(key_idx, "DEVICE", device) != registry_err_ok)
-                return -1;
+                return -3;
 
             if(registry_addkey_uint(key_idx, "FUNCTION", f) != registry_err_ok)
-                return -1;
+                return -4;
 
             if(registry_addkey_uint(key_idx, "CLASS", devInfo.ClassCode) != registry_err_ok)
-                return -1;
+                return -5;
 
             if(registry_addkey_uint(key_idx, "SUBCLASS", devInfo.SubClassCode) != registry_err_ok)
-                return -1;
+                return -6;
 
             if(registry_addkey_uint(key_idx, "DEVICE_ID", devInfo.DeviceID) != registry_err_ok)
-                return -1;
+                return -7;
 
             if(registry_addkey_uint(key_idx, "VENDOR_ID", devInfo.VendorID) != registry_err_ok)
-                return -1;
+                return -8;
 
             if(registry_addkey_uint(key_idx, "BAR_COUNT", devInfo.BarCount) != registry_err_ok)
-                return -1;
+                return -9;
 
             //Parse and store BARs
             for(uint32_t b0 = 0; b0 < devInfo.BarCount; b0++) {
-                char idx2_str[10];
-                char key2_str[256];
+                char idx2_str[10] = "";
+                char key2_str[256] = "";
                 char *key2_idx = strncpy(key2_str, key_str, 255);
                 itoa(b0, idx2_str, 16);
 
                 if(registry_createdirectory(key2_idx, idx2_str) != registry_err_ok)
-                    return -1;
+                    return -10;
 
                 key2_idx = strncat(key2_str, "/", 255);
                 key2_idx = strncat(key2_str, idx2_str, 255);
@@ -212,18 +213,17 @@ int pci_reg_init() {
                 bool isIOspace = PCI_IsIOSpaceBAR(&devInfo, b0);
 
                 if(registry_addkey_uint(key2_idx, "ADDRESS", bar_val) != registry_err_ok)
-                    return -1;
+                    return -11;
 
                 if(registry_addkey_uint(key2_idx, "SIZE", bar_sz) != registry_err_ok)
-                    return -1;
+                    return -12;
 
                 if(registry_addkey_bool(key2_idx, "IS_IO", isIOspace) != registry_err_ok)
-                    return -1;
+                    return -13;
             }
         }
 
         device++;
-        idx++;
     }
 
     return 0;
