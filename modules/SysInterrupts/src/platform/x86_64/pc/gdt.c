@@ -27,7 +27,7 @@ typedef struct PACKED {
 typedef struct PACKED {
     uint16_t limit;
     gdt_t *base;
-}gdtr_t;
+} gdtr_t;
 
 typedef struct {
     gdt_t *gdt;
@@ -45,7 +45,7 @@ static void gdt_setentry(gdt_t *gdt, uint32_t base, uint32_t limit, uint8_t acce
     gdt->access = access;
 }
 
-int gdt_init(){
+int gdt_init() {
 
     if(gdt == NULL) {
         int (*mp_tls_alloc)(int) = elf_resolvefunction("mp_tls_alloc");

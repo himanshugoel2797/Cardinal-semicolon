@@ -36,7 +36,7 @@ void apic_write(uint32_t off, uint32_t val) {
     apic->base_addr[off] = val;
 }
 
-int apic_init(){
+int apic_init() {
 
     //Disable the PIC
     outb(0x20, ICW1_INIT+ICW1_ICW4); // starts the initialization sequence (in cascade mode)

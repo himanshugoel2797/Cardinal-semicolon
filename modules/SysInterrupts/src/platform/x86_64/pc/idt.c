@@ -29,12 +29,12 @@ typedef struct {
     uint32_t offset1 : 16;
     uint32_t offset2 : 32;
     uint32_t zr2 : 32;
-}idt_t;
+} idt_t;
 
 typedef struct PACKED {
     uint16_t limit;
     idt_t *base;
-}idtr_t;
+} idtr_t;
 
 typedef struct {
     uint64_t rsp;
@@ -75,13 +75,13 @@ void interrupt_registerhandler(int idx, InterruptHandler hndlr) {
     interrupt_funcs[idx] = hndlr;
 }
 
-void idt_mainhandler(regs_t *regs){
+void idt_mainhandler(regs_t *regs) {
     //Store the registers in the processor interrupt state
     memcpy(idt->reg_state, regs, sizeof(regs_t));
 
     if(interrupt_funcs[regs->int_no] != NULL) {
         interrupt_funcs[regs->int_no]();
-    }else{
+    } else {
         char msg[256] = "Unhandled Interrupt: ";
         char int_num[10];
         char *msg_ptr = strncat(msg, itoa(regs->int_no, int_num, 16), 255);
@@ -180,7 +180,7 @@ int idt_init() {
         //Setup the hardware interrupts
         if(i == 8 || (i >= 10 && i <= 14)) pushesToStack = 0;
         idt_fillswinterrupthandler(idt_handlers[i], i, pushesToStack);  //If pushesToStack is non-zero, the value will be pushed to stack
-        
+
         interrupt_funcs[i] = NULL;
 
         idt_lcl[i].offset0 = (uint64_t)idt_handlers[i] & 0xFFFF;

@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2017 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -12,9 +12,9 @@ int gdt_init();
 int ioapic_init();
 int apic_init();
 
-int intr_init(){
+int intr_init() {
     int err = 0;
-    
+
     err = gdt_init();
     if(err != 0)
         return err;

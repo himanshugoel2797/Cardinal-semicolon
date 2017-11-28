@@ -54,7 +54,7 @@ int loadscript_execute() {
             print_str("LOADED\r\n");
 
             int err = entry_pt();
-            if(err != 0){
+            if(err != 0) {
                 char idx_str[10];
                 print_str("RETURN VALUE:");
                 print_str(itoa(err, idx_str, 16));
@@ -72,7 +72,7 @@ int loadscript_execute() {
                 PANIC("FAILED TO RESOLVE FUNCTION!");
 
             int err = entry_pt();
-            if(err != 0){
+            if(err != 0) {
                 char idx_str[10];
                 print_str("RETURN VALUE:");
                 print_str(itoa(err, idx_str, 16));

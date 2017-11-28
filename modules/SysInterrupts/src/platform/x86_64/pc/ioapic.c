@@ -44,7 +44,7 @@ static void ioapic_map(uint32_t idx, uint32_t irq_pin, uint32_t irq, bool active
     high &= ~0xff000000;
     high |= (0xff000000);
     ioapic_write(idx, high_index, high);
-            
+
     uint32_t low = ioapic_read(idx, low_index);
 
     // set the polarity
@@ -84,7 +84,7 @@ void interrupt_unmask(int irq) {
         }
 }*/
 
-int ioapic_init(){
+int ioapic_init() {
     //Read the registry
     uint64_t count = 0;
     if(registry_readkey_uint("HW/IOAPIC", "COUNT", &count) != registry_err_ok)
@@ -114,7 +114,7 @@ int ioapic_init(){
         ioapics[i].id = (uint32_t)id;
         ioapics[i].base_addr = (uint32_t volatile *)vmem_phystovirt(base_addr, KiB(8), vmem_flags_uncached);
         ioapics[i].global_intr_base = (uint32_t)intr_base;
-    
+
         //Configure the detected overrides
         uint64_t available_redirs = ((ioapic_read(i, 0x01) >> 16) & 0xff) + 1;
 
@@ -132,7 +132,7 @@ int ioapic_init(){
             bool level_trigger = false;
 
             int err = registry_readkey_uint(key2_idx, "IRQ", &irq);
-            if(err == registry_err_dne){
+            if(err == registry_err_dne) {
                 //Configure this entry as normal
                 ioapic_map(i, j, j + intr_base + 0x20, false, false);
                 continue;
@@ -144,7 +144,7 @@ int ioapic_init(){
             registry_readkey_uint(key2_idx, "BUS", &bus);
             registry_readkey_bool(key2_idx, "ACTIVE_LOW", &active_low);
             registry_readkey_bool(key2_idx, "LEVEL_TRIGGER", &level_trigger);
-            
+
             ioapic_map(i, j, irq + 0x20, active_low, level_trigger);
         }
     }

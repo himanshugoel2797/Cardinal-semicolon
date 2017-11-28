@@ -409,13 +409,13 @@ int vmem_virttophys(intptr_t virt, intptr_t *phys) {
 
 intptr_t vmem_phystovirt(intptr_t phys, size_t sz, int flags) {
 
-    if(flags & vmem_flags_cachewriteback){
+    if(flags & vmem_flags_cachewriteback) {
         if(phys < (intptr_t)GiB(2) && (phys + sz) < (intptr_t)GiB(2))
             return (phys + KERN_TOP_BASE);
 
         if(phys < (intptr_t)phys_map_sz && (phys + sz) < phys_map_sz)
             return (phys + KERN_PHYSMAP_BASE);
-    }else if(flags & vmem_flags_uncached) {
+    } else if(flags & vmem_flags_uncached) {
         if(phys < (intptr_t)phys_map_sz && (phys + sz) < phys_map_sz)
             return (phys + KERN_PHYSMAP_BASE_UC);
     }
