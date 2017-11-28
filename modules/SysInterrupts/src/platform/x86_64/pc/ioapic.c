@@ -36,38 +36,37 @@ static uint32_t ioapic_read(int idx, uint32_t off) {
 
 static void ioapic_map(uint32_t idx, uint32_t irq_pin, uint32_t irq, bool active_low, bool level_trigger) {
 
-            //configure this override
-            const uint32_t low_index = 0x10 + irq_pin*2;
-            const uint32_t high_index = 0x10 + irq_pin*2 + 1;
+    //configure this override
+    const uint32_t low_index = 0x10 + irq_pin*2;
+    const uint32_t high_index = 0x10 + irq_pin*2 + 1;
 
-            //  TODO: learn how logical destinations work
-            uint32_t high = ioapic_read(idx, high_index);
-            // set APIC ID
-            high &= ~0xff000000;
-            high |= 1 << 24;
-            ioapic_write(idx, high_index, high);
+    uint32_t high = ioapic_read(idx, high_index);
+    high &= ~0xff000000;
+    high |= 0xff << 24;
+    ioapic_write(idx, high_index, high);
             
+    uint32_t low = ioapic_read(idx, low_index);
 
-            uint32_t low = ioapic_read(idx, low_index);
+    // set the polarity
+    low &= ~(1<<13);
+    low |= ((active_low & 1) << 13);
 
-            // set the polarity
-            low &= ~(1<<13);
-            low |= ((active_low & 1) << 13);
+    low &= ~(1<<15);
+    low |= ((level_trigger & 1) << 15);
 
-            low &= ~(1<<15);
-            low |= ((level_trigger & 1) << 15);
+    // set delivery vector
+    low &= ~0xff;
+    low |= irq & 0xff;
 
-            // set to physical delivery mode
-            low &= ~(1<<11);
+    // set to logical delivery mode
+    low &= ~(1<<11);
+    low |= (1 << 11);
 
-            // set delivery vector
-            low &= ~0xff;
-            low |= irq & 0xff;
+    // set to lowest priority delivery mode
+    low &= ~0x700;
+    low |= 1 << 8;
 
-            // set to fixed delivery mode
-            low &= ~0x700;
-
-            ioapic_write(idx, low_index, low);
+    ioapic_write(idx, low_index, low);
 }
 
 int ioapic_init(){
