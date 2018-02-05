@@ -73,7 +73,8 @@ static const char *type_check_kinds[] = {"load of",
                                          "downcast of",
                                          "upcast of",
                                          "cast to virtual base of",
-                                         "_Nonnull binding to"
+                                         "_Nonnull binding to",
+                                         "Pointer overflow at",
                                         };
 
 typedef enum {
@@ -90,6 +91,7 @@ typedef enum {
     load_invalid_value,
     builtin_unreachable,
     nonnull_arg,
+    pointer_overflow,
 } ubsan_type_names;
 
 static const char *ubsan_type_strs[] = {
@@ -99,7 +101,7 @@ static const char *ubsan_type_strs[] = {
     "out_of_bounds:",      "nonnull_return:",
     "type_mismatch_v1:",   "vla_bound_not_positive:",
     "load_invalid_value:", "builtin_unreachable:",
-    "nonnull_arg:",
+    "nonnull_arg:", "pointer_overflow:"
 };
 
 #define ubsan_str_buf_len 1024
@@ -169,6 +171,11 @@ void WEAK __ubsan_handle_add_overflow(struct overflow_data *data, uintptr_t lhs,
 void WEAK __ubsan_handle_sub_overflow(struct overflow_data *data, uintptr_t lhs,
                                       uintptr_t rhs) {
     handle_lhs_rhs_funcs(&data->loc, lhs, rhs, sub_overflow);
+}
+
+void WEAK __ubsan_handle_pointer_overflow(struct overflow_data *data, uintptr_t lhs,
+                                      uintptr_t rhs) {
+    handle_lhs_rhs_funcs(&data->loc, lhs, rhs, pointer_overflow);
 }
 
 void WEAK __ubsan_handle_mul_overflow(struct overflow_data *data, uintptr_t lhs,
