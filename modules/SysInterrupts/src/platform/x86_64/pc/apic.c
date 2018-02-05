@@ -17,9 +17,14 @@
 #define ICW1_INIT 0x10 /* Initialization - required! */
 
 #define APIC_ID (0x20 / sizeof(uint32_t))
-#define APIC_SVR (0xF0 / sizeof(uint32_t))
 #define APIC_TPR (0x80 / sizeof(uint32_t))
+#define APIC_EOI (0xB0 / sizeof(uint32_t))
 #define APIC_DFR (0xE0 / sizeof(uint32_t))
+#define APIC_SVR (0xF0 / sizeof(uint32_t))
+#define APIC_ISR (0x100 / sizeof(uint32_t))
+
+#define MSI_ADDR (0xFEEFF00C)
+#define MSI_VEC (lvl, active_low, vector) (((lvl & 1) << 15) | ((~active_low & 1) << 14) | 0x100 /*lowest priority*/ | (vector & 0xff))
 
 typedef struct {
     uint32_t *base_addr;
@@ -71,6 +76,15 @@ int apic_init() {
     apic_write(APIC_SVR, (1 << 8) | 0xFF);
 
     return 0;
+}
+
+void interrupt_sendeoi(int irq) {
+    int byte_off = irq / 32;
+    int bit_off = irq % 32;
+
+    if(apic_read(APIC_ISR + byte_off) & (1 << bit_off)){
+        apic_write(APIC_EOI, 0);
+    }
 }
 
 //configure timer

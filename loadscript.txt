@@ -10,6 +10,6 @@ CALL:vmem_init
 CALL:pci_reg_init
 CALL:acpi_init
 CALL:intr_init
-LOAD:./SysTimer.celf
 LOAD:./SysUser.celf
+LOAD:./SysTimer.celf
 LOAD:./SysTaskMgr.celf

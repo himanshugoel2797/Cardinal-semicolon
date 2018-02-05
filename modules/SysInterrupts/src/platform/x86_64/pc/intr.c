@@ -31,7 +31,8 @@ int intr_init() {
     if(err != 0)
         return err;
 
-    __asm__("sti");
+    //__asm__("hlt");
+    //__asm__("sti");
 
     return 0;
 }

@@ -10,10 +10,12 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <types.h>
+#include <cardinal/local_spinlock.h>
 #include "elf.h"
 #include "SysInterrupts/interrupts.h"
 
 #define IDT_ENTRY_COUNT (256)
+#define IDT_HANDLER_CNT (16)
 #define IDT_ENTRY_HANDLER_SIZE (64)
 #define IDT_TYPE_INTR (0xE)
 
@@ -69,19 +71,102 @@ typedef struct {
 
 static TLS tls_idt_t *idt = NULL;
 static char idt_handlers[IDT_ENTRY_COUNT][IDT_ENTRY_HANDLER_SIZE];
-static InterruptHandler interrupt_funcs[IDT_ENTRY_COUNT];
+static InterruptHandler interrupt_funcs[IDT_ENTRY_COUNT][IDT_HANDLER_CNT];
+static bool interrupt_blocked[IDT_ENTRY_COUNT];
+static int interrupt_alloc_lock = 0;
+static bool int_arr_inited = false;
 
-void interrupt_registerhandler(int idx, InterruptHandler hndlr) {
-    interrupt_funcs[idx] = hndlr;
+
+void interrupt_registerhandler(int irq, InterruptHandler handler) {
+    local_spinlock_lock(&interrupt_alloc_lock);
+    for(int i = 0; i < IDT_HANDLER_CNT; i++)
+        if(interrupt_funcs[irq][i] == NULL){
+            interrupt_funcs[irq][i] = handler;
+            local_spinlock_unlock(&interrupt_alloc_lock);
+            return;
+        }
+    local_spinlock_unlock(&interrupt_alloc_lock);
+
+    PANIC("Interrupt oversubscribed!");
+}
+
+void interrupt_unregisterhandler(int irq, InterruptHandler handler) {
+    local_spinlock_lock(&interrupt_alloc_lock);
+    for(int i = 0; i < IDT_HANDLER_CNT; i++)
+        if(interrupt_funcs[irq][i] == handler){
+            interrupt_funcs[irq][i] = NULL;
+        }
+    local_spinlock_unlock(&interrupt_alloc_lock);
+}
+
+int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
+    if(flags & interrupt_flags_fixed) {
+        local_spinlock_lock(&interrupt_alloc_lock);
+        
+        for(int c = 0; c < cnt; c++) {
+            if(interrupt_blocked[*base + c]){
+                local_spinlock_unlock(&interrupt_alloc_lock);
+                return -1;
+            }
+        }
+
+        if(flags & interrupt_flags_exclusive)
+            for(int c = 0; c < cnt; c++)
+                interrupt_blocked[*base + c] = true;
+
+        local_spinlock_unlock(&interrupt_alloc_lock);
+        return 0;
+    }else{
+        //if fixed allocation works, use it
+        int err = interrupt_allocate(cnt, flags | interrupt_flags_fixed, base);
+        if(err == 0)
+            return 0;
+
+        //find a block that does work
+        local_spinlock_lock(&interrupt_alloc_lock);
+
+        int run_off = 0;
+        int run_len = 0;
+        for(int i = 0; i < IDT_ENTRY_COUNT; i++) {
+            if(run_len >= cnt) {
+                if(flags & interrupt_flags_exclusive)
+                    for(int c = 0; c < cnt; c++)
+                        interrupt_blocked[run_off + c] = true;
+
+                *base = run_off;
+                local_spinlock_unlock(&interrupt_alloc_lock);
+                return 0;
+            }
+
+            if(interrupt_blocked[i]) {
+                run_len = 0;
+                run_off = i + 1;
+            }else
+                run_len++;
+        }
+
+        local_spinlock_unlock(&interrupt_alloc_lock);
+        return -1;
+    }
+
 }
 
 void idt_mainhandler(regs_t *regs) {
     //Store the registers in the processor interrupt state
     memcpy(idt->reg_state, regs, sizeof(regs_t));
 
-    if(interrupt_funcs[regs->int_no] != NULL) {
-        interrupt_funcs[regs->int_no]();
-    } else {
+    bool handled = false;
+
+    for(int i = 0; i < IDT_HANDLER_CNT; i++){
+        local_spinlock_lock(&interrupt_alloc_lock);
+        if(interrupt_funcs[regs->int_no][i] != NULL) {
+            interrupt_funcs[regs->int_no][i](regs->int_no);
+            handled = true;
+        }
+        local_spinlock_unlock(&interrupt_alloc_lock);
+    }
+    
+    if(!handled) {
         char msg[256] = "Unhandled Interrupt: ";
         char int_num[10];
         char *msg_ptr = strncat(msg, itoa(regs->int_no, int_num, 16), 255);
@@ -177,11 +262,17 @@ int idt_init() {
 
     int pushesToStack = 1;
     for(int i = 0; i < IDT_ENTRY_COUNT; i++) {
-        //Setup the hardware interrupts
-        if(i == 8 || (i >= 10 && i <= 14)) pushesToStack = 0;
-        idt_fillswinterrupthandler(idt_handlers[i], i, pushesToStack);  //If pushesToStack is non-zero, the value will be pushed to stack
+        //Setup interrupts
 
-        interrupt_funcs[i] = NULL;
+        if(!int_arr_inited){
+            if(i == 8 || (i >= 10 && i <= 14)) pushesToStack = 0;
+            idt_fillswinterrupthandler(idt_handlers[i], i, pushesToStack);  //If pushesToStack is non-zero, the value will be pushed to stack
+            interrupt_blocked[i] = false;
+            for(int j = 0; j < IDT_HANDLER_CNT; j++)
+                interrupt_funcs[i][j] = NULL;
+
+            int_arr_inited = true;
+        }
 
         idt_lcl[i].offset0 = (uint64_t)idt_handlers[i] & 0xFFFF;
         idt_lcl[i].offset1 = ((uint64_t)idt_handlers[i] >> 16) & 0xFFFF;
