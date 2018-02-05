@@ -14,6 +14,7 @@
 
 #include "SysVirtualMemory/vmem.h"
 #include "SysReg/registry.h"
+#include "SysInterrupts/interrupts.h"
 
 typedef struct {
     uint32_t id;
@@ -71,18 +72,19 @@ static void ioapic_map(uint32_t idx, uint32_t irq_pin, uint32_t irq, bool active
 
     ioapic_write(idx, low_index, low);
 }
-/*
-void interrupt_unmask(int irq) {
 
+void interrupt_mapinterrupt(uint32_t line, int irq, bool active_low, bool level_trig) {
     int ioapic_idx = 0;
     uint32_t ioapic_close_intr_base = 0;
 
     for(int i = 0; i < ioapic_cnt; i++)
-        if(ioapics[i].global_intr_base < irq && ioapics[i].global_intr_base > ioapic_close_intr_base){
+        if(ioapics[i].global_intr_base < line && ioapics[i].global_intr_base > ioapic_close_intr_base){
             ioapic_close_intr_base = ioapics[i].global_intr_base;
             ioapic_idx = i;
         }
-}*/
+
+    ioapic_map(ioapic_idx, line, irq, active_low, level_trig);
+}
 
 int ioapic_init() {
     //Read the registry
@@ -146,6 +148,10 @@ int ioapic_init() {
             registry_readkey_bool(key2_idx, "LEVEL_TRIGGER", &level_trigger);
 
             ioapic_map(i, j, irq + 0x20, active_low, level_trigger);
+
+            int irq_num = irq + 0x20;
+            //if(interrupt_allocate(1, interrupt_flags_exclusive | interrupt_flags_fixed, &irq_num) != 0)
+            //    PANIC("Failed to reserve specified interrupt.");
         }
     }
 

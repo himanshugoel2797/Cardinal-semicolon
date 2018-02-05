@@ -259,7 +259,7 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)()) {
                             0) {
                         *entry_point = (int (*)())sym[j].st_value;
                     } else if (ELF64_ST_VISIBILITY(sym[j].st_other) !=
-                               STV_HIDDEN) // Don't add hidden symbols
+                               STV_HIDDEN && ELF64_ST_BIND(sym[j].st_info) != STB_LOCAL) // Don't add hidden symbols
                         symboldb_add(strtab, shdr, &sym[j]);
                 } else if (ELF64_ST_TYPE(sym[j].st_info) == STT_SECTION) {
                     sym[j].st_value += sec_shdr->sh_addr;

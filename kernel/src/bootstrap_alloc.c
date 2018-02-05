@@ -64,6 +64,9 @@ void *WEAK malloc(size_t size) {
     if (malloc_hndl != NULL)
         return malloc_hndl(size);
 
+    if(size == 0)
+        return NULL;
+
     uint8_t *res = bootstrap_malloc(size + 16);
     if (res == NULL)
         return res;

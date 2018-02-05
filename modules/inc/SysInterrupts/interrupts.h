@@ -6,8 +6,24 @@
 #ifndef CARDINAL_INTERRUPTS_H
 #define CARDINAL_INTERRUPTS_H
 
-typedef void (*InterruptHandler)();
+#include <stdint.h>
 
-void interrupt_registerhandler(int idx, InterruptHandler hndlr);
+typedef void (*InterruptHandler)(int);
+
+typedef enum {
+    interrupt_flags_none = 0,
+    interrupt_flags_exclusive = (1 << 0),
+    interrupt_flags_fixed = (1 << 1),
+} interrupt_flags_t;
+
+void interrupt_sendeoi(int irq);
+
+void interrupt_registerhandler(int irq, InterruptHandler handler);
+
+void interrupt_unregisterhandler(int irq, InterruptHandler handler);
+
+int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base);
+
+void interrupt_mapinterrupt(uint32_t line, int irq, bool active_low, bool level_trig);
 
 #endif
