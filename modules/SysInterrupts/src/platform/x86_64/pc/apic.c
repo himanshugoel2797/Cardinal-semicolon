@@ -9,6 +9,7 @@
 #include <types.h>
 
 #include "SysVirtualMemory/vmem.h"
+#include "SysReg/registry.h"
 
 #include "elf.h"
 
@@ -16,12 +17,12 @@
 #define ICW1_ICW4 0x01    /* ICW4 (not) needed */
 #define ICW1_INIT 0x10 /* Initialization - required! */
 
-#define APIC_ID (0x20 / sizeof(uint32_t))
-#define APIC_TPR (0x80 / sizeof(uint32_t))
-#define APIC_EOI (0xB0 / sizeof(uint32_t))
-#define APIC_DFR (0xE0 / sizeof(uint32_t))
-#define APIC_SVR (0xF0 / sizeof(uint32_t))
-#define APIC_ISR (0x100 / sizeof(uint32_t))
+#define APIC_ID (0x20)
+#define APIC_TPR (0x80)
+#define APIC_EOI (0xB0)
+#define APIC_DFR (0xE0)
+#define APIC_SVR (0xF0)
+#define APIC_ISR (0x100)
 
 #define MSI_ADDR (0xFEEFF00C)
 #define MSI_VEC (lvl, active_low, vector) (((lvl & 1) << 15) | ((~active_low & 1) << 14) | 0x100 /*lowest priority*/ | (vector & 0xff))
@@ -29,16 +30,25 @@
 typedef struct {
     uint32_t *base_addr;
     uint32_t id;
+    bool x2apic_mode;
 } tls_apic_t;
 
 static TLS tls_apic_t *apic = NULL;
 
 uint32_t apic_read(uint32_t off) {
-    return apic->base_addr[off];
+    if(apic->x2apic_mode) {
+        uint64_t val = rdmsr(0x800 + off);
+        return (uint32_t)val;
+    }
+    return apic->base_addr[off / sizeof(uint32_t)];
 }
 
 void apic_write(uint32_t off, uint32_t val) {
-    apic->base_addr[off] = val;
+    if(apic->x2apic_mode) {
+        uint64_t tmp_Val = rdmsr(0x800 + off);
+        wrmsr(0x800 + off, (tmp_Val & ~0xffffffff) | val);
+    }else
+        apic->base_addr[off / sizeof(uint32_t)] = val;
 }
 
 int apic_init() {
@@ -69,9 +79,20 @@ int apic_init() {
     apic->base_addr = (uint32_t*)vmem_phystovirt(apic_base_reg & ~0xfff, KiB(8), vmem_flags_uncached);
     apic->id = apic_read(APIC_ID);
     apic_base_reg |= (1 << 11);
+    {
+        bool x2apic_sup = false;
+        if(registry_readkey_bool("HW/PROC", "X2APIC", &x2apic_sup) != registry_err_ok)
+            return -1;
+
+        apic->x2apic_mode = x2apic_sup;
+
+        if(x2apic_sup)
+            apic_base_reg |= (1 << 10);   //Enable x2apic mode
+    }
+
     wrmsr(IA32_APIC_BASE, apic_base_reg);
 
-    apic_write(APIC_DFR, 0xf0000000);
+    if(!apic->x2apic_mode) apic_write(APIC_DFR, 0xf0000000);
     apic_write(APIC_TPR, 0);
     apic_write(APIC_SVR, (1 << 8) | 0xFF);
 

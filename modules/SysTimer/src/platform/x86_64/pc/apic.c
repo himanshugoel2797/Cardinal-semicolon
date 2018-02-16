@@ -5,3 +5,6 @@
  * https://opensource.org/licenses/MIT
  */
 
+int apic_timer_init(){
+    return -1;
+}

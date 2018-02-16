@@ -234,6 +234,16 @@ int add_cpuid() {
             return -1;
     }
 
+    {
+        CPUID_RequestInfo(0x1, 0, &eax, &ebx, &ecx, &edx);
+
+        //x2APIC
+        bool x2apic = (ecx >> 21) & 1;
+        if (registry_addkey_bool("HW/PROC", "X2APIC", x2apic) !=
+                registry_err_ok)
+            return -1;
+    }
+
     // TODO: Setup proper IDT and GDT
 
     // TODO: Come back after virtual memory and physical memory have been

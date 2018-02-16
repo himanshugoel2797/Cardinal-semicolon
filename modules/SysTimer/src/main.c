@@ -34,7 +34,7 @@ static int timer_init(){
 }
 
 int module_init() {
-    timer_def_cnt = timer_platform_gettimercount() + 1;
+    timer_def_cnt = timer_platform_gettimercount();
     timer_defs = malloc(sizeof(timer_defs_t) * timer_def_cnt);
 
     int err = 0;

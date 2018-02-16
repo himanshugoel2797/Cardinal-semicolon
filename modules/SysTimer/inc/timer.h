@@ -17,7 +17,9 @@ typedef enum {
     timer_features_absolute = (1 << 4),
     timer_features_64bit = (1 << 5),
     timer_features_write = (1 << 6),
-    timer_features_local = (1 << 7)
+    timer_features_local = (1 << 7),
+    timer_features_pcie_msg_intr = (1 << 8),
+    timer_features_fixed_intr = (1 << 9),
 } timer_features_t;
 
 typedef struct {
@@ -30,7 +32,7 @@ typedef struct {
     uint64_t state;
 } timer_handlers_t;
 
-//int timer_register(timer_features_t features, timer_handlers_t *handlers);
+int timer_register(timer_features_t features, timer_handlers_t *handlers);
 
 int timer_platform_gettimercount();
 int timer_platform_init();

@@ -244,29 +244,31 @@ int acpi_init() {
     {
         HPET* hpet = ACPITables_FindTable(HPET_SIG, 0);
 
-        if(registry_createdirectory("HW", "HPET") != registry_err_ok)
-            return -7;
+        if(hpet != NULL){
+            if(registry_createdirectory("HW", "HPET") != registry_err_ok)
+                return -7;
 
-        if(registry_addkey_uint("HW/HPET", "REVISION", hpet->RevisionID) != registry_err_ok)
-            return -8;
+            if(registry_addkey_uint("HW/HPET", "REVISION", hpet->RevisionID) != registry_err_ok)
+                return -8;
 
-        if(registry_addkey_uint("HW/HPET", "COMPARATOR_COUNT", hpet->ComparatorCount) != registry_err_ok)
-            return -9;
+            if(registry_addkey_uint("HW/HPET", "COMPARATOR_COUNT", hpet->ComparatorCount) != registry_err_ok)
+                return -9;
 
-        if(registry_addkey_bool("HW/HPET", "COUNTER_64BIT", hpet->CounterIs64Bit) != registry_err_ok)
-            return -10;
+            if(registry_addkey_bool("HW/HPET", "COUNTER_64BIT", hpet->CounterIs64Bit) != registry_err_ok)
+                return -10;
 
-        if(registry_addkey_bool("HW/HPET", "LEGACY_REPLACEMENT", hpet->LegacyReplacement) != registry_err_ok)
-            return -11;
+            if(registry_addkey_bool("HW/HPET", "LEGACY_REPLACEMENT", hpet->LegacyReplacement) != registry_err_ok)
+                return -11;
 
-        if(registry_addkey_uint("HW/HPET", "VENDOR", hpet->VendorID) != registry_err_ok)
-            return -12;
+            if(registry_addkey_uint("HW/HPET", "VENDOR", hpet->VendorID) != registry_err_ok)
+                return -12;
 
-        if(registry_addkey_uint("HW/HPET", "ADDRESS", hpet->Address.address) != registry_err_ok)
-            return -13;
+            if(registry_addkey_uint("HW/HPET", "ADDRESS", hpet->Address.address) != registry_err_ok)
+                return -13;
 
-        if(registry_addkey_uint("HW/HPET", "MINIMUM_TICK", hpet->MinimumTick) != registry_err_ok)
-            return -14;
+            if(registry_addkey_uint("HW/HPET", "MINIMUM_TICK", hpet->MinimumTick) != registry_err_ok)
+                return -14;
+        }
     }
 
     {
