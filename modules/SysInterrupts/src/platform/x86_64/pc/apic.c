@@ -45,6 +45,11 @@ uint32_t apic_read(uint32_t off) {
 
 void apic_write(uint32_t off, uint32_t val) {
     if(apic->x2apic_mode) {
+
+        if(off == APIC_EOI) {
+            wrmsr(0x800 + off, val);
+            return;
+        }
         uint64_t tmp_Val = rdmsr(0x800 + off);
         wrmsr(0x800 + off, (tmp_Val & ~0xffffffff) | val);
     }else
@@ -77,8 +82,7 @@ int apic_init() {
 
     uint64_t apic_base_reg = rdmsr(IA32_APIC_BASE);
     apic->base_addr = (uint32_t*)vmem_phystovirt(apic_base_reg & ~0xfff, KiB(8), vmem_flags_uncached);
-    apic->id = apic_read(APIC_ID);
-    apic_base_reg |= (1 << 11);
+    apic_base_reg |= (1 << 11); //Enable the apic
     {
         bool x2apic_sup = false;
         if(registry_readkey_bool("HW/PROC", "X2APIC", &x2apic_sup) != registry_err_ok)
@@ -89,8 +93,10 @@ int apic_init() {
         if(x2apic_sup)
             apic_base_reg |= (1 << 10);   //Enable x2apic mode
     }
-
     wrmsr(IA32_APIC_BASE, apic_base_reg);
+    
+    //Read the id after enabling the apic so x2apic handling works correctly
+    apic->id = apic_read(APIC_ID);
 
     if(!apic->x2apic_mode) apic_write(APIC_DFR, 0xf0000000);
     apic_write(APIC_TPR, 0);

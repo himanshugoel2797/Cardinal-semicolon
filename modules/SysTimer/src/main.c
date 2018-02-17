@@ -23,7 +23,7 @@ static timer_defs_t *timer_defs = NULL;
 static int timer_def_cnt = 0;
 static int timer_idx = 0;
 
-UNUSED static int timer_register(timer_features_t features, timer_handlers_t *handlers) {
+UNUSED int timer_register(timer_features_t features, timer_handlers_t *handlers) {
     memcpy(&timer_defs[timer_idx].handlers, handlers, sizeof(timer_handlers_t));
     timer_defs[timer_idx].features = features;
     return timer_idx++;

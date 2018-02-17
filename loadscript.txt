@@ -1,6 +1,7 @@
 LOAD:./SysDebug.celf
 LOAD:./SysReg.celf
 LOAD:./SysPhysicalMemory.celf
+CALL:pmem_initial_test
 LOAD:./SysVirtualMemory.celf
 LOAD:./SysMemory.celf
 LOAD:./SysInterrupts.celf

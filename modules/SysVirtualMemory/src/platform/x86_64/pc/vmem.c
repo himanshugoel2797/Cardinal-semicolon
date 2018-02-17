@@ -25,7 +25,7 @@
 
 #define KERN_TOP_BASE (0xffffffff80000000)
 #define KERN_PHYSMAP_BASE (0xFFFF800000000000)
-#define KERN_PHYSMAP_BASE_UC (0xFFFFFF8000000000)
+#define KERN_PHYSMAP_BASE_UC (KERN_PHYSMAP_BASE + GiB(512))
 
 struct vmem {
     uint64_t ptable[256];
@@ -127,7 +127,9 @@ int vmem_init() {
     vmem_map(NULL, KERN_TOP_BASE, 0x0, GiB(2), vmem_flags_kernel | vmem_flags_rw | vmem_flags_exec | vmem_flags_cachewriteback, 0);
 
     //Setup full physical to virtual map to simplify later accesses
-    registry_readkey_uint("HW/BOOTINFO", "MEMSIZE", &phys_map_sz);
+    //registry_readkey_uint("HW/BOOTINFO", "MEMSIZE", &phys_map_sz);
+    phys_map_sz = GiB(256);
+
     vmem_map(NULL, KERN_PHYSMAP_BASE, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_cachewriteback, 0);
     vmem_map(NULL, KERN_PHYSMAP_BASE_UC, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_uncached, 0);
 

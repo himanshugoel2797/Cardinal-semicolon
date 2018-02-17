@@ -134,6 +134,7 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
         case MULTIBOOT_TAG_TYPE_MODULE: {
             multiboot_tag_module *module = (multiboot_tag_module *)&hdr_8[i];
             bootInfo.InitrdStartAddress = (uint64_t)module->mod_start;
+            bootInfo.InitrdPhysStartAddress = (uint64_t)module->mod_start;
             bootInfo.InitrdLength = (uint64_t)(module->mod_end - module->mod_start);
         }
         break;

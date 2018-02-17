@@ -34,6 +34,7 @@ int debug_handle_trap();
 #define KiB(x) (x * 1024ull)
 #define MiB(x) (KiB(1) * 1024ull * x)
 #define GiB(x) (uint64_t)(MiB(1) * 1024ull * x)
+#define TiB(x) (uint64_t)(GiB(1) * 1024ull * x)
 
 #define UNUSED __attribute__((__unused__))
 #define NONNULL __attribute__((nonnull))

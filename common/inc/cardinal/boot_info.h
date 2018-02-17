@@ -35,6 +35,7 @@ typedef struct {
     uint64_t elf_shdr_addr;
     uint64_t RSDPAddress;        //!< The address of the ACPI RSDP table.
     uint64_t InitrdStartAddress; //!< The start virtual address of the initrd.
+    uint64_t InitrdPhysStartAddress; //!< The start physical address of the initrd.
     uint64_t InitrdLength;       //!< The length, in bytes, of the initrd.
     CardinalMemMap *CardinalMemoryMap; //!< The memory map.
     uint64_t FramebufferAddress;       //!< The address of the bootloader provided

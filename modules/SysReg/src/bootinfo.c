@@ -25,8 +25,12 @@ PRIVATE int add_bootinfo() {
         if (registry_createdirectory("HW/BOOTINFO", "INITRD") != registry_err_ok)
             return -3;
 
-        if (registry_addkey_uint("HW/BOOTINFO/INITRD", "PHYS_ADDR",
+        if (registry_addkey_uint("HW/BOOTINFO/INITRD", "VIRT_ADDR",
                                  bInfo->InitrdStartAddress) != registry_err_ok)
+            return -4;
+
+        if (registry_addkey_uint("HW/BOOTINFO/INITRD", "PHYS_ADDR",
+                                 bInfo->InitrdPhysStartAddress) != registry_err_ok)
             return -4;
 
         if (registry_addkey_uint("HW/BOOTINFO/INITRD", "LEN",

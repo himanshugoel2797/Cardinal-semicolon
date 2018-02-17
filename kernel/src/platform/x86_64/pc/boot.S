@@ -56,6 +56,12 @@ multiboot_start:
 
 .align 8
 
+.word 6
+.word 0
+.long 8
+
+.align 8
+
 .word 0
 .word 0
 .long 8

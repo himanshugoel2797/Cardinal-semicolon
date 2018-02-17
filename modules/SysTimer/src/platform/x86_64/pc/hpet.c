@@ -6,8 +6,10 @@
  */
 
 #include "priv_timers.h"
+#include "timer.h"
 
 #include "SysReg/registry.h"
+#include "SysVirtualMemory/vmem.h"
 
 typedef struct {
     uint64_t Rsv0 : 1;
@@ -76,6 +78,8 @@ PRIVATE int hpet_init(){
     HPET_Main *base_addr = NULL;
     if(registry_readkey_uint("HW/HPET", "ADDRESS", (uint64_t*)&base_addr) != registry_err_ok)
         return -1;
+
+    __asm__("hlt" :: "a"( vmem_phystovirt((intptr_t)base_addr, 4096, vmem_flags_uncached | vmem_flags_kernel )));   //TODO: Addresses may not be mapped, need to identity map entire memory
 
     //Initialize the main counter
     base_addr->Configuration.GlobalEnable = 0;  //Disable the counter during setup

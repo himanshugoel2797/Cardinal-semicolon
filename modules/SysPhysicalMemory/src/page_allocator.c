@@ -170,6 +170,14 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
                     insert_queue(BUILD_ENTRY(n_addr, n_pg_cnt));
 
                 free_mem -= size;
+
+#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
+                char tmp_buf[10];
+                DEBUG_PRINT("SysPhysicalMemory: Allocated addr=");
+                DEBUG_PRINT(itoa((int)ret_addr, tmp_buf, 16));
+                DEBUG_PRINT("\r\n");
+#endif
+
                 return ret_addr;
             }
         }
@@ -198,6 +206,20 @@ int pagealloc_init() {
 
     // parse each memory map entry and free the regions
     {
+        //Don't free initrd
+        uint64_t initrd_addr = 0, initrd_len = 0;
+        if (registry_readkey_uint("HW/BOOTINFO/INITRD", "PHYS_ADDR", &initrd_addr) != registry_err_ok)
+            PANIC("Failed to read registry.");
+
+        if (registry_readkey_uint("HW/BOOTINFO/INITRD", "LEN", &initrd_len) != registry_err_ok)
+            PANIC("Failed to read registry.");
+
+        if(initrd_len % BTM_LEVEL != 0)
+            initrd_len += BTM_LEVEL - (initrd_len % BTM_LEVEL);
+
+        if(initrd_addr % BTM_LEVEL != 0)
+            initrd_addr -= (initrd_addr % BTM_LEVEL);
+
         uint64_t entry_cnt = 0;
         if (registry_readkey_uint("HW/PHYS_MEM", "ENTRY_COUNT", &entry_cnt) !=
                 registry_err_ok)
@@ -217,11 +239,30 @@ int pagealloc_init() {
             if (registry_readkey_uint(key_str, "LEN", &len) != registry_err_ok)
                 PANIC("Failed to read registry.");
 
+
+            
             if (len % BTM_LEVEL != 0)
                 len -= len % BTM_LEVEL;
 
             addr = roundUp_po2(addr, BTM_LEVEL);
-            pagealloc_free(addr, len);
+            
+            if(addr <= initrd_addr && addr + len >= initrd_addr + initrd_len) {
+                if(initrd_addr > addr) pagealloc_free(addr, initrd_addr - addr);
+                if(initrd_addr + initrd_len < addr + len) pagealloc_free(initrd_addr + initrd_len, (addr + len) - (initrd_addr + initrd_len));
+            }else            
+                pagealloc_free(addr, len);
+
+
+#ifdef PHYSMEM_DEBUG_VERBOSE_MID
+                char tmp_buf[10];
+                char tmp_buf2[10];
+                DEBUG_PRINT("SysPhysicalMemory: Free zones, addr=");
+                DEBUG_PRINT(itoa((int)addr, tmp_buf, 16));
+                DEBUG_PRINT(" len=");
+                DEBUG_PRINT(itoa((int)len, tmp_buf2, 16));
+                DEBUG_PRINT("\r\n");
+#endif
+
         }
     }
 

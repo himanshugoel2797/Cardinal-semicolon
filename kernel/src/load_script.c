@@ -55,7 +55,10 @@ int loadscript_execute() {
             if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
                 PANIC("ELF LOAD FAILED");
 
-            print_str("LOADED\r\n");
+            char tmp_entry_addr[10];
+            print_str("LOADED at ");
+            print_str(itoa((int)entry_pt, tmp_entry_addr, 16));
+            print_str("\r\n");
 
             int err = entry_pt();
             if(err != 0) {
