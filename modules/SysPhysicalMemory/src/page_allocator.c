@@ -268,10 +268,10 @@ int pagealloc_init() {
 }
 //#endif
             
-            if(addr <= initrd_addr && addr + len >= initrd_addr + initrd_len) {
-                if(initrd_addr > addr) pagealloc_free(addr, initrd_addr - addr);
-                if(initrd_addr + initrd_len < addr + len) pagealloc_free(initrd_addr + initrd_len, (addr + len) - (initrd_addr + initrd_len));
-            }else
+            //if(addr <= initrd_addr && addr + len >= initrd_addr + initrd_len) {
+            //    if(initrd_addr > addr) pagealloc_free(addr, initrd_addr - addr);
+            //    if(initrd_addr + initrd_len < addr + len) pagealloc_free(initrd_addr + initrd_len, (addr + len) - (initrd_addr + initrd_len));
+            //}else
                 pagealloc_free(addr, len);
 
         }

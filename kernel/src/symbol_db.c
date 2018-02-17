@@ -98,6 +98,10 @@ static int symboldb_addentry(uint32_t idx, Elf64_Shdr *strhdr, Elf64_Shdr *hdr,
         // check if symbol is weak and replace if so
         // TODO: maybe also override the previous entry with a jump to the new one
         if (ELF64_ST_BIND(n_sym->st_info) == STB_WEAK) {
+            DEBUG_PRINT("Override WEAK symbol: ");
+            DEBUG_PRINT(orig_sym_str);
+            DEBUG_PRINT("\r\n");
+
             symbol_e_offsets[idx] = TO_OFF(sym);
             symbol_hdr_offsets[idx] = TO_OFF(hdr);
             symbol_strhdr_offsets[idx] = TO_OFF(strhdr);
