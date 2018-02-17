@@ -172,10 +172,12 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
                 free_mem -= size;
 
 #ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
+{
                 char tmp_buf[10];
                 DEBUG_PRINT("SysPhysicalMemory: Allocated addr=");
                 DEBUG_PRINT(itoa((int)ret_addr, tmp_buf, 16));
                 DEBUG_PRINT("\r\n");
+}
 #endif
 
                 return ret_addr;
@@ -220,6 +222,15 @@ int pagealloc_init() {
         if(initrd_addr % BTM_LEVEL != 0)
             initrd_addr -= (initrd_addr % BTM_LEVEL);
 
+{
+        char tmp_buf[10];
+        DEBUG_PRINT("SysPhysicalMemory: Initrd, addr=");
+        DEBUG_PRINT(itoa((int)initrd_addr, tmp_buf, 16));
+        DEBUG_PRINT(" len=");
+        DEBUG_PRINT(itoa((int)initrd_len, tmp_buf, 16));
+        DEBUG_PRINT("\r\n");
+}   
+
         uint64_t entry_cnt = 0;
         if (registry_readkey_uint("HW/PHYS_MEM", "ENTRY_COUNT", &entry_cnt) !=
                 registry_err_ok)
@@ -245,23 +256,23 @@ int pagealloc_init() {
                 len -= len % BTM_LEVEL;
 
             addr = roundUp_po2(addr, BTM_LEVEL);
+
+//#ifdef PHYSMEM_DEBUG_VERBOSE_MID
+{
+                char tmp_buf[10];
+                DEBUG_PRINT("SysPhysicalMemory: Free zones, addr=");
+                DEBUG_PRINT(itoa((int)addr, tmp_buf, 16));
+                DEBUG_PRINT(" len=");
+                DEBUG_PRINT(itoa((int)len, tmp_buf, 16));
+                DEBUG_PRINT("\r\n");
+}
+//#endif
             
             if(addr <= initrd_addr && addr + len >= initrd_addr + initrd_len) {
                 if(initrd_addr > addr) pagealloc_free(addr, initrd_addr - addr);
                 if(initrd_addr + initrd_len < addr + len) pagealloc_free(initrd_addr + initrd_len, (addr + len) - (initrd_addr + initrd_len));
-            }else            
+            }else
                 pagealloc_free(addr, len);
-
-
-#ifdef PHYSMEM_DEBUG_VERBOSE_MID
-                char tmp_buf[10];
-                char tmp_buf2[10];
-                DEBUG_PRINT("SysPhysicalMemory: Free zones, addr=");
-                DEBUG_PRINT(itoa((int)addr, tmp_buf, 16));
-                DEBUG_PRINT(" len=");
-                DEBUG_PRINT(itoa((int)len, tmp_buf2, 16));
-                DEBUG_PRINT("\r\n");
-#endif
 
         }
     }

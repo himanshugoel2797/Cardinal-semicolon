@@ -165,13 +165,19 @@ static int save_isaovr(uint32_t ioapic_cnt, MADT_EntryISAOVR *isaovr) {
     return 0;
 }
 
-int acpi_init() {
-
-    vmem_phystovirt_ptr = elf_resolvefunction("vmem_phystovirt");
-
+int preinit_acpi() {
     intptr_t rsdp_addr = 0;
     registry_readkey_uint("HW/BOOTINFO", "RSDPADDR", (uint64_t*)&rsdp_addr);
-    rsdp = (RSDPDescriptor20*)rsdp_addr;
+    RSDPDescriptor20* l_rsdp = (RSDPDescriptor20*)rsdp_addr;
+    
+    //Copy the rsdp
+    rsdp = malloc(sizeof(RSDPDescriptor20));
+    memcpy(rsdp, l_rsdp, sizeof(RSDPDescriptor20));
+    return 0;
+}
+
+int acpi_init() {
+    vmem_phystovirt_ptr = elf_resolvefunction("vmem_phystovirt");
 
     if(registry_createdirectory("HW", "ACPI") != registry_err_ok)
         return -1;

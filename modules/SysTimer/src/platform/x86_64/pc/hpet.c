@@ -76,10 +76,11 @@ typedef struct {
 PRIVATE int hpet_init(){
 
     HPET_Main *base_addr = NULL;
-    if(registry_readkey_uint("HW/HPET", "ADDRESS", (uint64_t*)&base_addr) != registry_err_ok)
+    intptr_t hpet_phys_base_addr = 0;
+    if(registry_readkey_uint("HW/HPET", "ADDRESS", (uint64_t*)&hpet_phys_base_addr) != registry_err_ok)
         return -1;
 
-    __asm__("hlt" :: "a"( vmem_phystovirt((intptr_t)base_addr, 4096, vmem_flags_uncached | vmem_flags_kernel )));   //TODO: Addresses may not be mapped, need to identity map entire memory
+    base_addr = (HPET_Main*)vmem_phystovirt(hpet_phys_base_addr, sizeof(HPET_Main), vmem_flags_uncached | vmem_flags_kernel);
 
     //Initialize the main counter
     base_addr->Configuration.GlobalEnable = 0;  //Disable the counter during setup
@@ -96,7 +97,7 @@ PRIVATE int hpet_init(){
 
 
     //Enable the counter
-    base_addr->Configuration.GlobalEnable = 1;
+    //base_addr->Configuration.GlobalEnable = 1;
 
     return 0;
 }
