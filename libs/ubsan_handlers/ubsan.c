@@ -114,9 +114,12 @@ static void handle_lhs_rhs_funcs(struct source_location *loc, uintptr_t lhs,
 
     char conv_str[11];
 
-    memset(temp_ubsan_str_buf, 0, ubsan_str_buf_len);
-    strncpy(temp_ubsan_str_buf, ubsan_type_strs[t], ubsan_str_buf_len);
-    strncat(temp_ubsan_str_buf, loc->filename, ubsan_str_buf_len);
+    //memset(temp_ubsan_str_buf, 0, ubsan_str_buf_len);
+    //strncpy(temp_ubsan_str_buf, ubsan_type_strs[t], ubsan_str_buf_len);
+    //strncat(temp_ubsan_str_buf, loc->filename, ubsan_str_buf_len);
+
+    DEBUG_PRINT(ubsan_type_strs[t]);
+    DEBUG_PRINT(loc->filename);
 
     {
         uint32_t line = loc->line;
@@ -136,7 +139,8 @@ static void handle_lhs_rhs_funcs(struct source_location *loc, uintptr_t lhs,
                 break;
             }
         }
-        strncat(temp_ubsan_str_buf, conv_str, ubsan_str_buf_len);
+        //strncat(temp_ubsan_str_buf, conv_str, ubsan_str_buf_len);
+        DEBUG_PRINT(conv_str);
     }
 
     {
@@ -156,11 +160,11 @@ static void handle_lhs_rhs_funcs(struct source_location *loc, uintptr_t lhs,
                 break;
             }
         }
-        strncat(temp_ubsan_str_buf, conv_str, ubsan_str_buf_len);
+        //strncat(temp_ubsan_str_buf, conv_str, ubsan_str_buf_len);
+        DEBUG_PRINT(conv_str);
     }
 
-    DEBUG_PRINT(temp_ubsan_str_buf);
-    PANIC(" ubsan_triggered");
+    PANIC("\r\nubsan_triggered");
 }
 
 void WEAK __ubsan_handle_add_overflow(struct overflow_data *data, uintptr_t lhs,

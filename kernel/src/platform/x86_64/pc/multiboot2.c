@@ -9,9 +9,9 @@
 
 #include "platform/x86_64/pc/multiboot2.h"
 #include "boot_information.h"
-#include "bootstrap_alloc.h"
 
 #include <cardinal/boot_info.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <types.h>
@@ -53,7 +53,7 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
             multiboot_tag_mmap *mmap = (multiboot_tag_mmap *)&hdr_8[i];
             int entryCount = (mmap->size - 16) / mmap->entry_size;
             CardinalMemMap *map =
-                bootstrap_malloc(sizeof(CardinalMemMap) * (entryCount) );
+                malloc(sizeof(CardinalMemMap) * (entryCount) );
 
             uint32_t mmap_entry = 0;
             for (uint32_t j = 0; j < (mmap->size - 16); j += mmap->entry_size) {

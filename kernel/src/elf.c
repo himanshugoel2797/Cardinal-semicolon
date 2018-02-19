@@ -146,7 +146,16 @@ int elf_installkernelsymbols() {
     //TODO: Verify that this is correct behavior on other machine
     for (uint32_t i = 0; i < bInfo->elf_shdr_num; i++) {
             shdr_cp[i].sh_addr += 0xffffffff80000000;
+
+            if(shdr_cp[i].sh_type == SHT_SYMTAB | shdr_cp[i].sh_type == SHT_STRTAB){
+                //Copy all shdr's into local memory too, and update addresses appropriately
+                void *cur_shdr_content = malloc(shdr_cp[i].sh_size);
+                memcpy(cur_shdr_content, (void*)shdr_cp[i].sh_addr, shdr_cp[i].sh_size);
+                shdr_cp[i].sh_addr = (uint64_t)cur_shdr_content;
+            }
     }
+
+
 
     for (uint32_t i = 0; i < bInfo->elf_shdr_num; i++) {
         if (shdr_cp[i].sh_type == SHT_SYMTAB) {

@@ -63,6 +63,8 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
 
     // Fix boot information addresses
     CardinalBootInfo *b_info = GetBootInfo();
+    
+    //Move initrd into allocated memory
     b_info->InitrdStartAddress += 0xffffffff80000000;
 
     uint64_t initrd_copy = (uint64_t)malloc(b_info->InitrdLength + 512);
@@ -70,6 +72,7 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
         initrd_copy += 512 - (initrd_copy % 512);
 
     memcpy((void*)initrd_copy, (void*)b_info->InitrdStartAddress, b_info->InitrdLength);
+    memset((void*)b_info->InitrdStartAddress, 0, b_info->InitrdLength);
     b_info->InitrdStartAddress = initrd_copy;
 
     // Initalize and load

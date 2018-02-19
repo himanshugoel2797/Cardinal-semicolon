@@ -17,7 +17,7 @@ int module_init() {
 int pmem_initial_test() {
     DEBUG_ECHO("Starting SysPhysicalMemory test set 1...\r\n");
 
-    for(int i = 0; i < 32; i++) {
+    for(int i = 0; i < 16; i++) {
         char tmp_buf[10];
         DEBUG_PRINT(itoa((int)pagealloc_alloc(0, 0, 0, KiB(4)), tmp_buf, 16));
         DEBUG_PRINT("\r\n");

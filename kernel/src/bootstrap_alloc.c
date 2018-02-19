@@ -88,7 +88,7 @@ void WEAK free(void *ptr) {
     size_t sz = 0;
     memcpy(&sz, (uint8_t *)ptr - 16, sizeof(size_t));
 
-    bootstrap_free(ptr, sz);
+    bootstrap_free(ptr, sz + 16);
 }
 
 void *WEAK realloc(void *ptr, size_t size) {
@@ -100,6 +100,7 @@ void *WEAK realloc(void *ptr, size_t size) {
 }
 
 int kernel_updatememhandlers() {
+    return 0;
     malloc_hndl = (void *(*)(size_t))elf_resolvefunction("malloc");
     if (malloc_hndl == malloc)
         malloc_hndl = NULL;

@@ -122,6 +122,17 @@ void pagealloc_free(uintptr_t addr, uint64_t size) {
     int32_t page_cnt = size / BTM_LEVEL;
     free_mem += size;
 
+//#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
+{
+                char tmp_buf[10];
+                DEBUG_PRINT("SysPhysicalMemory: Free addr=");
+                DEBUG_PRINT(itoa((int)addr, tmp_buf, 16));
+                DEBUG_PRINT(" size=");
+                DEBUG_PRINT(itoa((int)size, tmp_buf, 16));
+                DEBUG_PRINT("\r\n");
+}
+//#endif
+
     for (int32_t pg_0 = 0; pg_0 < page_cnt; pg_0 += MAX_ENTRIES) {
         int32_t cur_pg = 0;
         if (page_cnt - pg_0 >= MAX_ENTRIES)
@@ -171,14 +182,14 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
 
                 free_mem -= size;
 
-#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
+//#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
 {
                 char tmp_buf[10];
                 DEBUG_PRINT("SysPhysicalMemory: Allocated addr=");
                 DEBUG_PRINT(itoa((int)ret_addr, tmp_buf, 16));
                 DEBUG_PRINT("\r\n");
 }
-#endif
+//#endif
 
                 return ret_addr;
             }
@@ -208,29 +219,6 @@ int pagealloc_init() {
 
     // parse each memory map entry and free the regions
     {
-        //Don't free initrd
-        uint64_t initrd_addr = 0, initrd_len = 0;
-        if (registry_readkey_uint("HW/BOOTINFO/INITRD", "PHYS_ADDR", &initrd_addr) != registry_err_ok)
-            PANIC("Failed to read registry.");
-
-        if (registry_readkey_uint("HW/BOOTINFO/INITRD", "LEN", &initrd_len) != registry_err_ok)
-            PANIC("Failed to read registry.");
-
-        if(initrd_len % BTM_LEVEL != 0)
-            initrd_len += BTM_LEVEL - (initrd_len % BTM_LEVEL);
-
-        if(initrd_addr % BTM_LEVEL != 0)
-            initrd_addr -= (initrd_addr % BTM_LEVEL);
-
-{
-        char tmp_buf[10];
-        DEBUG_PRINT("SysPhysicalMemory: Initrd, addr=");
-        DEBUG_PRINT(itoa((int)initrd_addr, tmp_buf, 16));
-        DEBUG_PRINT(" len=");
-        DEBUG_PRINT(itoa((int)initrd_len, tmp_buf, 16));
-        DEBUG_PRINT("\r\n");
-}   
-
         uint64_t entry_cnt = 0;
         if (registry_readkey_uint("HW/PHYS_MEM", "ENTRY_COUNT", &entry_cnt) !=
                 registry_err_ok)
