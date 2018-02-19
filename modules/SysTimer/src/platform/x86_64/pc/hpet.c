@@ -29,9 +29,14 @@ typedef struct {
 } PACKED HPET_TimerConfigRegister;
 
 typedef struct {
+    uint32_t Value;
+    uint32_t Address;
+} PACKED HPET_FSBRoute;
+
+typedef struct {
     HPET_TimerConfigRegister Configuration;
     uint64_t ComparatorValue;
-    uint64_t FSBInterruptRoute;
+    HPET_FSBRoute InterruptRoute;
     uint64_t Rsv0;
 } PACKED HPET_Timer;
 
@@ -95,9 +100,8 @@ PRIVATE int hpet_init(){
     //HPET supports MSI/FSB interrupts
     common_features |= timer_features_pcie_msg_intr;
 
-
     //Enable the counter
-    //base_addr->Configuration.GlobalEnable = 1;
+    base_addr->Configuration.GlobalEnable = 1;
 
     return 0;
 }
