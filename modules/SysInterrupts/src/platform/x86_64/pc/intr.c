@@ -38,9 +38,9 @@ int intr_init() {
 }
 
 uint32_t msi_register_addr(int cpu_idx) {
-    return 0xFEE00000 | (cpu_idx & 0xff) << 12 | (1 << 3) | (1 << 2);
+    return 0xFEE00000 | (cpu_idx & 0xff) << 12 | (1 << 3) | (0 << 2);   //fixed destination mode
 }
 
 uint64_t msi_register_data(int vec) {
-    return (1 << 8) | (vec & 0xff);
+    return (vec & 0xff);
 }

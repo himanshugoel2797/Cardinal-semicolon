@@ -72,11 +72,19 @@ typedef struct {
     uint64_t Rsv2;
     volatile uint64_t CounterValue;
     uint64_t Rsv3;
-    HPET_Timer timer0;
-    HPET_Timer timer1;
-    HPET_Timer timer2;
+    HPET_Timer timers[0];
 } PACKED HPET_Main;
 
+PRIVATE int hpet_getcount() {
+    HPET_Main *base_addr = NULL;
+    intptr_t hpet_phys_base_addr = 0;
+    if(registry_readkey_uint("HW/HPET", "ADDRESS", (uint64_t*)&hpet_phys_base_addr) != registry_err_ok)
+        return -1;
+
+    base_addr = (HPET_Main*)vmem_phystovirt(hpet_phys_base_addr, sizeof(HPET_Main), vmem_flags_uncached | vmem_flags_kernel);
+
+    return base_addr->Capabilities.TimerCount;
+}
 
 PRIVATE int hpet_init(){
 
@@ -92,13 +100,18 @@ PRIVATE int hpet_init(){
     base_addr->CounterValue = 0;
 
     //Fill out the timer configuration
-    timer_features_t common_features = 0;
-
+    timer_features_t common_features = timer_features_persistent;
     if(base_addr->Capabilities.Is64Bit)
         common_features |= timer_features_64bit;
-
     //HPET supports MSI/FSB interrupts
     common_features |= timer_features_pcie_msg_intr;
+
+    //Enable MSI/FSB interrupt mode for timers, but keep interrupts disabled
+    for(int i = 0; i < base_addr->Capabilities.TimerCount; i++){
+        if(base_addr->timers[i].Configuration.FSBInterruptDelivery)
+            PANIC("HPET does not support MSI!\r\n");
+        base_addr->timers[i].Configuration.FSBInterruptEnable = 1;
+    }
 
     //Enable the counter
     base_addr->Configuration.GlobalEnable = 1;

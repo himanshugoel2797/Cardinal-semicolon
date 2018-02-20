@@ -19,7 +19,9 @@
 
 #define APIC_ID (0x20)
 #define APIC_TPR (0x80)
+#define APIC_PPR (0xA0)
 #define APIC_EOI (0xB0)
+#define APIC_LDR (0xD0)
 #define APIC_DFR (0xE0)
 #define APIC_SVR (0xF0)
 #define APIC_ISR (0x100)
@@ -35,15 +37,15 @@ typedef struct {
 
 static TLS tls_apic_t *apic = NULL;
 
-uint32_t apic_read(uint32_t off) {
+uint64_t apic_read(uint32_t off) {
     if(apic->x2apic_mode) {
         uint64_t val = rdmsr(0x800 + off);
-        return (uint32_t)val;
+        return val;
     }
     return apic->base_addr[off / sizeof(uint32_t)];
 }
 
-void apic_write(uint32_t off, uint32_t val) {
+void apic_write(uint32_t off, uint64_t val) {
     if(apic->x2apic_mode) {
 
         if(off == APIC_EOI) {
@@ -53,7 +55,7 @@ void apic_write(uint32_t off, uint32_t val) {
         uint64_t tmp_Val = rdmsr(0x800 + off);
         wrmsr(0x800 + off, (tmp_Val & ~0xffffffff) | val);
     }else
-        apic->base_addr[off / sizeof(uint32_t)] = val;
+        apic->base_addr[off / sizeof(uint32_t)] = (uint32_t)val;
 }
 
 int apic_init() {
@@ -90,19 +92,30 @@ int apic_init() {
 
         apic->x2apic_mode = x2apic_sup;
 
-        if(x2apic_sup)
+        if(x2apic_sup){
             apic_base_reg |= (1 << 10);   //Enable x2apic mode
+            
+        }else{
+            
+        }
     }
+    if(!apic->x2apic_mode) apic_write(APIC_DFR, 0xf0000000);    //Setup cluster destination mode
     wrmsr(IA32_APIC_BASE, apic_base_reg);
     
     //Read the id after enabling the apic so x2apic handling works correctly
     apic->id = apic_read(APIC_ID);
+    if(!apic->x2apic_mode)apic->id = apic->id >> 24;
 
-    if(!apic->x2apic_mode) apic_write(APIC_DFR, 0xf0000000);
     apic_write(APIC_TPR, 0);
     apic_write(APIC_SVR, (1 << 8) | 0xFF);
 
+    //TODO: Implement IPI function
+
     return 0;
+}
+
+int interrupt_get_cpuidx(void) {
+    return apic->id;
 }
 
 void interrupt_sendeoi(int irq) {

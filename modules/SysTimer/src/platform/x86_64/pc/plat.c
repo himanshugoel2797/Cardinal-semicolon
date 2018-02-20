@@ -8,7 +8,7 @@
 #include "priv_timers.h"
 
 int timer_platform_gettimercount(){
-    return 4;
+    return hpet_getcount() + 2;
 }
 
 int timer_platform_init(){

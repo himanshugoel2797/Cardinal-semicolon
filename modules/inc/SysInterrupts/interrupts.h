@@ -26,4 +26,10 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base);
 
 void interrupt_mapinterrupt(uint32_t line, int irq, bool active_low, bool level_trig);
 
+int interrupt_get_cpuidx(void);
+
+uint32_t msi_register_addr(int cpu_idx);
+
+uint64_t msi_register_data(int vec);
+
 #endif

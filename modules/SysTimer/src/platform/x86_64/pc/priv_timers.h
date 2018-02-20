@@ -3,6 +3,8 @@
 
 #include <types.h>
 
+PRIVATE int hpet_getcount();
+
 PRIVATE int hpet_init();
 PRIVATE int pit_init();
 PRIVATE int rtc_init();
