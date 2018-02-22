@@ -117,9 +117,9 @@ Load order:
     SysMemory               PLANNING/POSTPONED            
     SysInterrupts           MINIMUMFEATURECOMPLETE/NEEDREVIEW
     SysMP                   PLANNING
-    SysTimer                PLANNING
+    SysTimer                DEVELOPMENT
+    SysTaskMgr              PLANNING
     SysUser                 
-    SysTaskMgr              
     SysModMgr               
 
 Call order:
@@ -136,11 +136,11 @@ Call order:
     SysTimer                module_init     -configure local timers
     SysMP                   mp_init         -boot APs and setup TLS
     SysMemory               mem_init        -initialize slab allocator, kernel malloc
-    SysUser                 module_init     -setup syscall handling
     SysTaskMgr              module_init     -setup process management
     SysModMgr               module_init     -replace bootstrap kernel
     SysMP                   mp_waitready    -wait for APs to finish booting
     SysTaskMgr              task_enter      -enter scheduler
+    SysUser                 module_init     -setup syscall handling
 
 AP script:
     SysVirtualMemory        vmem_mp_init    -setup virtual memory for APs
@@ -154,8 +154,8 @@ Task load script:                           -determines which tasks to create to
     SysHw                   module_init     -handles standard busses
     SysStdInputDev          module_init     -manages standard input devices
     SysStdDisplay           module_init     -manages display devices/loads primary display driver
-    SysBtrfs                module_init     -handles btrfs implementation
     SysDisk                 module_init     -handles standard disk drivers
+    SysBtrfs                module_init     -handles btrfs implementation
     SysUsb                  module_init     -handles standard usb hubs
     SysUsb                  usb_load_init   -loads initial devices: keyboard
     SysReg                  reg_load        -loads registries from disk
