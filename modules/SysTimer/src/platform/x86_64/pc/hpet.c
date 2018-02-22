@@ -5,6 +5,10 @@
  * https://opensource.org/licenses/MIT
  */
 
+#include <stdlib.h>
+
+#include "SysInterrupts/interrupts.h"
+
 #include "priv_timers.h"
 #include "timer.h"
 
@@ -26,60 +30,54 @@ typedef struct {
     uint64_t FSBInterruptDelivery : 1;
     uint64_t Rsv2 : 16;
     uint64_t RoutingCapability : 32;
-} PACKED HPET_TimerConfigRegister;
+} HPET_TimerConfigRegister;
 
 typedef struct {
     uint32_t Value;
     uint32_t Address;
-} PACKED HPET_FSBRoute;
+} HPET_FSBRoute;
 
 typedef struct {
     HPET_TimerConfigRegister Configuration;
     uint64_t ComparatorValue;
     HPET_FSBRoute InterruptRoute;
     uint64_t Rsv0;
-} PACKED HPET_Timer;
+} HPET_Timer;
 
 typedef struct {
-    uint8_t RevID;
-    uint8_t TimerCount : 5;
-    uint8_t Is64Bit : 1;
-    uint8_t Rsv0 : 1;
-    uint8_t LegacyReplacementCapable : 1;
+    uint16_t RevID : 8;
+    uint16_t TimerCount : 5;
+    uint16_t Is64Bit : 1;
+    uint16_t Rsv0 : 1;
+    uint16_t LegacyReplacementCapable : 1;
     uint16_t VendorID;
     uint32_t ClockPeriod;
-} PACKED HPET_CapRegister;
+} HPET_CapRegister;
 
 typedef struct {
     uint64_t GlobalEnable : 1;
     uint64_t LegacyReplacementEnable : 1;
     uint64_t Rsv0 : 62;
-} PACKED HPET_ConfigRegister;
-
-typedef struct {
-    uint64_t T0_InterruptStatus : 1;
-    uint64_t T1_InterruptStatus : 1;
-    uint64_t T2_InterruptStatus : 1;
-    uint64_t Rsv0 : 61;
-} PACKED HPET_InterruptStatus;
+} HPET_ConfigRegister;
 
 typedef struct {
     HPET_CapRegister Capabilities;
     uint64_t Rsv0;
     HPET_ConfigRegister Configuration;
     uint64_t Rsv1;
-    HPET_InterruptStatus InterruptStatus;
-    uint64_t Rsv2;
+    uint64_t InterruptStatus;
+    uint64_t Rsv2[25];
     volatile uint64_t CounterValue;
     uint64_t Rsv3;
     HPET_Timer timers[0];
-} PACKED HPET_Main;
+} HPET_Main;
 
 typedef struct {
     HPET_Main *hpet;
-    int timer_num;
-    int intrpt_num;
+    void (*cur_handler)(int);
 } HPET_TimerState;
+
+static HPET_TimerState *timers;
 
 PRIVATE uint64_t hpet_main_read(timer_handlers_t *handler) {
     HPET_Main* hpet = (HPET_Main*)handler->state;
@@ -87,7 +85,7 @@ PRIVATE uint64_t hpet_main_read(timer_handlers_t *handler) {
     return hpet->CounterValue;
 }
 
-PRIVATE uint64_t hpet_main_write(timer_handlers_t *handler, uint64_t val) {
+PRIVATE void hpet_main_write(timer_handlers_t *handler, uint64_t val) {
     HPET_Main* hpet = (HPET_Main*)handler->state;
 
     hpet->CounterValue = val;
@@ -96,49 +94,54 @@ PRIVATE uint64_t hpet_main_write(timer_handlers_t *handler, uint64_t val) {
 
 
 PRIVATE uint64_t hpet_timer_read(timer_handlers_t *handler) {
-    HPET_Timer* timer = (HPET_Timer*)handler->state;
-    return timer->ComparatorValue;
+    HPET_TimerState timer = timers[handler->state];
+    return timer.hpet->timers[handler->state].ComparatorValue;
 }
 
-PRIVATE uint64_t hpet_timer_write(timer_handlers_t *handler, uint64_t val) {
-    HPET_Timer* timer = (HPET_Timer*)handler->state;
+PRIVATE void hpet_timer_write(timer_handlers_t *handler, uint64_t val) {
+    HPET_TimerState timer = timers[handler->state];
     
     //If periodic, set appropriate comparator value bit
-    if(timer->Configuration.TimerType)
-        timer->Configuration.ValueSet = 1;
-    timer->ComparatorValue = val;
-
-    return 0;
+    if(timer.hpet->timers[handler->state].Configuration.TimerType)
+        timer.hpet->timers[handler->state].Configuration.ValueSet = 1;
+    timer.hpet->timers[handler->state].ComparatorValue = val;
 }
 
 PRIVATE uint64_t hpet_timer_setmode(timer_handlers_t *handler, timer_features_t features) {
-    HPET_Timer* timer = (HPET_Timer*)handler->state;
+    HPET_TimerState timer = timers[handler->state];
     
     if(features & timer_features_oneshot) {
-        timer->Configuration.TimerType = 0;
+        timer.hpet->timers[handler->state].Configuration.TimerType = 0;
     }else if(features & timer_features_periodic) {
-        timer->Configuration.TimerType = 1;
+        timer.hpet->timers[handler->state].Configuration.TimerType = 1;
     }
 
     return 0;
 }
 
-PRIVATE uint64_t hpet_timer_setenable(timer_handlers_t *handler, bool enable) {
-    HPET_Timer* timer = (HPET_Timer*)handler->state;
-    timer->Configuration.InterruptEnable = enable;
-    return 0;
+PRIVATE void hpet_timer_setenable(timer_handlers_t *handler, bool enable) {
+    HPET_TimerState timer = timers[handler->state];
+    timer.hpet->timers[handler->state].Configuration.InterruptEnable = enable;
 }
 
-PRIVATE uint64_t hpet_timer_sethandler(timer_handlers_t *state, void (*handler)()) {
-    HPET_Timer* timer = (HPET_timer*)state->state;
-    //TODO
-    return 0;
+PRIVATE void hpet_timer_sethandler(timer_handlers_t *state, void (*handler)(int)) {
+    HPET_TimerState timer = timers[state->state];
+    timer.cur_handler = handler;
 }
 
-PRIVATE uint64_t hpet_timer_sendeoi(timer_handlers_t *handler) {
-    HPET_Timer* timer = (HPET_timer*)handler->state;
-    //TODO
-    return 0;
+PRIVATE void hpet_timer_sendeoi(timer_handlers_t *handler) {
+    HPET_TimerState timer = timers[handler->state];
+    timer.hpet->InterruptStatus = (1 << handler->state);
+}
+
+PRIVATE void hpet_timer_handler(int irq) {
+    HPET_Main *hpet = timers[0].hpet;
+    for(int i = 0; i < 32; i++) {
+        if(hpet->InterruptStatus & (1 << i)){
+            if(timers[i].cur_handler != NULL)
+                timers[i].cur_handler(irq);
+        }
+    }
 }
 
 PRIVATE int hpet_getcount() {
@@ -172,6 +175,7 @@ PRIVATE int hpet_init(){
 
     //Register main counter
     {
+
         timer_handlers_t main_counter;
         timer_features_t main_features = common_features;
 
@@ -189,24 +193,55 @@ PRIVATE int hpet_init(){
         timer_register(main_features, &main_counter);
     }
 
-    //Enable MSI/FSB interrupt mode for timers, but keep interrupts disabled
-    for(int i = 0; i < base_addr->Capabilities.TimerCount; i++){
-        if(base_addr->timers[i].Configuration.FSBInterruptDelivery)
-            PANIC("HPET does not support MSI!\r\n");
 
-        base_addr->timers[i].Configuration.FSBInterruptEnable = 1;
+    //Allocate interrupt handler
+    int intrpt_num = 0;
+    interrupt_allocate(1, interrupt_flags_none, &intrpt_num);
+    timers = (HPET_TimerState*)malloc(sizeof(HPET_TimerState) * base_addr->Capabilities.TimerCount + 1);
+    interrupt_registerhandler(intrpt_num, hpet_timer_handler);
+
+    //Enable MSI/FSB interrupt mode for timers, but keep interrupts disabled
+    for(int i = 0; i <= base_addr->Capabilities.TimerCount; i++){
 
         //Register remaining counters
         {
             timer_handlers_t sub_counter;
             timer_features_t sub_features = common_features;
+            sub_features |= timer_features_write | timer_features_oneshot;
 
-            sub_features |= timer_features_write | timer_features_oneshot | timer_features_pcie_msg_intr;
+            HPET_TimerState *tState = &timers[i];
+            tState->hpet = base_addr;
+
+            //Configure MSI information
+            if(base_addr->timers[i].Configuration.FSBInterruptDelivery){
+                sub_features |= timer_features_pcie_msg_intr;
+                
+                base_addr->timers[i].Configuration.FSBInterruptEnable = 1;
+                base_addr->timers[i].InterruptRoute.Address = msi_register_addr(interrupt_get_cpuidx());
+                base_addr->timers[i].InterruptRoute.Value = msi_register_data(intrpt_num);
+            }else{
+                sub_features |= timer_features_fixed_intr;
+
+                //All hpet timers use the same interrupt vector
+                //Try to configure all timers to use the same ioapic line
+                //If not possible, map the next available line to the same vector
+                int line = 0;
+                int sup_lines = base_addr->timers[i].Configuration.RoutingCapability;
+                while((sup_lines & 1) == 0) {
+                    sup_lines = sup_lines >> 1;
+                    line++;
+                }
+
+                base_addr->timers[i].Configuration.InterruptRoute = line;
+                interrupt_mapinterrupt(line, intrpt_num, false, false);
+            }
+
+
             if(base_addr->timers[i].Configuration.PeriodicCapable)
                 sub_features |= timer_features_periodic;
 
             sub_counter.rate = base_addr->Capabilities.ClockPeriod;
-            sub_counter.state = &base_addr->timers[i];
+            sub_counter.state = i;
             sub_counter.read = hpet_timer_read;
             sub_counter.write = hpet_timer_write;
             sub_counter.set_mode = hpet_timer_setmode;

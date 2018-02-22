@@ -43,7 +43,9 @@ static void ioapic_map(uint32_t idx, uint32_t irq_pin, uint32_t irq, bool active
 
     uint32_t high = ioapic_read(idx, high_index);
     high &= ~0xff000000;
-    high |= (0xff000000);
+    //high |= (0xff000000);
+    //bsp is the destination
+    high |= (interrupt_get_cpuidx() << 24);
     ioapic_write(idx, high_index, high);
 
     uint32_t low = ioapic_read(idx, low_index);
@@ -59,13 +61,14 @@ static void ioapic_map(uint32_t idx, uint32_t irq_pin, uint32_t irq, bool active
     low &= ~0xff;
     low |= irq & 0xff;
 
-    // set to logical delivery mode
+    // set to fixed destination mode
     low &= ~(1<<11);
-    low |= (1 << 11);
+    low |= (0 << 11);
 
-    // set to lowest priority delivery mode
+    // set to fixed delivery mode
     low &= ~0x700;
-    low |= 1 << 8;
+    low |= 0 << 8;
+
 
     // unmask the interrupt
     low &= ~(1<<16);

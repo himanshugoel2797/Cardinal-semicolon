@@ -118,16 +118,18 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
         return 0;
     }else{
         //if fixed allocation works, use it
-        int err = interrupt_allocate(cnt, flags | interrupt_flags_fixed, base);
-        if(err == 0)
-            return 0;
+        if(*base != 0) {
+            int err = interrupt_allocate(cnt, flags | interrupt_flags_fixed, base);
+            if(err == 0)
+                return 0;
+        }
 
         //find a block that does work
         local_spinlock_lock(&interrupt_alloc_lock);
 
-        int run_off = 0;
+        int run_off = 32;   //IRQs start at 32 for x86
         int run_len = 0;
-        for(int i = 0; i < IDT_ENTRY_COUNT; i++) {
+        for(int i = 32; i < IDT_ENTRY_COUNT; i++) {
             if(run_len >= cnt) {
                 if(flags & interrupt_flags_exclusive)
                     for(int c = 0; c < cnt; c++)
@@ -261,19 +263,25 @@ int idt_init() {
     idt_t *idt_lcl = idt->idt;
 
     int pushesToStack = 1;
-    for(int i = 0; i < IDT_ENTRY_COUNT; i++) {
-        //Setup interrupts
+    if(!int_arr_inited){
 
-        if(!int_arr_inited){
+        for(int i = 0; i < IDT_ENTRY_COUNT; i++){
             if(i == 8 || (i >= 10 && i <= 14)) pushesToStack = 0;
             idt_fillswinterrupthandler(idt_handlers[i], i, pushesToStack);  //If pushesToStack is non-zero, the value will be pushed to stack
+            
             interrupt_blocked[i] = false;
             for(int j = 0; j < IDT_HANDLER_CNT; j++)
                 interrupt_funcs[i][j] = NULL;
 
-            int_arr_inited = true;
-        }
+            pushesToStack = 1;
+        }    
+            
 
+        int_arr_inited = true;
+    }
+
+    for(int i = 0; i < IDT_ENTRY_COUNT; i++) {
+        //Setup interrupts
         idt_lcl[i].offset0 = (uint64_t)idt_handlers[i] & 0xFFFF;
         idt_lcl[i].offset1 = ((uint64_t)idt_handlers[i] >> 16) & 0xFFFF;
         idt_lcl[i].offset2 = ((uint64_t)idt_handlers[i] >> 32) & 0xFFFFFFFF;
@@ -285,8 +293,6 @@ int idt_init() {
         idt_lcl[i].zr0 = 0;
         idt_lcl[i].zr1 = 0;
         idt_lcl[i].zr2 = 0;
-
-        pushesToStack = 1;
     }
 
     idtr_t idtr;

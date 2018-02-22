@@ -34,25 +34,20 @@ static bool ACPITables_ValidateChecksum(ACPISDTHeader *header) {
     return sum == 0;
 }
 
-static void* ACPITables_FindTable(const char *table_name, int index) {
+static void* ACPITables_FindTable(const char *table_name) {
     if (rsdp == NULL) return NULL;
-
 
     if(rsdp->firstPart.Revision != ACPI_VERSION_1 && rsdp->XsdtAddress) {
         XSDT *xsdt = (XSDT*)vmem_phystovirt_ptr((intptr_t)rsdp->XsdtAddress, MiB(2), vmem_flags_cachewriteback);
         if (!ACPITables_ValidateChecksum((ACPISDTHeader*)xsdt)) return (void*)-1;
 
         int entries = XSDT_GET_POINTER_COUNT((xsdt->h));
-        int cur_index = 0;
 
         for (int i = 0; i < entries; i++) {
             if(xsdt->PointerToOtherSDT[i] == 0)continue;
             ACPISDTHeader *h = (ACPISDTHeader *)vmem_phystovirt_ptr((intptr_t)xsdt->PointerToOtherSDT[i], MiB(2), vmem_flags_cachewriteback);
-            if (!strncmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h)) {
-                if (cur_index == index)
-                    return (void *) h;
-
-                cur_index++;
+            if (!memcmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h)){
+                return (void *) h;
             }
         }
     } else if ((rsdp->firstPart.Revision == ACPI_VERSION_1) | (!rsdp->XsdtAddress)) {
@@ -60,15 +55,11 @@ static void* ACPITables_FindTable(const char *table_name, int index) {
         if (!ACPITables_ValidateChecksum((ACPISDTHeader*)rsdt)) return NULL;
 
         int entries = RSDT_GET_POINTER_COUNT((rsdt->h));
-        int cur_index = 0;
-
+        
         for (int i = 0; i < entries; i++) {
             ACPISDTHeader *h = (ACPISDTHeader*)vmem_phystovirt_ptr((intptr_t)rsdt->PointerToOtherSDT[i], MiB(2), vmem_flags_cachewriteback);
-            if (!strncmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h)) {
-                if (cur_index == index)
-                    return (void *) h;
-
-                cur_index++;
+            if (!memcmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h)){
+                return (void *) h;
             }
         }
     }
@@ -189,7 +180,7 @@ int acpi_init() {
         if(registry_createdirectory("HW", "IOAPIC") != registry_err_ok)
             return -3;
 
-        MADT* madt = ACPITables_FindTable(MADT_SIG, 0);
+        MADT* madt = ACPITables_FindTable(MADT_SIG);
         if(madt == NULL)
             return -4;
 
@@ -243,12 +234,12 @@ int acpi_init() {
     }
 
     {
-        FADT* fadt = ACPITables_FindTable(FADT_SIG, 0);
+        FADT* fadt = ACPITables_FindTable(FADT_SIG);
 
     }
 
     {
-        HPET* hpet = ACPITables_FindTable(HPET_SIG, 0);
+        HPET* hpet = ACPITables_FindTable(HPET_SIG);
 
         if(hpet != NULL){
             if(registry_createdirectory("HW", "HPET") != registry_err_ok)
@@ -279,7 +270,7 @@ int acpi_init() {
 
     {
         //TODO: This info goes into the PCI table
-        MCFG* mcfg = ACPITables_FindTable(MCFG_SIG, 0);
+        MCFG* mcfg = ACPITables_FindTable(MCFG_SIG);
     }
 
     return 0;
