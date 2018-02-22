@@ -95,6 +95,10 @@ static void CPUID_RequestInfo(uint32_t page, uint32_t idx, uint32_t *eax,
 int add_cpuid() {
     uint32_t eax, ebx, ecx, edx;
 
+    #define MANUFACT_AMD 1
+    #define MANUFACT_INTEL 2
+    int cpu_manufacturer = 0;
+
     // Processor manufacturer identification string
     {
         CPUID_RequestInfo(0, 0, &eax, &ebx, &ecx, &edx);
@@ -104,6 +108,11 @@ int add_cpuid() {
         memcpy(proc_str, &ebx, sizeof(ebx));
         memcpy(proc_str + 4, &edx, sizeof(edx));
         memcpy(proc_str + 8, &ecx, sizeof(ecx));
+
+        if(strcmp(proc_str, "GenuineIntel") == 0)
+            cpu_manufacturer = MANUFACT_INTEL;
+        else if(strcmp(proc_str, "AuthenticAMD") == 0)
+            cpu_manufacturer = MANUFACT_AMD;
 
         if (registry_addkey_str("HW/PROC", "IDENT_STR", proc_str) !=
                 registry_err_ok)
@@ -136,6 +145,102 @@ int add_cpuid() {
         if (registry_addkey_uint("HW/PROC", "TYPE", processor_type) !=
                 registry_err_ok)
             return -1;
+
+        bool tsc_avail = (edx & (1 << 4));
+        bool tsc_deadline = (ecx & (1 << 24));
+
+        if(registry_addkey_bool("HW/PROC", "TSC_AVAIL", tsc_avail) != registry_err_ok)
+            return -1;
+
+        if(registry_addkey_bool("HW/PROC", "TSC_DEADLINE", tsc_deadline) != registry_err_ok)
+            return -1;
+
+        {
+
+            //APIC frequency is the Bus frequency by default
+            CPUID_RequestInfo(0x16, 0, &eax, &ebx, &ecx, &edx);
+            uint32_t apic_rate = ecx & 0xFFFF;
+
+            //Use the processor identification to configure special information, like APIC clock rates
+            switch(cpu_manufacturer) {
+                case MANUFACT_AMD:
+                {
+                    //This method works for Zen only
+                    uint32_t tsc_freq = (rdmsr(0xc0010064) & 0xff) * 25 * (1000 * 1000);
+
+                    if(registry_addkey_uint("HW/PROC", "TSC_FREQ", 100 * 1000 * 1000) != registry_err_ok)
+                        return -1;
+
+                    //Default to 100MHz
+                    if(apic_rate == 0)
+                        apic_rate = 100;
+
+                    if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
+                        return -1;
+                }
+                break;
+                case MANUFACT_INTEL:
+                    {
+                        CPUID_RequestInfo(0x15, 0, &eax, &ebx, &ecx, &edx);
+
+                        uint32_t ratio_denom = eax;
+                        uint32_t ratio_numer = ebx;
+                        uint32_t clock_freq = ecx;
+
+                        if(ratio_denom != 0) {
+                            if(registry_addkey_uint("HW/PROC", "TSC_FREQ", clock_freq * ratio_numer / ratio_denom) != registry_err_ok)
+                                return -1;
+                        }else{
+                            if(registry_addkey_uint("HW/PROC", "TSC_FREQ", 0) != registry_err_ok)
+                                return -1;
+                        }
+
+                        if(apic_rate == 0)
+                        switch(model){
+                            //Nehalem
+                            case 0x1a:
+                            case 0x1e:
+                            case 0x1f:
+                            case 0x2e:
+
+                            //Westmere
+                            case 0x25:
+                            case 0x2c:
+                            case 0x2f:  //CPUID holds, else must callibrate
+                            break;
+
+                            case 0x2a: //Sandy Bridge
+                            case 0x2d: //Sandy Bridge EP
+                            case 0x3a: //Ivy Bridge
+                            case 0x3e: //Ivy Bridge EP
+                            case 0x3c: //Haswell DT
+                            case 0x3f: //Haswell MB
+                            case 0x45: //Haswell ULT
+                            case 0x46: //Haswell ULX
+                            case 0x3d: //Broadwell
+                            case 0x47: //Broadwell H
+                            case 0x56: //Broadwell EP
+                            case 0x4f: //Broadwell EX
+                            //MSR_PLATFORM_INFO gives the apic rate
+                            apic_rate = ((rdmsr(0xce) >> 8) & 0xFF) * 100;
+                            break;
+                            
+                            case 0x4e: //Skylake Y/U
+                            case 0x5e: //Skylake H/S
+                            case 0x55: //Skylake E
+
+                            case 0x8e: //Kabylake Y/U
+                            case 0x9e: //Kabylake H/S
+                                apic_rate = 24;
+                            break;
+                        }
+                        if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
+                            return -1;
+                    }
+                break;
+            }
+        }
+
     }
 
     // Memory information
@@ -231,6 +336,14 @@ int add_cpuid() {
         bool gibibyte_pages = (edx >> 26) & 1;
         if (registry_addkey_bool("HW/PROC", "HUGEPAGE", gibibyte_pages) !=
                 registry_err_ok)
+            return -1;
+    }
+
+    {
+        CPUID_RequestInfo(0x80000007, 0, &eax, &ebx, &ecx, &edx);
+
+        bool tsc_invar = (edx & (1 << 8));
+        if (registry_addkey_bool("HW/PROC", "TSC_INVARIANT", tsc_invar) != registry_err_ok)
             return -1;
     }
 
