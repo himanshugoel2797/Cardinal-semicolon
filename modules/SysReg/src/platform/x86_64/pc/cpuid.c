@@ -161,14 +161,22 @@ int add_cpuid() {
             CPUID_RequestInfo(0x16, 0, &eax, &ebx, &ecx, &edx);
             uint32_t apic_rate = ecx & 0xFFFF;
 
+            CPUID_RequestInfo(0x15, 0, &eax, &ebx, &ecx, &edx);
+            uint32_t ratio_denom = eax;
+            uint32_t ratio_numer = ebx;
+            uint32_t clock_freq = ecx;
+            uint32_t tsc_rate = 0;
+            if(ratio_denom != 0) tsc_rate = (clock_freq * ratio_numer) / ratio_denom;
+
             //Use the processor identification to configure special information, like APIC clock rates
             switch(cpu_manufacturer) {
                 case MANUFACT_AMD:
                 {
                     //This method works for Zen only
-                    uint32_t tsc_freq = (rdmsr(0xc0010064) & 0xff) * 25 * (1000 * 1000);
+                    if(tsc_rate == 0)
+                        tsc_rate = (rdmsr(0xc0010064) & 0xff) * 25 * (1000 * 1000);
 
-                    if(registry_addkey_uint("HW/PROC", "TSC_FREQ", 100 * 1000 * 1000) != registry_err_ok)
+                    if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
                         return -1;
 
                     //Default to 100MHz
@@ -181,20 +189,9 @@ int add_cpuid() {
                 break;
                 case MANUFACT_INTEL:
                     {
-                        CPUID_RequestInfo(0x15, 0, &eax, &ebx, &ecx, &edx);
-
-                        uint32_t ratio_denom = eax;
-                        uint32_t ratio_numer = ebx;
-                        uint32_t clock_freq = ecx;
-
-                        if(ratio_denom != 0) {
-                            if(registry_addkey_uint("HW/PROC", "TSC_FREQ", clock_freq * ratio_numer / ratio_denom) != registry_err_ok)
-                                return -1;
-                        }else{
-                            if(registry_addkey_uint("HW/PROC", "TSC_FREQ", 0) != registry_err_ok)
-                                return -1;
-                        }
-
+                        if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+                            return -1;
+                        
                         if(apic_rate == 0)
                         switch(model){
                             //Nehalem
@@ -237,6 +234,12 @@ int add_cpuid() {
                         if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
                             return -1;
                     }
+                break;
+                default:
+                    if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+                        return -1;
+                    if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate) != registry_err_ok)
+                        return -1;
                 break;
             }
         }

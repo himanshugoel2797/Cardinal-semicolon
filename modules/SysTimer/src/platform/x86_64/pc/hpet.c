@@ -137,11 +137,12 @@ PRIVATE void hpet_timer_sendeoi(timer_handlers_t *handler) {
 PRIVATE void hpet_timer_handler(int irq) {
     HPET_Main *hpet = timers[0].hpet;
     for(int i = 0; i < 32; i++) {
-        if(hpet->InterruptStatus & (1 << i)){
+        if(hpet->InterruptStatus & (1u << i)){
             if(timers[i].cur_handler != NULL)
                 timers[i].cur_handler(irq);
         }
     }
+    interrupt_sendeoi(irq);
 }
 
 PRIVATE int hpet_getcount() {
@@ -175,11 +176,10 @@ PRIVATE int hpet_init(){
 
     //Register main counter
     {
-
         timer_handlers_t main_counter;
         timer_features_t main_features = common_features;
 
-        main_features |= timer_features_counter | timer_features_write | timer_features_read;
+        main_features |= timer_features_counter | timer_features_write;
 
         main_counter.rate = base_addr->Capabilities.ClockPeriod;
         main_counter.state = (uint64_t)base_addr;

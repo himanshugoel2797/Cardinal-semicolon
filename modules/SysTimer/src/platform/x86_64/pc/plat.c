@@ -8,24 +8,26 @@
 #include "priv_timers.h"
 
 int timer_platform_gettimercount(){
-    return hpet_getcount() + 2;
+    return hpet_getcount() + (use_tsc() ? 2 : 0) + 2;
 }
 
 int timer_platform_init(){
 
-    //If TSC timer is constant rate + consistent, just use APIC timer in TSC mode
-
+    //If TSC timer is constant rate + consistent and the rate is known, just use APIC timer in TSC mode
+    if(use_tsc()) {
+        tsc_init();
+    }else{
         //Initialize HPET timer - use as reference
         if(hpet_init() != 0){
             //Initialize PIT timer - use as reference if HPET is not available
             pit_init();
         }
-        //Initialize APIC timer - callibrated relative to reference clock
+        //Initialize APIC timer as a periodic timer
         apic_timer_init();
+    }
 
     //Initialize RTC timer - absolute timer/clock
     rtc_init();
-
 
     return 0;
 }

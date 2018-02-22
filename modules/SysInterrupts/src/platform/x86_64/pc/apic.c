@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <types.h>
 
+#include "SysInterrupts/interrupts.h"
 #include "SysVirtualMemory/vmem.h"
 #include "SysReg/registry.h"
 
@@ -25,6 +26,11 @@
 #define APIC_DFR (0xE0)
 #define APIC_SVR (0xF0)
 #define APIC_ISR (0x100)
+
+#define APIC_TIMER (0x320)
+#define APIC_ICR (0x380)
+#define APIC_CCR (0x390)
+#define APIC_DCR (0x3E0)
 
 #define MSI_ADDR (0xFEEFF00C)
 #define MSI_VEC (lvl, active_low, vector) (((lvl & 1) << 15) | ((~active_low & 1) << 14) | 0x100 /*lowest priority*/ | (vector & 0xff))
@@ -119,7 +125,7 @@ int interrupt_get_cpuidx(void) {
 }
 
 void interrupt_sendeoi(int irq) {
-    int byte_off = irq / 32;
+    int byte_off = (irq / 32) * 16;
     int bit_off = irq % 32;
 
     if(apic_read(APIC_ISR + byte_off) & (1 << bit_off)){
@@ -127,6 +133,35 @@ void interrupt_sendeoi(int irq) {
     }
 }
 
-//configure timer
+//configure timer for tsc deadline
+int local_apic_timer_init(bool tsc_mode, void (*handler)(int)){
+    int intrpt_num = 0;
+    interrupt_allocate(1, interrupt_flags_none, &intrpt_num);
+    interrupt_registerhandler(intrpt_num, handler);
+
+    uint64_t v = apic_read(APIC_TIMER);
+    v = v & ~0x007100ff;
+    v |= (intrpt_num & 0xff);
+
+    if(tsc_mode){
+        v |= (2 << 17); //Set TSC-Deadline mode
+    }
+    else{
+        v |= (1 << 17); //Set Periodic mode
+
+        uint64_t apic_freq = 0;
+        if(registry_readkey_uint("HW/PROC", "APIC_FREQ", &apic_freq) != registry_err_ok)
+            return -1;
+
+        //tick every 0.5ms
+        apic_write(APIC_ICR, apic_freq / 2000);
+    }
+
+    apic_write(APIC_TIMER, v);
+    return intrpt_num;
+}
+
+
+
 //task switches don't require callibration
 //sleep operations do require callibration - given frequency timers
