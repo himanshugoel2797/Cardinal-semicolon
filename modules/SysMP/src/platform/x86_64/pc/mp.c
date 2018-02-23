@@ -56,6 +56,20 @@ int mp_init() {
         }
     }
 
+    while(true)
+    ;
+    return 0;
+}
+
+static _Atomic int coreCount = 1;
+
+int mp_signalready() {
+
+    coreCount++;
+
+    while(true)
+    ;
+
     return 0;
 }
 

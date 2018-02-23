@@ -67,3 +67,14 @@ PRIVATE int tsc_init() {
     //Initialize the apic timer
     return apic_timer_init();   //TODO: May want to use the TSC deadline mode
 }
+
+PRIVATE int tsc_mp_init() {
+    //Setup the tsc
+    uint64_t cr4 = 0;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4) :: );
+    cr4 |= (1 << 2);
+    __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
+
+    //Initialize the apic timer
+    return apic_timer_init();   //TODO: May want to use the TSC deadline mode    
+}

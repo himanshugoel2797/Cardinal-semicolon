@@ -131,8 +131,7 @@ Call order:
     SysVirtualMemory        vmem_init
     SysReg                  pci_reg_init    -Enumerate and store PCI devices
     SysReg                  acpi_init       -parse and store acpi tables
-    SysInterrupts           intr_init       -initialize IDT/APIC/IOAPIC
-    SysInterrupts           gdt_init        -initialize GDT
+    SysInterrupts           intr_init       -initialize GDT/IDT/APIC/IOAPIC
     SysTimer                module_init     -configure local timers
     SysMP                   mp_init         -boot APs and setup TLS
     SysMemory               mem_init        -initialize slab allocator, kernel malloc
@@ -143,11 +142,11 @@ Call order:
     SysUser                 module_init     -setup syscall handling
 
 AP script:
+    SysMP                   mp_tls_setup    -allocate TLS for the AP
     SysVirtualMemory        vmem_mp_init    -setup virtual memory for APs
-    SysInterrupts           intr_mp_init    -setup interrupt system for APs
-    SysInterrupts           gdt_mp_init     -setup gdt system for APs
-    SysMemory               mem_mp_init     -setup memory for APs
+    SysInterrupts           intr_mp_init    -setup GDT/IDT/APIC for APs
     SysTimer                timer_mp_init   -setup timers for APs
+    SysMemory               mem_mp_init     -setup memory for APs
     SysMP                   mp_signalready  -pause APs for further setup
     SysTaskMgr              task_enter      -enter scheduler
 

@@ -68,10 +68,6 @@ PRIVATE int apic_timer_init(){
     
     if(apic_state == NULL) {
         apic_state = (TLS tls_apic_timer_state_t*)mp_tls_get(mp_tls_alloc(sizeof(tls_apic_timer_state_t)));
-        apic_state->tsc_mode = false;
-        apic_state->enabled = false;
-        apic_state->oneshot = false;
-        apic_state->handler = NULL;
 
         {
             timer_handlers_t main_counter;
@@ -87,6 +83,11 @@ PRIVATE int apic_timer_init(){
             timer_register(main_features, &main_counter);
         }
     }
+
+    apic_state->tsc_mode = false;
+    apic_state->enabled = false;
+    apic_state->oneshot = false;
+    apic_state->handler = NULL;
     
     apic_init_done = true;
     return 0;

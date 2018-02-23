@@ -8,3 +8,11 @@
 int module_init() {
     return 0;
 }
+
+int mem_init() {
+    return 0;
+}
+
+int mem_mp_init() {
+    return 0;
+}

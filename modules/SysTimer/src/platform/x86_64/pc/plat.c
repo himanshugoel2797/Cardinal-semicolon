@@ -36,3 +36,13 @@ int timer_platform_init(){
 
     return 0;
 }
+
+int timer_mp_init(){
+    if(use_tsc()) {
+        tsc_mp_init();
+    } else{
+        apic_timer_init();
+    }
+
+    return 0;
+}

@@ -19,5 +19,6 @@ PRIVATE int apic_timer_tsc_init();
 
 PRIVATE bool use_tsc();
 PRIVATE int tsc_init();
+PRIVATE int tsc_mp_init();
 
 #endif
