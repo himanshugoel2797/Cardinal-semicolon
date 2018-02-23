@@ -72,6 +72,9 @@ void timer_wait(uint64_t ns) {
     //Halt the cpu
     while(timer_wait_pending)
         __asm__("hlt");
+
+    timer_wait_d = NULL;
+    t->in_use = false;
 }
 
 static int timer_init(){

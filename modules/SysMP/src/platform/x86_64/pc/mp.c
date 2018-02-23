@@ -22,6 +22,8 @@
 static int mp_loc = 0;
 static _Atomic volatile int pos = 0;
 static TLS uint64_t* g_tls;
+static _Atomic int coreCount = 1;
+static volatile int core_ready = 0;
 
 void alloc_ap_stack(void);
 
@@ -46,6 +48,8 @@ int mp_init() {
 
         if((int)apic_id != interrupt_get_cpuidx()){
             
+            core_ready = 0;
+
             alloc_ap_stack();
             interrupt_sendipi(apic_id, 0x0, ipi_delivery_mode_init);
 
@@ -53,6 +57,8 @@ int mp_init() {
             timer_wait(10 * 1000 * 1000);
 
             interrupt_sendipi(apic_id, 0x0f, ipi_delivery_mode_startup);
+
+            while(!core_ready);
         }
     }
 
@@ -61,11 +67,11 @@ int mp_init() {
     return 0;
 }
 
-static _Atomic int coreCount = 1;
 
 int mp_signalready() {
 
     coreCount++;
+    core_ready = 1;
 
     while(true)
     ;
