@@ -60,11 +60,10 @@ PRIVATE int tsc_init() {
         main_counter.set_mode = NULL;
         main_counter.set_enable = NULL;
         main_counter.set_handler = NULL;
-        main_counter.send_eoi = NULL;
 
         timer_register(main_features, &main_counter);
     }
 
-    //Initialize the apic timer for tsc
-    return apic_timer_tsc_init();
+    //Initialize the apic timer
+    return apic_timer_init();   //TODO: May want to use the TSC deadline mode
 }

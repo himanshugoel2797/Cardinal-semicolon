@@ -74,6 +74,7 @@ typedef struct {
 
 typedef struct {
     HPET_Main *hpet;
+    bool enabled;
     void (*cur_handler)(int);
 } HPET_TimerState;
 
@@ -94,55 +95,60 @@ PRIVATE void hpet_main_write(timer_handlers_t *handler, uint64_t val) {
 
 
 PRIVATE uint64_t hpet_timer_read(timer_handlers_t *handler) {
-    HPET_TimerState timer = timers[handler->state];
-    return timer.hpet->timers[handler->state].ComparatorValue;
+    HPET_TimerState *timer = &timers[handler->state];
+    return timer->hpet->timers[handler->state].ComparatorValue;
 }
 
 PRIVATE void hpet_timer_write(timer_handlers_t *handler, uint64_t val) {
-    HPET_TimerState timer = timers[handler->state];
+    HPET_TimerState *timer = &timers[handler->state];
     
     //If periodic, set appropriate comparator value bit
-    if(timer.hpet->timers[handler->state].Configuration.TimerType)
-        timer.hpet->timers[handler->state].Configuration.ValueSet = 1;
-    timer.hpet->timers[handler->state].ComparatorValue = val;
+    if(timer->hpet->timers[handler->state].Configuration.TimerType)
+        timer->hpet->timers[handler->state].Configuration.ValueSet = 1;
+    
+    timer->hpet->timers[handler->state].ComparatorValue = timer->hpet->CounterValue + val;
+
+    if(timer->hpet->timers[handler->state].Configuration.TimerType)
+        timer->hpet->timers[handler->state].ComparatorValue = val;
 }
 
 PRIVATE uint64_t hpet_timer_setmode(timer_handlers_t *handler, timer_features_t features) {
-    HPET_TimerState timer = timers[handler->state];
+    HPET_TimerState *timer = &timers[handler->state];
     
     if(features & timer_features_oneshot) {
-        timer.hpet->timers[handler->state].Configuration.TimerType = 0;
+        timer->hpet->timers[handler->state].Configuration.TimerType = 0;
     }else if(features & timer_features_periodic) {
-        timer.hpet->timers[handler->state].Configuration.TimerType = 1;
+        timer->hpet->timers[handler->state].Configuration.TimerType = 1;
     }
 
     return 0;
 }
 
 PRIVATE void hpet_timer_setenable(timer_handlers_t *handler, bool enable) {
-    HPET_TimerState timer = timers[handler->state];
-    timer.hpet->timers[handler->state].Configuration.InterruptEnable = enable;
+    HPET_TimerState *timer = &timers[handler->state];
+    timer->enabled = enable;
+    timer->hpet->timers[handler->state].Configuration.InterruptEnable = enable;
 }
 
 PRIVATE void hpet_timer_sethandler(timer_handlers_t *state, void (*handler)(int)) {
-    HPET_TimerState timer = timers[state->state];
-    timer.cur_handler = handler;
+    HPET_TimerState *timer = &timers[state->state];
+    timer->cur_handler = handler;
 }
 
 PRIVATE void hpet_timer_sendeoi(timer_handlers_t *handler) {
-    HPET_TimerState timer = timers[handler->state];
-    timer.hpet->InterruptStatus = (1 << handler->state);
+    HPET_TimerState *timer = &timers[handler->state];
+    timer->hpet->InterruptStatus = (1 << handler->state);
 }
 
 PRIVATE void hpet_timer_handler(int irq) {
     HPET_Main *hpet = timers[0].hpet;
-    for(int i = 0; i < 32; i++) {
-        if(hpet->InterruptStatus & (1u << i)){
+    for(int i = 0; i <= hpet->Capabilities.TimerCount; i++) {
+        if(timers[i].enabled){
             if(timers[i].cur_handler != NULL)
                 timers[i].cur_handler(irq);
+            hpet->InterruptStatus = (1u << i);
         }
     }
-    interrupt_sendeoi(irq);
 }
 
 PRIVATE int hpet_getcount() {
@@ -188,11 +194,9 @@ PRIVATE int hpet_init(){
         main_counter.set_mode = NULL;
         main_counter.set_enable = NULL;
         main_counter.set_handler = NULL;
-        main_counter.send_eoi = NULL;
 
         timer_register(main_features, &main_counter);
     }
-
 
     //Allocate interrupt handler
     int intrpt_num = 0;
@@ -233,7 +237,9 @@ PRIVATE int hpet_init(){
                 }
 
                 base_addr->timers[i].Configuration.InterruptRoute = line;
+
                 interrupt_mapinterrupt(line, intrpt_num, false, false);
+                interrupt_setmask(line, false);
             }
 
 
@@ -247,9 +253,11 @@ PRIVATE int hpet_init(){
             sub_counter.set_mode = hpet_timer_setmode;
             sub_counter.set_enable = hpet_timer_setenable;
             sub_counter.set_handler = hpet_timer_sethandler;
-            sub_counter.send_eoi = hpet_timer_sendeoi;
 
             timer_register(sub_features, &sub_counter);
+
+            //Ensure that all timers are disabled
+            hpet_timer_setenable(&sub_counter, false);
         }
     }
 

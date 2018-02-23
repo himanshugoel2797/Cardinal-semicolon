@@ -32,7 +32,7 @@ int intr_init() {
         return err;
 
     //__asm__("hlt");
-    //__asm__("sti");
+    __asm__("sti");
 
     return 0;
 }

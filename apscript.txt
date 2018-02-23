@@ -1,0 +1,7 @@
+CALL:vmem_mp_init
+CALL:intr_mp_init
+CALL:gdt_mp_init
+CALL:mem_mp_init
+CALL:timer_mp_init
+CALL:mp_signalready
+CALL:task_enter

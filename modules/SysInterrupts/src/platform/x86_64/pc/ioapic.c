@@ -76,6 +76,20 @@ static void ioapic_map(uint32_t idx, uint32_t irq_pin, uint32_t irq, bool active
     ioapic_write(idx, low_index, low);
 }
 
+static void ioapic_setmask(uint32_t idx, uint32_t irq_pin, bool mask) {
+    //configure this override
+    const uint32_t low_index = 0x10 + irq_pin*2;
+    uint32_t low = ioapic_read(idx, low_index);
+
+    // unmask the interrupt
+    low &= ~(1<<16);
+    if(mask)
+        low |= (1 << 16);
+
+    ioapic_write(idx, low_index, low);
+}
+
+
 void interrupt_mapinterrupt(uint32_t line, int irq, bool active_low, bool level_trig) {
     int ioapic_idx = 0;
     uint32_t ioapic_close_intr_base = 0;
@@ -87,6 +101,19 @@ void interrupt_mapinterrupt(uint32_t line, int irq, bool active_low, bool level_
         }
 
     ioapic_map(ioapic_idx, line, irq, active_low, level_trig);
+}
+
+void interrupt_setmask(uint32_t line, bool mask) {
+    int ioapic_idx = 0;
+    uint32_t ioapic_close_intr_base = 0;
+
+    for(int i = 0; i < ioapic_cnt; i++)
+        if(ioapics[i].global_intr_base < line && ioapics[i].global_intr_base > ioapic_close_intr_base){
+            ioapic_close_intr_base = ioapics[i].global_intr_base;
+            ioapic_idx = i;
+        }
+
+    ioapic_setmask(ioapic_idx, line, mask);
 }
 
 int ioapic_init() {
@@ -140,6 +167,7 @@ int ioapic_init() {
             if(err == registry_err_dne) {
                 //Configure this entry as normal
                 ioapic_map(i, j, j + intr_base + 0x20, false, false);
+                ioapic_setmask(i, j, true);
                 continue;
             }
 
@@ -150,7 +178,18 @@ int ioapic_init() {
             registry_readkey_bool(key2_idx, "ACTIVE_LOW", &active_low);
             registry_readkey_bool(key2_idx, "LEVEL_TRIGGER", &level_trigger);
 
+            char int_buf[10];
+            DEBUG_PRINT(itoa(irq, int_buf, 10));
+            DEBUG_PRINT(":");
+            DEBUG_PRINT(itoa(j + intr_base, int_buf, 10));
+            if(active_low)
+                DEBUG_PRINT(":active_low");
+            if(level_trigger)
+                DEBUG_PRINT(":level_trigger");
+            DEBUG_PRINT("\r\n");
+
             ioapic_map(i, j, irq + 0x20, active_low, level_trigger);
+            ioapic_setmask(i, j, true);
 
             int irq_num = irq + 0x20;
             //if(interrupt_allocate(1, interrupt_flags_exclusive | interrupt_flags_fixed, &irq_num) != 0)

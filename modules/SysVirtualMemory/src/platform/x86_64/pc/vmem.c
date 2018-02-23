@@ -138,6 +138,59 @@ int vmem_init() {
     return 0;
 }
 
+int vmem_mp_init() {
+    TLS void* (*mp_tls_get)(int) = (TLS void* (*)(int))elf_resolvefunction("mp_tls_get");
+    int (*mp_tls_alloc)(int) = (int (*)(int))elf_resolvefunction("mp_tls_alloc");
+
+
+    //Enable No Execute bit
+    wrmsr(EFER_MSR, rdmsr(EFER_MSR) | (1 << 11));
+
+
+    //Detect and enable SMEP/SMAP
+    bool smep = false;
+    registry_readkey_bool("HW/PROC", "SMEP", &smep);
+    bool smap = false;
+    registry_readkey_bool("HW/PROC", "SMAP", &smap);
+
+    uint64_t cr4 = 0;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4) :: );
+    if(smep) cr4 |= (1 << 20);
+    if(smap) cr4 |= (1 << 21);
+    __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
+
+    //Detect and enable 1GiB page support
+    bool hugepage = false;
+    registry_readkey_bool("HW/PROC", "HUGEPAGE", &hugepage);
+    if(hugepage) largepage_avail[1] = true;
+
+    //Setup PAT
+    uint64_t pat = 0;
+    pat |= 0x6;                   //PAT0 WB
+    pat |= ((uint64_t)0x4) << 8;  //PAT1 WT
+    pat |= ((uint64_t)0x0) << 16; //PAT2 UC
+    pat |= ((uint64_t)0x1) << 24;  //PAT3 WC
+    wrmsr(PAT_MSR, pat);
+
+
+    uintptr_t ktable_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
+    uint64_t *ktable = (uint64_t*)vmem_phystovirt(ktable_phys, KiB(4), vmem_flags_cachewriteback);
+    memset(ktable, 0, KiB(4));
+
+    if(lcl == NULL)
+        lcl = (TLS struct lcl_data*)mp_tls_get(mp_tls_alloc(sizeof(struct lcl_data)));
+    lcl->ktable = ktable_phys;
+    lcl->cur_vmem = NULL;
+
+    local_spinlock_lock(&kmem.lock);
+    memcpy(ktable + 256, kmem.ptable, sizeof(uint64_t) * 256);
+    local_spinlock_unlock(&kmem.lock);
+
+    __asm__ volatile("mov %0, %%cr3" :: "r"(ktable_phys) :);
+    
+    return 0;
+}
+
 static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, int flags, int lv) {
     uint64_t mask = masks[lv];
     uint64_t shamt = shamts[lv];

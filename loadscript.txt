@@ -13,4 +13,5 @@ CALL:acpi_init
 CALL:intr_init
 LOAD:./SysUser.celf
 LOAD:./SysTimer.celf
+CALL:mp_init
 LOAD:./SysTaskMgr.celf

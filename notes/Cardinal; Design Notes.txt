@@ -144,6 +144,8 @@ Call order:
 
 AP script:
     SysVirtualMemory        vmem_mp_init    -setup virtual memory for APs
+    SysInterrupts           intr_mp_init    -setup interrupt system for APs
+    SysInterrupts           gdt_mp_init     -setup gdt system for APs
     SysMemory               mem_mp_init     -setup memory for APs
     SysTimer                timer_mp_init   -setup timers for APs
     SysMP                   mp_signalready  -pause APs for further setup

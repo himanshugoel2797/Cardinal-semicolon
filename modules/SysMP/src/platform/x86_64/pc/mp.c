@@ -7,8 +7,12 @@
 
 #include "platform_mp.h"
 #include "SysMP/mp.h"
+#include "SysReg/registry.h"
+#include "SysInterrupts/interrupts.h"
+#include "elf.h"
 #include <types.h>
 #include <stdlib.h>
+#include <string.h>
 #include <cardinal/local_spinlock.h>
 
 #define TLS_SIZE ((int)KiB(4))
@@ -19,7 +23,38 @@ static int mp_loc = 0;
 static _Atomic volatile int pos = 0;
 static TLS uint64_t* g_tls;
 
+void alloc_ap_stack(void);
+
 int mp_init() {
+
+    void (*timer_wait)(uint64_t) = elf_resolvefunction("timer_wait");
+
+    //Start initializing the APs
+    uint64_t ap_cnt = 0;
+    if(registry_readkey_uint("HW/LAPIC", "COUNT", &ap_cnt) != registry_err_ok)
+        return -1;
+
+    for(uint32_t i = 0; i < ap_cnt; i++) {
+        char idx_str[10] = "";
+        char key_str[256] = "HW/LAPIC/";
+        char *key_idx = strncat(key_str, itoa(i, idx_str, 16), 255);
+
+        uint64_t apic_id = 0;
+
+        if(registry_readkey_uint(key_idx, "APIC ID", &apic_id) != registry_err_ok)
+            return -1;
+
+        if((int)apic_id != interrupt_get_cpuidx()){
+            
+            alloc_ap_stack();
+            interrupt_sendipi(apic_id, 0x0, ipi_delivery_mode_init);
+
+            //Use the timer api to wait for 10ms
+            timer_wait(10 * 1000 * 1000);
+
+            interrupt_sendipi(apic_id, 0x0f, ipi_delivery_mode_startup);
+        }
+    }
 
     return 0;
 }

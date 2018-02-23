@@ -30,7 +30,6 @@ struct timer_handlers {
     uint64_t (*set_mode)(timer_handlers_t *, timer_features_t);
     void (*set_enable)(timer_handlers_t *, bool);
     void (*set_handler)(timer_handlers_t *, void (*)(int));
-    void (*send_eoi)(timer_handlers_t *);
     uint64_t rate;
     uint64_t state;
 };

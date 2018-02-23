@@ -175,6 +175,9 @@ void idt_mainhandler(regs_t *regs) {
         DEBUG_PRINT(msg_ptr);
         PANIC("Failure!");
     }
+
+    if(regs->int_no >= 32)
+        interrupt_sendeoi(regs->int_no);
 }
 
 NAKED NORETURN

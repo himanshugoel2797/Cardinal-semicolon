@@ -9,13 +9,8 @@
 #include <stdlib.h>
 #include <types.h>
 
-int loadscript_execute() {
-
-    char *load_script = NULL;
+int script_execute(char *load_script, size_t load_len){
     char name[1024];
-    size_t load_len = 0;
-    if (!Initrd_GetFile("./loadscript.txt", (void **)&load_script, &load_len))
-        PANIC("FAILED TO FIND LOADSCRIPT");
 
     uintptr_t load_script_end = (uintptr_t)(load_script + load_len);
     while ((uintptr_t)load_script < load_script_end) {
@@ -91,4 +86,24 @@ int loadscript_execute() {
     }
 
     return 0;
+}
+
+int loadscript_execute() {
+
+    char *load_script = NULL;
+    size_t load_len = 0;
+    if (!Initrd_GetFile("./loadscript.txt", (void **)&load_script, &load_len))
+        PANIC("FAILED TO FIND LOADSCRIPT");
+
+    return script_execute(load_script, load_len);
+}
+
+int apscript_execute() {
+
+    char *load_script = NULL;
+    size_t load_len = 0;
+    if (!Initrd_GetFile("./apscript.txt", (void **)&load_script, &load_len))
+        PANIC("FAILED TO FIND APSCRIPT");
+
+    return script_execute(load_script, load_len);
 }

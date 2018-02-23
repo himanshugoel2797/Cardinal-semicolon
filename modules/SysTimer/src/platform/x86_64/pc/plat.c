@@ -6,12 +6,17 @@
  */
 
 #include "priv_timers.h"
+#include "SysInterrupts/interrupts.h"
 
 int timer_platform_gettimercount(){
     return hpet_getcount() + (use_tsc() ? 2 : 0) + 2;
 }
 
 int timer_platform_init(){
+    //Disable the PIT
+    outb(0x43, 0x30);
+    outb(0x40, 0x00);
+    outb(0x40, 0x00);
 
     //If TSC timer is constant rate + consistent and the rate is known, just use APIC timer in TSC mode
     if(use_tsc()) {
