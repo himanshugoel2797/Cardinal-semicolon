@@ -12,7 +12,7 @@ CALL:mem_init
 CALL:pci_reg_init
 CALL:acpi_init
 CALL:intr_init
-LOAD:./SysUser.celf
 LOAD:./SysTimer.celf
 CALL:mp_init
+LOAD:./SysUser.celf
 LOAD:./SysTaskMgr.celf

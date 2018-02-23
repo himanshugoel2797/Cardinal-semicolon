@@ -6,5 +6,11 @@
  */
 
 int module_init(){
+    //Setup syscall system
+    return 0;
+}
+
+int user_mp_init() {
+
     return 0;
 }

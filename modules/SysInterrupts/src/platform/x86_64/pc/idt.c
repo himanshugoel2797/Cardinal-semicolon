@@ -292,7 +292,7 @@ int idt_init() {
         idt_lcl[i].type = IDT_TYPE_INTR;
         idt_lcl[i].p = 1;
         idt_lcl[i].dpl = 0;
-        idt_lcl[i].ist = 0;
+        idt_lcl[i].ist = 1;
         idt_lcl[i].zr0 = 0;
         idt_lcl[i].zr1 = 0;
         idt_lcl[i].zr2 = 0;
