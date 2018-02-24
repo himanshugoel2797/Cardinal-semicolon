@@ -18,3 +18,9 @@ All programs are like modules, they have a initialization function, and can regi
 
 All programs are executed in a terminal mode, they can use a syscall to request a ui renderer
 They then submit their structural description to the ui renderer and register event handlers
+
+Terminals form a tree, they possess the following properties:
+    - Local User ID
+    - Terminal ID
+
+Terminals can each run one program. Drivers are modules of the service providers. Service providers + drivers are kernel objects, they register syscalls which user mode software can call.

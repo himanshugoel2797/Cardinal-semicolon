@@ -138,8 +138,8 @@ Call order:
     SysTaskMgr              module_init     -setup process management
     SysModMgr               module_init     -replace bootstrap kernel
     SysMP                   mp_waitready    -wait for APs to finish booting
-    SysTaskMgr              task_enter      -enter scheduler
     SysUser                 module_init     -setup syscall handling
+    SysTaskMgr              task_enter      -enter scheduler
 
 AP script:
     SysMP                   mp_tls_setup    -allocate TLS for the AP
@@ -148,6 +148,7 @@ AP script:
     SysTimer                timer_mp_init   -setup timers for APs
     SysMemory               mem_mp_init     -setup memory for APs
     SysMP                   mp_signalready  -pause APs for further setup
+    SysUser                 module_init     -setup syscall handling
     SysTaskMgr              task_enter      -enter scheduler
 
 Task load script:                           -determines which tasks to create to start setting up the userspace
