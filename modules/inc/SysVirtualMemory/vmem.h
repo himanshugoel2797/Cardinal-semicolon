@@ -47,7 +47,7 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
 
 int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size);
 
-int vmem_create(vmem_t *vm);
+int vmem_create(vmem_t **vm);
 
 int vmem_setactive(vmem_t *vm);
 

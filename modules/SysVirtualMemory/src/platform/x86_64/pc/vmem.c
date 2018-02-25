@@ -368,10 +368,15 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size) {
     return rVal;
 }
 
-int vmem_create(vmem_t *vm) {
+int vmem_create(vmem_t **vm_r) {
+    vmem_t *vm = malloc(sizeof(vmem_t));
+    if(vm == NULL)
+        return -1;
+
     vm->flags = vmem_flags_user;
     vm->lock = 0;
     memset(vm->ptable, 0, 256 * sizeof(uint64_t));
+    *vm_r = vm;
 
     return 0;
 }

@@ -15,4 +15,5 @@ CALL:intr_init
 LOAD:./SysTimer.celf
 CALL:mp_init
 LOAD:./SysUser.celf
+LOAD:./SysTerminal.celf
 LOAD:./SysTaskMgr.celf

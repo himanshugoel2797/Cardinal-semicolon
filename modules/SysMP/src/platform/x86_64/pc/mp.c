@@ -62,8 +62,6 @@ int mp_init() {
         }
     }
 
-    while(true)
-    ;
     return 0;
 }
 
