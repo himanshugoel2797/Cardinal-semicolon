@@ -65,6 +65,9 @@ int mp_init() {
     return 0;
 }
 
+int mp_corecount(void) {
+    return coreCount;
+}
 
 int mp_signalready() {
 

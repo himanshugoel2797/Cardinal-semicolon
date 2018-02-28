@@ -101,8 +101,27 @@ int syscall_sethandler(int idx, void* func) {
     return -1;
 }
 
+void syscall_getfullstate(void* dst) {
+    memcpy(dst, syscall_state, sizeof(syscall_state_t));
+}
+
+void syscall_setfullstate(void* state) {
+    memcpy(syscall_state, dst, sizeof(syscall_state_t));
+}
+
+PURE int syscall_getfullstate_size(void) {
+    return sizeof(syscall_state_t);
+}
+
 PURE int syscall_parameterreg_count(void) {
     return 7;
+}
+
+void syscall_setstate(uint64_t rsp, uint64_t rip, uint64_t rflags) {
+    memset(syscall_state, 0, sizeof(syscall_state_t));
+    syscall_state->rflags = rflags;
+    syscall_state->rip = rip;
+    syscall_state->rsp = rsp;
 }
 
 void syscall_touser(uint64_t *regs) {
@@ -118,7 +137,7 @@ PRIVATE int syscall_plat_init(){
     uint64_t lstar = (uint64_t)syscall_handler;
     uint64_t sfmask = (uint64_t)-1;
 
-    wrmsr(0xC0000080, rdmsr(0xC0000080) | 1);  // Enable the syscall instruction
+    wrmsr(EFER_MSR, rdmsr(EFER_MSR) | 1);  // Enable the syscall instruction
     wrmsr(0xC0000081, star_val);
     wrmsr(0xC0000082, lstar);
     wrmsr(0xC0000084, sfmask);

@@ -10,6 +10,11 @@
 
 int syscall_sethandler(int idx, void* func);
 PURE int syscall_parameterreg_count(void);
+void syscall_setstate(uint64_t rsp, uint64_t rip, uint64_t rflags);
 void syscall_touser(uint64_t *regs);
+
+void syscall_getfullstate(void* dst);
+void syscall_setfullstate(void* state);
+PURE int syscall_getfullstate_size(void);
 
 #endif

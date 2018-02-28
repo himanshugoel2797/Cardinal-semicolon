@@ -14,4 +14,6 @@ int mp_tls_alloc(int bytes);
 
 TLS void* mp_tls_get(int off);
 
+int mp_corecount(void);
+
 #endif

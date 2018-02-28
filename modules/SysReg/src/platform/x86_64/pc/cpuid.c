@@ -358,6 +358,23 @@ int add_cpuid() {
         if (registry_addkey_bool("HW/PROC", "X2APIC", x2apic) !=
                 registry_err_ok)
             return -1;
+
+        //xsave
+        bool xsave = (ecx >> 26) & 1;
+        if (registry_addkey_bool("HW/PROC", "XSAVE", xsave) !=
+                registry_err_ok)
+            return -1;
+    }
+
+    {
+        CPUID_RequestInfo(0x0d, 0, &eax, &ebx, &ecx, &edx);
+
+        if(registry_addkey_uint("HW/PROC", "XSAVE_SZ", ecx) != registry_err_ok)
+            return -1;
+
+        if(registry_addkey_uint("HW/PROC", "XSAVE_BITS", edx << 32 | eax) != registry_err_ok)
+            return -1;
+
     }
 
     // TODO: Setup proper IDT and GDT
