@@ -54,7 +54,7 @@ bool terminal_steal(void) {
                 terminaldef_t *n_thrd = NULL;
                 local_spinlock_lock(&thrd->lock);
                 n_thrd = thrd->next;
-                if(thrd->state == terminalstate_pending)
+                if(thrd->state == terminalstate_pending && !(thrd->flags & terminalflag_cpustatic))
                 {
                     //append this terminal to the list to append to this cpu
                     if(prev != NULL)prev->next = thrd->next;
@@ -119,6 +119,24 @@ void terminal_cycle(void) {
             break;
         }
     }
+
+    //TODO: figure out how to handle the issue that we need to restart allocation if the current thread is blocked or exiting
+    //TODO: maybe put blocked threads in a second list, and clean exiting threads
+    //TODO: blocked threads can be kept in a second per cpu list until they are ready to resume, in which case they're marked pending
+
+    //Mark the current terminal as active, if it isn't exiting or blocked
+    local_spinlock_lock(&qs[cur_state->coreIdx].curTerm->lock);
+    switch(qs[cur_state->coreIdx].curTerm->state){
+        case terminalstate_pending:
+        case terminalstate_running:
+            qs[cur_state->coreIdx].curTerm->state = terminalstate_running;
+        break;
+        case terminalstate_blocked:
+        case terminalstate_exiting:
+        break;
+    }
+    local_spinlock_unlock(&qs[cur_state->coreIdx].curTerm->lock);
+
     local_spinlock_unlock(&qs[cur_state->coreIdx].queue_lock);
 }
 
@@ -244,6 +262,7 @@ void terminal_delete(void) {
     local_spinlock_unlock(&qs[cur_state->coreIdx].queue_lock);
 
     //TODO: Free the term state now that the terminals have been completely removed from the schedule
+    //TODO: Delete task is a kernel level terminal that is tied to its cpu and cannot be preempted
 } 
 
 int module_init(){
@@ -259,9 +278,18 @@ int module_init(){
 int terminal_mp_init() {
     cur_state->coreIdx = coreId++; 
 
+    terminal_create(terminalflag_kernel | terminalflag_nopreempt | terminalflag_cpustatic, 0, NULL, 0);
+
     while(1) {
         //attempt to obtain a task
-        //If tasks aren't obtained, we should hlt the cpu after setting the apic timer
+        terminal_cycle();
+        
+        if(qs[cur_state->coreIdx].curTerm != NULL) {
+            //start the task
+
+        }
+
+        PANIC("This code should never execute.");
     }
 
     return 0;

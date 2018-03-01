@@ -11,7 +11,9 @@
 #include "SysVirtualMemory/vmem.h"
 
 typedef enum {
-    terminalflag_kernel = (1ull << 0),
+    terminalflag_kernel = (1 << 0),
+    terminalflag_nopreempt = (1 << 1),
+    terminalflag_cpustatic = (1 << 2),
 } terminalflags_t;
 
 typedef enum {
