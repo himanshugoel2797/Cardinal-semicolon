@@ -19,3 +19,4 @@ CALL:fp_mp_init
 LOAD:./SysUser.celf
 LOAD:./SysTerminal.celf
 LOAD:./SysTaskMgr.celf
+CALL:terminal_mp_init

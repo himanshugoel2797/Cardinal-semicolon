@@ -6,6 +6,7 @@
  */
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <types.h>
 
 #include "SysMP/mp.h"
@@ -102,11 +103,15 @@ int syscall_sethandler(int idx, void* func) {
 }
 
 void syscall_getfullstate(void* dst) {
-    memcpy(dst, syscall_state, sizeof(syscall_state_t));
+    syscall_state_t *st = (syscall_state_t*)dst;
+    st->kernel_stack = syscall_state->kernel_stack;
+    st->registers = syscall_state->registers;
 }
 
 void syscall_setfullstate(void* state) {
-    memcpy(syscall_state, dst, sizeof(syscall_state_t));
+    syscall_state_t *st = (syscall_state_t*)state;
+    syscall_state->kernel_stack = st->kernel_stack;
+    syscall_state->registers = st->registers;
 }
 
 PURE int syscall_getfullstate_size(void) {
@@ -118,10 +123,10 @@ PURE int syscall_parameterreg_count(void) {
 }
 
 void syscall_setstate(uint64_t rsp, uint64_t rip, uint64_t rflags) {
-    memset(syscall_state, 0, sizeof(syscall_state_t));
-    syscall_state->rflags = rflags;
-    syscall_state->rip = rip;
-    syscall_state->rsp = rsp;
+    //memset(&syscall_state->registers, 0, sizeof(syscall_state_t));
+    syscall_state->registers.rflags = rflags;
+    syscall_state->registers.rip = rip;
+    syscall_state->registers.rsp = rsp;
 }
 
 void syscall_touser(uint64_t *regs) {

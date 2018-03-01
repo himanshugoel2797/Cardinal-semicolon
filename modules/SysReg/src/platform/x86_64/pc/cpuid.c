@@ -372,7 +372,7 @@ int add_cpuid() {
         if(registry_addkey_uint("HW/PROC", "XSAVE_SZ", ecx) != registry_err_ok)
             return -1;
 
-        if(registry_addkey_uint("HW/PROC", "XSAVE_BITS", edx << 32 | eax) != registry_err_ok)
+        if(registry_addkey_uint("HW/PROC", "XSAVE_BITS", (uint64_t)edx << 32 | eax) != registry_err_ok)
             return -1;
 
     }

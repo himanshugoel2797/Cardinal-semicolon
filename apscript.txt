@@ -5,4 +5,4 @@ CALL:timer_mp_init
 CALL:mem_mp_init
 CALL:mp_signalready
 CALL:user_mp_init
-CALL:task_enter
+CALL:terminal_mp_init

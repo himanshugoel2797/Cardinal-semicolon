@@ -5,6 +5,8 @@
  * https://opensource.org/licenses/MIT
  */
 
+#include "fpu.h"
+
 int module_init(){
     fp_platform_init();
     return 0;

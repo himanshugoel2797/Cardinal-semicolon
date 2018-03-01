@@ -26,13 +26,16 @@ typedef struct terminaldef {
     uint32_t tid;
     terminalflags_t flags;
     terminalstate_t state;
+    int lock;
     void *u_stack;
     void *k_stack;
     void *float_state;
     void *reg_state;
     vmem_t *map;
-    struct terminaldef *next;   //NOTE: next and prev are only touched when queue_lock is locked
-    struct terminaldef *prev;
+
+    //This pointer has less strict requirements,
+    //it can be touched as long as the queue is locked
+    struct terminaldef *next;
 } terminaldef_t;
 
 #endif
