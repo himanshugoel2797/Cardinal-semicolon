@@ -66,6 +66,7 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
     
     //Move initrd into allocated memory
     b_info->InitrdStartAddress += 0xffffffff80000000;
+    //b_info->FramebufferAddress += 0xffffffff80000000;
 
     uint64_t initrd_copy = (uint64_t)malloc(b_info->InitrdLength + 512);
     if(initrd_copy % 512 != 0)

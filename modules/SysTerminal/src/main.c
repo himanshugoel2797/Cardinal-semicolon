@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <cardinal/local_spinlock.h>
 
+#include "SysMemory/memory.h"
 #include "SysMP/mp.h"
 #include "SysVirtualMemory/vmem.h"
 #include "SysFP/fp.h"
@@ -93,54 +94,20 @@ bool terminal_steal(void) {
 }
 
 //Make the next terminal the active one
-void terminal_cycle(void) {
+bool terminal_next(void) {
     local_spinlock_lock(&qs[cur_state->coreIdx].queue_lock);
-
     if(qs[cur_state->coreIdx].curTerm == NULL) {
         qs[cur_state->coreIdx].curTerm = qs[cur_state->coreIdx].queue;
     }else if(qs[cur_state->coreIdx].curTerm->next == NULL) {
         qs[cur_state->coreIdx].curTerm = qs[cur_state->coreIdx].queue;
-        terminal_steal();   //Try stealing some terminals after restarting the queue
-    }else {
-        qs[cur_state->coreIdx].curTerm = qs[cur_state->coreIdx].curTerm->next;
     }
 
-    //If still no terminal to run, unlock, enable cpu timer, hlt and try again
-    while (qs[cur_state->coreIdx].curTerm == NULL) {
-
-        //TODO: enable cpu timer and configure a blank handler to resume the cpu
-        local_spinlock_unlock(&qs[cur_state->coreIdx].queue_lock);
-        __asm__("hlt"); //TODO: abstract this assembly into a platform header
-        local_spinlock_lock(&qs[cur_state->coreIdx].queue_lock);
-
-        //If managed to steal some terminals, resume execution on this cpu
-        if(terminal_steal()) {
-            qs[cur_state->coreIdx].curTerm = qs[cur_state->coreIdx].queue;
-            break;
-        }
-    }
-
-    //TODO: figure out how to handle the issue that we need to restart allocation if the current thread is blocked or exiting
-    //TODO: maybe put blocked threads in a second list, and clean exiting threads
-    //TODO: blocked threads can be kept in a second per cpu list until they are ready to resume, in which case they're marked pending
-
-    //Mark the current terminal as active, if it isn't exiting or blocked
-    local_spinlock_lock(&qs[cur_state->coreIdx].curTerm->lock);
-    switch(qs[cur_state->coreIdx].curTerm->state){
-        case terminalstate_pending:
-        case terminalstate_running:
-            qs[cur_state->coreIdx].curTerm->state = terminalstate_running;
-        break;
-        case terminalstate_blocked:
-        case terminalstate_exiting:
-        break;
-    }
-    local_spinlock_unlock(&qs[cur_state->coreIdx].curTerm->lock);
-
+    bool hasnew = (qs[cur_state->coreIdx].curTerm != NULL);
     local_spinlock_unlock(&qs[cur_state->coreIdx].queue_lock);
+    return hasnew;
 }
 
-terminaldef_t* terminal_create(terminalflags_t flag, uint32_t uid, vmem_t *user_vmem, uint64_t ip) {
+terminaldef_t* terminal_create(terminalflags_t flag, uint32_t uid, vmem_t *user_vmem) {
     terminaldef_t *tdef = malloc(sizeof(terminaldef_t));
 
     tdef->uid = uid;
@@ -196,20 +163,26 @@ int terminal_setstate(uint32_t tid, terminalstate_t state) {
                     break;
                     case terminalstate_running:
                         if(state == terminalstate_blocked)
-                            thrd->state = terminalstate_blocked;
+                            thrd->state = terminalstate_blocked;    //Put this in its own queue
                         else if(state == terminalstate_exiting)
                             thrd->state = terminalstate_exiting;
                         else
                             err = -1;
                     break;
+
+                    //TODO: blocked processes aren't in the main queue
                     case terminalstate_blocked:
-                        if(state == terminalstate_running)
-                            thrd->state = terminalstate_running;
-                        else if(state == terminalstate_exiting)
+                        if(state == terminalstate_pending){
+                            thrd->state = terminalstate_pending;
+                        }
+                        else if(state == terminalstate_exiting){
                             thrd->state = terminalstate_exiting;
+                        }
                         else 
                             err = -1;
                     break;
+
+                    //TODO: the following case shouldn't happen, delete terminal when it's set to exiting
                     case terminalstate_exiting:
                         if(state == terminalstate_exiting)
                             thrd->state = terminalstate_exiting;
@@ -265,6 +238,46 @@ void terminal_delete(void) {
     //TODO: Delete task is a kernel level terminal that is tied to its cpu and cannot be preempted
 } 
 
+void terminal_cycle(void) {
+    terminal_delete();
+    terminal_steal();
+    local_spinlock_lock(&qs[cur_state->coreIdx].queue_lock);
+
+    //If still no terminal to run, unlock, enable cpu timer, hlt and try again
+    while (qs[cur_state->coreIdx].curTerm == NULL) {
+
+        //TODO: enable cpu timer and configure a blank handler to resume the cpu
+        local_spinlock_unlock(&qs[cur_state->coreIdx].queue_lock);
+        __asm__("hlt"); //TODO: abstract this assembly into a platform header
+        local_spinlock_lock(&qs[cur_state->coreIdx].queue_lock);
+
+        //If managed to steal some terminals, resume execution on this cpu
+        if(terminal_steal()) {
+            qs[cur_state->coreIdx].curTerm = qs[cur_state->coreIdx].queue;
+            break;
+        }
+    }
+
+    //TODO: figure out how to handle the issue that we need to restart allocation if the current thread is blocked or exiting
+    //TODO: maybe put blocked threads in a second list, and clean exiting threads
+    //TODO: blocked threads can be kept in a second per cpu list until they are ready to resume, in which case they're marked pending
+
+    //Mark the current terminal as active, if it isn't exiting or blocked
+    local_spinlock_lock(&qs[cur_state->coreIdx].curTerm->lock);
+    switch(qs[cur_state->coreIdx].curTerm->state){
+        case terminalstate_pending:
+        case terminalstate_running:
+            qs[cur_state->coreIdx].curTerm->state = terminalstate_running;
+        break;
+        case terminalstate_blocked:
+        case terminalstate_exiting:
+        break;
+    }
+    local_spinlock_unlock(&qs[cur_state->coreIdx].curTerm->lock);
+
+    local_spinlock_unlock(&qs[cur_state->coreIdx].queue_lock);
+}
+
 int module_init(){
     qs = malloc(sizeof(queue_state_t) * mp_corecount());
     memset(qs, 0, sizeof(queue_state_t*) * mp_corecount());
@@ -278,7 +291,7 @@ int module_init(){
 int terminal_mp_init() {
     cur_state->coreIdx = coreId++; 
 
-    terminal_create(terminalflag_kernel | terminalflag_nopreempt | terminalflag_cpustatic, 0, NULL, 0);
+    terminal_create(terminalflag_kernel | terminalflag_nopreempt | terminalflag_cpustatic, 0, NULL);
 
     while(1) {
         //attempt to obtain a task

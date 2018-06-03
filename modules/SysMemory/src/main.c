@@ -5,6 +5,14 @@
  * https://opensource.org/licenses/MIT
  */
 
+#include "SysMemory/memory.h"
+
+void *stack_alloc(size_t sz, bool kernel) {
+    sz = 0;
+    kernel = 0;
+    return NULL;
+}
+
 int module_init() {
     return 0;
 }

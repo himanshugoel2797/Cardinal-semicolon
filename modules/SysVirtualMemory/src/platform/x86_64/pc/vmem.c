@@ -133,6 +133,7 @@ int vmem_init() {
     vmem_map(NULL, KERN_PHYSMAP_BASE, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_cachewriteback, 0);
     vmem_map(NULL, KERN_PHYSMAP_BASE_UC, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_uncached, 0);
 
+    __asm__("cli\n\thlt");
     __asm__ volatile("mov %0, %%cr3" :: "r"(ktable_phys) :);
 
     return 0;
