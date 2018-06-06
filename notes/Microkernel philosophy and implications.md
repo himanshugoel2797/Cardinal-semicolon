@@ -38,3 +38,4 @@ Solutions:
             - Scheduling unsolved
                 - Terminal system remains?
                     - Lock other thread's queue, steal a thread
+                    - Have a single syscall - IPC
