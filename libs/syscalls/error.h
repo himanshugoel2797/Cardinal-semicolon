@@ -8,6 +8,8 @@
 
 typedef int cs_error;
 
+#define CS_OUTOFMEM (-2)
+#define CS_UNKN (-1)
 #define CS_OK 0
 
 #endif

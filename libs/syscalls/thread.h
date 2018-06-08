@@ -12,7 +12,6 @@
 #define CS_SIGNAL_COUNT (512)
 
 typedef enum {
-    cs_task_type_none = 0,
     cs_task_type_process,
     cs_task_type_thread,
 } cs_task_type;
@@ -21,7 +20,7 @@ typedef uint64_t cs_id;
 typedef uint32_t cs_signalnum;
 typedef void (*cs_signalhandler)(cs_signalnum signal, int err);
 
-cs_error cs_createtask(cs_task_type tasktype, cs_id *id);
+cs_error cs_createtask(cs_task_type tasktype, char *name, cs_id *id);
 cs_error cs_writeprocessmemory(cs_id id);
 cs_error cs_readprocessmemory(cs_id id);
 cs_error cs_starttask(cs_id id, void *start_address, void *argument);
