@@ -22,6 +22,8 @@ typedef enum {
     task_permissions_none = 0,
     task_permissions_memorymap = (1 << 0),
     task_permissions_io = (1 << 1),
+    task_permissions_tasking = (1 << 2),
+    task_permissions_interrupt = (1 << 3),
 } task_permissions_t;
 
 typedef struct task_desc {
