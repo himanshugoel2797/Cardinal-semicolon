@@ -107,3 +107,66 @@ TLS void* mp_tls_get(int off) {
     if(off >= TLS_SIZE)return NULL;
     return (TLS void*)(uintptr_t)off;
 }
+
+int mp_platform_getstatesize(void)
+{
+    return (0x88);
+}
+
+void mp_platform_getstate(void* buf)
+{
+    if(buf == NULL)
+        PANIC("Parameter is null.");
+
+    __asm__ volatile (
+        "movq %rax, +0x0(%rdi)\n\t"
+        "movq %rbx, +0x8(%rdi)\n\t"
+        "movq %rcx, +0x10(%rdi)\n\t"
+        "movq %rdx, +0x18(%rdi)\n\t"
+        "movq %rsi, +0x20(%rdi)\n\t"
+        "movq %rdi, +0x28(%rdi)\n\t"
+        "movq %rbp, +0x30(%rdi)\n\t"
+        "movq %rsp, +0x38(%rdi)\n\t"
+        "movq %r8, +0x40(%rdi)\n\t"
+        "movq %r9, +0x48(%rdi)\n\t"
+        "movq %r10, +0x50(%rdi)\n\t"
+        "movq %r11, +0x58(%rdi)\n\t"
+        "movq %r12, +0x60(%rdi)\n\t"
+        "movq %r13, +0x68(%rdi)\n\t"
+        "movq %r14, +0x70(%rdi)\n\t"
+        "movq %r15, +0x78(%rdi)\n\t"
+        "pushf\n\t"
+        "popq %rax\n\t"
+        "movq %rax, +0x80(%rdi)\n\t"
+        "movq (%rdi), %rax\n\t"
+    );
+}
+
+void mp_platform_setstate(void* buf)
+{
+    if(buf == NULL)
+        PANIC("Parameter is null.");
+
+    __asm__ volatile (
+        "movq +0x80(%rdi), %rax\n\t"
+        "push %rax\n\t"
+        "popf\n\t"
+        "movq +0x0(%rdi), %rax\n\t"
+        "movq +0x8(%rdi), %rbx\n\t"
+        "movq +0x10(%rdi), %rcx\n\t"
+        "movq +0x18(%rdi), %rdx\n\t"
+        "movq +0x20(%rdi), %rsi\n\t"
+        "movq +0x30(%rdi), %rbp\n\t"
+        "movq +0x38(%rdi), %rsp\n\t"
+        "movq +0x40(%rdi), %r8\n\t"
+        "movq +0x48(%rdi), %r9\n\t"
+        "movq +0x50(%rdi), %r10\n\t"
+        "movq +0x58(%rdi), %r11\n\t"
+        "movq +0x60(%rdi), %r12\n\t"
+        "movq +0x68(%rdi), %r13\n\t"
+        "movq +0x70(%rdi), %r14\n\t"
+        "movq +0x78(%rdi), %r15\n\t"
+
+        "movq +0x28(%rdi), %rdi\n\t"
+    );
+}

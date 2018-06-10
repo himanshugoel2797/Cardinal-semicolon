@@ -16,4 +16,10 @@ TLS void* mp_tls_get(int off);
 
 int mp_corecount(void);
 
+int mp_platform_getstatesize(void);
+
+void mp_platform_getstate(void* buf);
+
+void mp_platform_setstate(void* buf);
+
 #endif
