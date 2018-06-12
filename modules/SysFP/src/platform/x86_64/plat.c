@@ -5,9 +5,12 @@
  * https://opensource.org/licenses/MIT
  */
 
-#include "fpu.h"
+#include <string.h>
 
 #include "SysReg/registry.h"
+
+#include "fpu.h"
+
 
 static bool xsave = false;
 static uint64_t xsave_bits = 0;
@@ -61,4 +64,15 @@ void fp_platform_setstate(void* buf) {
         __asm__ volatile("xrstorq (%0)" :: "r"(buf) : "memory");
     else
         __asm__ volatile("fxrstorq (%0)" :: "r"(buf) : "memory");
+}
+
+void fp_platform_getdefaultstate(void* buf) {
+    //FPU ctrl word = 0x33F
+    //MXCSR = 0x1f80
+
+    memset(buf, 0, fp_platform_getstatesize());
+
+    uint16_t *buf_u16 = (uint16_t*)buf;
+    buf_u16[0] = 0x33f;
+    buf_u16[12] = 0x1f80;
 }

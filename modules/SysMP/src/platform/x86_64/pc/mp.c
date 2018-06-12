@@ -170,3 +170,8 @@ void mp_platform_setstate(void* buf)
         "movq +0x28(%rdi), %rdi\n\t"
     );
 }
+
+void mp_platform_getdefaultstate(void *buf)
+{
+    memset(buf, 0, mp_platform_getstatesize());
+}

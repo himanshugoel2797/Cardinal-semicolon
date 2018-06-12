@@ -11,6 +11,7 @@
 
 #include "SysMP/mp.h"
 #include "SysFP/fp.h"
+#include "SysPhysicalMemory/phys_mem.h"
 #include "SysMemory/memory.h"
 #include "SysUser/syscall.h"
 #include "task_priv.h"
@@ -96,10 +97,18 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         thread_info->lock = 0;
         thread_info->pid = alloc_id;
         thread_info->id = alloc_id;
-        //TODO allocate stack, fpu state, register state and signals
 
         thread_info->fpu_state = malloc(fp_platform_getstatesize());
-        
+        if(thread_info->fpu_state == NULL)
+            PANIC("Unexpected memory allocation failure.");
+        fp_platform_getdefaultstate(thread_info->fpu_state);
+
+        thread_info->reg_state = malloc(mp_platform_getstatesize());
+        if(thread_info->reg_state == NULL)
+            PANIC("Unexpected memory allocation failure.");
+        mp_platform_getdefaultstate(thread_info->reg_state);
+
+        //Stack is allocated by the elf loading program
 
         *id = alloc_id;
 
@@ -146,16 +155,9 @@ cs_error release_perms_syscall(int flag){
 cs_error create_task_syscall(cs_task_type tasktype, char *name, cs_id *id){
     return create_task_kernel(tasktype, name, task_permissions_none, id);
 }
-cs_error write_process_memory_syscall(){
-    return CS_OK;
-}
-cs_error read_process_memory_syscall(){
-    return CS_OK;
-}
 cs_error start_task_syscall(){
     return CS_OK;
 }
-
 
 cs_error nanosleep_syscall(){
     return CS_OK;
@@ -178,9 +180,54 @@ cs_error kill_task_syscall(){
     return CS_OK;
 }
 
+cs_error map_syscall(cs_id pid, intptr_t virt, intptr_t phys, size_t sz, int perms, int flags){
+    pid = 0;
+    virt = 0;
+    phys = 0;
+    sz = 0;
+    perms = 0;
+    flags = 0;
+    return CS_OK;
+}
+cs_error unmap_syscall(cs_id pid, intptr_t virt, size_t sz){
+    pid = 0;
+    virt = 0;
+    sz = 0;
+    return CS_OK;
+}
+cs_error read_mmap_syscall(cs_id pid, intptr_t virt, intptr_t *phys, size_t *sz, int *perms, int *flags){
+    pid = 0;
+    virt = 0;
+    phys = NULL;
+    sz = NULL;
+    perms = NULL;
+    flags = NULL;
+    return CS_OK;
+}
+
+cs_error pmalloc_syscall(int flags, size_t sz, uintptr_t *addr){
+    //pagealloc_alloc
+    *addr = pagealloc_alloc(0, 0, flags, sz);
+    if(*addr == (uintptr_t)-1)
+        return CS_OUTOFMEM;
+
+    return CS_OK;
+}
+cs_error pfree_syscall(uintptr_t addr, size_t sz){
+    //pagealloc_free
+    pagealloc_free(addr, sz);
+    return CS_OK;
+}
+
 int module_mp_init(){
     
     //Allocate kernel stack and setup interrupt stack
+    uint8_t* kernel_stack = (uint8_t*)malloc(KiB(4)) + KiB(4);
+    uint8_t* interrupt_stack = (uint8_t*)malloc(KiB(4)) + KiB(4);
+
+    core_descs->kernel_stack = kernel_stack;
+    core_descs->interrupt_stack = interrupt_stack;
+    core_descs->cur_task = NULL;
 
     return 0;
 }
@@ -205,8 +252,6 @@ int module_init(){
     syscall_sethandler(11, (void*)release_perms_syscall);
 
     syscall_sethandler(20, (void*)create_task_syscall);
-    syscall_sethandler(21, (void*)write_process_memory_syscall);
-    syscall_sethandler(22, (void*)read_process_memory_syscall);
     syscall_sethandler(23, (void*)start_task_syscall);
 
     syscall_sethandler(25, (void*)nanosleep_syscall);
@@ -217,6 +262,14 @@ int module_init(){
     
     syscall_sethandler(29, (void*)exit_syscall);
     syscall_sethandler(30, (void*)kill_task_syscall);
+
+    //add map, unmap and pmalloc and pfree syscalls
+    syscall_sethandler(31, (void*)map_syscall);
+    syscall_sethandler(32, (void*)unmap_syscall);
+    syscall_sethandler(33, (void*)read_mmap_syscall);
+
+    syscall_sethandler(34, (void*)pmalloc_syscall);
+    syscall_sethandler(35, (void*)pfree_syscall);
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers
 

@@ -22,4 +22,6 @@ void mp_platform_getstate(void* buf);
 
 void mp_platform_setstate(void* buf);
 
+void mp_platform_getdefaultstate(void* buf);
+
 #endif
