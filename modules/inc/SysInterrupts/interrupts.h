@@ -38,6 +38,8 @@ void interrupt_setmask(uint32_t line, bool mask);
 
 void interrupt_sendipi(int cpu, int vector, ipi_delivery_mode_t delivery_mode);
 
+void interrupt_setstack(void *stack);
+
 uint32_t msi_register_addr(int cpu_idx);
 
 uint64_t msi_register_data(int vec);

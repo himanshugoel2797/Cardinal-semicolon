@@ -72,6 +72,10 @@ void gdt_settss(gdt_t* gdt_lcl, int num, uint64_t base, uint32_t limit, uint8_t 
     gdt_lcl[num + 1].base_low = (uint16_t)(base >> (32 + 16));
 }
 
+void interrupt_setstack(void *stack) {
+    gdt->tss->ist1 = (uint64_t)stack;
+}
+
 int gdt_init() {
 
     if(gdt == NULL) {
@@ -82,7 +86,7 @@ int gdt_init() {
     }
     gdt->gdt = malloc(GDT_ENTRY_COUNT * sizeof(gdt_t));
     gdt->tss = malloc(sizeof(tss_struct_t));
-    gdt->tss->ist1 = (uint64_t)malloc(4096) + 4096;     //Allocate interrupt stack
+    gdt->tss->ist1 = (uint64_t)malloc(4096) + 4096;     //Allocate temporary interrupt stack
 
     gdt_t* gdt_lcl = gdt->gdt;
     gdt_setentry(&gdt_lcl[0], 0, 0, 0, 0);
