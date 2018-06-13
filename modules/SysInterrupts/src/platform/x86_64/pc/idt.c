@@ -67,6 +67,7 @@ typedef struct {
 typedef struct {
     idt_t *idt;
     regs_t *reg_state;
+    regs_t *reg_ref;
 } tls_idt_t;
 
 static TLS tls_idt_t *idt = NULL;
@@ -75,7 +76,6 @@ static InterruptHandler interrupt_funcs[IDT_ENTRY_COUNT][IDT_HANDLER_CNT];
 static bool interrupt_blocked[IDT_ENTRY_COUNT];
 static int interrupt_alloc_lock = 0;
 static bool int_arr_inited = false;
-
 
 void interrupt_registerhandler(int irq, InterruptHandler handler) {
     local_spinlock_lock(&interrupt_alloc_lock);
@@ -156,6 +156,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
 void idt_mainhandler(regs_t *regs) {
     //Store the registers in the processor interrupt state
     memcpy(idt->reg_state, regs, sizeof(regs_t));
+    idt->reg_ref = regs;
 
     bool handled = false;
 
@@ -176,8 +177,69 @@ void idt_mainhandler(regs_t *regs) {
         PANIC("Failure!");
     }
 
+    idt->reg_ref = NULL;
+
     if(regs->int_no >= 32)
         interrupt_sendeoi(regs->int_no);
+}
+
+
+void interrupt_setregisterstate(interrupt_register_state_t *state) {
+    if(state != NULL) {
+
+        idt->reg_ref->r15 = state->r15;
+        idt->reg_ref->r14 = state->r14;
+        idt->reg_ref->r13 = state->r13;
+        idt->reg_ref->r12 = state->r12;
+        idt->reg_ref->r11 = state->r11;
+        idt->reg_ref->r10 = state->r10;
+        idt->reg_ref->r9 = state->r9;
+        idt->reg_ref->r8 = state->r8;
+        idt->reg_ref->rdi = state->rdi;
+        idt->reg_ref->rsi = state->rsi;
+        idt->reg_ref->rdx = state->rdx;
+        idt->reg_ref->rcx = state->rcx;
+        idt->reg_ref->rbx = state->rbx;
+        idt->reg_ref->rax = state->rax;
+
+        idt->reg_ref->rflags = state->rflags;
+        idt->reg_ref->rip = state->rip;
+
+        idt->reg_ref->cs = state->cs;
+        idt->reg_ref->ss = state->ss;
+
+        idt->reg_ref->rbp = state->rbp;
+        idt->reg_ref->useresp = state->rsp;
+    }
+}
+
+void interrupt_getregisterstate(interrupt_register_state_t *state) {
+    if(state != NULL) {
+
+        state->r15 = idt->reg_ref->r15;
+        state->r14 = idt->reg_ref->r14;
+        state->r13 = idt->reg_ref->r13;
+        state->r12 = idt->reg_ref->r12;
+        state->r11 = idt->reg_ref->r11;
+        state->r10 = idt->reg_ref->r10;
+        state->r9 = idt->reg_ref->r9;
+        state->r8 = idt->reg_ref->r8;
+        state->rdi = idt->reg_ref->rdi;
+        state->rsi = idt->reg_ref->rsi;
+        state->rdx = idt->reg_ref->rdx;
+        state->rcx = idt->reg_ref->rcx;
+        state->rbx = idt->reg_ref->rbx;
+        state->rax = idt->reg_ref->rax;
+
+        state->rflags = idt->reg_ref->rflags;
+        state->rip = idt->reg_ref->rip;
+
+        state->cs = idt->reg_ref->cs;
+        state->ss = idt->reg_ref->ss;
+
+        state->rbp = idt->reg_ref->rbp;
+        state->rsp = idt->reg_ref->useresp;
+    }
 }
 
 NAKED NORETURN
@@ -292,7 +354,7 @@ int idt_init() {
         idt_lcl[i].type = IDT_TYPE_INTR;
         idt_lcl[i].p = 1;
         idt_lcl[i].dpl = 0;
-        idt_lcl[i].ist = 1;
+        idt_lcl[i].ist = 0;
         idt_lcl[i].zr0 = 0;
         idt_lcl[i].zr1 = 0;
         idt_lcl[i].zr2 = 0;

@@ -73,7 +73,7 @@ void gdt_settss(gdt_t* gdt_lcl, int num, uint64_t base, uint32_t limit, uint8_t 
 }
 
 void interrupt_setstack(void *stack) {
-    gdt->tss->ist1 = (uint64_t)stack;
+    gdt->tss->rsp0 = (uint64_t)stack;
 }
 
 int gdt_init() {

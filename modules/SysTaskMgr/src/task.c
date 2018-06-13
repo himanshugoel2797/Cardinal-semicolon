@@ -63,8 +63,11 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         //add this to the process queue
         local_spinlock_lock(&process_lock);
 
-        if(processes == NULL)
+        if(processes == NULL){
             processes = proc_info;
+            proc_info->prev = proc_info;
+            proc_info->next = proc_info;
+        }
         else{
             local_spinlock_lock(&processes->lock);
 
@@ -115,8 +118,11 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         //add this to the thread queue
         local_spinlock_lock(&task_lock);
 
-        if(tasks == NULL)
+        if(tasks == NULL){
             tasks = thread_info;
+            thread_info->next = thread_info;
+            thread_info->prev = thread_info;
+        }
         else {
             local_spinlock_lock(&tasks->lock);
 
@@ -134,6 +140,44 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
     return CS_OK;
 }
 
+static void task_switch_handler(int irq){
+    irq = 0;
+
+    if(local_spinlock_trylock(&task_lock)) {    //Only switch if the task queue could be locked
+
+        local_spinlock_lock(&core_descs->cur_task->lock);
+        core_descs->cur_task->state = task_state_suspended;
+        local_spinlock_unlock(&core_descs->cur_task->lock);
+
+        core_descs->cur_task = core_descs->cur_task->next;
+
+        local_spinlock_lock(&core_descs->cur_task->lock);
+        bool loop = true;
+
+        while(loop){
+            switch(core_descs->cur_task->state){
+                case task_state_pending:
+                    //setup process infrastructure
+                    break;
+                case task_state_suspended:
+                    //resume the process
+                    break;
+                case task_state_running:
+                case task_state_blocked:
+                case task_state_exiting:
+                case task_state_exited:
+                default:
+                    local_spinlock_unlock(&core_descs->cur_task->lock);
+                    core_descs->cur_task = core_descs->cur_task->next;
+                    local_spinlock_lock(&core_descs->cur_task->lock);
+                    break;
+            }
+        }
+        local_spinlock_unlock(&core_descs->cur_task->lock);
+
+        local_spinlock_unlock(&task_lock);
+    }
+}
 
 cs_error send_ipc_syscall(){
     return CS_OK;
