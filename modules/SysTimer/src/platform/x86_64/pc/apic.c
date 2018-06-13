@@ -6,6 +6,7 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 #include <types.h>
 #include "priv_timers.h"
 #include "timer.h"
@@ -28,7 +29,7 @@ static TLS tls_apic_timer_state_t *apic_state = NULL;
 
 PRIVATE void apic_handler(int irq) {
     if(apic_state->enabled) {
-        DEBUG_PRINT("APIC Triggered!");
+        //DEBUG_PRINT("APIC Triggered!");
         if(apic_state->handler != NULL)
             apic_state->handler(irq);
 
@@ -73,7 +74,8 @@ PRIVATE int apic_timer_init(){
             timer_handlers_t main_counter;
             timer_features_t main_features = timer_features_persistent | timer_features_oneshot | timer_features_periodic | timer_features_local;
 
-            main_counter.rate = 2000;   //0.5ms
+            strncpy(main_counter.name, "apic_local", 16);
+            main_counter.rate = 20000;   //0.05ms
             main_counter.read = NULL;
             main_counter.write = NULL;
             main_counter.set_mode = apic_timer_setmode;       //TODO
@@ -105,6 +107,7 @@ PRIVATE int apic_timer_tsc_init() {
         if(registry_readkey_uint("HW/PROC", "TSC_FREQ", &main_counter.rate) != registry_err_ok)
             return -1;
 
+        strncpy(main_counter.name, "apic_tsc", 16);
         main_counter.read = NULL;
         main_counter.write = NULL;
         main_counter.set_mode = NULL;

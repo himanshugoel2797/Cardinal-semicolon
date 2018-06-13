@@ -11,6 +11,7 @@
 
 int script_execute(char *load_script, size_t load_len){
     char name[1024];
+    bool isCRLF = false;
 
     uintptr_t load_script_end = (uintptr_t)(load_script + load_len);
     while ((uintptr_t)load_script < load_script_end) {
@@ -27,10 +28,15 @@ int script_execute(char *load_script, size_t load_len){
         memset(name, 0, 1024);
         
         //handle both line endings to avoid annoying issues during development
-        if(*(end_of_line - 1) == '\r') end_of_line--;
+        if(*(end_of_line - 1) == '\r'){
+            isCRLF = true;
+            end_of_line--;
+        } 
         
         strncpy(name, load_script, (size_t)(end_of_line - load_script));
         load_script += end_of_line - load_script + 1;
+        if(isCRLF)
+            load_script++;
 
         if (mode == 0) {
 
@@ -63,7 +69,6 @@ int script_execute(char *load_script, size_t load_len){
                 print_str("\r\n");
                 PANIC("module_init FAILED");
             }
-
         } else if (mode == 1) {
             print_str("CALL FUNCTION:");
             print_str(name);
@@ -81,10 +86,17 @@ int script_execute(char *load_script, size_t load_len){
                 print_str("\r\n");
                 PANIC("CALL FAILED");
             }
-        } else if (mode == -1)
-            break;
+        } else if (mode == -1){
+            print_str("NAME:");
+            print_str(name);
+
+            print_str("\r\nLOAD_SCRIPT:");
+            print_str(load_script);
+            PANIC("UNKNOWN COMMAND");
+        }
     }
 
+    PANIC("UNEXPECTED END!");
     return 0;
 }
 

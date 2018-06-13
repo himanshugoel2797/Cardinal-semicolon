@@ -175,8 +175,8 @@ int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap){
         if(registry_readkey_uint("HW/PROC", "APIC_FREQ", &apic_freq) != registry_err_ok)
             return -1;
 
-        //tick every 0.5ms
-        apic_write(APIC_ICoR, apic_freq / 2000);
+        //tick every 0.05ms
+        apic_write(APIC_ICoR, apic_freq / 20000);
     }
 
     apic_write(APIC_TIMER, v);

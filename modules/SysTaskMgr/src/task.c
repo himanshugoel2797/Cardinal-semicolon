@@ -14,6 +14,8 @@
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysMemory/memory.h"
 #include "SysUser/syscall.h"
+#include "SysTimer/timer.h"
+
 #include "task_priv.h"
 #include "error.h"
 #include "thread.h"
@@ -145,35 +147,37 @@ static void task_switch_handler(int irq){
 
     if(local_spinlock_trylock(&task_lock)) {    //Only switch if the task queue could be locked
 
-        local_spinlock_lock(&core_descs->cur_task->lock);
-        core_descs->cur_task->state = task_state_suspended;
-        local_spinlock_unlock(&core_descs->cur_task->lock);
+        if(core_descs->cur_task != NULL){
+            local_spinlock_lock(&core_descs->cur_task->lock);
+            core_descs->cur_task->state = task_state_suspended;
+            local_spinlock_unlock(&core_descs->cur_task->lock);
 
-        core_descs->cur_task = core_descs->cur_task->next;
+            core_descs->cur_task = core_descs->cur_task->next;
 
-        local_spinlock_lock(&core_descs->cur_task->lock);
-        bool loop = true;
+            local_spinlock_lock(&core_descs->cur_task->lock);
+            bool loop = true;
 
-        while(loop){
-            switch(core_descs->cur_task->state){
-                case task_state_pending:
-                    //setup process infrastructure
-                    break;
-                case task_state_suspended:
-                    //resume the process
-                    break;
-                case task_state_running:
-                case task_state_blocked:
-                case task_state_exiting:
-                case task_state_exited:
-                default:
-                    local_spinlock_unlock(&core_descs->cur_task->lock);
-                    core_descs->cur_task = core_descs->cur_task->next;
-                    local_spinlock_lock(&core_descs->cur_task->lock);
-                    break;
+            while(loop){
+                switch(core_descs->cur_task->state){
+                    case task_state_pending:
+                        //setup process infrastructure
+                        break;
+                    case task_state_suspended:
+                        //resume the process
+                        break;
+                    case task_state_running:
+                    case task_state_blocked:
+                    case task_state_exiting:
+                    case task_state_exited:
+                    default:
+                        local_spinlock_unlock(&core_descs->cur_task->lock);
+                        core_descs->cur_task = core_descs->cur_task->next;
+                        local_spinlock_lock(&core_descs->cur_task->lock);
+                        break;
+                }
             }
+            local_spinlock_unlock(&core_descs->cur_task->lock);
         }
-        local_spinlock_unlock(&core_descs->cur_task->lock);
 
         local_spinlock_unlock(&task_lock);
     }
@@ -273,6 +277,9 @@ int module_mp_init(){
     core_descs->interrupt_stack = interrupt_stack;
     core_descs->cur_task = NULL;
 
+    if(timer_request(timer_features_periodic | timer_features_local, 50000, task_switch_handler))
+        PANIC("Failed to allocate periodic timer!");
+
     return 0;
 }
 
@@ -316,6 +323,10 @@ int module_init(){
     syscall_sethandler(35, (void*)pfree_syscall);
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers
+
+
+    while(true)
+        halt();
 
     return 0;
 }

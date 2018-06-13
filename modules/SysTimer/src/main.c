@@ -69,12 +69,50 @@ void timer_wait(uint64_t ns) {
     t->handlers.set_handler(&t->handlers, timer_wait_handler);
     t->handlers.set_enable(&t->handlers, true);
 
+    print_str("Allocated one-shot timer: ");
+    print_str(t->handlers.name);
+
     //Halt the cpu
     while(timer_wait_pending)
-        __asm__("hlt");
+        halt();
 
     timer_wait_d = NULL;
     t->in_use = false;
+}
+
+int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int)) {
+    //Allocate a timer for the desired mode with a rate that can match the desired time
+    int idx = 0;
+    for(; idx < timer_idx; idx++)
+        if(!timer_defs[idx].in_use && ((timer_defs[idx].features & features) == features)){
+
+            if(timer_defs[idx].handlers.set_mode != NULL && 
+               timer_defs[idx].handlers.set_handler != NULL && 
+               timer_defs[idx].handlers.set_enable != NULL){
+
+                    if((features & timer_features_write) && (timer_defs[idx].handlers.write != NULL))
+                        break;
+                    else if(!(features & timer_features_write))
+                        break;
+               }
+        }
+    if(idx == timer_idx)
+        return -1;
+
+    //Configure the timer
+    timer_defs_t *t = &timer_defs[idx];
+    timer_wait_d = t;
+    t->in_use = true;
+    t->handlers.set_mode(&t->handlers, features);
+    if(features & timer_features_write)
+        t->handlers.write(&t->handlers, (ns * t->handlers.rate) / (1000 * 1000 * 1000));
+    t->handlers.set_handler(&t->handlers, handler);
+    t->handlers.set_enable(&t->handlers, true);
+
+    print_str("Allocated timer: ");
+    print_str(t->handlers.name);
+
+    return 0;
 }
 
 static int timer_init(){

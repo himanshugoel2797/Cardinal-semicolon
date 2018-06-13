@@ -6,6 +6,7 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "SysInterrupts/interrupts.h"
 
@@ -187,6 +188,7 @@ PRIVATE int hpet_init(){
 
         main_features |= timer_features_counter | timer_features_write;
 
+        strncpy(main_counter.name, "hpet_main", 16);
         main_counter.rate = base_addr->Capabilities.ClockPeriod;
         main_counter.state = (uint64_t)base_addr;
         main_counter.read = hpet_main_read;
@@ -245,6 +247,10 @@ PRIVATE int hpet_init(){
 
             if(base_addr->timers[i].Configuration.PeriodicCapable)
                 sub_features |= timer_features_periodic;
+
+            strncpy(sub_counter.name, "hpet_sub", 16);
+            sub_counter.name[8] = (i + '0');
+            sub_counter.name[9] = 0;
 
             sub_counter.rate = base_addr->Capabilities.ClockPeriod;
             sub_counter.state = i;

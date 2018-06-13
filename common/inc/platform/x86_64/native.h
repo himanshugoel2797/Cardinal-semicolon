@@ -52,4 +52,7 @@ __attribute__((always_inline)) static __inline uint64_t rdmsr(uint32_t msr) {
     return ((uint64_t)hi << 32) | lo;
 }
 
+__attribute__((always_inline)) static __inline void halt(void) {
+    __asm__ volatile("hlt");
+}
 #endif

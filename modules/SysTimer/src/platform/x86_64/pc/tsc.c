@@ -5,6 +5,8 @@
  * https://opensource.org/licenses/MIT
  */
 
+#include <string.h>
+
 #include "SysReg/registry.h"
 #include "priv_timers.h"
 #include "timer.h"
@@ -55,6 +57,8 @@ PRIVATE int tsc_init() {
 
         if(registry_readkey_uint("HW/PROC", "TSC_FREQ", &main_counter.rate) != registry_err_ok)
             return -1;
+
+        strncpy(main_counter.name, "tsc", 16);
         main_counter.read = tsc_read;
         main_counter.write = NULL;
         main_counter.set_mode = NULL;
