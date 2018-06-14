@@ -233,6 +233,13 @@ static void task_switch_handler(int irq) {
             } else {
                 core_descs->cur_task = tasks;
                 local_spinlock_lock(&core_descs->cur_task->lock);
+
+                process_desc_t *iterator = processes;
+                do
+                    iterator = iterator->next;
+                while(iterator->id != core_descs->cur_task->pid);
+
+                vmem_setactive(iterator->mem);
                 fp_platform_setstate(core_descs->cur_task->fpu_state);
                 mp_platform_setstate(core_descs->cur_task->reg_state);
 
@@ -329,21 +336,15 @@ cs_error pfree_syscall(uintptr_t addr, size_t sz) {
     return CS_OK;
 }
 
-void test_handler(void *arg) {
+int servicescript_execute();
+void servicescript_handler(void *arg) {
     arg = NULL;
 
-    while(true) {
-        DEBUG_PRINT("TEST0\r\n");
-    }
+    servicescript_execute();
+
+    PANIC("End of process.");
 }
 
-void test2_handler(void *arg) {
-    arg = NULL;
-
-    while(true) {
-        DEBUG_PRINT("TEST1\r\n");
-    }
-}
 
 int module_mp_init() {
 
@@ -353,24 +354,13 @@ int module_mp_init() {
     core_descs->interrupt_stack = interrupt_stack;
     core_descs->cur_task = NULL;
 
-    cs_id test0_id = 0, test1_id = 0;
-    cs_error t0_err = create_task_kernel(cs_task_type_process, "test0", task_permissions_kernel, &test0_id);
-    cs_error t1_err = create_task_kernel(cs_task_type_process, "test1", task_permissions_kernel, &test1_id);
-
-    if(t0_err != CS_OK)
-        PANIC("T0_ERR");
-
-    if(t1_err != CS_OK)
-        PANIC("T1_ERR");
-
-    t0_err = start_task_kernel(test0_id, test_handler);
-    t1_err = start_task_kernel(test1_id, test2_handler);
-
-    if(t0_err != CS_OK)
-        PANIC("T0_ERR");
-
-    if(t1_err != CS_OK)
-        PANIC("T1_ERR");
+    cs_id ss_id = 0;
+    cs_error ss_err = create_task_kernel(cs_task_type_process, "servicescript", task_permissions_kernel, &ss_id);
+    if(ss_err != CS_OK)
+        PANIC("SS_ERR0");
+    ss_err = start_task_kernel(ss_id, servicescript_handler);
+    if(ss_err != CS_OK)
+        PANIC("SS_ERR1");
 
     interrupt_setstack(interrupt_stack);
 
@@ -420,6 +410,10 @@ int module_init() {
     syscall_sethandler(35, (void*)pfree_syscall);
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers
+
+    //Make sure that execution on the boot path doesn't continue past here.
+    while(true)
+        halt();
 
     return 0;
 }

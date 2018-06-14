@@ -3,5 +3,6 @@
 
 int loadscript_execute();
 int apscript_execute();
+int servicescript_execute();
 
 #endif

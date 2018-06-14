@@ -19,6 +19,7 @@ COMMAND rm -rf "ISO/isodir/boot/apscript.txt"
 
 COMMAND cp "${LOAD_SCRIPT}" "ISO/isodir/boot/loadscript.txt"
 COMMAND cp "${AP_SCRIPT}" "ISO/isodir/boot/apscript.txt"
+COMMAND cp "${SERVICE_SCRIPT}" "ISO/isodir/boot/servicescript.txt"
 COMMAND tar -cvf "ISO/isodir/boot/initrd" -C "ISO/isodir/boot" .
 
 COMMAND cp "kernel/kernel.bin" "ISO/isodir/boot/kernel.bin"

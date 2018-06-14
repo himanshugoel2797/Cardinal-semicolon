@@ -95,8 +95,6 @@ int script_execute(char *load_script, size_t load_len) {
             PANIC("UNKNOWN COMMAND");
         }
     }
-
-    PANIC("UNEXPECTED END!");
     return 0;
 }
 
@@ -106,6 +104,16 @@ int loadscript_execute() {
     size_t load_len = 0;
     if (!Initrd_GetFile("./loadscript.txt", (void **)&load_script, &load_len))
         PANIC("FAILED TO FIND LOADSCRIPT");
+
+    return script_execute(load_script, load_len);
+}
+
+int servicescript_execute() {
+
+    char *load_script = NULL;
+    size_t load_len = 0;
+    if (!Initrd_GetFile("./servicescript.txt", (void **)&load_script, &load_len))
+        PANIC("FAILED TO FIND SERVICESCRIPT");
 
     return script_execute(load_script, load_len);
 }
