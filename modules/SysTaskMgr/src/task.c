@@ -112,9 +112,14 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
             PANIC("Unexpected memory allocaiton failure.");
         thread_info->kernel_stack += KERNEL_STACK_LEN;
 
-        thread_info->fpu_state = malloc(fp_platform_getstatesize());
+        thread_info->fpu_state = malloc(fp_platform_getstatesize() + fp_platform_getalign());
         if(thread_info->fpu_state == NULL)
             PANIC("Unexpected memory allocation failure.");
+
+        //Align the FPU state properly
+        if((uintptr_t)thread_info->fpu_state % fp_platform_getalign() != 0)
+            thread_info->fpu_state += fp_platform_getalign() - ((uintptr_t)thread_info->fpu_state % fp_platform_getalign());
+
         fp_platform_getdefaultstate(thread_info->fpu_state);
 
         thread_info->reg_state = malloc(mp_platform_getstatesize());

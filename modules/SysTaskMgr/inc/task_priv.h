@@ -47,8 +47,8 @@ typedef struct task_desc {
 
     cs_id pid;
     cs_id id;
-    uint64_t *fpu_state;
-    uint64_t *reg_state;
+    uint8_t *fpu_state;
+    uint8_t *reg_state;
     uint64_t signals[CS_SIGNAL_COUNT];
     uint8_t *kernel_stack;
 

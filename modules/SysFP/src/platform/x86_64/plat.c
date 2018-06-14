@@ -22,14 +22,11 @@ int fp_platform_init() {
     registry_readkey_uint("HW/PROC", "XSAVE_BITS", &xsave_bits);
     registry_readkey_uint("HW/PROC", "XSAVE_SZ", &xsave_sz);
 
-    xsave = false;
-
     //Enable FPU
     uint64_t cr0 = 0;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     cr0 &= ~(1 << 2);   //Clear EM bit, enabling FPU
     cr0 |= (1 << 1);    //Set MP bit, to allow lazy state saving
-    cr0 |= (1 << 3);    //Set TS bit, to cause interrupt on first FPU instruction
     cr0 |= (1 << 5);    //Enable native FPU error interrupts
     __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
 
@@ -41,6 +38,7 @@ int fp_platform_init() {
     if(xsave)cr4 |= (1 << 18);   //OSXSAVE
     __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
 
+    __asm__ volatile ("fninit");
     if(xsave) {
         __asm__ volatile("xsetbv" :: "d"(xsave_bits >> 32), "a"(xsave_bits & 0xffffffff), "c"((uint32_t)0));
     }
@@ -50,8 +48,14 @@ int fp_platform_init() {
 
 int fp_platform_getstatesize(void) {
     if(xsave)
-        return xsave_sz;
+        return (xsave_sz + 64);
     return 512;
+}
+
+int fp_platform_getalign(void) {
+    if(xsave)
+        return 64;
+    return 16;
 }
 
 void fp_platform_getstate(void* buf) {
@@ -73,7 +77,7 @@ void fp_platform_getdefaultstate(void* buf) {
     //MXCSR = 0x1f80
 
     memset(buf, 0, fp_platform_getstatesize());
-
+    
     uint16_t *buf_u16 = (uint16_t*)buf;
     buf_u16[0] = 0x33f;
     buf_u16[12] = 0x1f80;
