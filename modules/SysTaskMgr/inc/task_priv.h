@@ -11,9 +11,11 @@
 #include "thread.h"
 
 #define TASK_NAME_LEN 256
+#define KERNEL_STACK_LEN KiB(8)
 
 typedef enum {
-    task_state_pending = 0,
+    task_state_uninitialized = 0,
+    task_state_pending,
     task_state_running,
     task_state_suspended,
     task_state_blocked,
@@ -23,10 +25,7 @@ typedef enum {
 
 typedef enum {
     task_permissions_none = 0,
-    task_permissions_memorymap = (1 << 0),
-    task_permissions_io = (1 << 1),
-    task_permissions_tasking = (1 << 2),
-    task_permissions_interrupt = (1 << 3),
+    task_permissions_kernel = 1,
 } task_permissions_t;
 
 typedef struct process_desc {
@@ -51,13 +50,13 @@ typedef struct task_desc {
     uint64_t *fpu_state;
     uint64_t *reg_state;
     uint64_t signals[CS_SIGNAL_COUNT];
+    uint8_t *kernel_stack;
 
     struct task_desc *next;
     struct task_desc *prev;
 } task_desc_t;
 
 typedef struct {
-    uint8_t *kernel_stack;
     uint8_t *interrupt_stack;
     task_desc_t *cur_task;
 } core_desc_t;

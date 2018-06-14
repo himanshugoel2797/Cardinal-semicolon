@@ -15,6 +15,7 @@
 #include "SysMemory/memory.h"
 #include "SysUser/syscall.h"
 #include "SysTimer/timer.h"
+#include "SysInterrupts/interrupts.h"
 
 #include "task_priv.h"
 #include "error.h"
@@ -66,15 +67,17 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         local_spinlock_lock(&process_lock);
 
         if(processes == NULL){
-            processes = proc_info;
             proc_info->prev = proc_info;
             proc_info->next = proc_info;
+            processes = proc_info;
         }
         else{
             local_spinlock_lock(&processes->lock);
 
-            processes->prev = proc_info;
-            proc_info->next = processes;
+            proc_info->next = processes->next;
+            proc_info->prev = processes;
+            processes->next->prev = proc_info;
+            processes->next = proc_info;
 
             local_spinlock_unlock(&processes->lock);
 
@@ -96,12 +99,18 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
 
         memset(thread_info, 0, sizeof(task_desc_t));
         memcpy(thread_info->name, name, 256);
-        thread_info->state = task_state_pending;
+        thread_info->state = task_state_uninitialized;
         thread_info->permissions = perms;
         thread_info->signalmask = 0xffffffff;
         thread_info->lock = 0;
-        thread_info->pid = alloc_id;
+        thread_info->pid = (tasktype == cs_task_type_thread) ? core_descs->cur_task->pid : alloc_id;    //TODO: add this to the current process, unless it's an new process
         thread_info->id = alloc_id;
+
+        //Allocate the kernel level stack
+        thread_info->kernel_stack = malloc(KERNEL_STACK_LEN);
+        if(thread_info->kernel_stack == NULL)
+            PANIC("Unexpected memory allocaiton failure.");
+        thread_info->kernel_stack += KERNEL_STACK_LEN;
 
         thread_info->fpu_state = malloc(fp_platform_getstatesize());
         if(thread_info->fpu_state == NULL)
@@ -111,9 +120,9 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         thread_info->reg_state = malloc(mp_platform_getstatesize());
         if(thread_info->reg_state == NULL)
             PANIC("Unexpected memory allocation failure.");
-        mp_platform_getdefaultstate(thread_info->reg_state);
+        mp_platform_getdefaultstate(thread_info->reg_state, thread_info->kernel_stack, NULL, NULL);
 
-        //Stack is allocated by the elf loading program
+        //__asm__("cli\n\thlt" :: "a"(thread_info->kernel_stack), "b"(thread_info->fpu_state), "c"(thread_info->reg_state));
 
         *id = alloc_id;
 
@@ -121,19 +130,20 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         local_spinlock_lock(&task_lock);
 
         if(tasks == NULL){
-            tasks = thread_info;
             thread_info->next = thread_info;
             thread_info->prev = thread_info;
+
+            tasks = thread_info;
         }
         else {
             local_spinlock_lock(&tasks->lock);
 
-            tasks->prev = thread_info;
-            thread_info->next = tasks;
+            thread_info->next = tasks->next;
+            thread_info->prev = tasks;
+            tasks->next->prev = thread_info;
+            tasks->next = thread_info;
 
             local_spinlock_unlock(&tasks->lock);
-
-            tasks = thread_info;
         }
 
         local_spinlock_unlock(&task_lock);
@@ -142,28 +152,65 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
     return CS_OK;
 }
 
+cs_error start_task_kernel(cs_id id, void(*handler)(void *arg)){
+    local_spinlock_lock(&task_lock);
+
+    task_desc_t *iterator = tasks;
+    task_desc_t *task = NULL;
+    cs_id first_id = iterator->id;
+
+    //Find the specified task
+    do{
+        if(iterator->id == id){
+            task = iterator;
+            break;
+        }
+        iterator = iterator->next;
+    }while(iterator->id != first_id);
+    if(task == NULL)    //Didn't find the id
+        return CS_UNKN;
+
+    {
+        local_spinlock_lock(&task->lock);
+        //TODO: The argument may later be used for initialization parameters for the libc
+        mp_platform_getdefaultstate(task->reg_state, task->kernel_stack, handler, NULL);
+        task->state = task_state_pending;
+        local_spinlock_unlock(&task->lock);
+    }
+    local_spinlock_unlock(&task_lock);
+    return CS_OK;
+}
+
 static void task_switch_handler(int irq){
     irq = 0;
 
     if(local_spinlock_trylock(&task_lock)) {    //Only switch if the task queue could be locked
 
+
         if(core_descs->cur_task != NULL){
+            
             local_spinlock_lock(&core_descs->cur_task->lock);
             core_descs->cur_task->state = task_state_suspended;
+            
+            mp_platform_getstate(core_descs->cur_task->reg_state);
+            fp_platform_getstate(core_descs->cur_task->fpu_state);
+
             local_spinlock_unlock(&core_descs->cur_task->lock);
-
             core_descs->cur_task = core_descs->cur_task->next;
-
             local_spinlock_lock(&core_descs->cur_task->lock);
             bool loop = true;
 
             while(loop){
                 switch(core_descs->cur_task->state){
                     case task_state_pending:
-                        //setup process infrastructure
-                        break;
                     case task_state_suspended:
-                        //resume the process
+                        //resume the task
+                        //TODO: For user level tasks also find the process and switch vmem tables
+                        mp_platform_setstate(core_descs->cur_task->reg_state);
+                        fp_platform_setstate(core_descs->cur_task->fpu_state);
+
+                        core_descs->cur_task->state = task_state_running;
+                        loop = false;
                         break;
                     case task_state_running:
                     case task_state_blocked:
@@ -176,6 +223,14 @@ static void task_switch_handler(int irq){
                         break;
                 }
             }
+            local_spinlock_unlock(&core_descs->cur_task->lock);
+        }else{
+            core_descs->cur_task = tasks;
+            local_spinlock_lock(&core_descs->cur_task->lock);
+                fp_platform_setstate(core_descs->cur_task->fpu_state);
+                mp_platform_setstate(core_descs->cur_task->reg_state);
+
+                core_descs->cur_task->state = task_state_running;
             local_spinlock_unlock(&core_descs->cur_task->lock);
         }
 
@@ -203,8 +258,8 @@ cs_error release_perms_syscall(int flag){
 cs_error create_task_syscall(cs_task_type tasktype, char *name, cs_id *id){
     return create_task_kernel(tasktype, name, task_permissions_none, id);
 }
-cs_error start_task_syscall(){
-    return CS_OK;
+cs_error start_task_syscall(cs_id id, void(*handler)(void *arg)){
+    return start_task_kernel(id, handler);
 }
 
 cs_error nanosleep_syscall(){
@@ -267,15 +322,52 @@ cs_error pfree_syscall(uintptr_t addr, size_t sz){
     return CS_OK;
 }
 
+void test_handler(void *arg)
+{
+    arg = NULL;
+
+    while(true) {
+        DEBUG_PRINT("TEST0\r\n");
+    }
+}
+
+void test2_handler(void *arg)
+{
+    arg = NULL;
+
+    while(true) {
+        DEBUG_PRINT("TEST1\r\n");
+    }
+}
+
 int module_mp_init(){
     
-    //Allocate kernel stack and setup interrupt stack
-    uint8_t* kernel_stack = (uint8_t*)malloc(KiB(4)) + KiB(4);
+    //Allocate and setup interrupt stack
     uint8_t* interrupt_stack = (uint8_t*)malloc(KiB(4)) + KiB(4);
 
-    core_descs->kernel_stack = kernel_stack;
     core_descs->interrupt_stack = interrupt_stack;
     core_descs->cur_task = NULL;
+
+    cs_id test0_id = 0, test1_id = 0;
+    cs_error t0_err = create_task_kernel(cs_task_type_process, "test0", task_permissions_kernel, &test0_id);
+    cs_error t1_err = create_task_kernel(cs_task_type_process, "test1", task_permissions_kernel, &test1_id);
+
+    if(t0_err != CS_OK)
+        PANIC("T0_ERR");
+        
+    if(t1_err != CS_OK)
+        PANIC("T1_ERR");
+
+    t0_err = start_task_kernel(test0_id, test_handler);
+    t1_err = start_task_kernel(test1_id, test2_handler);
+
+    if(t0_err != CS_OK)
+        PANIC("T0_ERR");
+        
+    if(t1_err != CS_OK)
+        PANIC("T1_ERR");
+
+    interrupt_setstack(interrupt_stack);
 
     if(timer_request(timer_features_periodic | timer_features_local, 50000, task_switch_handler))
         PANIC("Failed to allocate periodic timer!");

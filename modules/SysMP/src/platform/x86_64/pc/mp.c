@@ -129,7 +129,20 @@ void mp_platform_setstate(void* buf)
     interrupt_setregisterstate( (interrupt_register_state_t*) buf);
 }
 
-void mp_platform_getdefaultstate(void *buf)
+void mp_platform_getdefaultstate(void *buf, void *stackpointer, void *instr_ptr, void *args)
 {
     memset(buf, 0, mp_platform_getstatesize());
+    interrupt_register_state_t* regs = (interrupt_register_state_t*)buf;
+
+    regs->cs = 0x8;
+    regs->ss = 0x10;
+
+    regs->rsp = (uint64_t)stackpointer;
+    regs->rbp = (uint64_t)stackpointer;
+    
+    regs->rflags = 0x0200;
+
+    regs->rip = (uint64_t)instr_ptr;
+
+    regs->rdi = (uint64_t)args;
 }

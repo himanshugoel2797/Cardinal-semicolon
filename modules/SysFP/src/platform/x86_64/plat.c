@@ -22,6 +22,8 @@ int fp_platform_init() {
     registry_readkey_uint("HW/PROC", "XSAVE_BITS", &xsave_bits);
     registry_readkey_uint("HW/PROC", "XSAVE_SZ", &xsave_sz);
 
+    xsave = false;
+
     //Enable FPU
     uint64_t cr0 = 0;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
@@ -54,14 +56,14 @@ int fp_platform_getstatesize(void) {
 
 void fp_platform_getstate(void* buf) {
     if(xsave)
-        __asm__ volatile("xsaveq (%0)" :: "r"(buf) : "memory");
+        __asm__ volatile("xsaveq (%0)" :: "r"(buf), "d"(0xffffffffffffffff), "a"(0xffffffffffffffff) : "memory");
     else
         __asm__ volatile("fxsaveq (%0)" :: "r"(buf) : "memory");
 }
 
 void fp_platform_setstate(void* buf) {
     if(xsave)
-        __asm__ volatile("xrstorq (%0)" :: "r"(buf) : "memory");
+        __asm__ volatile("xrstorq (%0)" :: "r"(buf), "d"(0xffffffffffffffff), "a"(0xffffffffffffffff) : "memory");
     else
         __asm__ volatile("fxrstorq (%0)" :: "r"(buf) : "memory");
 }
