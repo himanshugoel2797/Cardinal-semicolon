@@ -46,8 +46,8 @@ int mp_init() {
         if(registry_readkey_uint(key_idx, "APIC ID", &apic_id) != registry_err_ok)
             return -1;
 
-        if((int)apic_id != interrupt_get_cpuidx()){
-            
+        if((int)apic_id != interrupt_get_cpuidx()) {
+
             core_ready = 0;
 
             alloc_ap_stack();
@@ -75,7 +75,7 @@ int mp_signalready() {
     core_ready = 1;
 
     while(true)
-    ;
+        ;
 
     return 0;
 }
@@ -108,29 +108,25 @@ TLS void* mp_tls_get(int off) {
     return (TLS void*)(uintptr_t)off;
 }
 
-int mp_platform_getstatesize(void)
-{
+int mp_platform_getstatesize(void) {
     return sizeof(interrupt_register_state_t);
 }
 
-void mp_platform_getstate(void* buf)
-{
+void mp_platform_getstate(void* buf) {
     if(buf == NULL)
         PANIC("Parameter is null.");
 
     interrupt_getregisterstate( (interrupt_register_state_t*) buf);
 }
 
-void mp_platform_setstate(void* buf)
-{
+void mp_platform_setstate(void* buf) {
     if(buf == NULL)
         PANIC("Parameter is null.");
 
     interrupt_setregisterstate( (interrupt_register_state_t*) buf);
 }
 
-void mp_platform_getdefaultstate(void *buf, void *stackpointer, void *instr_ptr, void *args)
-{
+void mp_platform_getdefaultstate(void *buf, void *stackpointer, void *instr_ptr, void *args) {
     memset(buf, 0, mp_platform_getstatesize());
     interrupt_register_state_t* regs = (interrupt_register_state_t*)buf;
 
@@ -139,7 +135,7 @@ void mp_platform_getdefaultstate(void *buf, void *stackpointer, void *instr_ptr,
 
     regs->rsp = (uint64_t)stackpointer;
     regs->rbp = (uint64_t)stackpointer;
-    
+
     regs->rflags = 0x0200;
 
     regs->rip = (uint64_t)instr_ptr;

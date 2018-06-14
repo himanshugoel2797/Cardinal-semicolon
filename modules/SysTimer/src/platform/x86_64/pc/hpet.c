@@ -102,11 +102,11 @@ PRIVATE uint64_t hpet_timer_read(timer_handlers_t *handler) {
 
 PRIVATE void hpet_timer_write(timer_handlers_t *handler, uint64_t val) {
     HPET_TimerState *timer = &timers[handler->state];
-    
+
     //If periodic, set appropriate comparator value bit
     if(timer->hpet->timers[handler->state].Configuration.TimerType)
         timer->hpet->timers[handler->state].Configuration.ValueSet = 1;
-    
+
     timer->hpet->timers[handler->state].ComparatorValue = timer->hpet->CounterValue + val;
 
     if(timer->hpet->timers[handler->state].Configuration.TimerType)
@@ -115,10 +115,10 @@ PRIVATE void hpet_timer_write(timer_handlers_t *handler, uint64_t val) {
 
 PRIVATE uint64_t hpet_timer_setmode(timer_handlers_t *handler, timer_features_t features) {
     HPET_TimerState *timer = &timers[handler->state];
-    
+
     if(features & timer_features_oneshot) {
         timer->hpet->timers[handler->state].Configuration.TimerType = 0;
-    }else if(features & timer_features_periodic) {
+    } else if(features & timer_features_periodic) {
         timer->hpet->timers[handler->state].Configuration.TimerType = 1;
     }
 
@@ -144,7 +144,7 @@ PRIVATE void hpet_timer_sendeoi(timer_handlers_t *handler) {
 PRIVATE void hpet_timer_handler(int irq) {
     HPET_Main *hpet = timers[0].hpet;
     for(int i = 0; i <= hpet->Capabilities.TimerCount; i++) {
-        if(timers[i].enabled){
+        if(timers[i].enabled) {
             if(timers[i].cur_handler != NULL)
                 timers[i].cur_handler(irq);
             hpet->InterruptStatus = (1u << i);
@@ -163,7 +163,7 @@ PRIVATE int hpet_getcount() {
     return base_addr->Capabilities.TimerCount + 2;
 }
 
-PRIVATE int hpet_init(){
+PRIVATE int hpet_init() {
 
     HPET_Main *base_addr = NULL;
     intptr_t hpet_phys_base_addr = 0;
@@ -207,7 +207,7 @@ PRIVATE int hpet_init(){
     interrupt_registerhandler(intrpt_num, hpet_timer_handler);
 
     //Enable MSI/FSB interrupt mode for timers, but keep interrupts disabled
-    for(int i = 0; i <= base_addr->Capabilities.TimerCount; i++){
+    for(int i = 0; i <= base_addr->Capabilities.TimerCount; i++) {
 
         //Register remaining counters
         {
@@ -219,13 +219,13 @@ PRIVATE int hpet_init(){
             tState->hpet = base_addr;
 
             //Configure MSI information
-            if(base_addr->timers[i].Configuration.FSBInterruptDelivery){
+            if(base_addr->timers[i].Configuration.FSBInterruptDelivery) {
                 sub_features |= timer_features_pcie_msg_intr;
-                
+
                 base_addr->timers[i].Configuration.FSBInterruptEnable = 1;
                 base_addr->timers[i].InterruptRoute.Address = msi_register_addr(interrupt_get_cpuidx());
                 base_addr->timers[i].InterruptRoute.Value = msi_register_data(intrpt_num);
-            }else{
+            } else {
                 sub_features |= timer_features_fixed_intr;
 
                 //All hpet timers use the same interrupt vector

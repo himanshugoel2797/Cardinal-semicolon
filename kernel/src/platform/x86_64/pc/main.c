@@ -63,7 +63,7 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
 
     // Fix boot information addresses
     CardinalBootInfo *b_info = GetBootInfo();
-    
+
     //Move initrd into allocated memory
     b_info->InitrdStartAddress += 0xffffffff80000000;
     //b_info->FramebufferAddress += 0xffffffff80000000;
@@ -97,5 +97,5 @@ void alloc_ap_stack(void) {
 SECTION(".tramp_handler") void smp_bootstrap(void) {
     apscript_execute();
     while (1)
-    ;
+        ;
 }

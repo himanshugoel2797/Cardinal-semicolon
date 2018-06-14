@@ -95,7 +95,7 @@ void interrupt_mapinterrupt(uint32_t line, int irq, bool active_low, bool level_
     uint32_t ioapic_close_intr_base = 0;
 
     for(int i = 0; i < ioapic_cnt; i++)
-        if(ioapics[i].global_intr_base < line && ioapics[i].global_intr_base > ioapic_close_intr_base){
+        if(ioapics[i].global_intr_base < line && ioapics[i].global_intr_base > ioapic_close_intr_base) {
             ioapic_close_intr_base = ioapics[i].global_intr_base;
             ioapic_idx = i;
         }
@@ -108,7 +108,7 @@ void interrupt_setmask(uint32_t line, bool mask) {
     uint32_t ioapic_close_intr_base = 0;
 
     for(int i = 0; i < ioapic_cnt; i++)
-        if(ioapics[i].global_intr_base < line && ioapics[i].global_intr_base > ioapic_close_intr_base){
+        if(ioapics[i].global_intr_base < line && ioapics[i].global_intr_base > ioapic_close_intr_base) {
             ioapic_close_intr_base = ioapics[i].global_intr_base;
             ioapic_idx = i;
         }

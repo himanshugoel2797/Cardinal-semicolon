@@ -47,12 +47,12 @@ void timer_wait(uint64_t ns) {
     //Allocate a timer for oneshot mode with a rate that can match the desired time
     int idx = 0;
     for(; idx < timer_idx; idx++)
-        if(!timer_defs[idx].in_use && timer_defs[idx].features & timer_features_oneshot){
+        if(!timer_defs[idx].in_use && timer_defs[idx].features & timer_features_oneshot) {
 
-            if(timer_defs[idx].handlers.set_mode != NULL && 
-               timer_defs[idx].handlers.write != NULL && 
-               timer_defs[idx].handlers.set_handler != NULL && 
-               timer_defs[idx].handlers.set_enable != NULL)
+            if(timer_defs[idx].handlers.set_mode != NULL &&
+                    timer_defs[idx].handlers.write != NULL &&
+                    timer_defs[idx].handlers.set_handler != NULL &&
+                    timer_defs[idx].handlers.set_enable != NULL)
                 break;
         }
     if(idx == timer_idx)
@@ -84,17 +84,17 @@ int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int)) 
     //Allocate a timer for the desired mode with a rate that can match the desired time
     int idx = 0;
     for(; idx < timer_idx; idx++)
-        if(!timer_defs[idx].in_use && ((timer_defs[idx].features & features) == features)){
+        if(!timer_defs[idx].in_use && ((timer_defs[idx].features & features) == features)) {
 
-            if(timer_defs[idx].handlers.set_mode != NULL && 
-               timer_defs[idx].handlers.set_handler != NULL && 
-               timer_defs[idx].handlers.set_enable != NULL){
+            if(timer_defs[idx].handlers.set_mode != NULL &&
+                    timer_defs[idx].handlers.set_handler != NULL &&
+                    timer_defs[idx].handlers.set_enable != NULL) {
 
-                    if((features & timer_features_write) && (timer_defs[idx].handlers.write != NULL))
-                        break;
-                    else if(!(features & timer_features_write))
-                        break;
-               }
+                if((features & timer_features_write) && (timer_defs[idx].handlers.write != NULL))
+                    break;
+                else if(!(features & timer_features_write))
+                    break;
+            }
         }
     if(idx == timer_idx)
         return -1;
@@ -115,7 +115,7 @@ int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int)) 
     return 0;
 }
 
-static int timer_init(){
+static int timer_init() {
     return 0;
 }
 
@@ -124,7 +124,7 @@ int module_init() {
     timer_defs = malloc(sizeof(timer_defs_t) * timer_def_cnt);
 
     int err = 0;
-    
+
     err = timer_platform_init();
     if(err != 0)
         return err;

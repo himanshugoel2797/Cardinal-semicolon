@@ -187,7 +187,7 @@ int vmem_mp_init() {
     local_spinlock_unlock(&kmem.lock);
 
     __asm__ volatile("mov %0, %%cr3" :: "r"(ktable_phys) :);
-    
+
     return 0;
 }
 

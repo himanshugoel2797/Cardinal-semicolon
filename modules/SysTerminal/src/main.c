@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -55,8 +55,7 @@ bool terminal_steal(void) {
                 terminaldef_t *n_thrd = NULL;
                 local_spinlock_lock(&thrd->lock);
                 n_thrd = thrd->next;
-                if(thrd->state == terminalstate_pending && !(thrd->flags & terminalflag_cpustatic))
-                {
+                if(thrd->state == terminalstate_pending && !(thrd->flags & terminalflag_cpustatic)) {
                     //append this terminal to the list to append to this cpu
                     if(prev != NULL)prev->next = thrd->next;
                     thrd->next = n_terms;
@@ -69,7 +68,7 @@ bool terminal_steal(void) {
 
                     //Don't update prev in this case, because if the current item is removed
                     //the previous item remains the same
-                }else
+                } else
                     prev = thrd;
 
                 local_spinlock_unlock(&thrd->lock);
@@ -98,7 +97,7 @@ bool terminal_next(void) {
     local_spinlock_lock(&qs[cur_state->coreIdx].queue_lock);
     if(qs[cur_state->coreIdx].curTerm == NULL) {
         qs[cur_state->coreIdx].curTerm = qs[cur_state->coreIdx].queue;
-    }else if(qs[cur_state->coreIdx].curTerm->next == NULL) {
+    } else if(qs[cur_state->coreIdx].curTerm->next == NULL) {
         qs[cur_state->coreIdx].curTerm = qs[cur_state->coreIdx].queue;
     }
 
@@ -112,7 +111,7 @@ terminaldef_t* terminal_create(terminalflags_t flag, uint32_t uid, vmem_t *user_
 
     tdef->uid = uid;
     tdef->tid = terminal_tid++;
-    tdef->map = user_vmem;    
+    tdef->map = user_vmem;
     tdef->state = terminalstate_pending;
     tdef->lock = 0;
     tdef->flags = flag;
@@ -153,44 +152,42 @@ int terminal_setstate(uint32_t tid, terminalstate_t state) {
         local_spinlock_lock(&qs[i].queue_lock);
         terminaldef_t *thrd = qs[i].queue;
         while(thrd != NULL) {
-            
+
             local_spinlock_lock(&thrd->lock);
-            if(thrd->tid == tid){
+            if(thrd->tid == tid) {
                 int err = 0;
                 switch(thrd->state) {
-                    case terminalstate_pending:
-                        thrd->state = state;
+                case terminalstate_pending:
+                    thrd->state = state;
                     break;
-                    case terminalstate_running:
-                        if(state == terminalstate_blocked)
-                            thrd->state = terminalstate_blocked;    //Put this in its own queue
-                        else if(state == terminalstate_exiting)
-                            thrd->state = terminalstate_exiting;
-                        else
-                            err = -1;
-                    break;
-
-                    //TODO: blocked processes aren't in the main queue
-                    case terminalstate_blocked:
-                        if(state == terminalstate_pending){
-                            thrd->state = terminalstate_pending;
-                        }
-                        else if(state == terminalstate_exiting){
-                            thrd->state = terminalstate_exiting;
-                        }
-                        else 
-                            err = -1;
+                case terminalstate_running:
+                    if(state == terminalstate_blocked)
+                        thrd->state = terminalstate_blocked;    //Put this in its own queue
+                    else if(state == terminalstate_exiting)
+                        thrd->state = terminalstate_exiting;
+                    else
+                        err = -1;
                     break;
 
-                    //TODO: the following case shouldn't happen, delete terminal when it's set to exiting
-                    case terminalstate_exiting:
-                        if(state == terminalstate_exiting)
-                            thrd->state = terminalstate_exiting;
-                        else
-                            err = -1;
+                //TODO: blocked processes aren't in the main queue
+                case terminalstate_blocked:
+                    if(state == terminalstate_pending) {
+                        thrd->state = terminalstate_pending;
+                    } else if(state == terminalstate_exiting) {
+                        thrd->state = terminalstate_exiting;
+                    } else
+                        err = -1;
+                    break;
+
+                //TODO: the following case shouldn't happen, delete terminal when it's set to exiting
+                case terminalstate_exiting:
+                    if(state == terminalstate_exiting)
+                        thrd->state = terminalstate_exiting;
+                    else
+                        err = -1;
                     break;
                 }
-                
+
                 local_spinlock_unlock(&thrd->lock);
                 local_spinlock_unlock(&qs[i].queue_lock);
                 return err;
@@ -207,25 +204,25 @@ int terminal_setstate(uint32_t tid, terminalstate_t state) {
 //delete all terminals pending on this cpu
 void terminal_delete(void) {
     //lock core queue first, remove the terminals from it and unlock
-    
+
     terminaldef_t *d_term = NULL;
     local_spinlock_lock(&qs[cur_state->coreIdx].queue_lock);
-    
+
     terminaldef_t *thrd = qs[cur_state->coreIdx].queue;
     terminaldef_t *prev = NULL;
-        
-    while(thrd != NULL) {        
+
+    while(thrd != NULL) {
         local_spinlock_lock(&thrd->lock);
         terminaldef_t *n_term = thrd->next;
-        if(thrd->state == terminalstate_exiting){
+        if(thrd->state == terminalstate_exiting) {
             if(prev != NULL)prev->next = thrd->next; //Remove thrd from the thread list
-            
+
             //Add thrd to the delete list
             thrd->next = d_term;
             d_term = thrd;
 
             //If thrd is removed from the list, prev remains the same
-        }else{
+        } else {
             prev = thrd;
         }
         local_spinlock_unlock(&thrd->lock);
@@ -236,7 +233,7 @@ void terminal_delete(void) {
 
     //TODO: Free the term state now that the terminals have been completely removed from the schedule
     //TODO: Delete task is a kernel level terminal that is tied to its cpu and cannot be preempted
-} 
+}
 
 void terminal_cycle(void) {
     terminal_delete();
@@ -264,13 +261,13 @@ void terminal_cycle(void) {
 
     //Mark the current terminal as active, if it isn't exiting or blocked
     local_spinlock_lock(&qs[cur_state->coreIdx].curTerm->lock);
-    switch(qs[cur_state->coreIdx].curTerm->state){
-        case terminalstate_pending:
-        case terminalstate_running:
-            qs[cur_state->coreIdx].curTerm->state = terminalstate_running;
+    switch(qs[cur_state->coreIdx].curTerm->state) {
+    case terminalstate_pending:
+    case terminalstate_running:
+        qs[cur_state->coreIdx].curTerm->state = terminalstate_running;
         break;
-        case terminalstate_blocked:
-        case terminalstate_exiting:
+    case terminalstate_blocked:
+    case terminalstate_exiting:
         break;
     }
     local_spinlock_unlock(&qs[cur_state->coreIdx].curTerm->lock);
@@ -278,7 +275,7 @@ void terminal_cycle(void) {
     local_spinlock_unlock(&qs[cur_state->coreIdx].queue_lock);
 }
 
-int module_init(){
+int module_init() {
     qs = malloc(sizeof(queue_state_t) * mp_corecount());
     memset(qs, 0, sizeof(queue_state_t*) * mp_corecount());
 
@@ -289,14 +286,14 @@ int module_init(){
 }
 
 int terminal_mp_init() {
-    cur_state->coreIdx = coreId++; 
+    cur_state->coreIdx = coreId++;
 
     terminal_create(terminalflag_kernel | terminalflag_nopreempt | terminalflag_cpustatic, 0, NULL);
 
     while(1) {
         //attempt to obtain a task
         terminal_cycle();
-        
+
         if(qs[cur_state->coreIdx].curTerm != NULL) {
             //start the task
 

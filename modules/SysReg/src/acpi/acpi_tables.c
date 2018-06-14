@@ -46,7 +46,7 @@ static void* ACPITables_FindTable(const char *table_name) {
         for (int i = 0; i < entries; i++) {
             if(xsdt->PointerToOtherSDT[i] == 0)continue;
             ACPISDTHeader *h = (ACPISDTHeader *)vmem_phystovirt_ptr((intptr_t)xsdt->PointerToOtherSDT[i], MiB(2), vmem_flags_cachewriteback);
-            if (!memcmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h)){
+            if (!memcmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h)) {
                 return (void *) h;
             }
         }
@@ -55,10 +55,10 @@ static void* ACPITables_FindTable(const char *table_name) {
         if (!ACPITables_ValidateChecksum((ACPISDTHeader*)rsdt)) return NULL;
 
         int entries = RSDT_GET_POINTER_COUNT((rsdt->h));
-        
+
         for (int i = 0; i < entries; i++) {
             ACPISDTHeader *h = (ACPISDTHeader*)vmem_phystovirt_ptr((intptr_t)rsdt->PointerToOtherSDT[i], MiB(2), vmem_flags_cachewriteback);
-            if (!memcmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h)){
+            if (!memcmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h)) {
                 return (void *) h;
             }
         }
@@ -160,7 +160,7 @@ int preinit_acpi() {
     intptr_t rsdp_addr = 0;
     registry_readkey_uint("HW/BOOTINFO", "RSDPADDR", (uint64_t*)&rsdp_addr);
     RSDPDescriptor20* l_rsdp = (RSDPDescriptor20*)rsdp_addr;
-    
+
     //Copy the rsdp
     rsdp = malloc(sizeof(RSDPDescriptor20));
     memcpy(rsdp, l_rsdp, sizeof(RSDPDescriptor20));
@@ -220,7 +220,7 @@ int acpi_init() {
                 if(err != 0)
                     return err;
             }
-            
+
             i += hdr->entry_size;
             if(hdr->entry_size == 0) i += 8;
         }
@@ -241,7 +241,7 @@ int acpi_init() {
     {
         HPET* hpet = ACPITables_FindTable(HPET_SIG);
 
-        if(hpet != NULL){
+        if(hpet != NULL) {
             if(registry_createdirectory("HW", "HPET") != registry_err_ok)
                 return -7;
 

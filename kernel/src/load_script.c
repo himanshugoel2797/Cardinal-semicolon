@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <types.h>
 
-int script_execute(char *load_script, size_t load_len){
+int script_execute(char *load_script, size_t load_len) {
     char name[1024];
     bool isCRLF = false;
 
@@ -26,13 +26,13 @@ int script_execute(char *load_script, size_t load_len){
         load_script += 5;
         const char *end_of_line = strstr(load_script, "\n");
         memset(name, 0, 1024);
-        
+
         //handle both line endings to avoid annoying issues during development
-        if(*(end_of_line - 1) == '\r'){
+        if(*(end_of_line - 1) == '\r') {
             isCRLF = true;
             end_of_line--;
-        } 
-        
+        }
+
         strncpy(name, load_script, (size_t)(end_of_line - load_script));
         load_script += end_of_line - load_script + 1;
         if(isCRLF)
@@ -86,7 +86,7 @@ int script_execute(char *load_script, size_t load_len){
                 print_str("\r\n");
                 PANIC("CALL FAILED");
             }
-        } else if (mode == -1){
+        } else if (mode == -1) {
             print_str("NAME:");
             print_str(name);
 

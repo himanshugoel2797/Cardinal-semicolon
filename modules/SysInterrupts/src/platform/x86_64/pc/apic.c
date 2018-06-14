@@ -63,7 +63,7 @@ void apic_write(uint32_t off, uint64_t val) {
         }
         uint64_t tmp_Val = rdmsr(0x800 + off / 16);
         wrmsr(0x800 + off / 16, (tmp_Val & ~0xffffffff) | val);
-    }else
+    } else
         apic->base_addr[off / sizeof(uint32_t)] = (uint32_t)val;
 }
 
@@ -101,16 +101,16 @@ int apic_init() {
 
         apic->x2apic_mode = x2apic_sup;
 
-        if(x2apic_sup){
+        if(x2apic_sup) {
             apic_base_reg |= (1 << 10);   //Enable x2apic mode
-            
-        }else{
-            
+
+        } else {
+
         }
     }
     if(!apic->x2apic_mode) apic_write(APIC_DFR, 0xf0000000);    //Setup cluster destination mode
     wrmsr(IA32_APIC_BASE, apic_base_reg);
-    
+
     //Read the id after enabling the apic so x2apic handling works correctly
     apic->id = apic_read(APIC_ID);
     if(!apic->x2apic_mode)apic->id = apic->id >> 24;
@@ -131,7 +131,7 @@ void interrupt_sendeoi(int irq) {
     int byte_off = (irq / 32) * 16;
     int bit_off = irq % 32;
 
-    if(apic_read(APIC_ISR + byte_off) & (1 << bit_off)){
+    if(apic_read(APIC_ISR + byte_off) & (1 << bit_off)) {
         apic_write(APIC_EOI, 0);
     }
 }
@@ -145,7 +145,7 @@ void interrupt_sendipi(int cpu, int vector, ipi_delivery_mode_t delivery_mode) {
 
     if(apic->x2apic_mode) {
         apic_write(APIC_ICR_x2APIC, ipi_msg);
-    }else{
+    } else {
         apic_write(APIC_ICR_xAPIC_HI, (uint32_t)(ipi_msg >> 32));
         apic_write(APIC_ICR_xAPIC_LO, (uint32_t)ipi_msg);
     }
@@ -154,8 +154,8 @@ void interrupt_sendipi(int cpu, int vector, ipi_delivery_mode_t delivery_mode) {
 static int intrpt_num = 0;
 
 //configure timer for tsc deadline
-int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap){
-    
+int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap) {
+
     if(!ap) {
         interrupt_allocate(1, interrupt_flags_none, &intrpt_num);
         interrupt_registerhandler(intrpt_num, handler);
@@ -165,10 +165,9 @@ int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap){
     v = v & ~0x007100ff;
     v |= (intrpt_num & 0xff);
 
-    if(tsc_mode){
+    if(tsc_mode) {
         v |= (2 << 17); //Set TSC-Deadline mode
-    }
-    else{
+    } else {
         v |= (1 << 17); //Set Periodic mode
 
         uint64_t apic_freq = 0;

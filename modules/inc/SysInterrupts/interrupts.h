@@ -40,13 +40,13 @@ struct interrupt_register_state {
     uint64_t rcx;
     uint64_t rbx;
     uint64_t rax;
-    
+
     uint64_t rflags;
     uint64_t rip;
-    
+
     uint64_t cs;
     uint64_t ss;
-    
+
     uint64_t rbp;
     uint64_t rsp;
 };

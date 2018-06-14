@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -77,7 +77,7 @@ void fp_platform_getdefaultstate(void* buf) {
     //MXCSR = 0x1f80
 
     memset(buf, 0, fp_platform_getstatesize());
-    
+
     uint16_t *buf_u16 = (uint16_t*)buf;
     buf_u16[0] = 0x33f;
     buf_u16[12] = 0x1f80;

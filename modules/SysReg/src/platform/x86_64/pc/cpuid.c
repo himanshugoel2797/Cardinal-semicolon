@@ -95,8 +95,8 @@ static void CPUID_RequestInfo(uint32_t page, uint32_t idx, uint32_t *eax,
 int add_cpuid() {
     uint32_t eax, ebx, ecx, edx;
 
-    #define MANUFACT_AMD 1
-    #define MANUFACT_INTEL 2
+#define MANUFACT_AMD 1
+#define MANUFACT_INTEL 2
     int cpu_manufacturer = 0;
 
     // Processor manufacturer identification string
@@ -170,76 +170,74 @@ int add_cpuid() {
 
             //Use the processor identification to configure special information, like APIC clock rates
             switch(cpu_manufacturer) {
-                case MANUFACT_AMD:
-                {
-                    //This method works for Zen only
-                    if(tsc_rate == 0)
-                        tsc_rate = (rdmsr(0xc0010064) & 0xff) * 25 * (1000 * 1000);
+            case MANUFACT_AMD: {
+                //This method works for Zen only
+                if(tsc_rate == 0)
+                    tsc_rate = (rdmsr(0xc0010064) & 0xff) * 25 * (1000 * 1000);
 
-                    if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
-                        return -1;
+                if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+                    return -1;
 
-                    //Default to 100MHz
-                    if(apic_rate == 0)
-                        apic_rate = 100;
+                //Default to 100MHz
+                if(apic_rate == 0)
+                    apic_rate = 100;
 
-                    if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
-                        return -1;
-                }
-                break;
-                case MANUFACT_INTEL:
-                    {
-                        if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
-                            return -1;
-                        
-                        if(apic_rate == 0)
-                        switch(model){
-                            //Nehalem
-                            case 0x1a:
-                            case 0x1e:
-                            case 0x1f:
-                            case 0x2e:
+                if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
+                    return -1;
+            }
+            break;
+            case MANUFACT_INTEL: {
+                if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+                    return -1;
 
-                            //Westmere
-                            case 0x25:
-                            case 0x2c:
-                            case 0x2f:  //CPUID holds, else must callibrate
-                            break;
+                if(apic_rate == 0)
+                    switch(model) {
+                    //Nehalem
+                    case 0x1a:
+                    case 0x1e:
+                    case 0x1f:
+                    case 0x2e:
 
-                            case 0x2a: //Sandy Bridge
-                            case 0x2d: //Sandy Bridge EP
-                            case 0x3a: //Ivy Bridge
-                            case 0x3e: //Ivy Bridge EP
-                            case 0x3c: //Haswell DT
-                            case 0x3f: //Haswell MB
-                            case 0x45: //Haswell ULT
-                            case 0x46: //Haswell ULX
-                            case 0x3d: //Broadwell
-                            case 0x47: //Broadwell H
-                            case 0x56: //Broadwell EP
-                            case 0x4f: //Broadwell EX
-                            //MSR_PLATFORM_INFO gives the apic rate
-                            apic_rate = ((rdmsr(0xce) >> 8) & 0xFF) * 100;
-                            break;
-                            
-                            case 0x4e: //Skylake Y/U
-                            case 0x5e: //Skylake H/S
-                            case 0x55: //Skylake E
+                    //Westmere
+                    case 0x25:
+                    case 0x2c:
+                    case 0x2f:  //CPUID holds, else must callibrate
+                        break;
 
-                            case 0x8e: //Kabylake Y/U
-                            case 0x9e: //Kabylake H/S
-                                apic_rate = 24;
-                            break;
-                        }
-                        if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
-                            return -1;
+                    case 0x2a: //Sandy Bridge
+                    case 0x2d: //Sandy Bridge EP
+                    case 0x3a: //Ivy Bridge
+                    case 0x3e: //Ivy Bridge EP
+                    case 0x3c: //Haswell DT
+                    case 0x3f: //Haswell MB
+                    case 0x45: //Haswell ULT
+                    case 0x46: //Haswell ULX
+                    case 0x3d: //Broadwell
+                    case 0x47: //Broadwell H
+                    case 0x56: //Broadwell EP
+                    case 0x4f: //Broadwell EX
+                        //MSR_PLATFORM_INFO gives the apic rate
+                        apic_rate = ((rdmsr(0xce) >> 8) & 0xFF) * 100;
+                        break;
+
+                    case 0x4e: //Skylake Y/U
+                    case 0x5e: //Skylake H/S
+                    case 0x55: //Skylake E
+
+                    case 0x8e: //Kabylake Y/U
+                    case 0x9e: //Kabylake H/S
+                        apic_rate = 24;
+                        break;
                     }
-                break;
-                default:
-                    if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
-                        return -1;
-                    if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate) != registry_err_ok)
-                        return -1;
+                if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
+                    return -1;
+            }
+            break;
+            default:
+                if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+                    return -1;
+                if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate) != registry_err_ok)
+                    return -1;
                 break;
             }
         }

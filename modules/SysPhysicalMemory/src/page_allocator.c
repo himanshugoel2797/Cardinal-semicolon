@@ -123,14 +123,14 @@ void pagealloc_free(uintptr_t addr, uint64_t size) {
     free_mem += size;
 
 //#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
-{
-                char tmp_buf[10];
-                DEBUG_PRINT("SysPhysicalMemory: Free addr=");
-                DEBUG_PRINT(itoa((int)addr, tmp_buf, 16));
-                DEBUG_PRINT(" size=");
-                DEBUG_PRINT(itoa((int)size, tmp_buf, 16));
-                DEBUG_PRINT("\r\n");
-}
+    {
+        char tmp_buf[10];
+        DEBUG_PRINT("SysPhysicalMemory: Free addr=");
+        DEBUG_PRINT(itoa((int)addr, tmp_buf, 16));
+        DEBUG_PRINT(" size=");
+        DEBUG_PRINT(itoa((int)size, tmp_buf, 16));
+        DEBUG_PRINT("\r\n");
+    }
 //#endif
 
     for (int32_t pg_0 = 0; pg_0 < page_cnt; pg_0 += MAX_ENTRIES) {
@@ -183,12 +183,12 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
                 free_mem -= size;
 
 //#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
-{
-                char tmp_buf[10];
-                DEBUG_PRINT("SysPhysicalMemory: Allocated addr=");
-                DEBUG_PRINT(itoa((int)ret_addr, tmp_buf, 16));
-                DEBUG_PRINT("\r\n");
-}
+                {
+                    char tmp_buf[10];
+                    DEBUG_PRINT("SysPhysicalMemory: Allocated addr=");
+                    DEBUG_PRINT(itoa((int)ret_addr, tmp_buf, 16));
+                    DEBUG_PRINT("\r\n");
+                }
 //#endif
 
                 return ret_addr;
@@ -239,28 +239,28 @@ int pagealloc_init() {
                 PANIC("Failed to read registry.");
 
 
-            
+
             if (len % BTM_LEVEL != 0)
                 len -= len % BTM_LEVEL;
 
             addr = roundUp_po2(addr, BTM_LEVEL);
 
 //#ifdef PHYSMEM_DEBUG_VERBOSE_MID
-{
+            {
                 char tmp_buf[10];
                 DEBUG_PRINT("SysPhysicalMemory: Free zones, addr=");
                 DEBUG_PRINT(itoa((int)addr, tmp_buf, 16));
                 DEBUG_PRINT(" len=");
                 DEBUG_PRINT(itoa((int)len, tmp_buf, 16));
                 DEBUG_PRINT("\r\n");
-}
+            }
 //#endif
-            
+
             //if(addr <= initrd_addr && addr + len >= initrd_addr + initrd_len) {
             //    if(initrd_addr > addr) pagealloc_free(addr, initrd_addr - addr);
             //    if(initrd_addr + initrd_len < addr + len) pagealloc_free(initrd_addr + initrd_len, (addr + len) - (initrd_addr + initrd_len));
             //}else
-                pagealloc_free(addr, len);
+            pagealloc_free(addr, len);
 
         }
     }

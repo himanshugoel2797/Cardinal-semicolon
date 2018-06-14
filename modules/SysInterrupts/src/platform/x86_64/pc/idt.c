@@ -80,7 +80,7 @@ static bool int_arr_inited = false;
 void interrupt_registerhandler(int irq, InterruptHandler handler) {
     local_spinlock_lock(&interrupt_alloc_lock);
     for(int i = 0; i < IDT_HANDLER_CNT; i++)
-        if(interrupt_funcs[irq][i] == NULL){
+        if(interrupt_funcs[irq][i] == NULL) {
             interrupt_funcs[irq][i] = handler;
             local_spinlock_unlock(&interrupt_alloc_lock);
             return;
@@ -93,7 +93,7 @@ void interrupt_registerhandler(int irq, InterruptHandler handler) {
 void interrupt_unregisterhandler(int irq, InterruptHandler handler) {
     local_spinlock_lock(&interrupt_alloc_lock);
     for(int i = 0; i < IDT_HANDLER_CNT; i++)
-        if(interrupt_funcs[irq][i] == handler){
+        if(interrupt_funcs[irq][i] == handler) {
             interrupt_funcs[irq][i] = NULL;
         }
     local_spinlock_unlock(&interrupt_alloc_lock);
@@ -102,9 +102,9 @@ void interrupt_unregisterhandler(int irq, InterruptHandler handler) {
 int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
     if(flags & interrupt_flags_fixed) {
         local_spinlock_lock(&interrupt_alloc_lock);
-        
+
         for(int c = 0; c < cnt; c++) {
-            if(interrupt_blocked[*base + c]){
+            if(interrupt_blocked[*base + c]) {
                 local_spinlock_unlock(&interrupt_alloc_lock);
                 return -1;
             }
@@ -116,7 +116,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
 
         local_spinlock_unlock(&interrupt_alloc_lock);
         return 0;
-    }else{
+    } else {
         //if fixed allocation works, use it
         if(*base != 0) {
             int err = interrupt_allocate(cnt, flags | interrupt_flags_fixed, base);
@@ -143,7 +143,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
             if(interrupt_blocked[i]) {
                 run_len = 0;
                 run_off = i + 1;
-            }else
+            } else
                 run_len++;
         }
 
@@ -160,7 +160,7 @@ void idt_mainhandler(regs_t *regs) {
 
     bool handled = false;
 
-    for(int i = 0; i < IDT_HANDLER_CNT; i++){
+    for(int i = 0; i < IDT_HANDLER_CNT; i++) {
         local_spinlock_lock(&interrupt_alloc_lock);
         if(interrupt_funcs[regs->int_no][i] != NULL) {
             interrupt_funcs[regs->int_no][i](regs->int_no);
@@ -168,7 +168,7 @@ void idt_mainhandler(regs_t *regs) {
         }
         local_spinlock_unlock(&interrupt_alloc_lock);
     }
-    
+
     if(!handled) {
         char msg[256] = "Unhandled Interrupt: ";
         char int_num[10];
@@ -328,19 +328,19 @@ int idt_init() {
     idt_t *idt_lcl = idt->idt;
 
     int pushesToStack = 1;
-    if(!int_arr_inited){
+    if(!int_arr_inited) {
 
-        for(int i = 0; i < IDT_ENTRY_COUNT; i++){
+        for(int i = 0; i < IDT_ENTRY_COUNT; i++) {
             if(i == 8 || (i >= 10 && i <= 14)) pushesToStack = 0;
             idt_fillswinterrupthandler(idt_handlers[i], i, pushesToStack);  //If pushesToStack is non-zero, the value will be pushed to stack
-            
+
             interrupt_blocked[i] = false;
             for(int j = 0; j < IDT_HANDLER_CNT; j++)
                 interrupt_funcs[i][j] = NULL;
 
             pushesToStack = 1;
-        }    
-            
+        }
+
 
         int_arr_inited = true;
     }

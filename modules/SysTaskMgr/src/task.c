@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -37,41 +37,37 @@ static int process_lock = 0;
 static TLS core_desc_t *core_descs = NULL;
 
 
-cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_t perms, cs_id *id){
+cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_t perms, cs_id *id) {
     cs_id alloc_id = cur_id++;
 
-    if(tasktype == cs_task_type_process)
-    {
+    if(tasktype == cs_task_type_process) {
         //Create the process address space and add it to the list
         process_desc_t *proc_info = malloc(sizeof(process_desc_t));
-        if(proc_info == NULL)
-            {
-                free(proc_info);
-                return CS_OUTOFMEM;
-            }
+        if(proc_info == NULL) {
+            free(proc_info);
+            return CS_OUTOFMEM;
+        }
 
         memset(proc_info, 0, sizeof(process_desc_t));
         proc_info->id = alloc_id;
         proc_info->lock = 0;
         proc_info->thd_cnt = 0;
 
-        if(vmem_create(&proc_info->mem) != 0)
-            {
-                free(proc_info);
-                return CS_OUTOFMEM;
-            }
+        if(vmem_create(&proc_info->mem) != 0) {
+            free(proc_info);
+            return CS_OUTOFMEM;
+        }
 
         *id = alloc_id;
 
         //add this to the process queue
         local_spinlock_lock(&process_lock);
 
-        if(processes == NULL){
+        if(processes == NULL) {
             proc_info->prev = proc_info;
             proc_info->next = proc_info;
             processes = proc_info;
-        }
-        else{
+        } else {
             local_spinlock_lock(&processes->lock);
 
             proc_info->next = processes->next;
@@ -87,12 +83,10 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         local_spinlock_unlock(&process_lock);
     }
 
-    if(tasktype == cs_task_type_process || tasktype == cs_task_type_thread)
-    {
+    if(tasktype == cs_task_type_process || tasktype == cs_task_type_thread) {
         //Create the thread and add it to the list
         task_desc_t *thread_info = malloc(sizeof(task_desc_t));
-        if(thread_info == NULL)
-        {
+        if(thread_info == NULL) {
             free(thread_info);
             return CS_OUTOFMEM;
         }
@@ -134,13 +128,12 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         //add this to the thread queue
         local_spinlock_lock(&task_lock);
 
-        if(tasks == NULL){
+        if(tasks == NULL) {
             thread_info->next = thread_info;
             thread_info->prev = thread_info;
 
             tasks = thread_info;
-        }
-        else {
+        } else {
             local_spinlock_lock(&tasks->lock);
 
             thread_info->next = tasks->next;
@@ -157,7 +150,7 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
     return CS_OK;
 }
 
-cs_error start_task_kernel(cs_id id, void(*handler)(void *arg)){
+cs_error start_task_kernel(cs_id id, void(*handler)(void *arg)) {
     local_spinlock_lock(&task_lock);
 
     task_desc_t *iterator = tasks;
@@ -165,13 +158,13 @@ cs_error start_task_kernel(cs_id id, void(*handler)(void *arg)){
     cs_id first_id = iterator->id;
 
     //Find the specified task
-    do{
-        if(iterator->id == id){
+    do {
+        if(iterator->id == id) {
             task = iterator;
             break;
         }
         iterator = iterator->next;
-    }while(iterator->id != first_id);
+    } while(iterator->id != first_id);
     if(task == NULL)    //Didn't find the id
         return CS_UNKN;
 
@@ -186,26 +179,26 @@ cs_error start_task_kernel(cs_id id, void(*handler)(void *arg)){
     return CS_OK;
 }
 
-static void task_switch_handler(int irq){
+static void task_switch_handler(int irq) {
     irq = 0;
 
     if(local_spinlock_trylock(&task_lock)) {    //Only switch if the task queue could be locked
-        if(local_spinlock_trylock(&process_lock)){
-        if(core_descs->cur_task != NULL){
-            
-            local_spinlock_lock(&core_descs->cur_task->lock);
-            core_descs->cur_task->state = task_state_suspended;
-            
-            mp_platform_getstate(core_descs->cur_task->reg_state);
-            fp_platform_getstate(core_descs->cur_task->fpu_state);
+        if(local_spinlock_trylock(&process_lock)) {
+            if(core_descs->cur_task != NULL) {
 
-            local_spinlock_unlock(&core_descs->cur_task->lock);
-            core_descs->cur_task = core_descs->cur_task->next;
-            local_spinlock_lock(&core_descs->cur_task->lock);
-            bool loop = true;
+                local_spinlock_lock(&core_descs->cur_task->lock);
+                core_descs->cur_task->state = task_state_suspended;
 
-            while(loop){
-                switch(core_descs->cur_task->state){
+                mp_platform_getstate(core_descs->cur_task->reg_state);
+                fp_platform_getstate(core_descs->cur_task->fpu_state);
+
+                local_spinlock_unlock(&core_descs->cur_task->lock);
+                core_descs->cur_task = core_descs->cur_task->next;
+                local_spinlock_lock(&core_descs->cur_task->lock);
+                bool loop = true;
+
+                while(loop) {
+                    switch(core_descs->cur_task->state) {
                     case task_state_pending:
                     case task_state_suspended:
                         //resume the task
@@ -226,70 +219,70 @@ static void task_switch_handler(int irq){
                         core_descs->cur_task = core_descs->cur_task->next;
                         local_spinlock_lock(&core_descs->cur_task->lock);
                         break;
+                    }
                 }
-            }
-            local_spinlock_unlock(&core_descs->cur_task->lock);
-        }else{
-            core_descs->cur_task = tasks;
-            local_spinlock_lock(&core_descs->cur_task->lock);
+                local_spinlock_unlock(&core_descs->cur_task->lock);
+            } else {
+                core_descs->cur_task = tasks;
+                local_spinlock_lock(&core_descs->cur_task->lock);
                 fp_platform_setstate(core_descs->cur_task->fpu_state);
                 mp_platform_setstate(core_descs->cur_task->reg_state);
 
                 core_descs->cur_task->state = task_state_running;
-            local_spinlock_unlock(&core_descs->cur_task->lock);
-        }
+                local_spinlock_unlock(&core_descs->cur_task->lock);
+            }
             local_spinlock_unlock(&process_lock);
         }
         local_spinlock_unlock(&task_lock);
     }
 }
 
-cs_error send_ipc_syscall(){
+cs_error send_ipc_syscall() {
     return CS_OK;
 }
-cs_error receive_ipc_syscall(){
+cs_error receive_ipc_syscall() {
     return CS_OK;
 }
 
-cs_error get_perms_syscall(int flag, uint64_t* result){
+cs_error get_perms_syscall(int flag, uint64_t* result) {
     flag = 0;
     result = NULL;
     return CS_OK;
 }
-cs_error release_perms_syscall(int flag){
+cs_error release_perms_syscall(int flag) {
     flag = 0;
     return CS_OK;
 }
 
-cs_error create_task_syscall(cs_task_type tasktype, char *name, cs_id *id){
+cs_error create_task_syscall(cs_task_type tasktype, char *name, cs_id *id) {
     return create_task_kernel(tasktype, name, task_permissions_none, id);
 }
-cs_error start_task_syscall(cs_id id, void(*handler)(void *arg)){
+cs_error start_task_syscall(cs_id id, void(*handler)(void *arg)) {
     return start_task_kernel(id, handler);
 }
 
-cs_error nanosleep_syscall(){
+cs_error nanosleep_syscall() {
     return CS_OK;
 }
 
-cs_error signal_syscall(){
+cs_error signal_syscall() {
     return CS_OK;
 }
-cs_error register_signal_syscall(){
+cs_error register_signal_syscall() {
     return CS_OK;
 }
-cs_error signal_mask_syscall(){
-    return CS_OK;
-}
-
-cs_error exit_syscall(){
-    return CS_OK;
-}
-cs_error kill_task_syscall(){
+cs_error signal_mask_syscall() {
     return CS_OK;
 }
 
-cs_error map_syscall(cs_id pid, intptr_t virt, intptr_t phys, size_t sz, int perms, int flags){
+cs_error exit_syscall() {
+    return CS_OK;
+}
+cs_error kill_task_syscall() {
+    return CS_OK;
+}
+
+cs_error map_syscall(cs_id pid, intptr_t virt, intptr_t phys, size_t sz, int perms, int flags) {
     pid = 0;
     virt = 0;
     phys = 0;
@@ -298,13 +291,13 @@ cs_error map_syscall(cs_id pid, intptr_t virt, intptr_t phys, size_t sz, int per
     flags = 0;
     return CS_OK;
 }
-cs_error unmap_syscall(cs_id pid, intptr_t virt, size_t sz){
+cs_error unmap_syscall(cs_id pid, intptr_t virt, size_t sz) {
     pid = 0;
     virt = 0;
     sz = 0;
     return CS_OK;
 }
-cs_error read_mmap_syscall(cs_id pid, intptr_t virt, intptr_t *phys, size_t *sz, int *perms, int *flags){
+cs_error read_mmap_syscall(cs_id pid, intptr_t virt, intptr_t *phys, size_t *sz, int *perms, int *flags) {
     pid = 0;
     virt = 0;
     phys = NULL;
@@ -314,7 +307,7 @@ cs_error read_mmap_syscall(cs_id pid, intptr_t virt, intptr_t *phys, size_t *sz,
     return CS_OK;
 }
 
-cs_error pmalloc_syscall(int flags, size_t sz, uintptr_t *addr){
+cs_error pmalloc_syscall(int flags, size_t sz, uintptr_t *addr) {
     //pagealloc_alloc
     *addr = pagealloc_alloc(0, 0, flags, sz);
     if(*addr == (uintptr_t)-1)
@@ -322,14 +315,13 @@ cs_error pmalloc_syscall(int flags, size_t sz, uintptr_t *addr){
 
     return CS_OK;
 }
-cs_error pfree_syscall(uintptr_t addr, size_t sz){
+cs_error pfree_syscall(uintptr_t addr, size_t sz) {
     //pagealloc_free
     pagealloc_free(addr, sz);
     return CS_OK;
 }
 
-void test_handler(void *arg)
-{
+void test_handler(void *arg) {
     arg = NULL;
 
     while(true) {
@@ -337,8 +329,7 @@ void test_handler(void *arg)
     }
 }
 
-void test2_handler(void *arg)
-{
+void test2_handler(void *arg) {
     arg = NULL;
 
     while(true) {
@@ -346,8 +337,8 @@ void test2_handler(void *arg)
     }
 }
 
-int module_mp_init(){
-    
+int module_mp_init() {
+
     //Allocate and setup interrupt stack
     uint8_t* interrupt_stack = (uint8_t*)malloc(KiB(4)) + KiB(4);
 
@@ -360,7 +351,7 @@ int module_mp_init(){
 
     if(t0_err != CS_OK)
         PANIC("T0_ERR");
-        
+
     if(t1_err != CS_OK)
         PANIC("T1_ERR");
 
@@ -369,7 +360,7 @@ int module_mp_init(){
 
     if(t0_err != CS_OK)
         PANIC("T0_ERR");
-        
+
     if(t1_err != CS_OK)
         PANIC("T1_ERR");
 
@@ -381,7 +372,7 @@ int module_mp_init(){
     return 0;
 }
 
-int module_init(){
+int module_init() {
 
     //Allocate core memory
     if(core_descs == NULL)
@@ -404,11 +395,11 @@ int module_init(){
     syscall_sethandler(23, (void*)start_task_syscall);
 
     syscall_sethandler(25, (void*)nanosleep_syscall);
-    
+
     syscall_sethandler(26, (void*)signal_syscall);
     syscall_sethandler(27, (void*)register_signal_syscall);
     syscall_sethandler(28, (void*)signal_mask_syscall);
-    
+
     syscall_sethandler(29, (void*)exit_syscall);
     syscall_sethandler(30, (void*)kill_task_syscall);
 

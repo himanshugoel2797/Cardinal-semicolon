@@ -33,7 +33,7 @@ PRIVATE void apic_handler(int irq) {
         if(apic_state->handler != NULL)
             apic_state->handler(irq);
 
-        if(apic_state->oneshot){
+        if(apic_state->oneshot) {
             apic_state->enabled = false;
         }
     }
@@ -42,10 +42,10 @@ PRIVATE void apic_handler(int irq) {
 
 PRIVATE uint64_t apic_timer_setmode(timer_handlers_t *handler, timer_features_t features) {
     handler = NULL;
-    
+
     if(features & timer_features_oneshot) {
         apic_state->oneshot = true;
-    }else if(features & timer_features_periodic) {
+    } else if(features & timer_features_periodic) {
         apic_state->oneshot = false;
     }
 
@@ -64,9 +64,9 @@ PRIVATE void apic_timer_sethandler(timer_handlers_t *state, void (*handler)(int)
 
 
 static bool apic_init_done = false;
-PRIVATE int apic_timer_init(){
+PRIVATE int apic_timer_init() {
     local_apic_timer_init(false, apic_handler, apic_init_done);
-    
+
     if(apic_state == NULL) {
         apic_state = (TLS tls_apic_timer_state_t*)mp_tls_get(mp_tls_alloc(sizeof(tls_apic_timer_state_t)));
 
@@ -90,7 +90,7 @@ PRIVATE int apic_timer_init(){
     apic_state->enabled = false;
     apic_state->oneshot = false;
     apic_state->handler = NULL;
-    
+
     apic_init_done = true;
     return 0;
 }

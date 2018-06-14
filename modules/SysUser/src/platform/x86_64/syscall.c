@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -94,7 +94,7 @@ PRIVATE NAKED NORETURN void user_transition(uint64_t UNUSED(a), uint64_t UNUSED(
 }
 
 int syscall_sethandler(int idx, void* func) {
-    if(idx < SYSCALL_COUNT){
+    if(idx < SYSCALL_COUNT) {
         syscall_funcs[idx] = func;
         return 0;
     }
@@ -133,7 +133,7 @@ void syscall_touser(uint64_t *regs) {
     user_transition(regs[0], regs[1], regs[2], regs[3], regs[4], regs[5], regs[6]);
 }
 
-PRIVATE int syscall_plat_init(){
+PRIVATE int syscall_plat_init() {
 
     if(syscall_state == NULL)
         syscall_state = (TLS syscall_state_t*)mp_tls_get(mp_tls_alloc(sizeof(syscall_state_t)));

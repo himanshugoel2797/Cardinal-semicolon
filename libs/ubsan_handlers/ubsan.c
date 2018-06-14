@@ -178,7 +178,7 @@ void WEAK __ubsan_handle_sub_overflow(struct overflow_data *data, uintptr_t lhs,
 }
 
 void WEAK __ubsan_handle_pointer_overflow(struct overflow_data *data, uintptr_t lhs,
-                                      uintptr_t rhs) {
+        uintptr_t rhs) {
     handle_lhs_rhs_funcs(&data->loc, lhs, rhs, pointer_overflow);
 }
 

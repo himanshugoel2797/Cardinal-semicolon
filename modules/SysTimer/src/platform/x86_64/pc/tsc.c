@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -11,7 +11,7 @@
 #include "priv_timers.h"
 #include "timer.h"
 
-PRIVATE bool use_tsc(){
+PRIVATE bool use_tsc() {
     bool tsc_valid = false;
     if(registry_readkey_bool("HW/PROC", "TSC_AVAIL", &tsc_valid) != registry_err_ok)
         return false;
@@ -80,5 +80,5 @@ PRIVATE int tsc_mp_init() {
     __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
 
     //Initialize the apic timer
-    return apic_timer_init();   //TODO: May want to use the TSC deadline mode    
+    return apic_timer_init();   //TODO: May want to use the TSC deadline mode
 }

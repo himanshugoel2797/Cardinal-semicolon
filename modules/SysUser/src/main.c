@@ -1,13 +1,13 @@
 /**
  * Copyright (c) 2017 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
 #include "plat_defs.h"
 #include "boot_information.h"
 
-int module_init(){
+int module_init() {
 
     /*CardinalBootInfo *bInfo = GetBootInfo();
     uint32_t* v = (uint32_t*)(0xffff800000000000ull + bInfo->FramebufferAddress);
@@ -17,7 +17,7 @@ int module_init(){
         {
             v[y * bInfo->FramebufferPitch/sizeof(uint32_t) + x] = 0xaaaaaaaa;
         }
-*/
+    */
     //Setup syscall system
     syscall_plat_init();
     return 0;

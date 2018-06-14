@@ -10,6 +10,6 @@
 //TODO: timer manager creates virtual timers with certain capabilities which it presents to the OS
 //TODO: provides a general purpose platform independent interface for timers
 
-int pit_init(){
+int pit_init() {
     return -1;
 }
