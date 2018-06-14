@@ -55,4 +55,21 @@ __attribute__((always_inline)) static __inline uint64_t rdmsr(uint32_t msr) {
 __attribute__((always_inline)) static __inline void halt(void) {
     __asm__ volatile("hlt");
 }
+
+__attribute__((always_inline)) static __inline int cli(void) {
+    uint64_t flags = 0;
+    __asm__ volatile( 
+        "pushf\n\t"
+        "popq %0\n\t" 
+        "cli\n\t"
+        : "=r"(flags)
+        );
+
+    return (flags & 0x200);
+}
+
+__attribute__((always_inline)) static __inline void sti(int state) {
+    if(state)
+    __asm__ volatile("sti");
+}
 #endif

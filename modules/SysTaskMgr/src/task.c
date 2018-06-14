@@ -421,9 +421,5 @@ int module_init() {
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers
 
-
-    while(true)
-        halt();
-
     return 0;
 }

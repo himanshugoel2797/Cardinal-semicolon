@@ -53,8 +53,11 @@ static inline char serial_input() {
 
 void print_stream(void (*output_stream)(char) NONNULL,
                   const char *str NONNULL) {
+    int state = cli();
     while (*str != 0)
         output_stream(*(str++));
+
+    sti(state);
 }
 
 static char priv_s[2048];
