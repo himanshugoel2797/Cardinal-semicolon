@@ -12,6 +12,7 @@
 #include "SysMP/mp.h"
 #include "SysFP/fp.h"
 #include "SysPhysicalMemory/phys_mem.h"
+#include "SysVirtualMemory/vmem.h"
 #include "SysMemory/memory.h"
 #include "SysUser/syscall.h"
 #include "SysTimer/timer.h"
@@ -201,14 +202,21 @@ static void task_switch_handler(int irq) {
                     switch(core_descs->cur_task->state) {
                     case task_state_pending:
                     case task_state_suspended:
+                    {
                         //resume the task
                         //For user level tasks also find the process and switch vmem table
+                        process_desc_t *iterator = processes;
+                        do
+                            iterator = iterator->next;
+                        while(iterator->id != core_descs->cur_task->pid);
 
+                        vmem_setactive(iterator->mem);
                         mp_platform_setstate(core_descs->cur_task->reg_state);
                         fp_platform_setstate(core_descs->cur_task->fpu_state);
 
                         core_descs->cur_task->state = task_state_running;
                         loop = false;
+                    }
                         break;
                     case task_state_running:
                     case task_state_blocked:
