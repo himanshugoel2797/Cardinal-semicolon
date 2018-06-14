@@ -190,8 +190,7 @@ static void task_switch_handler(int irq){
     irq = 0;
 
     if(local_spinlock_trylock(&task_lock)) {    //Only switch if the task queue could be locked
-
-
+        if(local_spinlock_trylock(&process_lock)){
         if(core_descs->cur_task != NULL){
             
             local_spinlock_lock(&core_descs->cur_task->lock);
@@ -210,7 +209,8 @@ static void task_switch_handler(int irq){
                     case task_state_pending:
                     case task_state_suspended:
                         //resume the task
-                        //TODO: For user level tasks also find the process and switch vmem tables
+                        //For user level tasks also find the process and switch vmem table
+
                         mp_platform_setstate(core_descs->cur_task->reg_state);
                         fp_platform_setstate(core_descs->cur_task->fpu_state);
 
@@ -238,7 +238,8 @@ static void task_switch_handler(int irq){
                 core_descs->cur_task->state = task_state_running;
             local_spinlock_unlock(&core_descs->cur_task->lock);
         }
-
+            local_spinlock_unlock(&process_lock);
+        }
         local_spinlock_unlock(&task_lock);
     }
 }
