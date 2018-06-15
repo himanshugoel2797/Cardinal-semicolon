@@ -5,6 +5,8 @@
  * https://opensource.org/licenses/MIT
  */
 
+#include "CoreDisplay/display.h"
+
 int module_init(){
 
     return 0;
