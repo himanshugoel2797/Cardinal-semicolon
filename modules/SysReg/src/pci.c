@@ -226,5 +226,9 @@ int pci_reg_init() {
         device++;
     }
 
+    
+    if(registry_addkey_uint("HW/PCI", "COUNT", idx) != registry_err_ok)
+        return -14;
+
     return 0;
 }

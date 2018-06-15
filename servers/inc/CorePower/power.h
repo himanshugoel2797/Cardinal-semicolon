@@ -25,13 +25,13 @@ typedef enum device_pwr_state {
 } device_pwr_state_t;
 
 typedef enum device_pwr_class {
-    generic,
-    display,
-    audio_out,
-    audio_in,
-    human_interface_device,
-    camera,
-    processor,
+    generic = (1 << 0),
+    display = (1 << 1),
+    audio_out = (1 << 2),
+    audio_in = (1 << 3),
+    human_interface_device = (1 << 4),
+    camera = (1 << 5),
+    processor = (1 << 6),
 } device_pwr_class_t;
 
 //Power management event handlers
@@ -46,9 +46,10 @@ typedef struct pwr_device {
 } pwr_device_t;
 
 //Register a power management device
-int pwr_register();
+int pwr_register(pwr_device_t *device);
 
 //Send a power state change event
-int pwr_sendevent();
+int pwr_sendevent_g(device_pwr_class_t pwr_class, global_pwr_state_t state, int p_state);
+int pwr_sendevent_d(device_pwr_class_t pwr_class, device_pwr_state_t state);
 
 #endif
