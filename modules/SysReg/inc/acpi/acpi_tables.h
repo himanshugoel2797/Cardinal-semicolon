@@ -80,6 +80,10 @@ typedef struct {
 
 int acpi_init();
 
+bool ACPITables_ValidateChecksum(ACPISDTHeader *header);
+
+void* ACPITables_FindTable(const char *table_name);
+
 /**@}*/
 
 #endif /* end of include guard: _PRIV_ACPI_TABLES_DRIVER_H_ */

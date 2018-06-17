@@ -25,7 +25,7 @@
 static intptr_t (*vmem_phystovirt_ptr)(intptr_t, size_t, int);
 static RSDPDescriptor20 *rsdp;
 
-static bool ACPITables_ValidateChecksum(ACPISDTHeader *header) {
+bool ACPITables_ValidateChecksum(ACPISDTHeader *header) {
     uint8_t sum = 0;
     for (uint32_t i = 0; i < header->Length; i++) {
         sum += ((char *)header)[i];
@@ -34,7 +34,7 @@ static bool ACPITables_ValidateChecksum(ACPISDTHeader *header) {
     return sum == 0;
 }
 
-static void* ACPITables_FindTable(const char *table_name) {
+void* ACPITables_FindTable(const char *table_name) {
     if (rsdp == NULL) return NULL;
 
     if(rsdp->firstPart.Revision != ACPI_VERSION_1 && rsdp->XsdtAddress) {
