@@ -201,8 +201,7 @@ static void task_switch_handler(int irq) {
                 while(loop) {
                     switch(core_descs->cur_task->state) {
                     case task_state_pending:
-                    case task_state_suspended:
-                    {
+                    case task_state_suspended: {
                         //resume the task
                         //For user level tasks also find the process and switch vmem table
                         process_desc_t *iterator = processes;
@@ -217,7 +216,7 @@ static void task_switch_handler(int irq) {
                         core_descs->cur_task->state = task_state_running;
                         loop = false;
                     }
-                        break;
+                    break;
                     case task_state_running:
                     case task_state_blocked:
                     case task_state_exiting:

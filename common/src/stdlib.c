@@ -72,12 +72,12 @@ int WEAK atoi(const char * ptr, int base) {
         int digit = 0;
         while(true) {
             for(digit = 0; digit < 16; digit++)
-                if(hextable[digit] == *ptr){
+                if(hextable[digit] == *ptr) {
                     val |= digit;
                     break;
                 }
 
-            if(digit == 16){
+            if(digit == 16) {
                 val = val >> 4;
                 return val;
             }
@@ -85,6 +85,6 @@ int WEAK atoi(const char * ptr, int base) {
             ptr++;
             val = val << 4;
         }
-    }else
+    } else
         return -1;
 }

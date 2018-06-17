@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -14,7 +14,7 @@
 #include "initrd.h"
 #include "elf.h"
 
-int module_init(){
+int module_init() {
 
     char *str = NULL;
     size_t str_sz = 0;
@@ -48,14 +48,14 @@ int module_init(){
             char idx_str[10] = "";
             char key_str[256] = "HW/PCI/";
             char *key_idx = strncat(key_str, itoa(idx, idx_str, 16), 255);
-            
+
             uint64_t dev_class = 0;
             if(registry_readkey_uint(key_idx, "CLASS", &dev_class) != registry_err_ok)
                 return -1;
-                
+
             uint64_t dev_subclass = 0;
             if(registry_readkey_uint(key_idx, "SUBCLASS", &dev_subclass) != registry_err_ok)
-                return -1; 
+                return -1;
 
             uint64_t dev_devID = 0;
             if(registry_readkey_uint(key_idx, "DEVICE_ID", &dev_devID) != registry_err_ok)
@@ -71,10 +71,10 @@ int module_init(){
             bool vendorIDMatch = (vendorID == (int)dev_vendorID) || (vendorID == 0xFFFF);
 
             if(classMatch && subclassMatch && devIDMatch && vendorIDMatch) {
-                
+
                 char *tmp = (char*)strchr(cursor, '|');
                 *tmp = 0;
-                
+
                 //load this driver
                 print_str("LOAD MODULE:");
                 print_str(exec_str);

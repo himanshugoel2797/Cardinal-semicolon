@@ -1,10 +1,10 @@
 // Copyright (c) 2018 Himanshu Goel
-// 
+//
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
 #ifndef CARDINAL_COREDISPLAY_DISPLAY_H
-#define CARDINAL_COREDISPLAY_DISPLAY_H  
+#define CARDINAL_COREDISPLAY_DISPLAY_H
 
 #include <stdint.h>
 

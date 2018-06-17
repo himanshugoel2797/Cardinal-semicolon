@@ -154,7 +154,7 @@ int pci_reg_init() {
 
     if(registry_createdirectory("HW", "PCI") != registry_err_ok)
         return -1;
-    
+
     //Find the ECAM address if possible
     MCFG* mcfg = ACPITables_FindTable(MCFG_SIG);
     uint32_t len = mcfg->h.Length - 8 - sizeof(ACPISDTHeader);
@@ -202,7 +202,7 @@ int pci_reg_init() {
                 return -9;
 
             for(uint32_t mcfg_idx = 0; mcfg_idx < len / sizeof(MCFG_Entry); mcfg_idx++)
-                if(mcfg->entries[mcfg_idx].start_bus_number <= bus && mcfg->entries[mcfg_idx].end_bus_number >= bus){
+                if(mcfg->entries[mcfg_idx].start_bus_number <= bus && mcfg->entries[mcfg_idx].end_bus_number >= bus) {
                     uint64_t ecam_addr = mcfg->entries[mcfg_idx].baseAddr + ( (bus - mcfg->entries[mcfg_idx].start_bus_number) << 20 | device << 15 | f << 12 );
                     if(registry_addkey_uint(key_idx, "ECAM_ADDR", ecam_addr) != registry_err_ok)
                         return -20;
@@ -241,7 +241,7 @@ int pci_reg_init() {
         device++;
     }
 
-    
+
     if(registry_addkey_uint("HW/PCI", "COUNT", idx) != registry_err_ok)
         return -14;
 

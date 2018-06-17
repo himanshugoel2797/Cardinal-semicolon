@@ -58,18 +58,18 @@ __attribute__((always_inline)) static __inline void halt(void) {
 
 __attribute__((always_inline)) static __inline int cli(void) {
     uint64_t flags = 0;
-    __asm__ volatile( 
+    __asm__ volatile(
         "pushf\n\t"
-        "popq %0\n\t" 
+        "popq %0\n\t"
         "cli\n\t"
         : "=r"(flags)
-        );
+    );
 
     return (flags & 0x200);
 }
 
 __attribute__((always_inline)) static __inline void sti(int state) {
     if(state)
-    __asm__ volatile("sti");
+        __asm__ volatile("sti");
 }
 #endif
