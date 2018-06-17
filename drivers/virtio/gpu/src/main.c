@@ -5,11 +5,6 @@
  * https://opensource.org/licenses/MIT
  */
 
-#include "CoreDisplay/display.h"
-
-//register display devices
-//deregister display devices
-//get info/handlers
 
 int module_init(){
 

@@ -342,7 +342,7 @@ void servicescript_handler(void *arg) {
 
     servicescript_execute();
 
-    PANIC("End of process.");
+    while(true) halt(); //TODO: Implemented process termination
 }
 
 

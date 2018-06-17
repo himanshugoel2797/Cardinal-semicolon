@@ -2,3 +2,4 @@ LOAD:./CorePower.celf
 LOAD:./CoreDisplay.celf
 LOAD:./CoreAudio.celf
 LOAD:./CoreInput.celf
+LOAD:./CoreDriver.celf
