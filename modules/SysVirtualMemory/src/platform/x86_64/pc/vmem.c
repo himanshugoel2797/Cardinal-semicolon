@@ -70,6 +70,20 @@ static TLS struct lcl_data *lcl;
 static vmem_t kmem;
 static size_t phys_map_sz;
 
+static uint64_t kernel_vmalloc = (KERN_PHYSMAP_BASE_UC + GiB(512));
+
+//TODO: none of these operations are atomic to preemption within the kernel
+intptr_t vmem_vmalloc(size_t sz) {
+    intptr_t rVal = (intptr_t)kernel_vmalloc;
+    kernel_vmalloc += sz;
+    return rVal;
+}
+
+void vmem_vfree(intptr_t virt, size_t sz) {
+    if(virt + sz == kernel_vmalloc)
+        kernel_vmalloc -= sz;
+}
+
 int vmem_init() {
     TLS void* (*mp_tls_get)(int) = (TLS void* (*)(int))elf_resolvefunction("mp_tls_get");
     int (*mp_tls_alloc)(int) = (int (*)(int))elf_resolvefunction("mp_tls_alloc");

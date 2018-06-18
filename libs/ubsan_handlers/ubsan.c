@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <types.h>
 
@@ -120,51 +121,17 @@ static void handle_lhs_rhs_funcs(struct source_location *loc, uintptr_t lhs,
 
     DEBUG_PRINT(ubsan_type_strs[t]);
     DEBUG_PRINT(loc->filename);
+    DEBUG_PRINT(":");
+    DEBUG_PRINT(itoa(loc->line, conv_str, 10));
 
-    {
-        uint32_t line = loc->line;
-        for (int i = 0; i < 10; i++) {
-            conv_str[i] = (line % 10) + '0';
-            line = line / 10;
-            if (line == 0) {
-
-                for (int j = 0; j <= i / 2; j++) {
-                    conv_str[j] ^= conv_str[i - j];
-                    conv_str[i - j] ^= conv_str[j];
-                    conv_str[j] ^= conv_str[i - j];
-                }
-
-                conv_str[i + 1] = ':';
-                conv_str[i + 2] = 0;
-                break;
-            }
-        }
-        //strncat(temp_ubsan_str_buf, conv_str, ubsan_str_buf_len);
-        DEBUG_PRINT(conv_str);
+    if(t == out_of_bounds){
+        DEBUG_PRINT("\r\nOut of bounds value:");
+        DEBUG_PRINT(itoa(lhs >> 32, conv_str, 16));
+        DEBUG_PRINT(itoa(lhs, conv_str, 16));
     }
 
-    {
-        uint32_t line = loc->column;
-        for (int i = 0; i < 9; i++) {
-            conv_str[i] = (line % 10) + '0';
-            line = line / 10;
-            if (line == 0) {
-
-                for (int j = 0; j <= i / 2; j++) {
-                    conv_str[j] ^= conv_str[i - j];
-                    conv_str[i - j] ^= conv_str[j];
-                    conv_str[j] ^= conv_str[i - j];
-                }
-
-                conv_str[i + 1] = 0;
-                break;
-            }
-        }
-        //strncat(temp_ubsan_str_buf, conv_str, ubsan_str_buf_len);
-        DEBUG_PRINT(conv_str);
-    }
-
-    PANIC("\r\nubsan_triggered");
+    DEBUG_PRINT("\r\n");
+    PANIC("ubsan_triggered");
 }
 
 void WEAK __ubsan_handle_add_overflow(struct overflow_data *data, uintptr_t lhs,

@@ -2,3 +2,4 @@ CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
 
 FILE(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c)
 ADD_LIBRARY(VirtioCommon STATIC ${SRCS})
+TARGET_INCLUDE_DIRECTORIES(VirtioCommon PRIVATE "inc" "../../../modules/inc" "../../../libs")

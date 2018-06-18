@@ -29,7 +29,6 @@ static TLS tls_apic_timer_state_t *apic_state = NULL;
 
 PRIVATE void apic_handler(int irq) {
     if(apic_state->enabled) {
-        //DEBUG_PRINT("APIC Triggered!");
         if(apic_state->handler != NULL)
             apic_state->handler(irq);
 
@@ -37,7 +36,6 @@ PRIVATE void apic_handler(int irq) {
             apic_state->enabled = false;
         }
     }
-    interrupt_sendeoi(irq);
 }
 
 PRIVATE uint64_t apic_timer_setmode(timer_handlers_t *handler, timer_features_t features) {

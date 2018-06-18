@@ -27,7 +27,7 @@ typedef struct {
     ACPISDTHeader h;
     uint64_t res0;
     MCFG_Entry entries[1];
-} MCFG;
+} PACKED MCFG;
 
 /**@}*/
 

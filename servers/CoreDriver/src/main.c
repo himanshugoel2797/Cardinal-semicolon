@@ -92,12 +92,20 @@ int module_init() {
                 if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
                     PANIC("ELF LOAD FAILED");
 
+                int (*entry_pt_real)(void*) = (int (*)(void*))entry_pt;
+
+
+                uint64_t ecam_addr = 0;
+                if(registry_readkey_uint(key_idx, "ECAM_ADDR", &ecam_addr) != registry_err_ok)
+                    return -1;
+
                 char tmp_entry_addr[10];
-                print_str("LOADED at ");
-                print_str(itoa((int)entry_pt, tmp_entry_addr, 16));
+                print_str("Device ECAM at ");
+                print_str(itoa((int)(ecam_addr >> 32), tmp_entry_addr, 16));
+                print_str(itoa((int)ecam_addr, tmp_entry_addr, 16));
                 print_str("\r\n");
 
-                int err = entry_pt();
+                int err = entry_pt_real((void*)ecam_addr);
                 if(err != 0) {
                     char idx_str[10];
                     print_str("RETURN VALUE:");

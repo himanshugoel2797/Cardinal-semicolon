@@ -201,7 +201,7 @@ PRIVATE int hpet_init() {
     }
 
     //Allocate interrupt handler
-    int intrpt_num = 0;
+    int intrpt_num = 240;   //low priority interrupt
     interrupt_allocate(1, interrupt_flags_none, &intrpt_num);
     timers = (HPET_TimerState*)malloc(sizeof(HPET_TimerState) * base_addr->Capabilities.TimerCount + 1);
     interrupt_registerhandler(intrpt_num, hpet_timer_handler);

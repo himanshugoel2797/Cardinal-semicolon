@@ -110,6 +110,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
             }
         }
 
+
         if(flags & interrupt_flags_exclusive)
             for(int c = 0; c < cnt; c++)
                 interrupt_blocked[*base + c] = true;
@@ -155,11 +156,15 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
 
 void idt_mainhandler(regs_t *regs) {
     //Store the registers in the processor interrupt state
+
+    regs->int_no = (uint8_t)regs->int_no;
+
     memcpy(idt->reg_state, regs, sizeof(regs_t));
     idt->reg_ref = regs;
 
     bool handled = false;
 
+    int state = cli();
     for(int i = 0; i < IDT_HANDLER_CNT; i++) {
         local_spinlock_lock(&interrupt_alloc_lock);
         if(interrupt_funcs[regs->int_no][i] != NULL) {
@@ -168,6 +173,7 @@ void idt_mainhandler(regs_t *regs) {
         }
         local_spinlock_unlock(&interrupt_alloc_lock);
     }
+    sti(state);
 
     if(!handled) {
         char msg[256] = "Unhandled Interrupt: ";
