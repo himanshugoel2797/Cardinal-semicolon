@@ -15,18 +15,30 @@
 #include "SysPhysicalMemory/phys_mem.h"
 
 static virtio_gpu_driver_state_t device;
+static bool tmp_swap = false;
 
 void intrpt_handler(int idx) {
     idx = 0;
 
-    for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++)
-        virtio_accept_used(device.common_state, i);
+    tmp_swap = true;
+
+    for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++){
+        device.used_idx[i] = virtio_accept_used(device.common_state, i, device.used_idx[i]);
+        if(i == 0)
+        {
+            char tmp[10];
+            DEBUG_PRINT("USED_IDX: ");
+            DEBUG_PRINT(itoa(device.used_idx[i], tmp, 10));
+            DEBUG_PRINT("\r\n");
+        }
+    }
 
     virtio_gpu_config_t *cfg = (virtio_gpu_config_t*)device.common_state->dev_cfg;
 
     if(cfg->events_read & VIRTIO_GPU_EVENT_DISPLAY) {
         DEBUG_PRINT("Display resized\r\n");
         cfg->events_clear = VIRTIO_GPU_EVENT_DISPLAY;
+        //virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
     }
 
     DEBUG_PRINT("GPU Interrupt\r\n");
@@ -286,26 +298,44 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd) {
 
     for(int i = 0; i < VIRTIO_GPU_MAX_SCANOUTS; i++) {
         if(display_info->pmodes[i].enabled) {
-            //setup this scanout
 
+            //free the previous resource_id
+            if(device.scanouts[i].resource_id != 0) {
+                virtio_gpu_detachbacking(device.scanouts[i].resource_id);
+                virtio_gpu_unref(device.scanouts[i].resource_id);
+                virtio_notify(device.common_state, 0);
+
+                //pagealloc_free(device.scanouts[i].phys_addr, device.scanouts[i].w * device.scanouts[i].h * sizeof(uint32_t));
+            }
+
+            //setup this scanout
             //create a 2d resource
-            virtio_gpu_create2d(i + 1, VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM, display_info->pmodes[i].r.width, display_info->pmodes[i].r.height);
+            uint32_t n_res_id = device.resource_ids++;
+            virtio_gpu_create2d(n_res_id, VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM, display_info->pmodes[i].r.width, display_info->pmodes[i].r.height);
 
             //set its backing data
             size_t sz = display_info->pmodes[i].r.width * display_info->pmodes[i].r.height * sizeof(uint32_t);
             uintptr_t fbuf = pagealloc_alloc(0, 0, physmem_alloc_flags_data, sz);
-            virtio_gpu_attachbacking(i + 1, fbuf, sz);
+            virtio_gpu_attachbacking(n_res_id, fbuf, sz);
 
             //set scanout
-            virtio_gpu_setscanout(i, i + 1, 0, 0, display_info->pmodes[i].r.width, display_info->pmodes[i].r.height);
+            virtio_gpu_setscanout(i, n_res_id, 0, 0, display_info->pmodes[i].r.width, display_info->pmodes[i].r.height);
 
             uint32_t *vaddr = (uint32_t*)vmem_phystovirt(fbuf, sz, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
             memset(vaddr, 0xff, sz);
 
-            virtio_gpu_transfertohost2d(i + 1, 0, 0, 0, display_info->pmodes[i].r.width, display_info->pmodes[i].r.height);
-            virtio_gpu_flush(i + 1, 0, 0, display_info->pmodes[i].r.width, display_info->pmodes[i].r.height);
+            virtio_gpu_transfertohost2d(n_res_id, 0, 0, 0, display_info->pmodes[i].r.width, display_info->pmodes[i].r.height);
+            virtio_gpu_flush(n_res_id, 0, 0, display_info->pmodes[i].r.width, display_info->pmodes[i].r.height);
 
             virtio_notify(device.common_state, 0);
+
+            device.scanouts[i].x = display_info->pmodes[i].r.x * 0;
+            device.scanouts[i].y = display_info->pmodes[i].r.y * 0;
+            device.scanouts[i].w = display_info->pmodes[i].r.width;
+            device.scanouts[i].h = display_info->pmodes[i].r.height;
+            device.scanouts[i].phys_addr = fbuf;
+            device.scanouts[i].virt_addr = vaddr;
+            device.scanouts[i].resource_id = n_res_id;
         }
     }
 
@@ -313,7 +343,7 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd) {
 }
 
 //TODO: Implement Display driver API
-//TODO: design Graphics driver API
+//TODO: design Graphics driver API, filling command buffers in user space to submit to the driver
 
 int module_init(void *ecam) {
 
@@ -322,6 +352,8 @@ int module_init(void *ecam) {
     device.qstate[0] = device.controlq;
     device.qstate[1] = device.cursorq;
     device.common_state = virtio_initialize(ecam, intrpt_handler, device.qstate);
+
+    device.resource_ids = 1;
 
     uint32_t features = virtio_getfeatures(device.common_state, 0);
 
@@ -345,6 +377,21 @@ int module_init(void *ecam) {
     virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
     virtio_notify(device.common_state, 0);
 
+    //loop
+    uint8_t val = 0xff;
+    while(true) {
+
+        if(device.scanouts[0].resource_id != 0) {
+            memset(device.scanouts[0].virt_addr, val--, device.scanouts[0].w * device.scanouts[0].h * sizeof(uint32_t));
+
+            virtio_gpu_transfertohost2d(device.scanouts[0].resource_id, 0, device.scanouts[0].x, device.scanouts[0].y, device.scanouts[0].w, device.scanouts[0].h);
+            virtio_gpu_flush(device.scanouts[0].resource_id, device.scanouts[0].x, device.scanouts[0].y, device.scanouts[0].w, device.scanouts[0].h);
+            virtio_notify(device.common_state, 0);
+
+            //while(!tmp_swap)
+            //    ;
+        }
+    }
 
     return 0;
 }

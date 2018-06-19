@@ -193,14 +193,49 @@ typedef struct {
     uint32_t buffer[0];
 } virtio_gpu_submit_t;
 
+typedef struct {
+    uint32_t resource_id;
+    uint32_t x;
+    uint32_t y;
+    uint32_t w;
+    uint32_t h;
+
+    uintptr_t phys_addr;
+    uint32_t* virt_addr;
+} virtio_gpu_scanout_state_t;
 
 typedef struct {
     virtio_state_t *common_state;
     bool virgl_mode;
     volatile _Atomic uint32_t latest_ready_cmd;
+    
+    _Atomic uint32_t resource_ids;
+    
+    virtio_gpu_scanout_state_t scanouts [VIRTIO_GPU_MAX_SCANOUTS];
+
     virtio_virtq_cmd_state_t *qstate [VIRTIO_GPU_VIRTQ_COUNT];
     virtio_virtq_cmd_state_t controlq [VIRTIO_GPU_VIRTQ_LEN / 2];
     virtio_virtq_cmd_state_t cursorq [VIRTIO_GPU_VIRTQ_LEN / 2];
+
+    int used_idx[VIRTIO_GPU_VIRTQ_COUNT];
 } virtio_gpu_driver_state_t;
+
+
+void virtio_gpu_submitcmd(int q, void *cmd, int cmd_len, void *resp, int resp_len, void (*resp_handler)(virtio_virtq_cmd_state_t*));
+void virtio_gpu_default_handler(virtio_virtq_cmd_state_t *cmd);
+void virtio_gpu_getdisplayinfo(void (*handler)(virtio_virtq_cmd_state_t*));
+void virtio_gpu_create2d(uint32_t id, virtio_gpu_formats_t fmt, uint32_t width, uint32_t height);
+void virtio_gpu_unref(uint32_t rsc_id);
+void virtio_gpu_setscanout(uint32_t scanout_id, uint32_t resource_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+void virtio_gpu_flush(uint32_t resource_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+void virtio_gpu_transfertohost2d(uint32_t resource_id, uint64_t offset, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+void virtio_gpu_attachbacking(uint32_t rsc_id, uintptr_t addr, size_t len);
+void virtio_gpu_detachbacking(uint32_t rsc_id);
+
+void virtio_gpu_ctx_create(uint32_t ctx_id, char name[64]);
+void virtio_gpu_ctx_destroy(uint32_t ctx_id);
+void virtio_gpu_ctx_attachresource(uint32_t ctx_id, uint32_t handle);
+void virtio_gpu_ctx_submit(uint32_t ctx_id, uint32_t *cmds, uint32_t sz);
+void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd);
 
 #endif

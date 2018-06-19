@@ -1,6 +1,7 @@
 {
     "licenser.projectName": "Cardinal;",
     "files.associations": {
-        "priv_timers.h": "c"
+        "priv_timers.h": "c",
+        "phys_mem.h": "c"
     },
 }

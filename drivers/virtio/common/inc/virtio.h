@@ -56,10 +56,6 @@ typedef struct {
 } virtio_pci_common_cfg_t;
 
 typedef struct {
-
-} virtio_pci_isr_cfg_t;
-
-typedef struct {
     virtio_pci_cap_t cap;
     uint32_t notify_multiplier;
 } virtio_pci_notif_cfg_t;
@@ -87,7 +83,7 @@ typedef struct {
 
 typedef struct {
     uint16_t flags;
-    uint16_t idx;
+    volatile uint16_t idx;
     uint16_t ring[0];
 } virtq_avail_t;
 
@@ -98,7 +94,7 @@ typedef struct {
 
 typedef struct PACKED {
     uint16_t flags;
-    uint16_t idx;
+    volatile uint16_t idx;
     virtq_used_elem_t ring[0];
 } virtq_used_t;
 
@@ -120,12 +116,11 @@ typedef struct virtio_virtq_cmd_state {
 
 typedef struct {
     virtio_pci_common_cfg_t *common_cfg;
-    virtio_pci_isr_cfg_t *isr_cfg;
+    volatile uint32_t *isr_cfg;
     virtio_pci_notif_cfg_t *notif_cfg;
     void *dev_cfg;
 
     virtio_virtq_cmd_state_t **cmds;
-    int used_idx;
 
     intptr_t notif_bar;
     pci_config_t *device;
@@ -147,5 +142,5 @@ PRIVATE void virtio_notify(virtio_state_t *state, int idx);
 
 PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t*));
 
-PRIVATE int virtio_accept_used(virtio_state_t *state, int idx);
+PRIVATE int virtio_accept_used(virtio_state_t *state, int idx, int used_idx);
 #endif

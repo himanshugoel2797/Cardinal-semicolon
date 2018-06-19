@@ -80,7 +80,7 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
                 }
                 break;
                 case virtio_pci_cap_cfg_isr: {
-                    n_state->isr_cfg = (virtio_pci_isr_cfg_t*)(bar_addr + vendorCap->offset);
+                    n_state->isr_cfg = (volatile uint32_t*)(bar_addr + vendorCap->offset);
                 }
                 break;
                 case virtio_pci_cap_cfg_device: {
@@ -172,8 +172,16 @@ PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, v
 
     int cur_desc_idx = (avails->idx * 2) % q_len;
 
-    while(state->cmds[idx][cur_desc_idx / 2].waiting && !state->cmds[idx][cur_desc_idx / 2].finished)
-        DEBUG_PRINT("FAILURE\r\n");
+        char tmp[10];
+        DEBUG_PRINT("Using: ");
+        DEBUG_PRINT(itoa(cur_desc_idx / 2, tmp, 10));
+        DEBUG_PRINT("\r\n");
+
+
+    while(state->cmds[idx][cur_desc_idx / 2].waiting && !state->cmds[idx][cur_desc_idx / 2].finished){
+        //__asm__("cli\n\thlt" :: "a"(cur_desc_idx));
+        //DEBUG_PRINT("FAILURE\r\n");
+    }
 
     state->cmds[idx][cur_desc_idx / 2].waiting = true;
     state->cmds[idx][cur_desc_idx / 2].finished = false;
@@ -219,19 +227,33 @@ PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, v
     return cur_desc_idx;
 }
 
-int virtio_accept_used(virtio_state_t *state, int idx) {
+int virtio_accept_used(virtio_state_t *state, int idx, int used_idx) {
     state->common_cfg->queue_select = (uint16_t)idx;
     int q_len = state->common_cfg->queue_size;
 
     virtq_used_t *descs = (virtq_used_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_used, q_len * 8 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
-    for(int i = state->used_idx; i < descs->idx; i+=2) {
-        state->cmds[idx][i / 2].waiting = false;
-        if(state->cmds[idx][i / 2].handler != NULL)
-            state->cmds[idx][i / 2].handler(&state->cmds[idx][i / 2]);
-        state->cmds[idx][i / 2].finished = true;
-    }
-    state->used_idx = descs->idx;
-
-    return state->used_idx;
+    int d_idx = descs->idx;
+    do{
+        for(int i = used_idx; i < d_idx; i+=2) {
+            char tmp[10];
+            DEBUG_PRINT("Handling: ");
+            DEBUG_PRINT(itoa(i / 2, tmp, 10));
+            DEBUG_PRINT("\r\n");
+            
+            state->cmds[idx][i / 2].waiting = false;
+            if(state->cmds[idx][i / 2].handler != NULL)
+                state->cmds[idx][i / 2].handler(&state->cmds[idx][i / 2]);
+            state->cmds[idx][i / 2].finished = true;
+        
+        }
+        if(d_idx == descs->idx){
+            *state->isr_cfg;
+            return d_idx;
+        }else{
+            used_idx = d_idx;
+            d_idx = descs->idx;
+            DEBUG_PRINT("Continuing...");
+        }
+    }while(true);
 }
