@@ -1,5 +1,5 @@
 // Copyright (c) 2018 Himanshu Goel
-// 
+//
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
@@ -34,10 +34,10 @@ typedef enum {
     VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
     VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
     VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING,
-    
+
     VIRTIO_GPU_CMD_UPDATE_CURSOR = 0x0300,
     VIRTIO_GPU_CMD_MOVE_CURSOR,
-    
+
     VIRTIO_GPU_RESP_OK_NODATA = 0x1100,
     VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
 
@@ -72,7 +72,7 @@ typedef struct {
     virtio_gpu_rect_t r;
     uint32_t enabled;
     uint32_t flags;
-} virtio_gpu_display_t; 
+} virtio_gpu_display_t;
 
 typedef struct {
     virtio_gpu_ctrl_hdr_t hdr;

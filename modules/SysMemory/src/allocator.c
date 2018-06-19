@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -36,11 +36,11 @@ void* WEAK malloc(size_t sz) {
     mem_node_t *cur_best_fit = NULL;
     mem_node_t *iter = root;
     while(iter != NULL) {
-        if(iter->isFree && iter->len >= sz){
-            if(cur_best_fit != NULL){
+        if(iter->isFree && iter->len >= sz) {
+            if(cur_best_fit != NULL) {
                 if(iter->len < cur_best_fit->len)
                     cur_best_fit = iter;
-            }else
+            } else
                 cur_best_fit = iter;
         }
         iter = iter->next;
@@ -66,14 +66,14 @@ void* WEAK malloc(size_t sz) {
         node_cnt++;
 
         //insert the node into the list
-        if(root == NULL){
+        if(root == NULL) {
             root = n_node;
-        }else{
+        } else {
             n_node->next = root->next;
             root->next = n_node;
         }
     }
-    
+
     if(cur_best_fit->len > sz + sizeof(mem_node_t)) {
 
         //Create a new free node with the remaining memory
@@ -84,7 +84,7 @@ void* WEAK malloc(size_t sz) {
 
         node_cnt++;
 
-        if(n_node->len <= sz / 2){
+        if(n_node->len <= sz / 2) {
             //TODO: report freenode creations that are at or below half the allocation size, this can be used to tune the best 'fit' scoring
         }
 
@@ -100,7 +100,7 @@ void* WEAK malloc(size_t sz) {
     return cur_best_fit->data;
 }
 
-static void mem_compact(){
+static void mem_compact() {
     //TODO: compact list if it gets too big, to clear out small fragmented areas
     //TODO: detect adjacent free areas and merge them
 }
@@ -117,7 +117,7 @@ void WEAK free(void* sz) {
 
     //Mark the remaining space as available
     desc->isFree = true;
-    
+
     //TODO: implement returning remaining memory to system
     if(node_cnt >= 512)
         mem_compact();

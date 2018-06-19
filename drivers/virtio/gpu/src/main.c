@@ -24,7 +24,7 @@ void intrpt_handler(int idx) {
 
     virtio_gpu_config_t *cfg = (virtio_gpu_config_t*)device.common_state->dev_cfg;
 
-    if(cfg->events_read & VIRTIO_GPU_EVENT_DISPLAY){
+    if(cfg->events_read & VIRTIO_GPU_EVENT_DISPLAY) {
         DEBUG_PRINT("Display resized\r\n");
         cfg->events_clear = VIRTIO_GPU_EVENT_DISPLAY;
     }
@@ -32,15 +32,14 @@ void intrpt_handler(int idx) {
     DEBUG_PRINT("GPU Interrupt\r\n");
 }
 
-void virtio_gpu_submitcmd(int q, void *cmd, int cmd_len, void *resp, int resp_len, void (*resp_handler)(virtio_virtq_cmd_state_t*))
-{
+void virtio_gpu_submitcmd(int q, void *cmd, int cmd_len, void *resp, int resp_len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
     int cmd_idx = virtio_postcmd(device.common_state, q, cmd, cmd_len, resp, resp_len, resp_handler);
 }
 
 void virtio_gpu_default_handler(virtio_virtq_cmd_state_t *cmd) {
     //free descriptors and print any error codes
     virtio_gpu_ctrl_hdr_t *resp = (virtio_gpu_ctrl_hdr_t *)cmd->resp.virt;
-    if(resp->type >= 0x1200 && resp->type <= 0x1205){
+    if(resp->type >= 0x1200 && resp->type <= 0x1205) {
         DEBUG_PRINT("VIRTIO_GPU: ERROR\r\n");
     }
 
@@ -49,11 +48,10 @@ void virtio_gpu_default_handler(virtio_virtq_cmd_state_t *cmd) {
 }
 
 
-void virtio_gpu_getdisplayinfo(void (*handler)(virtio_virtq_cmd_state_t*))
-{
+void virtio_gpu_getdisplayinfo(void (*handler)(virtio_virtq_cmd_state_t*)) {
     virtio_gpu_ctrl_hdr_t *display_info_cmd = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
     virtio_gpu_resp_display_info_t *display_info_resp = malloc(sizeof(virtio_gpu_resp_display_info_t));
-    
+
     //Retrieve display info
     display_info_cmd->type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
     display_info_cmd->flags = 0;
@@ -66,8 +64,7 @@ void virtio_gpu_getdisplayinfo(void (*handler)(virtio_virtq_cmd_state_t*))
     virtio_gpu_submitcmd(0, display_info_cmd, sizeof(virtio_gpu_ctrl_hdr_t), display_info_resp, sizeof(virtio_gpu_resp_display_info_t), handler);
 }
 
-void virtio_gpu_create2d(uint32_t id, virtio_gpu_formats_t fmt, uint32_t width, uint32_t height)
-{
+void virtio_gpu_create2d(uint32_t id, virtio_gpu_formats_t fmt, uint32_t width, uint32_t height) {
     virtio_gpu_resource_create_2d_t *rsc_d = malloc(sizeof(virtio_gpu_resource_create_2d_t));
     virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
 
@@ -76,7 +73,7 @@ void virtio_gpu_create2d(uint32_t id, virtio_gpu_formats_t fmt, uint32_t width, 
     rsc_d->hdr.fence_id = 0;
     rsc_d->hdr.ctx_id = 0;
     rsc_d->hdr.padding = 0;
-    
+
     rsc_d->resource_id = id;
     rsc_d->format = fmt;
     rsc_d->width = width;
@@ -96,7 +93,7 @@ void virtio_gpu_attachbacking(uint32_t rsc_id, uintptr_t addr, size_t len) {
     rsc_d->hdr.fence_id = 0;
     rsc_d->hdr.ctx_id = 0;
     rsc_d->hdr.padding = 0;
-    
+
     rsc_d->resource_id = rsc_id;
     rsc_d->nr_entries = 1;
     rsc_d->entries[0].addr = addr;
@@ -108,8 +105,7 @@ void virtio_gpu_attachbacking(uint32_t rsc_id, uintptr_t addr, size_t len) {
     virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_resource_attach_backing_t) + sizeof(virtio_gpu_mem_entry_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
 }
 
-void virtio_gpu_setscanout(uint32_t scanout_id, uint32_t resource_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
-{
+void virtio_gpu_setscanout(uint32_t scanout_id, uint32_t resource_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     virtio_gpu_set_scanout_t *rsc_d = malloc(sizeof(virtio_gpu_set_scanout_t));
     virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
 
@@ -118,7 +114,7 @@ void virtio_gpu_setscanout(uint32_t scanout_id, uint32_t resource_id, uint32_t x
     rsc_d->hdr.fence_id = 0;
     rsc_d->hdr.ctx_id = 0;
     rsc_d->hdr.padding = 0;
-    
+
     rsc_d->resource_id = resource_id;
     rsc_d->scanout_id = scanout_id;
     rsc_d->r.x = x;
@@ -131,8 +127,7 @@ void virtio_gpu_setscanout(uint32_t scanout_id, uint32_t resource_id, uint32_t x
     virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_set_scanout_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
 }
 
-void virtio_gpu_transfertohost2d(uint32_t resource_id, uint64_t offset, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
-{
+void virtio_gpu_transfertohost2d(uint32_t resource_id, uint64_t offset, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     virtio_gpu_transfer_to_host_2d_t *rsc_d = malloc(sizeof(virtio_gpu_transfer_to_host_2d_t));
     virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
 
@@ -141,7 +136,7 @@ void virtio_gpu_transfertohost2d(uint32_t resource_id, uint64_t offset, uint32_t
     rsc_d->hdr.fence_id = 0;
     rsc_d->hdr.ctx_id = 0;
     rsc_d->hdr.padding = 0;
-    
+
     rsc_d->offset = offset;
     rsc_d->resource_id = resource_id;
     rsc_d->padding = 0;
@@ -155,8 +150,7 @@ void virtio_gpu_transfertohost2d(uint32_t resource_id, uint64_t offset, uint32_t
     virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_transfer_to_host_2d_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
 }
 
-void virtio_gpu_flush(uint32_t resource_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
-{
+void virtio_gpu_flush(uint32_t resource_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     virtio_gpu_resource_flush_t *rsc_d = malloc(sizeof(virtio_gpu_resource_flush_t));
     virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
 
@@ -165,7 +159,7 @@ void virtio_gpu_flush(uint32_t resource_id, uint32_t x, uint32_t y, uint32_t w, 
     rsc_d->hdr.fence_id = 0;
     rsc_d->hdr.ctx_id = 0;
     rsc_d->hdr.padding = 0;
-    
+
     rsc_d->resource_id = resource_id;
     rsc_d->padding = 0;
     rsc_d->r.x = x;
@@ -183,8 +177,8 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd) {
     //read the display info, initialize all enabled scanouts
     virtio_gpu_resp_display_info_t *display_info = (virtio_gpu_resp_display_info_t*)cmd->resp.virt;
 
-    for(int i = 0; i < VIRTIO_GPU_MAX_SCANOUTS; i++){
-        if(display_info->pmodes[i].enabled){
+    for(int i = 0; i < VIRTIO_GPU_MAX_SCANOUTS; i++) {
+        if(display_info->pmodes[i].enabled) {
             //setup this scanout
 
             //create a 2d resource
@@ -222,12 +216,12 @@ int module_init(void *ecam) {
     uint32_t features = virtio_getfeatures(device.common_state, 0);
 
     device.virgl_mode = false;
-    if(features & VIRTIO_GPU_F_VIRGL){
+    if(features & VIRTIO_GPU_F_VIRGL) {
         DEBUG_PRINT("VirGL Support Enabled.\r\n");
         device.virgl_mode = true;
-        virtio_setfeatures(device.common_state, VIRTIO_GPU_F_VIRGL | VIRTIO_F_INDIRECT_DESC , 0);
-    }else
-        virtio_setfeatures(device.common_state, VIRTIO_F_INDIRECT_DESC , 0);
+        virtio_setfeatures(device.common_state, VIRTIO_GPU_F_VIRGL | VIRTIO_F_INDIRECT_DESC, 0);
+    } else
+        virtio_setfeatures(device.common_state, VIRTIO_F_INDIRECT_DESC, 0);
 
     if(!virtio_features_ok(device.common_state))
         return -1;

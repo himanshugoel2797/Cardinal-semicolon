@@ -1,5 +1,5 @@
 // Copyright (c) 2018 Himanshu Goel
-// 
+//
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
@@ -44,7 +44,7 @@ typedef struct {
 #define DRIVER_OK (4)
     uint8_t device_status; /* read-write */
     uint8_t config_generation; /* read-only for driver */
-    
+
     uint16_t queue_select; /* read-write */
     uint16_t queue_size; /* read-write, power of 2, or 0. */
     uint16_t queue_msix_vector; /* read-write */
@@ -108,7 +108,7 @@ typedef struct {
     size_t len;
 } virtio_phys_virt_addrpair_t;
 
-typedef struct virtio_virtq_cmd_state{
+typedef struct virtio_virtq_cmd_state {
     virtio_phys_virt_addrpair_t cmd;
     virtio_phys_virt_addrpair_t resp;
     bool waiting;
@@ -122,7 +122,7 @@ typedef struct {
     virtio_pci_common_cfg_t *common_cfg;
     virtio_pci_isr_cfg_t *isr_cfg;
     virtio_pci_notif_cfg_t *notif_cfg;
-    void *dev_cfg; 
+    void *dev_cfg;
 
     virtio_virtq_cmd_state_t **cmds;
     int used_idx;

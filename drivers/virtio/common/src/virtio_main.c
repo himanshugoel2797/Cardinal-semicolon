@@ -15,7 +15,7 @@
 #include "pci/pci.h"
 #include "virtio.h"
 
-PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds){
+PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds) {
     pci_config_t *device = (pci_config_t*)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     //enable pci bus master
@@ -48,7 +48,7 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
                     msi_64_->msg_addr = msi_register_addr(0);   //TODO: verify that 0 is okay as a value for current cpu
                     msi_64_->msg_addr_hi = 0;
                     msi_64_->msg_data = (uint16_t)msi_register_data(intrpt_num);
-                }else{
+                } else {
                     msi_32_->msg_addr = msi_register_addr(0);   //TODO: verify that 0 is okay as a value for current cpu
                     msi_32_->msg_data = (uint16_t)msi_register_data(intrpt_num);
                 }
@@ -60,7 +60,7 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
                 DEBUG_PRINT("MSIX\r\n");
             } else if(capEntry->capID == pci_cap_vendor) {
                 intptr_t bar_addr = 0;
-                
+
                 virtio_pci_cap_t *vendorCap = (virtio_pci_cap_t*)capEntry;
                 if(device->bar[vendorCap->bar] & 4)
                     bar_addr = ((intptr_t)device->bar[vendorCap->bar + 1] << 32) + device->bar[vendorCap->bar] & 0xFFFF0000;
@@ -70,33 +70,29 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
                 bar_addr = vmem_phystovirt(bar_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
                 switch(vendorCap->cfg_type) {
-                    case virtio_pci_cap_cfg_common:
-                    {
-                        n_state->common_cfg = (virtio_pci_common_cfg_t*)(bar_addr + vendorCap->offset);
-                    }
-                    break;
-                    case virtio_pci_cap_cfg_notify:
-                    {
-                        n_state->notif_cfg = (virtio_pci_notif_cfg_t*)vendorCap;
-                        n_state->notif_bar = bar_addr;
-                    }
-                    break;
-                    case virtio_pci_cap_cfg_isr:
-                    {
-                        n_state->isr_cfg = (virtio_pci_isr_cfg_t*)(bar_addr + vendorCap->offset);
-                    }
-                    break;
-                    case virtio_pci_cap_cfg_device:
-                    {
-                        n_state->dev_cfg = (void*)(bar_addr + vendorCap->offset);
-                    }
-                    break;
-                    case virtio_pci_cap_cfg_pci:
-                        //Don't care, we don't need the alternative access mechanisms
+                case virtio_pci_cap_cfg_common: {
+                    n_state->common_cfg = (virtio_pci_common_cfg_t*)(bar_addr + vendorCap->offset);
+                }
+                break;
+                case virtio_pci_cap_cfg_notify: {
+                    n_state->notif_cfg = (virtio_pci_notif_cfg_t*)vendorCap;
+                    n_state->notif_bar = bar_addr;
+                }
+                break;
+                case virtio_pci_cap_cfg_isr: {
+                    n_state->isr_cfg = (virtio_pci_isr_cfg_t*)(bar_addr + vendorCap->offset);
+                }
+                break;
+                case virtio_pci_cap_cfg_device: {
+                    n_state->dev_cfg = (void*)(bar_addr + vendorCap->offset);
+                }
+                break;
+                case virtio_pci_cap_cfg_pci:
+                    //Don't care, we don't need the alternative access mechanisms
                     break;
                 }
             }
-                ptr = capEntry->nextPtr;
+            ptr = capEntry->nextPtr;
         } while(ptr != 0);
     }
 
@@ -161,11 +157,11 @@ PRIVATE void virtio_notify(virtio_state_t *state, int idx) {
     state->common_cfg->queue_select = (uint16_t)idx;
 
     *(uint16_t*)(state->notif_bar + state->notif_cfg->cap.offset + state->common_cfg->queue_notify_off * state->notif_cfg->notify_multiplier)
-         = (uint16_t)idx;
+        = (uint16_t)idx;
 }
 
 PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
-    
+
     state->common_cfg->queue_select = (uint16_t)idx;
     int q_len = state->common_cfg->queue_size;
 
@@ -175,7 +171,7 @@ PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, v
     //avails->flags = 1;
 
     int cur_desc_idx = (avails->idx * 2) % q_len;
-    
+
     while(state->cmds[idx][cur_desc_idx / 2].waiting && !state->cmds[idx][cur_desc_idx / 2].finished)
         DEBUG_PRINT("FAILURE\r\n");
 
@@ -186,7 +182,7 @@ PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, v
     state->cmds[idx][cur_desc_idx / 2].handler = resp_handler;
 
     //Fill a descriptor with the cmd and update the available ring
-    //Fill a descriptor with the response and update the available ring 
+    //Fill a descriptor with the response and update the available ring
     intptr_t cmd_phys = 0;
     intptr_t resp_phys = 0;
     vmem_virttophys((intptr_t)cmd, &cmd_phys);
@@ -210,13 +206,13 @@ PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, v
     if(response_len > 0) {
         descs[cur_desc_idx].flags = VIRTQ_DESC_F_NEXT;
         descs[cur_desc_idx].next = cur_desc_idx + 1;
-        
+
         descs[cur_desc_idx + 1].addr = resp_phys;
         descs[cur_desc_idx + 1].len = response_len;
         descs[cur_desc_idx + 1].flags = VIRTQ_DESC_F_WRITE;
         descs[cur_desc_idx + 1].next = 0;
     }
-    
+
     avails->ring[avails->idx % q_len] = cur_desc_idx;
     avails->idx ++;
 
@@ -229,7 +225,7 @@ int virtio_accept_used(virtio_state_t *state, int idx) {
 
     virtq_used_t *descs = (virtq_used_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_used, q_len * 8 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
-    for(int i = state->used_idx; i < descs->idx; i+=2){
+    for(int i = state->used_idx; i < descs->idx; i+=2) {
         state->cmds[idx][i / 2].waiting = false;
         if(state->cmds[idx][i / 2].handler != NULL)
             state->cmds[idx][i / 2].handler(&state->cmds[idx][i / 2]);
