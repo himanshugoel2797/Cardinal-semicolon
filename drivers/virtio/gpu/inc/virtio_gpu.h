@@ -35,11 +35,22 @@ typedef enum {
     VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
     VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING,
 
+    VIRTIO_GPU_CMD_CTX_CREATE = 0x0200,
+	VIRTIO_GPU_CMD_CTX_DESTROY,
+	VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE,
+	VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE,
+	VIRTIO_GPU_CMD_RESOURCE_CREATE_3D,
+	VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D,
+	VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
+    VIRTIO_GPU_CMD_SUBMIT_3D,
+
     VIRTIO_GPU_CMD_UPDATE_CURSOR = 0x0300,
     VIRTIO_GPU_CMD_MOVE_CURSOR,
 
     VIRTIO_GPU_RESP_OK_NODATA = 0x1100,
     VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
+	VIRTIO_GPU_RESP_OK_CAPSET_INFO,
+    VIRTIO_GPU_RESP_OK_CAPSET,
 
     VIRTIO_GPU_RESP_ERR_UNSPEC = 0x1200,
     VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY,
@@ -99,6 +110,12 @@ typedef struct {
 } virtio_gpu_resource_create_2d_t;
 
 typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    uint32_t resource_id;
+    uint32_t padding;
+} virtio_gpu_resource_unref_t;
+
+typedef struct {
     uint64_t addr;
     uint32_t length;
     uint32_t padding;
@@ -110,6 +127,12 @@ typedef struct {
     uint32_t nr_entries;
     virtio_gpu_mem_entry_t entries[0];
 } virtio_gpu_resource_attach_backing_t;
+
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    uint32_t resource_id;
+    uint32_t padding;
+} virtio_gpu_resource_detach_backing_t;
 
 typedef struct {
     virtio_gpu_ctrl_hdr_t hdr;
@@ -148,6 +171,28 @@ typedef struct {
     uint32_t hot_y;
     uint32_t padding;
 } virtio_gpu_update_cursor_t;
+
+//3d acceleration command structures
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    uint32_t nlen;
+    uint32_t padding;
+    char debug_name[64];
+} virtio_gpu_ctx_create_t;
+
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    uint32_t handle;
+    uint32_t padding;
+} virtio_gpu_ctx_attach_resource_t;
+
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    uint32_t size;
+    uint32_t padding;
+    uint32_t buffer[0];
+} virtio_gpu_submit_t;
+
 
 typedef struct {
     virtio_state_t *common_state;

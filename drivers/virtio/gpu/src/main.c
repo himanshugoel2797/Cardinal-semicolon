@@ -47,7 +47,6 @@ void virtio_gpu_default_handler(virtio_virtq_cmd_state_t *cmd) {
     free(cmd->resp.virt);
 }
 
-
 void virtio_gpu_getdisplayinfo(void (*handler)(virtio_virtq_cmd_state_t*)) {
     virtio_gpu_ctrl_hdr_t *display_info_cmd = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
     virtio_gpu_resp_display_info_t *display_info_resp = malloc(sizeof(virtio_gpu_resp_display_info_t));
@@ -84,25 +83,22 @@ void virtio_gpu_create2d(uint32_t id, virtio_gpu_formats_t fmt, uint32_t width, 
     virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_resource_create_2d_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
 }
 
-void virtio_gpu_attachbacking(uint32_t rsc_id, uintptr_t addr, size_t len) {
-    virtio_gpu_resource_attach_backing_t *rsc_d = malloc(sizeof(virtio_gpu_resource_attach_backing_t) + sizeof(virtio_gpu_mem_entry_t));
+void virtio_gpu_unref(uint32_t rsc_id) {
+    virtio_gpu_resource_unref_t *rsc_d = malloc(sizeof(virtio_gpu_resource_unref_t));
     virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
 
-    rsc_d->hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+    rsc_d->hdr.type = VIRTIO_GPU_CMD_RESOURCE_UNREF;
     rsc_d->hdr.flags = 0;
     rsc_d->hdr.fence_id = 0;
     rsc_d->hdr.ctx_id = 0;
     rsc_d->hdr.padding = 0;
 
     rsc_d->resource_id = rsc_id;
-    rsc_d->nr_entries = 1;
-    rsc_d->entries[0].addr = addr;
-    rsc_d->entries[0].length = len;
-    rsc_d->entries[0].padding = 0;
+    rsc_d->padding = 0;
 
     memset(resp, 0, sizeof(virtio_gpu_ctrl_hdr_t));
 
-    virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_resource_attach_backing_t) + sizeof(virtio_gpu_mem_entry_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
+    virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_resource_unref_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
 }
 
 void virtio_gpu_setscanout(uint32_t scanout_id, uint32_t resource_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
@@ -125,6 +121,28 @@ void virtio_gpu_setscanout(uint32_t scanout_id, uint32_t resource_id, uint32_t x
     memset(resp, 0, sizeof(virtio_gpu_ctrl_hdr_t));
 
     virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_set_scanout_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
+}
+
+void virtio_gpu_flush(uint32_t resource_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    virtio_gpu_resource_flush_t *rsc_d = malloc(sizeof(virtio_gpu_resource_flush_t));
+    virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
+
+    rsc_d->hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+    rsc_d->hdr.flags = 0;
+    rsc_d->hdr.fence_id = 0;
+    rsc_d->hdr.ctx_id = 0;
+    rsc_d->hdr.padding = 0;
+
+    rsc_d->resource_id = resource_id;
+    rsc_d->padding = 0;
+    rsc_d->r.x = x;
+    rsc_d->r.y = y;
+    rsc_d->r.width = w;
+    rsc_d->r.height = h;
+
+    memset(resp, 0, sizeof(virtio_gpu_ctrl_hdr_t));
+
+    virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_resource_flush_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
 }
 
 void virtio_gpu_transfertohost2d(uint32_t resource_id, uint64_t offset, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
@@ -150,26 +168,115 @@ void virtio_gpu_transfertohost2d(uint32_t resource_id, uint64_t offset, uint32_t
     virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_transfer_to_host_2d_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
 }
 
-void virtio_gpu_flush(uint32_t resource_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
-    virtio_gpu_resource_flush_t *rsc_d = malloc(sizeof(virtio_gpu_resource_flush_t));
+void virtio_gpu_attachbacking(uint32_t rsc_id, uintptr_t addr, size_t len) {
+    virtio_gpu_resource_attach_backing_t *rsc_d = malloc(sizeof(virtio_gpu_resource_attach_backing_t) + sizeof(virtio_gpu_mem_entry_t));
     virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
 
-    rsc_d->hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+    rsc_d->hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
     rsc_d->hdr.flags = 0;
     rsc_d->hdr.fence_id = 0;
     rsc_d->hdr.ctx_id = 0;
     rsc_d->hdr.padding = 0;
 
-    rsc_d->resource_id = resource_id;
-    rsc_d->padding = 0;
-    rsc_d->r.x = x;
-    rsc_d->r.y = y;
-    rsc_d->r.width = w;
-    rsc_d->r.height = h;
+    rsc_d->resource_id = rsc_id;
+    rsc_d->nr_entries = 1;
+    rsc_d->entries[0].addr = addr;
+    rsc_d->entries[0].length = len;
+    rsc_d->entries[0].padding = 0;
 
     memset(resp, 0, sizeof(virtio_gpu_ctrl_hdr_t));
 
-    virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_resource_flush_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
+    virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_resource_attach_backing_t) + sizeof(virtio_gpu_mem_entry_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
+}
+
+void virtio_gpu_detachbacking(uint32_t rsc_id) {
+    virtio_gpu_resource_detach_backing_t *rsc_d = malloc(sizeof(virtio_gpu_resource_detach_backing_t));
+    virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
+
+    rsc_d->hdr.type = VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING;
+    rsc_d->hdr.flags = 0;
+    rsc_d->hdr.fence_id = 0;
+    rsc_d->hdr.ctx_id = 0;
+    rsc_d->hdr.padding = 0;
+
+    rsc_d->resource_id = rsc_id;
+    rsc_d->padding = 0;
+
+    memset(resp, 0, sizeof(virtio_gpu_ctrl_hdr_t));
+
+    virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_resource_detach_backing_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
+}
+
+//3d acceleration commands
+void virtio_gpu_ctx_create(uint32_t ctx_id, char name[64]) {
+    virtio_gpu_ctx_create_t *rsc_d = malloc(sizeof(virtio_gpu_ctx_create_t));
+    virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
+
+    rsc_d->hdr.type = VIRTIO_GPU_CMD_CTX_CREATE;
+    rsc_d->hdr.flags = 0;
+    rsc_d->hdr.fence_id = 0;
+    rsc_d->hdr.ctx_id = ctx_id;
+    rsc_d->hdr.padding = 0;
+
+    rsc_d->nlen = strnlen(name, 64);
+    rsc_d->padding = 0;
+    strncpy(rsc_d->debug_name, name, 64);
+
+    memset(resp, 0, sizeof(virtio_gpu_ctrl_hdr_t));
+
+    virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_ctx_create_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
+}
+
+void virtio_gpu_ctx_destroy(uint32_t ctx_id) {
+    virtio_gpu_ctrl_hdr_t *rsc_d = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
+    virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
+
+    rsc_d->type = VIRTIO_GPU_CMD_CTX_DESTROY;
+    rsc_d->flags = 0;
+    rsc_d->fence_id = 0;
+    rsc_d->ctx_id = ctx_id;
+    rsc_d->padding = 0;
+
+    memset(resp, 0, sizeof(virtio_gpu_ctrl_hdr_t));
+
+    virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_ctrl_hdr_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
+}
+
+void virtio_gpu_ctx_attachresource(uint32_t ctx_id, uint32_t handle) {
+    virtio_gpu_ctx_attach_resource_t *rsc_d = malloc(sizeof(virtio_gpu_ctx_attach_resource_t));
+    virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
+
+    rsc_d->hdr.type = VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE;
+    rsc_d->hdr.flags = 0;
+    rsc_d->hdr.fence_id = 0;
+    rsc_d->hdr.ctx_id = ctx_id;
+    rsc_d->hdr.padding = 0;
+
+    rsc_d->handle = handle;
+    rsc_d->padding = 0;
+
+    memset(resp, 0, sizeof(virtio_gpu_ctrl_hdr_t));
+
+    virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_ctx_attach_resource_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
+}
+
+void virtio_gpu_ctx_submit(uint32_t ctx_id, uint32_t *cmds, uint32_t sz) {
+    virtio_gpu_submit_t *rsc_d = malloc(sizeof(virtio_gpu_submit_t));
+    virtio_gpu_ctrl_hdr_t *resp = malloc(sizeof(virtio_gpu_ctrl_hdr_t));
+
+    rsc_d->hdr.type = VIRTIO_GPU_CMD_SUBMIT_3D;
+    rsc_d->hdr.flags = 0;
+    rsc_d->hdr.fence_id = 0;
+    rsc_d->hdr.ctx_id = ctx_id;
+    rsc_d->hdr.padding = 0;
+
+    rsc_d->size = sz;
+    rsc_d->padding = 0;
+    memcpy(rsc_d->buffer, cmds, sz * sizeof(uint32_t));
+
+    memset(resp, 0, sizeof(virtio_gpu_ctrl_hdr_t));
+
+    virtio_gpu_submitcmd(0, rsc_d, sizeof(virtio_gpu_submit_t) + sz * sizeof(uint32_t), resp, sizeof(virtio_gpu_ctrl_hdr_t), virtio_gpu_default_handler);
 }
 
 void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd) {
@@ -205,6 +312,9 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd) {
     virtio_gpu_default_handler(cmd);
 }
 
+//TODO: Implement Display driver API
+//TODO: design Graphics driver API
+
 int module_init(void *ecam) {
 
     memset(&device, 0, sizeof(device));
@@ -235,8 +345,6 @@ int module_init(void *ecam) {
     virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
     virtio_notify(device.common_state, 0);
 
-    while(true) {
-    }
 
     return 0;
 }
