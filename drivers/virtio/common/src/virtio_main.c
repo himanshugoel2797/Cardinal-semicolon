@@ -59,8 +59,6 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
             } else if(capEntry->capID == pci_cap_msix) {
                 DEBUG_PRINT("MSIX\r\n");
             } else if(capEntry->capID == pci_cap_vendor) {
-                DEBUG_PRINT("Vendor\r\n");
-
                 intptr_t bar_addr = 0;
                 
                 virtio_pci_cap_t *vendorCap = (virtio_pci_cap_t*)capEntry;
@@ -75,30 +73,26 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
                     case virtio_pci_cap_cfg_common:
                     {
                         n_state->common_cfg = (virtio_pci_common_cfg_t*)(bar_addr + vendorCap->offset);
-                        DEBUG_PRINT("\tCOMMON\r\n");
                     }
                     break;
                     case virtio_pci_cap_cfg_notify:
                     {
                         n_state->notif_cfg = (virtio_pci_notif_cfg_t*)vendorCap;
                         n_state->notif_bar = bar_addr;
-                        DEBUG_PRINT("\tNOTIFY\r\n");
                     }
                     break;
                     case virtio_pci_cap_cfg_isr:
                     {
-                        n_state->isr_cfg = (virtio_pci_isr_cfg_t*)(bar_addr + vendorCap->offset);                        
-                        DEBUG_PRINT("\tISR\r\n");
+                        n_state->isr_cfg = (virtio_pci_isr_cfg_t*)(bar_addr + vendorCap->offset);
                     }
                     break;
                     case virtio_pci_cap_cfg_device:
                     {
-                        n_state->dev_cfg = (void*)(bar_addr + vendorCap->offset);                        
-                        DEBUG_PRINT("\tDEVICE\r\n");
+                        n_state->dev_cfg = (void*)(bar_addr + vendorCap->offset);
                     }
                     break;
                     case virtio_pci_cap_cfg_pci:
-                        DEBUG_PRINT("\tPCI\r\n");
+                        //Don't care, we don't need the alternative access mechanisms
                     break;
                 }
             }
@@ -178,12 +172,12 @@ PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, v
 
     virtq_desc_t *descs = (virtq_desc_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_desc, q_len * 16, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     virtq_avail_t *avails = (virtq_avail_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_avail, q_len * 2 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-    avails->flags = 1;
+    //avails->flags = 1;
 
-    int cur_desc_idx = avails->idx % q_len;
+    int cur_desc_idx = (avails->idx * 2) % q_len;
     
     while(state->cmds[idx][cur_desc_idx / 2].waiting && !state->cmds[idx][cur_desc_idx / 2].finished)
-        halt();
+        DEBUG_PRINT("FAILURE\r\n");
 
     state->cmds[idx][cur_desc_idx / 2].waiting = true;
     state->cmds[idx][cur_desc_idx / 2].finished = false;

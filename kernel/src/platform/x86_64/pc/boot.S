@@ -221,5 +221,5 @@ multiboot_end:
 
                                .section .bootstrap_stack
                                stack_bottom:
-                               .skip 16384 # 4 KiB	(4 KiB is enough for initialization until threading is setup)
+                               .skip 16384 # 16 KiB	(16 KiB is enough for initialization until threading is setup)
                                stack_top:

@@ -348,7 +348,7 @@ void servicescript_handler(void *arg) {
 int module_mp_init() {
 
     //Allocate and setup interrupt stack
-    uint8_t* interrupt_stack = (uint8_t*)malloc(KiB(4)) + KiB(4);
+    uint8_t* interrupt_stack = (uint8_t*)malloc(KERNEL_STACK_LEN) + KERNEL_STACK_LEN;
 
     core_descs->interrupt_stack = interrupt_stack;
     core_descs->cur_task = NULL;

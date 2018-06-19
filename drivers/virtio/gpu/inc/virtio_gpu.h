@@ -99,6 +99,57 @@ typedef struct {
 } virtio_gpu_resource_create_2d_t;
 
 typedef struct {
+    uint64_t addr;
+    uint32_t length;
+    uint32_t padding;
+} virtio_gpu_mem_entry_t;
+
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    uint32_t resource_id;
+    uint32_t nr_entries;
+    virtio_gpu_mem_entry_t entries[0];
+} virtio_gpu_resource_attach_backing_t;
+
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    virtio_gpu_rect_t r;
+    uint32_t scanout_id;
+    uint32_t resource_id;
+} virtio_gpu_set_scanout_t;
+
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    virtio_gpu_rect_t r;
+    uint64_t offset;
+    uint32_t resource_id;
+    uint32_t padding;
+} virtio_gpu_transfer_to_host_2d_t;
+
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    virtio_gpu_rect_t r;
+    uint32_t resource_id;
+    uint32_t padding;
+} virtio_gpu_resource_flush_t;
+
+typedef struct {
+    uint32_t scanout_id;
+    uint32_t x;
+    uint32_t y;
+    uint32_t padding;
+} virtio_gpu_cursor_pos_t;
+
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    virtio_gpu_cursor_pos_t pos;
+    uint32_t resource_id;
+    uint32_t hot_x;
+    uint32_t hot_y;
+    uint32_t padding;
+} virtio_gpu_update_cursor_t;
+
+typedef struct {
     virtio_state_t *common_state;
     bool virgl_mode;
     volatile _Atomic uint32_t latest_ready_cmd;
