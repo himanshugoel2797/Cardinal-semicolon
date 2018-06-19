@@ -13,11 +13,15 @@ void *stack_alloc(size_t sz, bool kernel) {
     return NULL;
 }
 
+
+int kernel_updatememhandlers();
+
 int module_init() {
     return 0;
 }
 
 int mem_init() {
+    kernel_updatememhandlers();
     return 0;
 }
 

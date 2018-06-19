@@ -353,6 +353,8 @@ int module_mp_init() {
     core_descs->interrupt_stack = interrupt_stack;
     core_descs->cur_task = NULL;
 
+    interrupt_setstack(interrupt_stack);
+
     cs_id ss_id = 0;
     cs_error ss_err = create_task_kernel(cs_task_type_process, "servicescript", task_permissions_kernel, &ss_id);
     if(ss_err != CS_OK)
@@ -360,8 +362,6 @@ int module_mp_init() {
     ss_err = start_task_kernel(ss_id, servicescript_handler);
     if(ss_err != CS_OK)
         PANIC("SS_ERR1");
-
-    interrupt_setstack(interrupt_stack);
 
     if(timer_request(timer_features_periodic | timer_features_local, 50000, task_switch_handler))
         PANIC("Failed to allocate periodic timer!");

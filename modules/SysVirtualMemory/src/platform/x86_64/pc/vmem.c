@@ -461,12 +461,12 @@ static int vmem_virttophys_st(uint64_t *pg, uint64_t virt, intptr_t *phys, int l
     if(ent & PRESENT) {
 
         if((ent & LARGEPAGE) && largepage_avail[lv]) {
-            *phys = (ent & ADDR_MASK);
+            *phys = (ent & ADDR_MASK) + (virt % levels[lv]);
             return 0;
         }
 
         if(levels[lv] == KiB(4)) {
-            *phys = (ent & ADDR_MASK);
+            *phys = (ent & ADDR_MASK) + (virt % levels[lv]);
             return 0;
         }
 

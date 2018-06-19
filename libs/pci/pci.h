@@ -56,6 +56,22 @@ typedef struct {
     uint16_t support_vectormask : 1;
 } pci_msi_control_t;
 
+typedef struct {
+    pci_cap_header_t hdr;
+    pci_msi_control_t ctrl;
+    uint32_t msg_addr;
+    uint16_t msg_data;
+} pci_msi_32_t;
+
+typedef struct {
+    pci_cap_header_t hdr;
+    pci_msi_control_t ctrl;
+    uint32_t msg_addr;
+    uint32_t msg_addr_hi;
+    uint16_t msg_data;
+} pci_msi_64_t;
+
+
 static inline void pci_getmsiinfo(pci_config_t *device) {
     //Search cap list
     if(device->capabilitiesPtr != 0) {

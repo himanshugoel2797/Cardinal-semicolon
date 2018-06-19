@@ -7,6 +7,7 @@
 #define CARDINAL_VIRTIO_COMMON_MAIN_H
 
 #include <types.h>
+#include <stddef.h>
 
 #include "pci/pci.h"
 
@@ -58,6 +59,18 @@ typedef struct {
 
 } virtio_pci_isr_cfg_t;
 
+typedef struct {
+    virtio_pci_cap_t cap;
+    uint32_t notify_multiplier;
+} virtio_pci_notif_cfg_t;
+
+/* Arbitrary descriptor layouts. */
+#define VIRTIO_F_ANY_LAYOUT (1 << 27)
+/* Support for indirect descriptors */
+#define VIRTIO_F_INDIRECT_DESC  (1 << 28)
+/* Support for avail_event and used_event fields */
+#define VIRTIO_F_EVENT_IDX  (1 << 29)
+
 /* This marks a buffer as continuing via the next field. */
 #define VIRTQ_DESC_F_NEXT   1
 /* This marks a buffer as device write-only (otherwise device read-only). */
@@ -83,20 +96,42 @@ typedef struct {
     uint32_t len;
 } virtq_used_elem_t;
 
-typedef struct {
+typedef struct PACKED {
     uint16_t flags;
     uint16_t idx;
     virtq_used_elem_t ring[0];
 } virtq_used_t;
 
 typedef struct {
+    void *virt;
+    intptr_t phys;
+    size_t len;
+} virtio_phys_virt_addrpair_t;
+
+typedef struct virtio_virtq_cmd_state{
+    virtio_phys_virt_addrpair_t cmd;
+    virtio_phys_virt_addrpair_t resp;
+    bool waiting;
+    bool finished;
+    int q;
+    int idx;
+    void (*handler)(struct virtio_virtq_cmd_state *);
+} virtio_virtq_cmd_state_t;
+
+typedef struct {
     virtio_pci_common_cfg_t *common_cfg;
     virtio_pci_isr_cfg_t *isr_cfg;
+    virtio_pci_notif_cfg_t *notif_cfg;
+    void *dev_cfg; 
 
+    virtio_virtq_cmd_state_t **cmds;
+    int used_idx;
+
+    intptr_t notif_bar;
     pci_config_t *device;
 } virtio_state_t;
 
-PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr);
+PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds);
 
 PRIVATE uint32_t virtio_getfeatures(virtio_state_t *state, int idx);
 
@@ -108,4 +143,9 @@ PRIVATE void virtio_driver_ok(virtio_state_t *state);
 
 PRIVATE void* virtio_setupqueue(virtio_state_t *state, int idx, int entcnt);
 
+PRIVATE void virtio_notify(virtio_state_t *state, int idx);
+
+PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t*));
+
+PRIVATE int virtio_accept_used(virtio_state_t *state, int idx);
 #endif
