@@ -214,9 +214,10 @@ typedef struct {
     virtio_gpu_scanout_state_t scanouts [VIRTIO_GPU_MAX_SCANOUTS];
 
     virtio_virtq_cmd_state_t *qstate [VIRTIO_GPU_VIRTQ_COUNT];
-    virtio_virtq_cmd_state_t controlq [VIRTIO_GPU_VIRTQ_LEN / 2];
-    virtio_virtq_cmd_state_t cursorq [VIRTIO_GPU_VIRTQ_LEN / 2];
+    virtio_virtq_cmd_state_t controlq [VIRTIO_GPU_VIRTQ_LEN];
+    virtio_virtq_cmd_state_t cursorq [VIRTIO_GPU_VIRTQ_LEN];
 
+    int avail_idx[VIRTIO_GPU_VIRTQ_COUNT];
     int used_idx[VIRTIO_GPU_VIRTQ_COUNT];
 } virtio_gpu_driver_state_t;
 

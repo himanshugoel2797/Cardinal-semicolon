@@ -15,7 +15,7 @@
 #include "pci/pci.h"
 #include "virtio.h"
 
-PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds) {
+PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds, int *avail_idx, int *used_idx) {
     pci_config_t *device = (pci_config_t*)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     //enable pci bus master
@@ -24,6 +24,8 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
     virtio_state_t *n_state = malloc(sizeof(virtio_state_t));
     n_state->cmds = cmds;
     n_state->device = device;
+    n_state->avail_idx = avail_idx;
+    n_state->used_idx = used_idx;
 
     //TODO: install msi interrupt servicing
     //traverse capabilities
@@ -160,7 +162,7 @@ PRIVATE void virtio_notify(virtio_state_t *state, int idx) {
         = (uint16_t)idx;
 }
 
-PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
+PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
 
     state->common_cfg->queue_select = (uint16_t)idx;
     int q_len = state->common_cfg->queue_size;
@@ -169,9 +171,10 @@ PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, v
     virtq_avail_t *avails = (virtq_avail_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_avail, q_len * 2 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     //avails->flags = 1;
 
-    int cur_desc_idx = (avails->idx % (q_len / 2)) * 2;
+    int cur_desc_idx = state->avail_idx[idx];
+    state->avail_idx[idx] = (state->avail_idx[idx] + 2) % q_len;
 
-    while(state->cmds[idx][cur_desc_idx / 2].waiting && !state->cmds[idx][cur_desc_idx / 2].finished){
+    while(state->cmds[idx][cur_desc_idx].waiting && !state->cmds[idx][cur_desc_idx].finished){
         //__asm__("cli\n\thlt" :: "a"(cur_desc_idx));
         {
             char tmp[10];
@@ -184,11 +187,11 @@ PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, v
         virtio_notify(state, idx);
     }
 
-    state->cmds[idx][cur_desc_idx / 2].waiting = true;
-    state->cmds[idx][cur_desc_idx / 2].finished = false;
-    state->cmds[idx][cur_desc_idx / 2].q = idx;
-    state->cmds[idx][cur_desc_idx / 2].idx = cur_desc_idx;
-    state->cmds[idx][cur_desc_idx / 2].handler = resp_handler;
+    state->cmds[idx][cur_desc_idx].waiting = true;
+    state->cmds[idx][cur_desc_idx].finished = false;
+    state->cmds[idx][cur_desc_idx].q = idx;
+    state->cmds[idx][cur_desc_idx].idx = cur_desc_idx;
+    state->cmds[idx][cur_desc_idx].handler = resp_handler;
 
     //Fill a descriptor with the cmd and update the available ring
     //Fill a descriptor with the response and update the available ring
@@ -198,13 +201,13 @@ PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, v
     if(response_len > 0)vmem_virttophys((intptr_t)resp, &resp_phys);
 
     {
-        state->cmds[idx][cur_desc_idx / 2].cmd.virt = cmd;
-        state->cmds[idx][cur_desc_idx / 2].cmd.phys = cmd_phys;
-        state->cmds[idx][cur_desc_idx / 2].cmd.len = len;
+        state->cmds[idx][cur_desc_idx].cmd.virt = cmd;
+        state->cmds[idx][cur_desc_idx].cmd.phys = cmd_phys;
+        state->cmds[idx][cur_desc_idx].cmd.len = len;
 
-        state->cmds[idx][cur_desc_idx / 2].resp.virt = resp;
-        state->cmds[idx][cur_desc_idx / 2].resp.phys = resp_phys;
-        state->cmds[idx][cur_desc_idx / 2].resp.len = response_len;
+        state->cmds[idx][cur_desc_idx].resp.virt = resp;
+        state->cmds[idx][cur_desc_idx].resp.phys = resp_phys;
+        state->cmds[idx][cur_desc_idx].resp.len = response_len;
     }
 
     descs[cur_desc_idx].addr = cmd_phys;
@@ -221,55 +224,45 @@ PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, v
         descs[cur_desc_idx + 1].flags = VIRTQ_DESC_F_WRITE;
         descs[cur_desc_idx + 1].next = 0;
     }
-
-    avails->ring[avails->idx % q_len] = cur_desc_idx;
-    avails->idx ++;
         char tmp[10];
         DEBUG_PRINT("Using: ");
         DEBUG_PRINT(itoa(cur_desc_idx, tmp, 10));
-        DEBUG_PRINT(", ");
-        DEBUG_PRINT(itoa(avails->idx % q_len, tmp, 10));
-        DEBUG_PRINT(", ");
-        DEBUG_PRINT(itoa(idx, tmp, 10));
         DEBUG_PRINT("\r\n");
 
-    return cur_desc_idx;
+    avails->ring[avails->idx % q_len] = cur_desc_idx;
+    avails->idx ++;
 }
 
-int virtio_accept_used(virtio_state_t *state, int idx, int used_idx) {
+void virtio_accept_used(virtio_state_t *state, int idx) {
     state->common_cfg->queue_select = (uint16_t)idx;
     int q_len = state->common_cfg->queue_size;
 
     virtq_used_t *descs = (virtq_used_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_used, q_len * 8 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
-    int d_idx = (descs->idx % q_len);
+    int d_idx = descs->idx;
     do{
-        for(int i = used_idx; i < d_idx; i++) {
+        for(int i = state->used_idx[idx]; i != d_idx; i++) {
 
-            int r_id = descs->ring[i].id;
+            int r_id = descs->ring[i % q_len].id;
 
             char tmp[10];
             DEBUG_PRINT("Handling: ");
             DEBUG_PRINT(itoa(r_id, tmp, 10));
-            DEBUG_PRINT(", ");
-            DEBUG_PRINT(itoa(i, tmp, 10));
             DEBUG_PRINT("\r\n");
 
-            state->cmds[idx][r_id / 2].waiting = false;
-            if(state->cmds[idx][r_id / 2].handler != NULL)
-                state->cmds[idx][r_id / 2].handler(&state->cmds[idx][r_id / 2]);
-            state->cmds[idx][r_id / 2].finished = true;
-            state->cmds[idx][r_id / 2].handler = NULL;   
+            state->cmds[idx][r_id].waiting = false;
+            if(state->cmds[idx][r_id].handler != NULL)
+                state->cmds[idx][r_id].handler(&state->cmds[idx][r_id]);
+            state->cmds[idx][r_id].finished = true;
+            state->cmds[idx][r_id].handler = NULL;   
         }
-        if(d_idx == (descs->idx % q_len)){
+        if(d_idx == descs->idx){
             *state->isr_cfg;
-            return d_idx;
+            return;
         }else{
-            used_idx = d_idx;
-            d_idx = (descs->idx % q_len);
+            state->used_idx[idx] = d_idx;
+            d_idx = descs->idx;
             DEBUG_PRINT("Continuing...");
         }
     }while(true);
-
-    return d_idx;
 }

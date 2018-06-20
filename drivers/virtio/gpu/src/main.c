@@ -24,14 +24,7 @@ void intrpt_handler(int idx) {
     DEBUG_PRINT("GPU Interrupt\r\n");
 
     for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++){
-        if(i == 0)
-        {
-            char tmp[10];
-            DEBUG_PRINT("USED_IDX: ");
-            DEBUG_PRINT(itoa(device.used_idx[i], tmp, 10));
-            DEBUG_PRINT("\r\n");
-        }
-        device.used_idx[i] = virtio_accept_used(device.common_state, i, device.used_idx[i]);
+        virtio_accept_used(device.common_state, i);
     }
 
     virtio_gpu_config_t *cfg = (virtio_gpu_config_t*)device.common_state->dev_cfg;
@@ -39,13 +32,13 @@ void intrpt_handler(int idx) {
     if(cfg->events_read & VIRTIO_GPU_EVENT_DISPLAY) {
         DEBUG_PRINT("Display resized\r\n");
         cfg->events_clear = VIRTIO_GPU_EVENT_DISPLAY;
-        //virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
+        virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
     }
 
 }
 
 void virtio_gpu_submitcmd(int q, void *cmd, int cmd_len, void *resp, int resp_len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
-    int cmd_idx = virtio_postcmd(device.common_state, q, cmd, cmd_len, resp, resp_len, resp_handler);
+    virtio_postcmd(device.common_state, q, cmd, cmd_len, resp, resp_len, resp_handler);
 }
 
 void virtio_gpu_default_handler(virtio_virtq_cmd_state_t *cmd) {
@@ -354,7 +347,7 @@ int module_init(void *ecam) {
 
     device.qstate[0] = device.controlq;
     device.qstate[1] = device.cursorq;
-    device.common_state = virtio_initialize(ecam, intrpt_handler, device.qstate);
+    device.common_state = virtio_initialize(ecam, intrpt_handler, device.qstate, device.avail_idx, device.used_idx);
 
     device.resource_ids = 1;
 

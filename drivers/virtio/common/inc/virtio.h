@@ -120,14 +120,15 @@ typedef struct {
     virtio_pci_notif_cfg_t *notif_cfg;
     void *dev_cfg;
 
-    uint32_t *cmd_idx;
+    int *avail_idx;
+    int *used_idx;
     virtio_virtq_cmd_state_t **cmds;
 
     intptr_t notif_bar;
     pci_config_t *device;
 } virtio_state_t;
 
-PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds);
+PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds, int *avail_idx, int *used_idx);
 
 PRIVATE uint32_t virtio_getfeatures(virtio_state_t *state, int idx);
 
@@ -141,7 +142,7 @@ PRIVATE void* virtio_setupqueue(virtio_state_t *state, int idx, int entcnt);
 
 PRIVATE void virtio_notify(virtio_state_t *state, int idx);
 
-PRIVATE int virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t*));
+PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t*));
 
-PRIVATE int virtio_accept_used(virtio_state_t *state, int idx, int used_idx);
+PRIVATE void virtio_accept_used(virtio_state_t *state, int idx);
 #endif
