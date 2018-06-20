@@ -7,30 +7,47 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <cardinal/local_spinlock.h>
 
 #include "virtio.h"
 #include "virtio_gpu.h"
 
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
+#include "SysTaskMgr/task.h"
 
 static virtio_gpu_driver_state_t device;
+static int virtio_signalled = 0;
 
 void intrpt_handler(int idx) {
     idx = 0;
+    virtio_signalled = true;
+    local_spinlock_unlock(&virtio_signalled);
+}
 
-    for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++) {
-        virtio_accept_used(device.common_state, i);
+void virtio_task_handler(void *arg) {
+    arg = NULL;
+
+    local_spinlock_lock(&virtio_signalled);
+
+    while(true) {
+        local_spinlock_lock(&virtio_signalled);
+        int state = cli();  //TODO: replace this with a thread aware lock, to prevent other submitting threads from interfering
+
+        for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++) {
+            virtio_accept_used(device.common_state, i);
+        }
+
+        virtio_gpu_config_t *cfg = (virtio_gpu_config_t*)device.common_state->dev_cfg;
+
+        if(cfg->events_read & VIRTIO_GPU_EVENT_DISPLAY) {
+            DEBUG_PRINT("Display resized\r\n");
+            cfg->events_clear = VIRTIO_GPU_EVENT_DISPLAY;
+            virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
+        }
+
+        sti(state);
     }
-
-    virtio_gpu_config_t *cfg = (virtio_gpu_config_t*)device.common_state->dev_cfg;
-
-    if(cfg->events_read & VIRTIO_GPU_EVENT_DISPLAY) {
-        DEBUG_PRINT("Display resized\r\n");
-        cfg->events_clear = VIRTIO_GPU_EVENT_DISPLAY;
-        virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
-    }
-
 }
 
 void virtio_gpu_submitcmd(int q, void *cmd, int cmd_len, void *resp, int resp_len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
@@ -343,6 +360,14 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd) {
 int module_init(void *ecam) {
 
     memset(&device, 0, sizeof(device));
+
+    cs_id ss_id = 0;
+    cs_error ss_err = create_task_kernel(cs_task_type_process, "virtio_gpu_0", task_permissions_kernel, &ss_id);
+    if(ss_err != CS_OK)
+        PANIC("VIRTIO_ERR0");
+    ss_err = start_task_kernel(ss_id, virtio_task_handler);
+    if(ss_err != CS_OK)
+        PANIC("VIRTIO_ERR1");
 
     device.qstate[0] = device.controlq;
     device.qstate[1] = device.cursorq;

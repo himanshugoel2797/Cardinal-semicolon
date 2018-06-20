@@ -3,7 +3,7 @@
 #include <string.h>
 #include <types.h>
 
-#define MAX_SYMBOL_CNT (65537)
+#define MAX_SYMBOL_CNT (65413)
 
 #define TO_SYM(x) ((Elf64_Sym *)(symbol_e_offsets[x]))
 #define TO_HDR(x) ((Elf64_Shdr *)(symbol_hdr_offsets[x]))
@@ -45,11 +45,22 @@ static uint32_t hash(const char *src, size_t src_len) {
         hash ^= src[i];
         hash *= FNV1A_PRIME;
     }
+
+    /*{
+        char tmp[10];
+        DEBUG_PRINT("Hash Value of ");
+        DEBUG_PRINT(src);
+        DEBUG_PRINT(" : ");
+        DEBUG_PRINT(itoa(hash % MAX_SYMBOL_CNT, tmp, 16));
+        DEBUG_PRINT("\r\n");
+    }*/
+
     return hash;
 }
 
 static uint32_t murmur3_32(const char *key, size_t len, uint32_t seed) {
     uint32_t h = seed;
+    const char *key_cp = key;
     if (len > 3) {
         const uint32_t *key_x4 = (const uint32_t *)key;
         size_t i = len >> 2;
@@ -83,6 +94,15 @@ static uint32_t murmur3_32(const char *key, size_t len, uint32_t seed) {
     h ^= h >> 13;
     h *= 0xc2b2ae35;
     h ^= h >> 16;
+
+    /*{
+        char tmp[10];
+        DEBUG_PRINT("Murmur hash Value of ");
+        DEBUG_PRINT(key_cp);
+        DEBUG_PRINT(" : ");
+        DEBUG_PRINT(itoa(h % MAX_SYMBOL_CNT, tmp, 16));
+        DEBUG_PRINT("\r\n");
+    }*/
     return h;
 }
 
@@ -179,7 +199,7 @@ int symboldb_add(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *symbol) {
         return 0;
     }
 
-    s_hash = murmur3_32((char *)&sym_str, strlen(sym_str),
+    s_hash = murmur3_32(sym_str, strlen(sym_str),
                         sym_str[0] + strlen(sym_str));
 
     idx = s_hash % MAX_SYMBOL_CNT;
@@ -220,7 +240,7 @@ int symboldb_findfunc(const char *str, Elf64_Shdr **r_hdr, Elf64_Sym **r_sym) {
         }
     }
 
-    str_hash = murmur3_32((char *)&str, strlen(str), str[0] + strlen(str));
+    str_hash = murmur3_32(str, strlen(str), str[0] + strlen(str));
     idx = str_hash % MAX_SYMBOL_CNT;
 
     if (symbol_e_offsets[idx] != 0) {
@@ -257,7 +277,7 @@ int symboldb_findmatch(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *sym,
     if (symboldb_entrymatch(idx, strhdr, hdr, sym, r_hdr, r_sym) == 0)
         return 0;
 
-    s_hash = murmur3_32((char *)&sym_str, strlen(sym_str),
+    s_hash = murmur3_32(sym_str, strlen(sym_str),
                         sym_str[0] + strlen(sym_str));
     idx = s_hash % MAX_SYMBOL_CNT;
 
@@ -267,4 +287,11 @@ int symboldb_findmatch(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *sym,
     DEBUG_PRINT(sym_str);
     PANIC("CRITICAL ERROR: Could not find symbol.");
     return -1;
+}
+
+void symboldb_showcnt(){
+    char tmp[10];
+    DEBUG_PRINT("Symbol Count : ");
+    DEBUG_PRINT(itoa(symbol_cnt, tmp, 10));
+    DEBUG_PRINT("\r\n");
 }

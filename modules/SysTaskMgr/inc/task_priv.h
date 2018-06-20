@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include "SysVirtualMemory/vmem.h"
+#include "SysTaskMgr/task.h"
 #include "thread.h"
 
 #define TASK_NAME_LEN 256
@@ -22,11 +23,6 @@ typedef enum {
     task_state_exiting,
     task_state_exited,
 } task_state_t;
-
-typedef enum {
-    task_permissions_none = 0,
-    task_permissions_kernel = 1,
-} task_permissions_t;
 
 typedef struct process_desc {
     vmem_t *mem;

@@ -9,6 +9,11 @@
 #include <stdint.h>
 #include "thread.h"
 
+typedef enum {
+    task_permissions_none = 0,
+    task_permissions_kernel = 1,
+} task_permissions_t;
+
 cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_t perms, cs_id *id);
 
 cs_error start_task_kernel(cs_id id, void(*handler)(void *arg));
