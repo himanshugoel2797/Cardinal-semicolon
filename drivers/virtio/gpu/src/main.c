@@ -19,7 +19,7 @@ static virtio_gpu_driver_state_t device;
 void intrpt_handler(int idx) {
     idx = 0;
 
-    for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++){
+    for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++) {
         virtio_accept_used(device.common_state, i);
     }
 

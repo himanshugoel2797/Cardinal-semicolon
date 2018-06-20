@@ -174,7 +174,7 @@ PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, 
     int cur_desc_idx = state->avail_idx[idx];
     state->avail_idx[idx] = (state->avail_idx[idx] + 2) % q_len;
 
-    while(state->cmds[idx][cur_desc_idx].waiting && !state->cmds[idx][cur_desc_idx].finished){
+    while(state->cmds[idx][cur_desc_idx].waiting && !state->cmds[idx][cur_desc_idx].finished) {
         virtio_notify(state, idx);
     }
 
@@ -227,7 +227,7 @@ void virtio_accept_used(virtio_state_t *state, int idx) {
     virtq_used_t *descs = (virtq_used_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_used, q_len * 8 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     int d_idx = descs->idx;
-    do{
+    do {
         for(int i = state->used_idx[idx]; i != d_idx; i++) {
             int r_id = descs->ring[i % q_len].id;
 
@@ -235,14 +235,14 @@ void virtio_accept_used(virtio_state_t *state, int idx) {
             if(state->cmds[idx][r_id].handler != NULL)
                 state->cmds[idx][r_id].handler(&state->cmds[idx][r_id]);
             state->cmds[idx][r_id].finished = true;
-            state->cmds[idx][r_id].handler = NULL;   
+            state->cmds[idx][r_id].handler = NULL;
         }
-        if(d_idx == descs->idx){
+        if(d_idx == descs->idx) {
             *state->isr_cfg;
             return;
-        }else{
+        } else {
             state->used_idx[idx] = d_idx;
             d_idx = descs->idx;
         }
-    }while(true);
+    } while(true);
 }
