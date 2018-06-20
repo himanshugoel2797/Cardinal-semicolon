@@ -15,13 +15,9 @@
 #include "SysPhysicalMemory/phys_mem.h"
 
 static virtio_gpu_driver_state_t device;
-static bool tmp_swap = false;
 
 void intrpt_handler(int idx) {
     idx = 0;
-
-    tmp_swap = true;
-    DEBUG_PRINT("GPU Interrupt\r\n");
 
     for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++){
         virtio_accept_used(device.common_state, i);
@@ -301,7 +297,10 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd) {
                 virtio_gpu_unref(device.scanouts[i].resource_id);
                 virtio_notify(device.common_state, 0);
 
-                //pagealloc_free(device.scanouts[i].phys_addr, device.scanouts[i].w * device.scanouts[i].h * sizeof(uint32_t));
+                size_t sz = device.scanouts[i].w * device.scanouts[i].h * sizeof(uint32_t);
+                if(sz % KiB(4))
+                    sz += KiB(4) - (sz % KiB(4));
+                pagealloc_free(device.scanouts[i].phys_addr, sz);
             }
 
             //setup this scanout
@@ -381,13 +380,8 @@ int module_init(void *ecam) {
             memset(device.scanouts[0].virt_addr, val--, device.scanouts[0].w * device.scanouts[0].h * sizeof(uint32_t));
 
             virtio_gpu_transfertohost2d(device.scanouts[0].resource_id, 0, device.scanouts[0].x, device.scanouts[0].y, device.scanouts[0].w, device.scanouts[0].h);
-            
-            //for(int q = 0; q < 40; q++)
             virtio_gpu_flush(device.scanouts[0].resource_id, device.scanouts[0].x, device.scanouts[0].y, device.scanouts[0].w, device.scanouts[0].h);
             virtio_notify(device.common_state, 0);
-
-            //while(!tmp_swap)
-            //    ;
         }
     }
 

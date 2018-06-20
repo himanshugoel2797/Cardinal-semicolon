@@ -175,15 +175,6 @@ PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, 
     state->avail_idx[idx] = (state->avail_idx[idx] + 2) % q_len;
 
     while(state->cmds[idx][cur_desc_idx].waiting && !state->cmds[idx][cur_desc_idx].finished){
-        //__asm__("cli\n\thlt" :: "a"(cur_desc_idx));
-        {
-            char tmp[10];
-            DEBUG_PRINT("WAITING FOR: ");
-            DEBUG_PRINT(itoa(cur_desc_idx, tmp, 10));
-            DEBUG_PRINT(" ");
-        }
-
-        DEBUG_PRINT("FAILURE\r\n");
         virtio_notify(state, idx);
     }
 
@@ -224,10 +215,6 @@ PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, 
         descs[cur_desc_idx + 1].flags = VIRTQ_DESC_F_WRITE;
         descs[cur_desc_idx + 1].next = 0;
     }
-        char tmp[10];
-        DEBUG_PRINT("Using: ");
-        DEBUG_PRINT(itoa(cur_desc_idx, tmp, 10));
-        DEBUG_PRINT("\r\n");
 
     avails->ring[avails->idx % q_len] = cur_desc_idx;
     avails->idx ++;
@@ -242,13 +229,7 @@ void virtio_accept_used(virtio_state_t *state, int idx) {
     int d_idx = descs->idx;
     do{
         for(int i = state->used_idx[idx]; i != d_idx; i++) {
-
             int r_id = descs->ring[i % q_len].id;
-
-            char tmp[10];
-            DEBUG_PRINT("Handling: ");
-            DEBUG_PRINT(itoa(r_id, tmp, 10));
-            DEBUG_PRINT("\r\n");
 
             state->cmds[idx][r_id].waiting = false;
             if(state->cmds[idx][r_id].handler != NULL)
@@ -262,7 +243,6 @@ void virtio_accept_used(virtio_state_t *state, int idx) {
         }else{
             state->used_idx[idx] = d_idx;
             d_idx = descs->idx;
-            DEBUG_PRINT("Continuing...");
         }
     }while(true);
 }
