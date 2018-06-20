@@ -79,7 +79,7 @@ void* WEAK malloc(size_t sz) {
         //Create a new free node with the remaining memory
         mem_node_t *n_node = (mem_node_t*)(cur_best_fit->data + sz);
         n_node->next = NULL;
-        n_node->len = cur_best_fit->len - sz;
+        n_node->len = cur_best_fit->len - sz - sizeof(mem_node_t);
         n_node->isFree = true;
 
         node_cnt++;

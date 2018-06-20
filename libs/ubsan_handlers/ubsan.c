@@ -123,9 +123,15 @@ static void handle_lhs_rhs_funcs(struct source_location *loc, uintptr_t lhs,
     DEBUG_PRINT(loc->filename);
     DEBUG_PRINT(":");
     DEBUG_PRINT(itoa(loc->line, conv_str, 10));
+    DEBUG_PRINT(":");
+    DEBUG_PRINT(itoa(loc->column, conv_str, 10));
 
     if(t == out_of_bounds) {
         DEBUG_PRINT("\r\nOut of bounds value:");
+        DEBUG_PRINT(itoa(lhs >> 32, conv_str, 16));
+        DEBUG_PRINT(itoa(lhs, conv_str, 16));
+    }else if(t == type_mismatch_v1) {
+        DEBUG_PRINT("\r\nType mismatch value:");
         DEBUG_PRINT(itoa(lhs >> 32, conv_str, 16));
         DEBUG_PRINT(itoa(lhs, conv_str, 16));
     }

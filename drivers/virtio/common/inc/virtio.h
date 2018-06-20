@@ -120,6 +120,7 @@ typedef struct {
     virtio_pci_notif_cfg_t *notif_cfg;
     void *dev_cfg;
 
+    uint32_t *cmd_idx;
     virtio_virtq_cmd_state_t **cmds;
 
     intptr_t notif_bar;

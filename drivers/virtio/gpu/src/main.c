@@ -21,9 +21,9 @@ void intrpt_handler(int idx) {
     idx = 0;
 
     tmp_swap = true;
+    DEBUG_PRINT("GPU Interrupt\r\n");
 
     for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++){
-        device.used_idx[i] = virtio_accept_used(device.common_state, i, device.used_idx[i]);
         if(i == 0)
         {
             char tmp[10];
@@ -31,6 +31,7 @@ void intrpt_handler(int idx) {
             DEBUG_PRINT(itoa(device.used_idx[i], tmp, 10));
             DEBUG_PRINT("\r\n");
         }
+        device.used_idx[i] = virtio_accept_used(device.common_state, i, device.used_idx[i]);
     }
 
     virtio_gpu_config_t *cfg = (virtio_gpu_config_t*)device.common_state->dev_cfg;
@@ -41,7 +42,6 @@ void intrpt_handler(int idx) {
         //virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
     }
 
-    DEBUG_PRINT("GPU Interrupt\r\n");
 }
 
 void virtio_gpu_submitcmd(int q, void *cmd, int cmd_len, void *resp, int resp_len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
@@ -301,6 +301,9 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd) {
 
             //free the previous resource_id
             if(device.scanouts[i].resource_id != 0) {
+
+                DEBUG_PRINT("Deleting previous framebuffer.\r\n");
+
                 virtio_gpu_detachbacking(device.scanouts[i].resource_id);
                 virtio_gpu_unref(device.scanouts[i].resource_id);
                 virtio_notify(device.common_state, 0);
@@ -385,6 +388,8 @@ int module_init(void *ecam) {
             memset(device.scanouts[0].virt_addr, val--, device.scanouts[0].w * device.scanouts[0].h * sizeof(uint32_t));
 
             virtio_gpu_transfertohost2d(device.scanouts[0].resource_id, 0, device.scanouts[0].x, device.scanouts[0].y, device.scanouts[0].w, device.scanouts[0].h);
+            
+            //for(int q = 0; q < 40; q++)
             virtio_gpu_flush(device.scanouts[0].resource_id, device.scanouts[0].x, device.scanouts[0].y, device.scanouts[0].w, device.scanouts[0].h);
             virtio_notify(device.common_state, 0);
 

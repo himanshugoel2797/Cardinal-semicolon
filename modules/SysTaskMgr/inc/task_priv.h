@@ -11,7 +11,7 @@
 #include "thread.h"
 
 #define TASK_NAME_LEN 256
-#define KERNEL_STACK_LEN KiB(16)
+#define KERNEL_STACK_LEN KiB(32)
 
 typedef enum {
     task_state_uninitialized = 0,
