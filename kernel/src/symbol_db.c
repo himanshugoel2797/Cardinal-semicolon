@@ -58,7 +58,7 @@ static uint32_t hash(const char *src, size_t src_len) {
     return hash;
 }
 
-static uint32_t murmur3_32(const char *key, size_t len, uint32_t seed) {
+static NO_UBSAN uint32_t murmur3_32(const char *key, size_t len, uint32_t seed) {
     uint32_t h = seed;
     const char *key_cp = key;
     if (len > 3) {

@@ -9,6 +9,8 @@
 #include <string.h>
 #include <stdint.h>
 
+#include <cardinal/local_spinlock.h>
+
 #include "SysMP/mp.h"
 #include "SysFP/fp.h"
 #include "SysPhysicalMemory/phys_mem.h"
@@ -21,7 +23,6 @@
 #include "task_priv.h"
 #include "error.h"
 #include "thread.h"
-#include <cardinal/local_spinlock.h>
 
 // thread/process id allocator
 static _Atomic cs_id cur_id = 1;

@@ -54,6 +54,8 @@ int debug_handle_trap();
 #define NONNULL_RETURN __attribute__((returns_nonnull))
 #define WEAK __attribute__((weak))
 
+#define NO_UBSAN __attribute__((no_sanitize("undefined")))
+
 #define SWAP_ENDIAN_32(x)                                                      \
   (((x & 0x000000ff) << 24) | ((x & 0x0000ff00) << 8) |                        \
    ((x & 0x00ff0000) >> 8) | ((x & 0xff000000) >> 24))
