@@ -17,36 +17,40 @@
 #include "SysTaskMgr/task.h"
 
 static virtio_gpu_driver_state_t device;
-static int virtio_signalled = 0;
+static _Atomic int virtio_signalled = 0;
+static int virtio_queue_avl = 0;
 
 void intrpt_handler(int idx) {
     idx = 0;
     virtio_signalled = true;
-    local_spinlock_unlock(&virtio_signalled);
+    //local_spinlock_unlock(&virtio_signalled);
 }
 
 void virtio_task_handler(void *arg) {
     arg = NULL;
 
-    local_spinlock_lock(&virtio_signalled);
-
     while(true) {
-        local_spinlock_lock(&virtio_signalled);
-        int state = cli();  //TODO: replace this with a thread aware lock, to prevent other submitting threads from interfering
+        while(virtio_signalled){
+            local_spinlock_lock(&virtio_queue_avl);
+            //int state = cli();  //TODO: replace this with a thread aware lock, to prevent other submitting threads from interfering
 
-        for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++) {
-            virtio_accept_used(device.common_state, i);
+            virtio_signalled = false;
+            for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++) {
+                virtio_accept_used(device.common_state, i);
+            }
+
+            virtio_gpu_config_t *cfg = (virtio_gpu_config_t*)device.common_state->dev_cfg;
+
+            if(cfg->events_read & VIRTIO_GPU_EVENT_DISPLAY) {
+                DEBUG_PRINT("Display resized\r\n");
+                cfg->events_clear = VIRTIO_GPU_EVENT_DISPLAY;
+                virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
+            }
+
+            //sti(state);
+            DEBUG_PRINT("Exit handler\r\n");
+            local_spinlock_unlock(&virtio_queue_avl);
         }
-
-        virtio_gpu_config_t *cfg = (virtio_gpu_config_t*)device.common_state->dev_cfg;
-
-        if(cfg->events_read & VIRTIO_GPU_EVENT_DISPLAY) {
-            DEBUG_PRINT("Display resized\r\n");
-            cfg->events_clear = VIRTIO_GPU_EVENT_DISPLAY;
-            virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
-        }
-
-        sti(state);
     }
 }
 
@@ -401,6 +405,9 @@ int module_init(void *ecam) {
     uint8_t val = 0xff;
     while(true) {
 
+        for(int wait = 0; wait < 10000000; wait++)
+            ;
+        local_spinlock_lock(&virtio_queue_avl);
         if(device.scanouts[0].resource_id != 0) {
             memset(device.scanouts[0].virt_addr, val--, device.scanouts[0].w * device.scanouts[0].h * sizeof(uint32_t));
 
@@ -408,6 +415,7 @@ int module_init(void *ecam) {
             virtio_gpu_flush(device.scanouts[0].resource_id, device.scanouts[0].x, device.scanouts[0].y, device.scanouts[0].w, device.scanouts[0].h);
             virtio_notify(device.common_state, 0);
         }
+        local_spinlock_unlock(&virtio_queue_avl);
     }
 
     return 0;
