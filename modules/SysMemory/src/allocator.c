@@ -29,8 +29,8 @@ void* WEAK malloc(size_t sz) {
         return NULL;
 
     //Align size with 16 bytes, so all allocations are 16-byte aligned
-    if(sz % 16)
-        sz += 16 - (sz % 16);
+    if(sz % 8)
+        sz += 8 - (sz % 8);
 
     //Search list for best fitting free region
     mem_node_t *cur_best_fit = NULL;
@@ -109,6 +109,8 @@ void WEAK free(void* sz) {
 
     if(sz == NULL)
         return;
+
+    DEBUG_PRINT("FREE\r\n");
 
     //access the node info
     mem_node_t* desc = (mem_node_t*)((intptr_t)sz - sizeof(mem_node_t));

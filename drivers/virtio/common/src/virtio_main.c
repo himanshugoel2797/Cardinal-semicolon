@@ -15,6 +15,10 @@
 #include "pci/pci.h"
 #include "virtio.h"
 
+void tmp_handler(int i) {
+    i = 0;
+}
+
 PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds, int *avail_idx, int *used_idx) {
     pci_config_t *device = (pci_config_t*)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
@@ -35,6 +39,9 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
 
         interrupt_registerhandler(42, int_handler);
         interrupt_setmask(10, false);
+
+        interrupt_registerhandler(53, tmp_handler);
+        interrupt_setmask(21, false);
         do {
             pci_cap_header_t *capEntry = (pci_cap_header_t*)(pci_base + ptr);
 

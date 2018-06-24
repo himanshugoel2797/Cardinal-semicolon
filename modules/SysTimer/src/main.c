@@ -96,8 +96,10 @@ int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int)) 
                     break;
             }
         }
+
     if(idx == timer_idx)
         return -1;
+
 
     //Configure the timer
     timer_defs_t *t = &timer_defs[idx];
@@ -122,6 +124,7 @@ static int timer_init() {
 int module_init() {
     timer_def_cnt = timer_platform_gettimercount();
     timer_defs = malloc(sizeof(timer_defs_t) * timer_def_cnt);
+    memset(timer_defs, 0, sizeof(timer_defs_t) * timer_def_cnt);
 
     int err = 0;
 

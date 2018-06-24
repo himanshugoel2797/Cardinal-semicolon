@@ -363,10 +363,12 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd) {
 
 int module_init(void *ecam) {
 
+
     memset(&device, 0, sizeof(device));
 
     cs_id ss_id = 0;
     cs_error ss_err = create_task_kernel(cs_task_type_process, "virtio_gpu_0", task_permissions_kernel, &ss_id);
+    DEBUG_PRINT("VirtioGpu initializing...\r\n");
     if(ss_err != CS_OK)
         PANIC("VIRTIO_ERR0");
     ss_err = start_task_kernel(ss_id, virtio_task_handler);
