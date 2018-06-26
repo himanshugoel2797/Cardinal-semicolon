@@ -59,6 +59,7 @@ void timer_wait(uint64_t ns) {
         PANIC("Failed to select timer.");
 
     timer_wait_pending = 1;
+    DEBUG_PRINT("Timer wait start! ");
 
     //Configure it for oneshot wait handler
     timer_defs_t *t = &timer_defs[idx];

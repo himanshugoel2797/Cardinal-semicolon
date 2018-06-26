@@ -78,34 +78,42 @@ static int interrupt_alloc_lock = 0;
 static bool int_arr_inited = false;
 
 void interrupt_registerhandler(int irq, InterruptHandler handler) {
+    int state = cli();
     local_spinlock_lock(&interrupt_alloc_lock);
     for(int i = 0; i < IDT_HANDLER_CNT; i++)
         if(interrupt_funcs[irq][i] == NULL) {
             interrupt_funcs[irq][i] = handler;
             local_spinlock_unlock(&interrupt_alloc_lock);
+            sti(state);
             return;
         }
     local_spinlock_unlock(&interrupt_alloc_lock);
+    sti(state);
 
     PANIC("Interrupt oversubscribed!");
 }
 
 void interrupt_unregisterhandler(int irq, InterruptHandler handler) {
+    int state = cli();
     local_spinlock_lock(&interrupt_alloc_lock);
     for(int i = 0; i < IDT_HANDLER_CNT; i++)
         if(interrupt_funcs[irq][i] == handler) {
             interrupt_funcs[irq][i] = NULL;
         }
+
     local_spinlock_unlock(&interrupt_alloc_lock);
+    sti(state);
 }
 
 int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
     if(flags & interrupt_flags_fixed) {
+        int state = cli();
         local_spinlock_lock(&interrupt_alloc_lock);
 
         for(int c = 0; c < cnt; c++) {
             if(interrupt_blocked[*base + c]) {
                 local_spinlock_unlock(&interrupt_alloc_lock);
+                sti(state);
                 return -1;
             }
         }
@@ -116,6 +124,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
                 interrupt_blocked[*base + c] = true;
 
         local_spinlock_unlock(&interrupt_alloc_lock);
+        sti(state);
         return 0;
     } else {
         //if fixed allocation works, use it
@@ -126,6 +135,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
         }
 
         //find a block that does work
+        int state = cli();
         local_spinlock_lock(&interrupt_alloc_lock);
 
         int run_off = 32;   //IRQs start at 32 for x86
@@ -138,6 +148,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
 
                 *base = run_off;
                 local_spinlock_unlock(&interrupt_alloc_lock);
+                sti(state);
                 return 0;
             }
 
@@ -149,6 +160,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
         }
 
         local_spinlock_unlock(&interrupt_alloc_lock);
+        sti(state);
         return -1;
     }
 
@@ -165,14 +177,14 @@ void idt_mainhandler(regs_t *regs) {
     bool handled = false;
 
     int state = cli();
+    local_spinlock_lock(&interrupt_alloc_lock);
     for(int i = 0; i < IDT_HANDLER_CNT; i++) {
-        local_spinlock_lock(&interrupt_alloc_lock);
         if(interrupt_funcs[regs->int_no][i] != NULL) {
             interrupt_funcs[regs->int_no][i](regs->int_no);
             handled = true;
         }
-        local_spinlock_unlock(&interrupt_alloc_lock);
     }
+    local_spinlock_unlock(&interrupt_alloc_lock);
     sti(state);
 
     if(!handled) {

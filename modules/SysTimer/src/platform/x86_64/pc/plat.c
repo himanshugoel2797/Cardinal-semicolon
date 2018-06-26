@@ -19,11 +19,11 @@ int timer_platform_init() {
     outb(0x40, 0x00);
 
     //If TSC timer is constant rate + consistent and the rate is known, just use APIC timer in TSC mode
-    /*if(use_tsc()) {
+    if(use_tsc()) {
         DEBUG_PRINT("TSC Usable\r\n");
         if(tsc_init() != 0)
             PANIC("TSC Init Error!\r\n");
-    } else*/ {
+    } /*else {
         DEBUG_PRINT("TSC Unusable\r\n");
 
         //Initialize HPET timer - use as reference
@@ -33,7 +33,7 @@ int timer_platform_init() {
         }
         //Initialize APIC timer as a periodic timer
         apic_timer_init();
-    }
+    }*/
 
     //Initialize RTC timer - absolute timer/clock
     rtc_init();

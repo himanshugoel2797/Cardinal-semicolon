@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
@@ -105,12 +106,19 @@ static void mem_compact() {
     //TODO: detect adjacent free areas and merge them
 }
 
+static void *doublefree_addr = NULL;
+void print_free_addr(){
+    char tmp[10];
+    DEBUG_PRINT("At ");
+    DEBUG_PRINT(itoa((uint64_t)doublefree_addr >> 32, tmp, 16));
+    DEBUG_PRINT(itoa((uint64_t)doublefree_addr, tmp, 16));
+    DEBUG_PRINT("\r\n");
+}
+
 void WEAK free(void* sz) {
 
     if(sz == NULL)
         return;
-
-    DEBUG_PRINT("FREE\r\n");
 
     //access the node info
     mem_node_t* desc = (mem_node_t*)((intptr_t)sz - sizeof(mem_node_t));
@@ -118,6 +126,12 @@ void WEAK free(void* sz) {
     //Remove any freed pages from the allocator
 
     //Mark the remaining space as available
+    if(desc->isFree)
+        {
+            doublefree_addr = sz;
+            PANIC("Double free detected.");
+        }
+
     desc->isFree = true;
 
     //TODO: implement returning remaining memory to system

@@ -48,7 +48,6 @@ void virtio_task_handler(void *arg) {
             }
 
             //sti(state);
-            DEBUG_PRINT("Exit handler\r\n");
             local_spinlock_unlock(&virtio_queue_avl);
         }
     }

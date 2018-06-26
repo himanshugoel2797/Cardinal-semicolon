@@ -150,6 +150,7 @@ PRIVATE void hpet_timer_handler(int irq) {
             hpet->InterruptStatus = (1u << i);
         }
     }
+    DEBUG_PRINT("HPET\r\n");
 }
 
 PRIVATE int hpet_getcount() {
@@ -263,12 +264,15 @@ PRIVATE int hpet_init() {
             timer_register(sub_features, &sub_counter);
 
             //Ensure that all timers are disabled
+            hpet_timer_write(&sub_counter, 0);
             hpet_timer_setenable(&sub_counter, false);
         }
     }
-
+    
+    while(true)
+        ;
     //Enable the counter
-    base_addr->Configuration.GlobalEnable = 1;
+    base_addr->Configuration.GlobalEnable = 0;
 
     return 0;
 }
