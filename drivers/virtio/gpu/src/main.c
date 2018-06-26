@@ -45,6 +45,7 @@ void virtio_task_handler(void *arg) {
                 DEBUG_PRINT("Display resized\r\n");
                 cfg->events_clear = VIRTIO_GPU_EVENT_DISPLAY;
                 virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
+                virtio_notify(device.common_state, 0);
             }
 
             //sti(state);
@@ -401,23 +402,6 @@ int module_init(void *ecam) {
 
     virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
     virtio_notify(device.common_state, 0);
-
-    //loop
-    uint8_t val = 0xff;
-    while(true) {
-
-        for(int wait = 0; wait < 10000000; wait++)
-            ;
-        local_spinlock_lock(&virtio_queue_avl);
-        if(device.scanouts[0].resource_id != 0) {
-            memset(device.scanouts[0].virt_addr, val--, device.scanouts[0].w * device.scanouts[0].h * sizeof(uint32_t));
-
-            virtio_gpu_transfertohost2d(device.scanouts[0].resource_id, 0, device.scanouts[0].x, device.scanouts[0].y, device.scanouts[0].w, device.scanouts[0].h);
-            virtio_gpu_flush(device.scanouts[0].resource_id, device.scanouts[0].x, device.scanouts[0].y, device.scanouts[0].w, device.scanouts[0].h);
-            virtio_notify(device.common_state, 0);
-        }
-        local_spinlock_unlock(&virtio_queue_avl);
-    }
 
     return 0;
 }

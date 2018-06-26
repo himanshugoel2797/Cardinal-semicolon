@@ -14,6 +14,9 @@
 #include <string.h>
 #include <types.h>
 
+static uintptr_t loaded_modules[512];
+static int loaded_modules_idx = 0;
+
 static int Elf64_GetSymbolValue(Elf64_Ehdr *hdr NONNULL,
                                 Elf64_Shdr *shdr NONNULL, int symbol,
                                 uint64_t *ret NONNULL) {
@@ -200,7 +203,14 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)()) {
     if (elf_len == 0)
         return -1;
 
+    bool reloading = false;
+
     Elf64_Ehdr *hdr = elf;
+    for(int i = 0; i < loaded_modules_idx; i++)
+        if(loaded_modules[i] == (uintptr_t)elf){
+            reloading = true;
+            break;
+        }
 
     // Verify the header
     Elf_CommonEhdr *c_hdr = &hdr->e_hdr;
@@ -231,6 +241,34 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)()) {
 
         if ((shdr->sh_type == SHT_STRTAB) | (shdr->sh_type == SHT_PROGBITS))
             shdr->sh_addr = (uintptr_t)hdr + shdr->sh_offset;
+    }
+
+    if(reloading) {
+        for (int i = 0; i < hdr->e_shnum; i++) {
+            Elf64_Shdr *shdr = &shdr_root[i];
+            if (shdr->sh_type == SHT_SYMTAB) {
+
+                Elf64_Sym *sym = (Elf64_Sym *)((uint8_t *)hdr + shdr->sh_offset);
+                
+                for (uint32_t j = 0; j < shdr->sh_size / shdr->sh_entsize; j++) {
+
+                    if ((sym[j].st_shndx == SHN_ABS) | (sym[j].st_shndx == SHN_UNDEF))
+                        continue;
+
+                    Elf64_Shdr *sec_shdr = &shdr_root[sym[j].st_shndx];
+
+                    if (ELF64_ST_TYPE(sym[j].st_info) == STT_FUNC) {
+                        Elf64_Shdr *strtab = &shdr_root[shdr->sh_link];
+                        
+                        if (strcmp((char *)strtab->sh_addr + sym[j].st_name, "module_init") ==
+                                0) {
+                            *entry_point = (int (*)())sym[j].st_value;
+                        }
+                    }
+                }
+            }
+        }
+        return 0;
     }
 
     // allocate SHT_NOBITS and SHF_ALLOC sections
@@ -315,6 +353,8 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)()) {
             }
         }
     }
+
+    loaded_modules[loaded_modules_idx++] = (uintptr_t)elf;
 
     return 0;
 }
