@@ -18,6 +18,7 @@
 
 static virtio_gpu_driver_state_t device;
 static _Atomic int virtio_signalled = 0;
+static _Atomic int virtio_inited = 0;
 static int virtio_queue_avl = 0;
 
 void intrpt_handler(int idx) {
@@ -28,6 +29,9 @@ void intrpt_handler(int idx) {
 
 void virtio_task_handler(void *arg) {
     arg = NULL;
+
+    while(!virtio_inited)
+        ;
 
     while(true) {
         while(virtio_signalled){
@@ -402,6 +406,8 @@ int module_init(void *ecam) {
 
     virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
     virtio_notify(device.common_state, 0);
+
+    virtio_inited = true;
 
     return 0;
 }

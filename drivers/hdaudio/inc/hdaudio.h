@@ -10,6 +10,7 @@
 
 typedef struct {
     uint32_t *buffer;
+    uintptr_t buffer_phys;
     int entcnt;
 } hdaudio_buffer_def_t;
 

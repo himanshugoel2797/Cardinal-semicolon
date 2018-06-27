@@ -66,18 +66,16 @@ char *WEAK itoa(int val, char *dst, int base) {
 int WEAK atoi(const char * ptr, int base) {
 
     if(base == 16) {
-        char *hextable = "0123456789ABCDEF";
-
         int val = 0;
         int digit = 0;
         while(true) {
-            for(digit = 0; digit < 16; digit++)
-                if(hextable[digit] == *ptr) {
-                    val |= digit;
-                    break;
-                }
-
-            if(digit == 16) {
+            if(*ptr >= '0' && *ptr <= '9'){
+                val |= (*ptr - '0');
+            }else if(*ptr >= 'a' && *ptr <= 'f') {
+                val |= (*ptr - 'a') + 10;
+            }else if(*ptr >= 'A' && *ptr <= 'F') {
+                val |= (*ptr - 'A') + 10;
+            }else {
                 val = val >> 4;
                 return val;
             }

@@ -38,7 +38,7 @@ typedef struct {
 
 typedef struct {
     uint8_t cmeie : 1;
-    uint8_t corbrun : 1;
+    volatile uint8_t corbrun : 1;
 } hdaudio_corb_ctl_t;
 
 typedef struct {
@@ -55,7 +55,7 @@ typedef struct {
     uint32_t lower_base;
     uint32_t upper_base;
     uint16_t wp;
-    uint16_t rp;
+    volatile uint16_t rp;
     hdaudio_corb_ctl_t ctl;
     hdaudio_corb_sts_t sts;
     hdaudio_corb_sz_t sz;

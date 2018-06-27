@@ -158,7 +158,7 @@ int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap) {
 
     if(!ap) {
         intrpt_num = 0;   //Allocate a low priority interrupt
-        interrupt_allocate(1, interrupt_flags_none, &intrpt_num);
+        interrupt_allocate(1, interrupt_flags_exclusive, &intrpt_num);
         interrupt_registerhandler(intrpt_num, handler);
     }
 

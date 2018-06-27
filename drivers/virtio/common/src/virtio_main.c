@@ -24,6 +24,8 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
 
     //enable pci bus master
     device->command.busmaster = 1;
+    device->command.mem_space = 1;
+    device->command.int_disable = 1;
 
     virtio_state_t *n_state = malloc(sizeof(virtio_state_t));
     n_state->cmds = cmds;
@@ -31,42 +33,31 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
     n_state->avail_idx = avail_idx;
     n_state->used_idx = used_idx;
 
+    int msi_vector = 0;
+
     //TODO: install msi interrupt servicing
     //traverse capabilities
     if(device->capabilitiesPtr != 0) {
         uint8_t ptr = device->capabilitiesPtr;
         uint8_t *pci_base = (uint8_t*)device;
 
-        interrupt_registerhandler(42, int_handler);
-        interrupt_setmask(10, false);
-
-        interrupt_registerhandler(53, tmp_handler);
-        interrupt_setmask(21, false);
         do {
             pci_cap_header_t *capEntry = (pci_cap_header_t*)(pci_base + ptr);
 
-            if(capEntry->capID == pci_cap_msi) {
-                DEBUG_PRINT("MSI\r\n");
-
-                int intrpt_num = 0;
-                interrupt_allocate(1, interrupt_flags_none, &intrpt_num);
-
-                pci_msi_32_t *msi_32_ = (pci_msi_32_t*)capEntry;
-                if(msi_32_->ctrl.support_64bit) {
-                    pci_msi_64_t *msi_64_ = (pci_msi_64_t*)capEntry;
-                    msi_64_->msg_addr = msi_register_addr(0);   //TODO: verify that 0 is okay as a value for current cpu
-                    msi_64_->msg_addr_hi = 0;
-                    msi_64_->msg_data = (uint16_t)msi_register_data(intrpt_num);
-                } else {
-                    msi_32_->msg_addr = msi_register_addr(0);   //TODO: verify that 0 is okay as a value for current cpu
-                    msi_32_->msg_data = (uint16_t)msi_register_data(intrpt_num);
-                }
-
-                msi_32_->ctrl.avail_vector_num = 0;
-                msi_32_->ctrl.enable = 1;
-
-            } else if(capEntry->capID == pci_cap_msix) {
+            if(capEntry->capID == pci_cap_msi || capEntry->capID == pci_cap_msix) {
                 DEBUG_PRINT("MSIX\r\n");
+                
+                //interrupt setup
+                int int_cnt = 0;
+                int msi_val = pci_getmsiinfo(device, &int_cnt);
+
+                interrupt_allocate(1, interrupt_flags_exclusive, &msi_vector);
+                interrupt_registerhandler(msi_vector, int_handler);
+
+                uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
+                uint32_t msi_msg = msi_register_data(msi_vector);
+                pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
+
             } else if(capEntry->capID == pci_cap_vendor) {
                 intptr_t bar_addr = 0;
 
@@ -105,13 +96,11 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
         } while(ptr != 0);
     }
 
-    //Awaken device
-
     //Set ack bit
     //Set driver bit
     n_state->common_cfg->device_status |= (ACKNOWLEDGE);
     n_state->common_cfg->device_status |= (DRIVER);
-
+    n_state->common_cfg->msix_config = 0;
 
 
     return n_state;
@@ -156,7 +145,7 @@ PRIVATE void* virtio_setupqueue(virtio_state_t *state, int idx, int entcnt) {
     state->common_cfg->queue_desc = virtqueue_phys;
     state->common_cfg->queue_avail = virtqueue_phys + 16 * entcnt;
     state->common_cfg->queue_used = virtqueue_phys + 16 * entcnt + 6 + 2 * entcnt;
-
+    state->common_cfg->queue_msix_vector = 0;
     state->common_cfg->queue_enable = 1;
 
     return (void*)virtqueue_virt;
