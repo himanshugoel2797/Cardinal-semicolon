@@ -1,5 +1,5 @@
 // Copyright (c) 2018 Himanshu Goel
-// 
+//
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
@@ -14,7 +14,7 @@ typedef struct {
     int entcnt;
 } hdaudio_buffer_def_t;
 
-typedef struct hdaudio_instance{
+typedef struct hdaudio_instance {
     hdaudio_regs_t *cfg_regs;
     hdaudio_buffer_def_t corb;
     hdaudio_buffer_def_t rirb;

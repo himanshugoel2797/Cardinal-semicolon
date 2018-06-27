@@ -268,7 +268,7 @@ PRIVATE int hpet_init() {
             hpet_timer_setenable(&sub_counter, false);
         }
     }
-    
+
     while(true)
         ;
     //Enable the counter

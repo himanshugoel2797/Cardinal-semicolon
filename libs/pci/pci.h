@@ -139,21 +139,21 @@ static inline int pci_setmsiinfo(pci_config_t *device, int msix, uintptr_t *msi_
             pci_cap_header_t *capEntry = (pci_cap_header_t*)(pci_base + ptr);
 
             if(capEntry->capID == pci_cap_msi && msix == 0) {
-                
+
                 pci_msi_32_t *msi_space = (pci_msi_32_t*)capEntry;
                 if(msi_space->ctrl.support_64bit) {
                     pci_msi_64_t *msi64_space = (pci_msi_64_t*)capEntry;
                     msi64_space->msg_addr = (uint32_t) *msi_addr;
                     msi64_space->msg_addr_hi = (uint32_t) (*msi_addr >> 32);
                     msi64_space->msg_data = *msi_msg;
-                }else{
+                } else {
                     msi_space->msg_addr = (uint32_t) *msi_addr;
                     msi_space->msg_data = *msi_msg;
                 }
 
                 uint32_t coded_vecnum = 0;
                 for(int i = 30; i >= 0; i--)
-                    if(cnt & (1 << i)){
+                    if(cnt & (1 << i)) {
                         coded_vecnum = i;
                         break;
                     }
@@ -162,7 +162,7 @@ static inline int pci_setmsiinfo(pci_config_t *device, int msix, uintptr_t *msi_
                 msi_space->ctrl.enable = 1;
 
             } else if(capEntry->capID == pci_cap_msix && msix == 1) {
-                
+
                 pci_msix_t *msi_space = (pci_msix_t*)capEntry;
 
                 if(cnt != 1 && (msi_space->ctrl.table_sz + 1) != cnt)
@@ -179,7 +179,7 @@ static inline int pci_setmsiinfo(pci_config_t *device, int msix, uintptr_t *msi_
                 }
 
                 uint32_t *table = (uint32_t*)vmem_phystovirt((intptr_t)(bar + (msi_space->table_off.offset << 3)), KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-                
+
                 //fill the offset table
                 for(int i = 0; i <= msi_space->ctrl.table_sz; i++) {
                     table[i * 4 + 0] = (uint32_t)msi_addr[ cnt == 1 ? 0 : i];

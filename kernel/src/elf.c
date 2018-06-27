@@ -207,7 +207,7 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)()) {
 
     Elf64_Ehdr *hdr = elf;
     for(int i = 0; i < loaded_modules_idx; i++)
-        if(loaded_modules[i] == (uintptr_t)elf){
+        if(loaded_modules[i] == (uintptr_t)elf) {
             reloading = true;
             break;
         }
@@ -249,7 +249,7 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)()) {
             if (shdr->sh_type == SHT_SYMTAB) {
 
                 Elf64_Sym *sym = (Elf64_Sym *)((uint8_t *)hdr + shdr->sh_offset);
-                
+
                 for (uint32_t j = 0; j < shdr->sh_size / shdr->sh_entsize; j++) {
 
                     if ((sym[j].st_shndx == SHN_ABS) | (sym[j].st_shndx == SHN_UNDEF))
@@ -259,7 +259,7 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)()) {
 
                     if (ELF64_ST_TYPE(sym[j].st_info) == STT_FUNC) {
                         Elf64_Shdr *strtab = &shdr_root[shdr->sh_link];
-                        
+
                         if (strcmp((char *)strtab->sh_addr + sym[j].st_name, "module_init") ==
                                 0) {
                             *entry_point = (int (*)())sym[j].st_value;

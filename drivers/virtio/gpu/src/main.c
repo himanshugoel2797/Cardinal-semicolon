@@ -34,7 +34,7 @@ void virtio_task_handler(void *arg) {
         ;
 
     while(true) {
-        while(virtio_signalled){
+        while(virtio_signalled) {
             local_spinlock_lock(&virtio_queue_avl);
             //int state = cli();  //TODO: replace this with a thread aware lock, to prevent other submitting threads from interfering
 

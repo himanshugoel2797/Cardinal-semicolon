@@ -107,7 +107,7 @@ static void mem_compact() {
 }
 
 static void *doublefree_addr = NULL;
-void print_free_addr(){
+void print_free_addr() {
     char tmp[10];
     DEBUG_PRINT("At ");
     DEBUG_PRINT(itoa((uint64_t)doublefree_addr >> 32, tmp, 16));
@@ -126,11 +126,10 @@ void WEAK free(void* sz) {
     //Remove any freed pages from the allocator
 
     //Mark the remaining space as available
-    if(desc->isFree)
-        {
-            doublefree_addr = sz;
-            PANIC("Double free detected.");
-        }
+    if(desc->isFree) {
+        doublefree_addr = sz;
+        PANIC("Double free detected.");
+    }
 
     desc->isFree = true;
 

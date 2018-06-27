@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -34,28 +34,28 @@ int hdaudio_setupbuffersz(hdaudio_instance_t *instance, bool corb) {
         entcnt_cap = 16;
     else if(entcnt_cap & (1 << 0))
         entcnt_cap = 2;
-    
-    if(corb){
+
+    if(corb) {
         instance->corb.entcnt = entcnt_cap;
-    }else{
+    } else {
         instance->rirb.entcnt = entcnt_cap;
     }
 
     switch(entcnt_cap) {
-        case 2:
+    case 2:
         entcnt_cap = 0;
         break;
-        case 16:
+    case 16:
         entcnt_cap = 1;
         break;
-        case 256:
+    case 256:
         entcnt_cap = 2;
         break;
     }
 
-    if(corb){
+    if(corb) {
         instance->cfg_regs->corb.sz.sz = entcnt_cap;
-    }else{
+    } else {
         instance->cfg_regs->rirb.sz.sz = entcnt_cap;
     }
 
@@ -67,7 +67,7 @@ static void tmp_handler(int int_num) {
     DEBUG_PRINT("HD Audio Interrupt\r\n");
 }
 
-int hdaudio_initialize(hdaudio_instance_t *instance){
+int hdaudio_initialize(hdaudio_instance_t *instance) {
 
     //bring the device out of reset
     instance->cfg_regs->sdiwake = 0xFFFF;
@@ -82,7 +82,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance){
         ;
     DEBUG_PRINT("Codecs Enumerated!\r\n");
     instance->cfg_regs->gctl.crst |= (1 << 8);
-        
+
     //Enable state change interrupts
     instance->cfg_regs->sdiwen = 0xFFFF;
     instance->cfg_regs->intctl.cie = 1;
@@ -109,7 +109,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance){
             ;
     }
     instance->cfg_regs->corb.wp = 0;
-    
+
     //Start the corb again
     instance->cfg_regs->corb.ctl.corbrun = 1;
     while(!instance->cfg_regs->corb.ctl.corbrun)
@@ -132,9 +132,9 @@ int hdaudio_initialize(hdaudio_instance_t *instance){
     //Start the rirb again
     instance->cfg_regs->rirb.ctl.dmaen = 1;
     while(!instance->cfg_regs->rirb.ctl.dmaen)
-        ;   
+        ;
 
-    #define VERB_MSG(addr, node, payload) (addr << 28 | (node & 0xFF) << 20 | (payload & 0xFFFFF))
+#define VERB_MSG(addr, node, payload) (addr << 28 | (node & 0xFF) << 20 | (payload & 0xFFFFF))
 
     //uint32_t *direct_buf = (uint32_t*)0xffff8000febd0060;
 
@@ -151,7 +151,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance){
     return 0;
 }
 
-int module_init(void *ecam_addr){
+int module_init(void *ecam_addr) {
 
     local_spinlock_lock(&device_init_lock);
     pci_config_t *device = (pci_config_t*)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
@@ -201,10 +201,10 @@ int module_init(void *ecam_addr){
 
     uint32_t *corb_rirb_buffer = (uint32_t*)vmem_phystovirt(corb_rirb_buffer_phys, (instance->corb.entcnt + 2 * instance->rirb.entcnt) * sizeof(uint32_t), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     instance->corb.buffer = corb_rirb_buffer;
-    instance->rirb.buffer = corb_rirb_buffer + instance->corb.entcnt;    
+    instance->rirb.buffer = corb_rirb_buffer + instance->corb.entcnt;
 
     instance->corb.buffer_phys = corb_rirb_buffer_phys;
-    instance->rirb.buffer_phys = corb_rirb_buffer_phys + instance->corb.entcnt * sizeof(uint32_t);  
+    instance->rirb.buffer_phys = corb_rirb_buffer_phys + instance->corb.entcnt * sizeof(uint32_t);
 
     hdaudio_initialize(instance);
 

@@ -289,7 +289,7 @@ int symboldb_findmatch(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *sym,
     return -1;
 }
 
-void symboldb_showcnt(){
+void symboldb_showcnt() {
     char tmp[10];
     DEBUG_PRINT("Symbol Count : ");
     DEBUG_PRINT(itoa(symbol_cnt, tmp, 10));

@@ -69,13 +69,13 @@ int WEAK atoi(const char * ptr, int base) {
         int val = 0;
         int digit = 0;
         while(true) {
-            if(*ptr >= '0' && *ptr <= '9'){
+            if(*ptr >= '0' && *ptr <= '9') {
                 val |= (*ptr - '0');
-            }else if(*ptr >= 'a' && *ptr <= 'f') {
+            } else if(*ptr >= 'a' && *ptr <= 'f') {
                 val |= (*ptr - 'a') + 10;
-            }else if(*ptr >= 'A' && *ptr <= 'F') {
+            } else if(*ptr >= 'A' && *ptr <= 'F') {
                 val |= (*ptr - 'A') + 10;
-            }else {
+            } else {
                 val = val >> 4;
                 return val;
             }
