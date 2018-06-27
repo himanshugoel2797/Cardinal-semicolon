@@ -36,8 +36,7 @@ void virtio_task_handler(void *arg) {
     while(true) {
         while(virtio_signalled) {
             local_spinlock_lock(&virtio_queue_avl);
-            //int state = cli();  //TODO: replace this with a thread aware lock, to prevent other submitting threads from interfering
-
+            
             virtio_signalled = false;
             for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++) {
                 virtio_accept_used(device.common_state, i);
@@ -52,7 +51,6 @@ void virtio_task_handler(void *arg) {
                 virtio_notify(device.common_state, 0);
             }
 
-            //sti(state);
             local_spinlock_unlock(&virtio_queue_avl);
         }
     }
