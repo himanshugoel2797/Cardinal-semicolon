@@ -17,7 +17,7 @@ typedef union {
 } hdaudio_gcap_t;
 
 typedef struct {
-    uint32_t crst : 1;
+    volatile uint32_t crst : 1;
     uint32_t fcntrl : 1;
     uint32_t rsv0 : 6;
     uint32_t unsol : 1;
@@ -29,6 +29,65 @@ typedef struct {
     uint32_t cie : 1;
     uint32_t gie : 1;
 } hdaudio_intctl_t;
+
+typedef struct {
+    uint32_t sis : 30;
+    uint32_t cis : 1;
+    uint32_t gis : 1;
+} hdaudio_intsts_t;
+
+typedef struct {
+    uint8_t cmeie : 1;
+    uint8_t corbrun : 1;
+} hdaudio_corb_ctl_t;
+
+typedef struct {
+    uint8_t cmei : 1;
+} hdaudio_corb_sts_t;
+
+typedef struct {
+    uint8_t sz : 2;
+    uint8_t rsv0 : 2;
+    uint8_t szcap : 4;
+} hdaudio_corb_sz_t;
+
+typedef struct {
+    uint32_t lower_base;
+    uint32_t upper_base;
+    uint16_t wp;
+    uint16_t rp;
+    hdaudio_corb_ctl_t ctl;
+    hdaudio_corb_sts_t sts;
+    hdaudio_corb_sz_t sz;
+} hdaudio_corb_t;
+
+typedef struct {
+    uint8_t rintctl : 1;
+    uint8_t dmaen : 1;
+    uint8_t oic : 1;
+} hdaudio_rirb_ctl_t;
+
+typedef struct {
+    uint8_t rintfl : 1;
+    uint8_t rsv0 : 1;
+    uint8_t ois : 1;
+} hdaudio_rirb_sts_t;
+
+typedef struct {
+    uint8_t sz : 2;
+    uint8_t rsv0 : 2;
+    uint8_t szcap : 4;
+} hdaudio_rirb_sz_t;
+
+typedef struct {
+    uint32_t lower_base;
+    uint32_t upper_base;
+    uint16_t wp;
+    uint16_t intcnt;
+    hdaudio_rirb_ctl_t ctl;
+    hdaudio_rirb_sts_t sts;
+    hdaudio_rirb_sz_t sz;
+} hdaudio_rirb_t;
 
 typedef struct {
     hdaudio_gcap_t gcap;
@@ -45,6 +104,16 @@ typedef struct {
     uint16_t instrmpay;
     uint8_t rsv1[4];
     hdaudio_intctl_t intctl;
+    hdaudio_intsts_t intsts;
+    uint8_t rsv2[8];
+    uint32_t wallclock;
+    uint8_t rsv3[4];
+    uint32_t ssync;
+    uint8_t rsv4[4];
+    hdaudio_corb_t corb;
+    hdaudio_rirb_t rirb;
+    uint32_t dplbase;
+    uint32_t dpubase;
 } hdaudio_regs_t;
 
 #endif
