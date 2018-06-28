@@ -1,4 +1,7 @@
 LOAD:./CorePower.celf
+LOAD:./CoreStorage.celf
+LOAD:./tarfs.celf
+LOAD:./btrfs.celf
 LOAD:./CoreDisplay.celf
 LOAD:./CoreAudio.celf
 LOAD:./CoreInput.celf
