@@ -25,9 +25,21 @@ typedef enum {
     hdaudio_param_volume_caps = 0x13,
 } hdaudio_param_type_t;
 
+typedef enum {
+    hdaudio_widget_audio_output,
+    hdaudio_widget_audio_input,
+    hdaudio_widget_audio_mixer,
+    hdaudio_widget_audio_selector,
+    hdaudio_widget_pin_complex,
+    hdaudio_widget_power,
+    hdaudio_widget_volume_knob,
+} hdaudio_widget_type_t;
+
 #define GET_PARAM(param_type) (0xF0000 | param_type)
 #define GET_PARAMTYPE_FRM_PAYLOAD(payload) (payload & 0xFF)
 #define GET_CONN_LIST(idx) (0xF0200 | idx) 
 #define GET_CONN_LIST_OFF(payload) (payload & 0xFF)
+
+#define GET_CFG_DEFAULT (0xF1C00) 
 
 #endif

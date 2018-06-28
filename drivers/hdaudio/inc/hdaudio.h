@@ -17,6 +17,7 @@ typedef struct {
     uint8_t input_delay;
     uint8_t output_delay;
 
+    uint8_t isValid;
     uint32_t caps;
 
     uint32_t pcm_rates;
@@ -30,8 +31,18 @@ typedef struct {
     uint32_t gpio_count;
     uint32_t volume_caps;
 
+    uint32_t configuration_default;
+
     uint8_t *conn_list;
 } hdaudio_node_t;
+
+typedef struct {
+    uint8_t nodes[10];
+    uint32_t input_delay;
+    uint32_t output_delay;
+    bool isInput;
+    bool isOutput;
+} hdaudio_path_t;
 
 typedef struct {
     uint32_t *buffer;
@@ -49,6 +60,7 @@ typedef struct hdaudio_instance {
 
     int interrupt_vec;
     uint32_t codecs;
+    uint8_t rirb_rp;
 
     hdaudio_node_t **nodes;
 
