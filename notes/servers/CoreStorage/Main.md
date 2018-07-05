@@ -10,24 +10,24 @@ The disk service manages drivers for all the storage devices connected to the sy
 Application memory is stored in versioned data banks. Data banks can be owned by applications. The user interface is simply an object browser, customizeable using object viewers.
 
 File system has superblocks with multiple backup copies.
-Consists of 3 trees:
-    - Checksum tree - crc checksums for every block, even for checksum blocks
-    - Allocation tree - tracks free space
-    - Object store table - list of objects stored on the drive
-        - Contains Inodes + B-Tree of file contents
-        - Inode metadata:
-            - Name
-            - Doctype
-            - Size
-            - Implied content storage format (Inline/B-Tree) based on the size
-            - Capability list
-    - Object tags - a file that contains the list of tags and their contents, has a special ID
-        - Each tag contains a hashmap of objects tagged with the tag
-        - Tags can be restricted with capabilities
-    - A circular buffer for the journal
-    - All of these structures are by B-tree
-    - All writes are copy-on-write, except for the journal
-    - Data can be distributed over multiple disks in a user controlled way, file system does not directly offer an abstraction for multiple disks.
+The file system is log structured.
+Consists of 2 data structures:
+    - Allocation map - tracks free space for all segments, 1 bit per segment
+    - Log structure - 
+        - Object store table - list of objects stored on the drive
+            - Contains Inodes + B-Tree of file contents
+            - Inode metadata:
+                - Name
+                - Doctype
+                - Size
+                - Implied content storage format (Inline/B-Tree) based on the size
+                - Capability list
+        - Object tags - a file that contains the list of tags and their contents, has a special ID
+            - Each tag contains a hashmap of objects tagged with the tag
+            - Tags can be restricted with capabilities
+        - All of these structures are by B-tree
+        - All writes are copy-on-write, except for the journal
+        - Data can be distributed over multiple disks in a user controlled way, file system does not directly offer an abstraction for multiple disks.
 
 Superblock Structure:
 
@@ -37,21 +37,23 @@ Superblock Structure:
         uint32_t generation;
         uint32_t block_sz;
         uint64_t flag1;
-        uint64_t checksum_tree_addr;
+        uint64_t log_top_addr;
         uint64_t allocation_tree_addr;
         uint64_t object_tree_addr;
-        uint64_t tag_tree_addr;
         uint64_t latest_object_id;
         char label[256];
         uint64_t vol_sz;
-        JournalEntry journal[1024];
-        uint8_t rsv_blocks[8 * block_sz];  //space reserved for emergency allocation tree allocations
     };
 
     Possible flags:
         - Volume encryption
         - Boot volume specification
         - Compression flag
+
+    Locations:
+        KiB(4)
+        MiB(16)
+        GiB(64)
 
 B-Tree structure:
 
@@ -76,21 +78,6 @@ B-Tree structure:
     Node Types:
         0 = Internal Pointer
         1 = Key-Value Pair
-
-Checksum Entry:
-
-    struct ChecksumEntry {
-        uint64_t address;
-        uint32_t sz;
-        uint32_t checksum;
-    };
-
-Allocation Entry:
-
-    struct AllocationEntry {
-        uint64_t address;
-        uint64_t sz;
-    };
 
 Object Store Entry:
 
@@ -120,18 +107,16 @@ Object Store Entry:
         - Applications store their capabilities here, along with the application code.
         - Tags store their hash tables in this objects
 
-Journal Entry:
+Log Structure:
 
-    struct JournalEntry {
-        uint16_t operation;
-        uint8_t tree_idx;
-        uint8_t finished;
-        uint32_t src_sz;
-        uint64_t src_addr;
+    struct LogHeader {
+        uint8_t magic[8];   //'LOGSTART'
+        uint64_t timestamp;
+        uint64_t block_cnt;
     };
 
-    Operations:
-        - Insert    //Standard B-Tree insertion operation (COW)
-        - Delete    //Standard B-Tree deletion operation (COW)
-        - Update    //Standard B-Tree entry update operation (COW)
-        - Compact   //Rebuild specified portion of the B-Tree to make it smaller
+    struct LogFooter {
+        uint8_t magic[8];   //'LOGENDED'
+        uint64_t timestamp;
+        uint32_t checksums[0];
+    };
