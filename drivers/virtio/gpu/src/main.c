@@ -36,7 +36,7 @@ void virtio_task_handler(void *arg) {
     while(true) {
         while(virtio_signalled) {
             local_spinlock_lock(&virtio_queue_avl);
-            
+
             virtio_signalled = false;
             for(int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++) {
                 virtio_accept_used(device.common_state, i);

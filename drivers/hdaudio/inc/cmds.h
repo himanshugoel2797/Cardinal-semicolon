@@ -1,5 +1,5 @@
 // Copyright (c) 2018 hgoel
-// 
+//
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
@@ -37,9 +37,9 @@ typedef enum {
 
 #define GET_PARAM(param_type) (0xF0000 | param_type)
 #define GET_PARAMTYPE_FRM_PAYLOAD(payload) (payload & 0xFF)
-#define GET_CONN_LIST(idx) (0xF0200 | idx) 
+#define GET_CONN_LIST(idx) (0xF0200 | idx)
 #define GET_CONN_LIST_OFF(payload) (payload & 0xFF)
 
-#define GET_CFG_DEFAULT (0xF1C00) 
+#define GET_CFG_DEFAULT (0xF1C00)
 
 #endif

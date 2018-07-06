@@ -65,7 +65,7 @@ int hdaudio_setupbuffersz(hdaudio_instance_t *instance, bool corb) {
 
 static void tmp_handler(int int_num) {
     hdaudio_instance_t *instance = instances;
-    while (instance->interrupt_vec != int_num){
+    while (instance->interrupt_vec != int_num) {
         instance = instance->next;
 
         if(instance == NULL)
@@ -73,9 +73,9 @@ static void tmp_handler(int int_num) {
     }
 
     //TODO: signal the handler thread for this device
-    if(instance->cfg_regs->intsts.cis){
+    if(instance->cfg_regs->intsts.cis) {
 
-        if(instance->cfg_regs->rirb.sts.rintfl){
+        if(instance->cfg_regs->rirb.sts.rintfl) {
 
             instance->rirb_rp++;
 
@@ -87,13 +87,13 @@ static void tmp_handler(int int_num) {
                 //Unsolicited response
                 instance->rirb_rp--;
 
-            }else if(instance->cmds[cmd_idx].handler != NULL){
+            } else if(instance->cmds[cmd_idx].handler != NULL) {
                 //Solicited response
 
-    char tmp[10];
-    //DEBUG_PRINT("HANDLED: ");
-    //DEBUG_PRINT(itoa(cmd_idx, tmp, 16));
-    //DEBUG_PRINT("\r\n");
+                char tmp[10];
+                //DEBUG_PRINT("HANDLED: ");
+                //DEBUG_PRINT(itoa(cmd_idx, tmp, 16));
+                //DEBUG_PRINT("\r\n");
 
                 instance->cmds[cmd_idx].waiting = false;
                 instance->cmds[cmd_idx].handler(instance, &instance->cmds[cmd_idx], instance->rirb.buffer[idx * 2]);
@@ -120,7 +120,7 @@ int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node,
     int idx = (instance->cfg_regs->corb.wp + 1) % instance->corb.entcnt;
     while(instance->cmds[idx].waiting && !instance->cmds[idx].handled)
         DEBUG_PRINT("WAITING\r\n");
-        ;
+    ;
 
     instance->cmds[idx].waiting = true;
     instance->cmds[idx].handled = false;
@@ -153,72 +153,72 @@ static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_
     }
 
     switch(param_type) {
-        case hdaudio_param_vendor_device_id:
-            instance->nodes[addr][node].vendor_dev_id = (uint32_t)(resp);
-            break;
-        case hdaudio_param_node_cnt:
-            instance->nodes[addr][node].starting_sub_node = (resp >> (16)) & 0xFF;
-            instance->nodes[addr][node].sub_node_cnt = (resp) & 0xFF;
+    case hdaudio_param_vendor_device_id:
+        instance->nodes[addr][node].vendor_dev_id = (uint32_t)(resp);
+        break;
+    case hdaudio_param_node_cnt:
+        instance->nodes[addr][node].starting_sub_node = (resp >> (16)) & 0xFF;
+        instance->nodes[addr][node].sub_node_cnt = (resp) & 0xFF;
 
-            int max_node_id_l = instance->nodes[addr][node].starting_sub_node + instance->nodes[addr][node].sub_node_cnt;
-            if(max_node_id_l > max_node_id)
-                max_node_id = max_node_id_l;
+        int max_node_id_l = instance->nodes[addr][node].starting_sub_node + instance->nodes[addr][node].sub_node_cnt;
+        if(max_node_id_l > max_node_id)
+            max_node_id = max_node_id_l;
 
-                char tmp[10];
-                DEBUG_PRINT("Parent Node: ");
-                DEBUG_PRINT(itoa(node, tmp, 16));
+        char tmp[10];
+        DEBUG_PRINT("Parent Node: ");
+        DEBUG_PRINT(itoa(node, tmp, 16));
 
-                DEBUG_PRINT("\tChild Node Base: ");
-                DEBUG_PRINT(itoa((resp >> (16)) & 0xFF, tmp, 16));
+        DEBUG_PRINT("\tChild Node Base: ");
+        DEBUG_PRINT(itoa((resp >> (16)) & 0xFF, tmp, 16));
 
-                DEBUG_PRINT("\tChild Node Count: ");
-                DEBUG_PRINT(itoa(resp & 0xFF, tmp, 16));
+        DEBUG_PRINT("\tChild Node Count: ");
+        DEBUG_PRINT(itoa(resp & 0xFF, tmp, 16));
 
-                DEBUG_PRINT("\r\n");
-            break;
-        case hdaudio_param_func_grp_type:
-            instance->nodes[addr][node].grp_type = (resp); 
-            break;
-        case hdaudio_param_audio_grp_caps:
-            instance->nodes[addr][node].input_delay = (resp >> 8) & 0x0F;
-            instance->nodes[addr][node].output_delay = resp & 0x0F;
-            break;
-        case hdaudio_param_audio_widget_caps:
-            instance->nodes[addr][node].caps = (resp); 
-            break;
-        case hdaudio_param_pcm_rate_caps:
-            instance->nodes[addr][node].pcm_rates = (resp); 
-            break;
-        case hdaudio_param_fmt_caps:
-            instance->nodes[addr][node].stream_formats = (resp); 
-            break;
-        case hdaudio_param_pin_caps:
-            instance->nodes[addr][node].pin_cap = (resp); 
-            break;
-        case hdaudio_param_input_amp_caps:
-            instance->nodes[addr][node].input_amp_cap = (resp); 
-            break;
-        case hdaudio_param_output_amp_caps:
-            instance->nodes[addr][node].output_amp_cap = (resp);
-            break;
-        case hdaudio_param_conn_list_len:
-            instance->nodes[addr][node].conn_list_len = (resp);
-            instance->nodes[addr][node].conn_list = malloc((resp & 0x7F) * sizeof(uint8_t));
-            break;
-        case hdaudio_param_pwr_caps:
-            instance->nodes[addr][node].pwr_states = (resp);
-            break;
-        case hdaudio_param_processing_caps:
-            instance->nodes[addr][node].process_caps = (resp);
-            break;
-        case hdaudio_param_gpio_cnt:
-            instance->nodes[addr][node].gpio_count = (resp);
-            break;
-        case hdaudio_param_volume_caps:
-            instance->nodes[addr][node].volume_caps = (resp);
-            break;
-        default:
-            break;
+        DEBUG_PRINT("\r\n");
+        break;
+    case hdaudio_param_func_grp_type:
+        instance->nodes[addr][node].grp_type = (resp);
+        break;
+    case hdaudio_param_audio_grp_caps:
+        instance->nodes[addr][node].input_delay = (resp >> 8) & 0x0F;
+        instance->nodes[addr][node].output_delay = resp & 0x0F;
+        break;
+    case hdaudio_param_audio_widget_caps:
+        instance->nodes[addr][node].caps = (resp);
+        break;
+    case hdaudio_param_pcm_rate_caps:
+        instance->nodes[addr][node].pcm_rates = (resp);
+        break;
+    case hdaudio_param_fmt_caps:
+        instance->nodes[addr][node].stream_formats = (resp);
+        break;
+    case hdaudio_param_pin_caps:
+        instance->nodes[addr][node].pin_cap = (resp);
+        break;
+    case hdaudio_param_input_amp_caps:
+        instance->nodes[addr][node].input_amp_cap = (resp);
+        break;
+    case hdaudio_param_output_amp_caps:
+        instance->nodes[addr][node].output_amp_cap = (resp);
+        break;
+    case hdaudio_param_conn_list_len:
+        instance->nodes[addr][node].conn_list_len = (resp);
+        instance->nodes[addr][node].conn_list = malloc((resp & 0x7F) * sizeof(uint8_t));
+        break;
+    case hdaudio_param_pwr_caps:
+        instance->nodes[addr][node].pwr_states = (resp);
+        break;
+    case hdaudio_param_processing_caps:
+        instance->nodes[addr][node].process_caps = (resp);
+        break;
+    case hdaudio_param_gpio_cnt:
+        instance->nodes[addr][node].gpio_count = (resp);
+        break;
+    case hdaudio_param_volume_caps:
+        instance->nodes[addr][node].volume_caps = (resp);
+        break;
+    default:
+        break;
     }
 }
 
@@ -245,12 +245,12 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
     instance->cfg_regs->gctl.crst = 1;
     while(instance->cfg_regs->gctl.crst != 1)
         ;
-        
+
     //Wait for the codecs to request state changes
     while(instance->cfg_regs->sdiwake == 0)
         ;
     DEBUG_PRINT("Codecs Enumerated!\r\n");
-    
+
     instance->cfg_regs->gctl.crst |= (1 << 8);
 
     //Enable state change interrupts
@@ -304,11 +304,11 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
 
     //Build the device graph
     DEBUG_PRINT("HD Audio initialized, Enumerating nodes\r\n");
-    for(int i = 0; i < 32; i++){
-        if(instance->codecs & (1u << i)){
+    for(int i = 0; i < 32; i++) {
+        if(instance->codecs & (1u << i)) {
             instance->nodes[i] = malloc(sizeof(hdaudio_node_t) * 256);
 
-            for(int j = 0; j < max_node_id; j++){
+            for(int j = 0; j < max_node_id; j++) {
                 instance->nodes[i][j].isValid = true;
 
                 hdaudio_sendverb(instance, i, j, GET_PARAM(hdaudio_param_vendor_device_id), hdaudio_scanhandler);
@@ -338,7 +338,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
                 for(int k = 0; k < list_len; k += 4)
                     hdaudio_sendverb(instance, i, j, GET_CONN_LIST(k), hdaudio_connlisthandler);
             }
-            
+
             //Sort everything into groups based on widget type
             uint8_t *node_grps[7];
             uint8_t node_grps_cnt[7];
@@ -350,8 +350,8 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
 
                 int node_type = (instance->nodes[i][j].caps >> 20) & 0xF;
 
-                if(node_type < 0x7){
-                    if(node_grps[node_type] == NULL){
+                if(node_type < 0x7) {
+                    if(node_grps[node_type] == NULL) {
                         node_grps[node_type] = malloc(sizeof(uint8_t) * max_node_id);
                         memset(node_grps[node_type], 0, max_node_id * sizeof(uint8_t));
 
@@ -363,8 +363,8 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
             }
 
             //For each pin, build a shortest path from pin to stream
-                //Output pins must end at Audio Outputs and must include an amplifier in-between
-                //Input pins must end at Audio Inputs and must include an amplifier in-between
+            //Output pins must end at Audio Outputs and must include an amplifier in-between
+            //Input pins must end at Audio Inputs and must include an amplifier in-between
             for(int j = 0; j < node_grps_cnt[hdaudio_widget_pin_complex]; j++) {
                 hdaudio_node_t *cur_node = &instance->nodes[i][node_grps[hdaudio_widget_pin_complex][j]];
 
@@ -377,7 +377,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
                 //walk the connection list
                 int conn_list_len = cur_node->conn_list_len & 0x7F;
 
-                for(int k = 0; k < conn_list_len; k++){
+                for(int k = 0; k < conn_list_len; k++) {
 
                 }
             }
