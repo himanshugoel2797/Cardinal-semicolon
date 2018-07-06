@@ -13,7 +13,7 @@ File system has superblocks with multiple backup copies.
 The file system is log structured.
 Consists of 2 data structures:
     - Allocation map - tracks free space for all segments, 1 bit per segment
-    - Log structure - 
+    - Log structure: 
         - Object store table - list of objects stored on the drive
             - Contains Inodes + B-Tree of file contents
             - Inode metadata:
@@ -28,21 +28,30 @@ Consists of 2 data structures:
         - All of these structures are by B-tree
         - All writes are copy-on-write, except for the journal
         - Data can be distributed over multiple disks in a user controlled way, file system does not directly offer an abstraction for multiple disks.
+    - File system defragmentation is used every 128 or so segments
 
 Superblock Structure:
 
-    struct {
+    struct CheckpointBlock {
+        uint64_t cold_log_top_addr;
+        uint64_t default_log_top_addr;
+        uint64_t latest_object_id;
+        uint64_t imap_head;
+    };
+
+    struct Superblock {
         uint32_t checksum;
         char magic[8];
-        uint32_t generation;
-        uint32_t block_sz;
-        uint64_t flag1;
-        uint64_t log_top_addr;
-        uint64_t allocation_tree_addr;
-        uint64_t object_tree_addr;
-        uint64_t latest_object_id;
+        uint64_t generation;
+        uint32_t block_sz;      //In units of bytes
+        uint32_t segment_sz;    //In units of blocks
+        uint64_t inode_cnt;     //Determines size of imap, should be possible to increase later
+        uint64_t flags;
         char label[256];
         uint64_t vol_sz;
+        CheckpointBlock blk0;
+        CheckpointBlock blk1;
+        uint64_t alloc_map[0];
     };
 
     Possible flags:
@@ -54,30 +63,6 @@ Superblock Structure:
         KiB(4)
         MiB(16)
         GiB(64)
-
-B-Tree structure:
-
-    struct InternalNode {
-        uint64_t address;
-    };
-
-    struct LeafNode {
-        uint32_t offset;
-        uint32_t id;    //Specifies the object id pointed to
-    };
-
-    struct Header {
-        uint32_t checksum
-        uint32_t generation;
-        uint8_t level;
-        uint8_t node_type;
-        uint16_t flags;
-        uint32_t entry_count;
-    };
-
-    Node Types:
-        0 = Internal Pointer
-        1 = Key-Value Pair
 
 Object Store Entry:
 
@@ -112,11 +97,11 @@ Log Structure:
     struct LogHeader {
         uint8_t magic[8];   //'LOGSTART'
         uint64_t timestamp;
-        uint64_t block_cnt;
-    };
-
-    struct LogFooter {
-        uint8_t magic[8];   //'LOGENDED'
-        uint64_t timestamp;
+        uint64_t block_owner[0];
         uint32_t checksums[0];
     };
+
+    Notes:
+        - 1364 blocks per log, because (16384 - 16) / (8 + 4) = 1364 and is a whole number, meaning no space is wasted in the header block.
+
+Defragmentation is slightly different from traditional log file systems, in that cold files are placed into empty blocks near the end of the disk, perhaps based on a hinting API. While hot files stay on the log as is. 
