@@ -106,10 +106,10 @@ int module_init() {
                 print_str("\r\n");
 
                 int err = entry_pt_real((void*)ecam_addr);
-                    char idx_str[10];
-                    print_str("RETURN VALUE:");
-                    print_str(itoa(err, idx_str, 16));
-                    print_str("\r\n");
+                char idx_str[10];
+                print_str("RETURN VALUE:");
+                print_str(itoa(err, idx_str, 16));
+                print_str("\r\n");
                 if(err != 0) {
                     PANIC("module_init FAILED");
                 }

@@ -378,10 +378,10 @@ static int virtio_gpu_drv_getstatus(void *state, display_status_t *ans) {
 }
 
 static int virtio_gpu_drv_getdisplayinfo(void *state, display_res_info_t *res, int *entcnt) {
-    
+
     virtio_gpu_driver_state_t *st = (virtio_gpu_driver_state_t*)state;
     *entcnt = 1;
-    if(res != NULL){
+    if(res != NULL) {
         res->w_res = st->scanouts[0].w;
         res->h_res = st->scanouts[0].h;
         res->stride = 0;
@@ -391,7 +391,7 @@ static int virtio_gpu_drv_getdisplayinfo(void *state, display_res_info_t *res, i
 }
 
 static int virtio_gpu_drv_flush(void *state) {
-    
+
     virtio_gpu_driver_state_t *st = (virtio_gpu_driver_state_t*)state;
     virtio_gpu_flush(st->scanouts[0].resource_id, 0, 0, st->scanouts[0].w, st->scanouts[0].h);
 

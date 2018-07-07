@@ -38,7 +38,7 @@ typedef enum {
 typedef struct display_handlers {
     //set resolution
     int (*set_resolution) (void *state, display_res_info_t *info);
-    
+
     //set brightness
     int (*set_brightness) (void *state, uint8_t brightness);
 

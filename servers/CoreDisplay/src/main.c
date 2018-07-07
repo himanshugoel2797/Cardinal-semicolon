@@ -14,15 +14,15 @@
 #include "CoreDisplay/display.h"
 
 static int display_list_lock = 0;
-static list_t display_list; 
+static list_t display_list;
 
 //register display devices
-int display_register(display_desc_t *desc){
+int display_register(display_desc_t *desc) {
     if(desc == NULL)
         return -1;
 
     local_spinlock_lock(&display_list_lock);
-    if(list_append(&display_list, desc) != list_error_none){
+    if(list_append(&display_list, desc) != list_error_none) {
         local_spinlock_unlock(&display_list_lock);
         return -2;
     }
@@ -44,7 +44,7 @@ int display_unregister(display_desc_t *desc) {
     int len = (int)list_len(&display_list);
 
     for(int i = 0; i < len; i++) {
-        if((uintptr_t)list_at(&display_list, (uint64_t)i) == (uintptr_t)desc ){
+        if((uintptr_t)list_at(&display_list, (uint64_t)i) == (uintptr_t)desc ) {
             list_remove(&display_list, (uint64_t)i);
             local_spinlock_unlock(&display_list_lock);
             return 0;
@@ -57,7 +57,7 @@ int display_unregister(display_desc_t *desc) {
 
 //get info/handlers
 
-int coredisplay_postinit(){
+int coredisplay_postinit() {
     local_spinlock_lock(&display_list_lock);
 
     if(list_len(&display_list) == 0) {

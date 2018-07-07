@@ -1,5 +1,5 @@
 // Copyright (c) 2018 Himanshu Goel
-// 
+//
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
@@ -51,7 +51,7 @@ list_fini(list_t *a);
 
 void*
 list_at(list_t *a,
-             uint64_t index);
+        uint64_t index);
 
 void*
 list_rot_next(list_t *a);

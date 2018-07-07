@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -17,13 +17,13 @@ list_init(list_t *t) {
     t->last_accessed_node = NULL;
     t->last_accessed_index = 0;
     t->entry_count = 0;
-    
+
     return 0;
 }
 
 list_error_t
 list_append(list_t *a,
-              void *value) {
+            void *value) {
     list_node_t *l = malloc(sizeof(list_node_t));
     if(l == NULL)return list_error_allocation_failed;
 
@@ -101,7 +101,7 @@ list_fini(list_t *a) {
 
 void*
 list_at(list_t *a,
-             uint64_t index) {
+        uint64_t index) {
 
     if(a->last_accessed_index >= a->entry_count) {
         a->last_accessed_index = 0;
