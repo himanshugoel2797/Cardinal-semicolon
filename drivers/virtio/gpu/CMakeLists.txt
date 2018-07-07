@@ -16,7 +16,7 @@ ADD_CUSTOM_TARGET(${CELF_NAME}.celf ALL
 )
 
 SET_TARGET_PROPERTIES(${CELF_NAME}.elf PROPERTIES COMPILE_OPTIONS "-fPIC")
-TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf PRIVATE "inc" "../common/inc" "../inc" "../../../modules/inc" "../../../libs" "${LIBS_DIR}/syscalls")
+TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf PRIVATE "inc" "../common/inc" "../inc" "../../../modules/inc" "../../../servers/inc" "../../../libs" "${LIBS_DIR}/syscalls")
 TARGET_LINK_LIBRARIES(${CELF_NAME}.elf PUBLIC VirtioCommon)
 
 SET_TARGET_PROPERTIES(${CELF_NAME}.elf PROPERTIES LINK_FLAGS "-r ${ISA_LINKER_FLAGS} ${PLATFORM_LINKER_FLAGS}")

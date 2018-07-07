@@ -91,9 +91,9 @@ static void tmp_handler(int int_num) {
                 //Solicited response
 
                 char tmp[10];
-                //DEBUG_PRINT("HANDLED: ");
-                //DEBUG_PRINT(itoa(cmd_idx, tmp, 16));
-                //DEBUG_PRINT("\r\n");
+                DEBUG_PRINT("HANDLED: ");
+                DEBUG_PRINT(itoa(cmd_idx, tmp, 16));
+                DEBUG_PRINT("\r\n");
 
                 instance->cmds[cmd_idx].waiting = false;
                 instance->cmds[cmd_idx].handler(instance, &instance->cmds[cmd_idx], instance->rirb.buffer[idx * 2]);
@@ -304,6 +304,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
 
     //Build the device graph
     DEBUG_PRINT("HD Audio initialized, Enumerating nodes\r\n");
+    max_node_id = 1;
     for(int i = 0; i < 32; i++) {
         if(instance->codecs & (1u << i)) {
             instance->nodes[i] = malloc(sizeof(hdaudio_node_t) * 256);
@@ -365,6 +366,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
             //For each pin, build a shortest path from pin to stream
             //Output pins must end at Audio Outputs and must include an amplifier in-between
             //Input pins must end at Audio Inputs and must include an amplifier in-between
+            /*
             for(int j = 0; j < node_grps_cnt[hdaudio_widget_pin_complex]; j++) {
                 hdaudio_node_t *cur_node = &instance->nodes[i][node_grps[hdaudio_widget_pin_complex][j]];
 
@@ -380,7 +382,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
                 for(int k = 0; k < conn_list_len; k++) {
 
                 }
-            }
+            }*/
 
             //Paths have a maximum length of 10 units
         }
@@ -458,9 +460,6 @@ int module_init(void *ecam_addr) {
     instance->rirb.buffer_phys = corb_rirb_buffer_phys + instance->corb.entcnt * sizeof(uint32_t);
 
     hdaudio_initialize(instance);
-
-    while(true)
-        ;
 
     return 0;
 }

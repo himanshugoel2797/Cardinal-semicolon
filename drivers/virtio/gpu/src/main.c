@@ -12,6 +12,8 @@
 #include "virtio.h"
 #include "virtio_gpu.h"
 
+#include "CoreDisplay/display.h"
+
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysTaskMgr/task.h"
@@ -360,11 +362,60 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd) {
     virtio_gpu_default_handler(cmd);
 }
 
-//TODO: Implement Display driver API
+//Implement Display driver API
+static int virtio_gpu_drv_getframebuffer(void *state, uintptr_t *addr) {
+
+    virtio_gpu_driver_state_t *st = (virtio_gpu_driver_state_t*)state;
+    *addr = (uintptr_t)st->scanouts[0].virt_addr;
+
+    return 0;
+}
+
+static int virtio_gpu_drv_getstatus(void *state, display_status_t *ans) {
+    state = NULL;
+    *ans = display_status_connected;
+    return 0;
+}
+
+static int virtio_gpu_drv_getdisplayinfo(void *state, display_res_info_t *res, int *entcnt) {
+    
+    virtio_gpu_driver_state_t *st = (virtio_gpu_driver_state_t*)state;
+    *entcnt = 1;
+    if(res != NULL){
+        res->w_res = st->scanouts[0].w;
+        res->h_res = st->scanouts[0].h;
+        res->stride = 0;
+        res->refresh_rate = 0;
+    }
+    return 0;
+}
+
+static int virtio_gpu_drv_flush(void *state) {
+    
+    virtio_gpu_driver_state_t *st = (virtio_gpu_driver_state_t*)state;
+    virtio_gpu_flush(st->scanouts[0].resource_id, 0, 0, st->scanouts[0].w, st->scanouts[0].h);
+
+    return 0;
+}
+
 //TODO: design Graphics driver API, filling command buffers in user space to submit to the driver
+static display_desc_t display_config = {
+    .display_name = "Virtio GPU Display",
+    .connection = display_connection_unkn,
+    .handlers = {
+        .set_resolution = NULL,
+        .set_brightness = NULL,
+        .set_state = NULL,
+        .get_framebuffer = virtio_gpu_drv_getframebuffer,
+        .get_status = virtio_gpu_drv_getstatus,
+        .get_displayinfo = virtio_gpu_drv_getdisplayinfo,
+        .flush = virtio_gpu_drv_flush,
+    },
+    .features = display_features_hardware3d | display_features_autoresize | display_features_requireflip,
+    .state = &device
+};
 
 int module_init(void *ecam) {
-
 
     memset(&device, 0, sizeof(device));
 
@@ -406,6 +457,9 @@ int module_init(void *ecam) {
     virtio_notify(device.common_state, 0);
 
     virtio_inited = true;
+
+    while(device.scanouts[0].resource_id == 0);
+    display_register(&display_config);
 
     return 0;
 }

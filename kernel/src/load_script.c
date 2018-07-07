@@ -9,6 +9,32 @@
 #include <stdlib.h>
 #include <types.h>
 
+int module_load(char *name) {
+        print_str("LOAD MODULE:");
+        print_str(name);
+        print_str("\r\n");
+
+        void *mod_loc = NULL;
+        size_t len = 0;
+        if (!Initrd_GetFile(name, &mod_loc, &len))
+            PANIC("FAILED TO FIND MODULE!");
+
+        // decompress celf's elf section
+        ModuleHeader *hdr = (ModuleHeader *)mod_loc;
+
+            int (*entry_pt)() = NULL;
+            if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
+                PANIC("ELF LOAD FAILED");
+
+            char tmp_entry_addr[10];
+            print_str("LOADED at ");
+            print_str(itoa((int)entry_pt, tmp_entry_addr, 16));
+            print_str("\r\n");
+
+            int err = entry_pt();
+            return err;
+}
+
 int script_execute(char *load_script, size_t load_len) {
     char name[1024];
     bool isCRLF = false;
@@ -40,28 +66,8 @@ int script_execute(char *load_script, size_t load_len) {
 
         if (mode == 0) {
 
-            print_str("LOAD MODULE:");
-            print_str(name);
-            print_str("\r\n");
 
-            void *mod_loc = NULL;
-            size_t len = 0;
-            if (!Initrd_GetFile(name, &mod_loc, &len))
-                PANIC("FAILED TO FIND MODULE!");
-
-            // decompress celf's elf section
-            ModuleHeader *hdr = (ModuleHeader *)mod_loc;
-
-            int (*entry_pt)() = NULL;
-            if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
-                PANIC("ELF LOAD FAILED");
-
-            char tmp_entry_addr[10];
-            print_str("LOADED at ");
-            print_str(itoa((int)entry_pt, tmp_entry_addr, 16));
-            print_str("\r\n");
-
-            int err = entry_pt();
+            int err = module_load(name);
             if(err != 0) {
                 char idx_str[10];
                 print_str("RETURN VALUE:");
