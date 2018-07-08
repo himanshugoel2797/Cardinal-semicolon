@@ -5,3 +5,16 @@
 ./HDAudio.celf|8086|2668|FFFF|FFFF|FFFF
 ./HDAudio.celf|1022|1457|FFFF|FFFF|FFFF
 ./HDAudio.celf|1002|aaf0|FFFF|FFFF|FFFF
+./rtl8139.celf|10ec|8139|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|08b3|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|08b4|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|3165|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|3166|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|24fb|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|08b1|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|08b2|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|095a|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|095b|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|24f3|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|24f4|FFFF|FFFF|FFFF
+./intel_wifi.celf|8086|24fd|FFFF|FFFF|FFFF
