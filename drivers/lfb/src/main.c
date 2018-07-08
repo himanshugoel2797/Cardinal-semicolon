@@ -62,7 +62,6 @@ static display_desc_t display_config = {
 
 int module_init(void) {
 
-    DEBUG_PRINT("TEST");
     registry_readkey_uint("HW/BOOTINFO/FRAMEBUFFER", "PHYS_ADDR", &fbuf_phys_addr);
     registry_readkey_uint("HW/BOOTINFO/FRAMEBUFFER", "PITCH", &pitch);
     registry_readkey_uint("HW/BOOTINFO/FRAMEBUFFER", "WIDTH", &width);

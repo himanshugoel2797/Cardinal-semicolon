@@ -58,15 +58,17 @@ int display_unregister(display_desc_t *desc) {
 //get info/handlers
 
 int coredisplay_postinit() {
+    
     local_spinlock_lock(&display_list_lock);
+    uint64_t len = list_len(&display_list);
+    local_spinlock_unlock(&display_list_lock);
 
-    if(list_len(&display_list) == 0) {
+    if(len == 0) {
         //TODO: Load the lfb driver
         if(module_load("./lfb.celf") != 0)
             PANIC("No framebuffer available!\r\n");
     }
 
-    local_spinlock_unlock(&display_list_lock);
     return 0;
 }
 
