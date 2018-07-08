@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -12,8 +12,7 @@
 #include "ps2_keyboard.h"
 #include "priv_ps2.h"
 
-uint8_t PS2Keyboard_Initialize()
-{
+uint8_t PS2Keyboard_Initialize() {
     //Reset the keyboard
     WAIT_DATA_SENT;
     outb(DATA_PORT, 0xFF);
@@ -23,7 +22,7 @@ uint8_t PS2Keyboard_Initialize()
     uint16_t reset_res = inb(DATA_PORT);
     if(reset_res != 0xaa) DEBUG_PRINT("PS/2 Keyboard initialization failed.\r\n");
 
-    
+
     //Set scancode set 3
     outb(DATA_PORT, 0xF0);
     WAIT_CMD_SENT;
@@ -62,7 +61,7 @@ uint8_t PS2Keyboard_Initialize()
     WAIT_CMD_SENT;
     WAIT_DATA_AVL;
     inb(DATA_PORT);
-    
+
     //Enable sending scancodes
     outb(DATA_PORT, 0xF4);
     WAIT_CMD_SENT;
@@ -75,13 +74,12 @@ uint8_t PS2Keyboard_Initialize()
         DEBUG_PRINT(itoa(c, tmp, 16));
         DEBUG_PRINT("\r\n");
     }
-        
+
 
     return 0;
 }
 
-void PS2Keyboard_SetLEDStatus(uint8_t led, uint8_t status)
-{
+void PS2Keyboard_SetLEDStatus(uint8_t led, uint8_t status) {
     WAIT_DATA_SENT;
     outb(DATA_PORT, 0xED);
     WAIT_DATA_SENT;

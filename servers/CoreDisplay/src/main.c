@@ -58,7 +58,7 @@ int display_unregister(display_desc_t *desc) {
 //get info/handlers
 
 int coredisplay_postinit() {
-    
+
     local_spinlock_lock(&display_list_lock);
     uint64_t len = list_len(&display_list);
     local_spinlock_unlock(&display_list_lock);

@@ -12,7 +12,7 @@
 #include "SysVirtualMemory/vmem.h"
 
 #include "CoreDisplay/display.h"
-    
+
 static uint64_t fbuf_phys_addr;
 static uint64_t pitch;
 static uint64_t width;
