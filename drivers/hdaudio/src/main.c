@@ -90,10 +90,10 @@ static void tmp_handler(int int_num) {
             } else if(instance->cmds[cmd_idx].handler != NULL) {
                 //Solicited response
 
-                char tmp[10];
+                /*char tmp[10];
                 DEBUG_PRINT("HANDLED: ");
                 DEBUG_PRINT(itoa(cmd_idx, tmp, 16));
-                DEBUG_PRINT("\r\n");
+                DEBUG_PRINT("\r\n");*/
 
                 instance->cmds[cmd_idx].waiting = false;
                 instance->cmds[cmd_idx].handler(instance, &instance->cmds[cmd_idx], instance->rirb.buffer[idx * 2]);

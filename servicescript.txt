@@ -5,5 +5,6 @@ LOAD:./btrfs.celf
 LOAD:./CoreDisplay.celf
 LOAD:./CoreAudio.celf
 LOAD:./CoreInput.celf
+LOAD:./ps2.celf
 LOAD:./CoreDriver.celf
 CALL:coredisplay_postinit
