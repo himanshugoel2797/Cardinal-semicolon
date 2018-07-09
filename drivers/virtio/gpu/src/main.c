@@ -23,13 +23,13 @@ static _Atomic int virtio_signalled = 0;
 static _Atomic int virtio_inited = 0;
 static int virtio_queue_avl = 0;
 
-void intrpt_handler(int idx) {
+static void intrpt_handler(int idx) {
     idx = 0;
     virtio_signalled = true;
     //local_spinlock_unlock(&virtio_signalled);
 }
 
-void virtio_task_handler(void *arg) {
+static void virtio_task_handler(void *arg) {
     arg = NULL;
 
     while(!virtio_inited)

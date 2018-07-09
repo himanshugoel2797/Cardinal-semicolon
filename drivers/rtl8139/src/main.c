@@ -28,6 +28,11 @@ int module_init(void *ecam_addr) {
     int int_cnt = 0;
     int msi_val = pci_getmsiinfo(device, &int_cnt);
 
+    if(msi_val == -1){
+        DEBUG_PRINT("Failed to load RTL8139 driver, requires MSI support.\r\n");
+        return -1;
+    }
+
     int int_val = 0;
     interrupt_allocate(1, interrupt_flags_none, &int_val);
     interrupt_registerhandler(int_val, rtl8139_intr_handler);

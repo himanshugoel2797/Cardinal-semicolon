@@ -65,6 +65,5 @@ int rtl8139_init(rtl8139_state_t *state) {
     //Start the receiver and transmitter
     state->memar[CMD_REG] |= CMD_TX_EN | CMD_RX_EN;
 
-    __asm__("cli\n\thlt" :: "a"(state->memar));
     return 0;
 }

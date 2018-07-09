@@ -140,8 +140,6 @@ PRIVATE void* virtio_setupqueue(virtio_state_t *state, int idx, int entcnt) {
 
     memset((void*)virtqueue_virt, 0, ts);
 
-
-
     state->common_cfg->queue_desc = virtqueue_phys;
     state->common_cfg->queue_avail = virtqueue_phys + 16 * entcnt;
     state->common_cfg->queue_used = virtqueue_phys + 16 * entcnt + 6 + 2 * entcnt;
