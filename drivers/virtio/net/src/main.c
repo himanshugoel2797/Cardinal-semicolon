@@ -38,6 +38,10 @@ static void virtio_task_handler(void *arg) {
         while(virtio_signalled) {
             local_spinlock_lock(&virtio_queue_avl);
 
+            //acknowledge transmitted packets
+
+            //forward received packets
+
             virtio_signalled = false;
             
             local_spinlock_unlock(&virtio_queue_avl);
@@ -46,7 +50,24 @@ static void virtio_task_handler(void *arg) {
 }
 
 int virtio_net_sendpacket(void *packet, int len, int gso){
+    gso = 0;
 
+    int ent_idx = device.avail_idx[VIRTIO_NET_Q_TX];
+    uint8_t *data_buf = device.tx_buf_virt + ent_idx * KiB(2);
+
+    memcpy(data_buf + sizeof(virtio_net_cmd_hdr_t), packet, len);
+    virtio_net_cmd_hdr_t *hdr = (virtio_net_cmd_hdr_t*)data_buf;
+
+    hdr->flags = 0;
+    hdr->gso_type = VIRTIO_NET_GSO_NONE;
+    hdr->hdr_len = sizeof(virtio_net_cmd_hdr_t);
+    hdr->gso_sz = len;
+    hdr->csum_start = 0;
+    hdr->csum_offset = 0;
+    hdr->num_buffers = 0;
+
+    virtio_postcmd_noresp(device.common_state, VIRTIO_NET_Q_TX, data_buf, len + sizeof(virtio_net_cmd_hdr_t), NULL);
+    virtio_notify(device.common_state, VIRTIO_NET_Q_TX);
     return 0;
 }
 
@@ -81,20 +102,72 @@ int module_init(void *ecam) {
         device.checksum_offload = true;
     }
 
-    virtio_setfeatures(device.common_state, VIRTIO_NET_F_MAC | (device.checksum_offload ? VIRTIO_NET_F_CSUM : 0), 0);
+    virtio_setfeatures(device.common_state, VIRTIO_NET_F_STATUS | VIRTIO_NET_F_MAC | (device.checksum_offload ? VIRTIO_NET_F_CSUM : 0), 0);
 
     if(!virtio_features_ok(device.common_state))
         return -1;
 
     //setup virtqueues
     for(int i = 0; i < VIRTIO_NET_QUEUE_CNT; i++)
-        virtio_setupqueue(device.common_state, 0, VIRTIO_NET_QUEUE_LEN);
+        virtio_setupqueue(device.common_state, i, VIRTIO_NET_QUEUE_LEN);
 
     virtio_driver_ok(device.common_state);
 
+    //Fill the receive virtq with buffers
+    uintptr_t rcv_buf = pagealloc_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
+    uint8_t *rcv_buf_virt = (uint8_t*)vmem_phystovirt((intptr_t)rcv_buf, VIRTIO_NET_QUEUE_LEN * KiB(2), vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+    device.rx_buf_phys = rcv_buf;
+
+    for(int i = 0; i < VIRTIO_NET_QUEUE_LEN; i++) {
+        virtio_net_cmd_hdr_t *cmd_tmp = (virtio_net_cmd_hdr_t*)(rcv_buf_virt + i * KiB(2));
+        virtio_addresponse(device.common_state, VIRTIO_NET_Q_RX, cmd_tmp, KiB(2));
+    }
+
+    //Allocate tx buffer
+    device.tx_buf_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
+    device.tx_buf_virt = (uint8_t*)vmem_phystovirt((intptr_t)device.tx_buf_phys, VIRTIO_NET_QUEUE_LEN * KiB(2), vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
     
+    //Register to the network service
+    if(virtio_net_linkstatus())
+        DEBUG_PRINT("Network connected!\r\n");
+
+    virtio_notify(device.common_state, VIRTIO_NET_Q_RX);
+    virtio_notify(device.common_state, VIRTIO_NET_Q_TX);
+
+    DEBUG_PRINT("Register Network Device: VirtioNet\r\n");
 
     virtio_inited = true;
+
+    ARP_Packet packet_a;
+    ARP_Packet *packet = (ARP_Packet*)&packet_a;
+
+    for(int i = 0; i < 6; i++)
+        packet->frame.dst_mac[i] = 0xFF;
+
+    for(int i = 0; i < 6; i++)
+        packet->frame.src_mac[i] = device.cfg->mac[i];
+
+    packet->frame.type = 0x0608;
+
+    packet->hw_type = 0x0100;
+    packet->protocol_type = 0x0008;
+    packet->hw_addr_len = 6;
+    packet->protocol_addr_len = 4;
+    packet->opcode = 0x0100;
+
+    for(int i = 0; i < 6; i++)
+        packet->src_mac[i] = device.cfg->mac[i];
+
+    for(int i = 0; i < 4; i++)
+        packet->src_ip[i] = 0;
+
+    for(int i = 0; i < 6; i++)
+        packet->dst_mac[i] = 0x00;
+
+    for(int i = 0; i < 4; i++)
+        packet->dst_ip[i] = 0x00;
+
+    virtio_net_sendpacket(packet, sizeof(ARP_Packet), 0);
 
     return 0;
 }

@@ -13,6 +13,10 @@
 
 #define VIRTIO_NET_F_CSUM (1 << 0)
 #define VIRTIO_NET_F_MAC (1 << 5)
+#define VIRTIO_NET_F_STATUS (1 << 16)
+
+#define VIRTIO_NET_Q_RX 0
+#define VIRTIO_NET_Q_TX 1
 
 #define VIRTIO_NET_S_LINK_UP 1
 typedef struct {
@@ -45,6 +49,31 @@ typedef struct {
     int avail_idx[VIRTIO_NET_QUEUE_CNT];
     int used_idx[VIRTIO_NET_QUEUE_CNT];
     bool checksum_offload;
+
+    uintptr_t rx_buf_phys;
+
+    uintptr_t tx_buf_phys;
+    uint8_t *tx_buf_virt;
 } virtio_net_driver_state_t;
+
+
+typedef struct {
+    uint8_t dst_mac[6];
+    uint8_t src_mac[6];
+    uint16_t type;
+} __attribute__((packed)) Ethernet_Frame;
+
+typedef struct {
+    Ethernet_Frame frame;
+    uint16_t hw_type;
+    uint16_t protocol_type;
+    uint8_t hw_addr_len;
+    uint8_t protocol_addr_len;
+    uint16_t opcode;
+    uint8_t src_mac[6];
+    uint8_t src_ip[4];
+    uint8_t dst_mac[6];
+    uint8_t dst_ip[4];
+} __attribute__((packed)) ARP_Packet;
 
 #endif
