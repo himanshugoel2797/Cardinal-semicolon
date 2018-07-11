@@ -9,9 +9,9 @@
 #include <stdint.h>
 #include <types.h>
 
-#define ETHERNET_TYPE_ARP (TO_BE_16(0x0806))
-#define ETHERNET_TYPE_IPv4 (TO_BE_16(0x0800))
-#define ETHERNET_TYPE_IPv6 (TO_BE_16(0x86DD))
+#define ETHERNET_TYPE_ARP (TO_BE_FRM_LE_16(0x0806))
+#define ETHERNET_TYPE_IPv4 (TO_BE_FRM_LE_16(0x0800))
+#define ETHERNET_TYPE_IPv6 (TO_BE_FRM_LE_16(0x86DD))
 
 typedef struct {
     uint8_t dst_mac[6];

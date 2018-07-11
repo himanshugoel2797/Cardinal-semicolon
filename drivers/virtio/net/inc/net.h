@@ -38,8 +38,7 @@ typedef struct {
     uint16_t gso_sz;
     uint16_t csum_start;
     uint16_t csum_offset;
-    uint16_t num_buffers;
-} virtio_net_cmd_hdr_t;
+} PACKED virtio_net_cmd_hdr_t;
 
 typedef struct {
     virtio_state_t *common_state;

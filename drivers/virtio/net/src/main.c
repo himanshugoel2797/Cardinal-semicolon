@@ -86,7 +86,6 @@ int virtio_net_sendpacket(void *state, void *packet, int len, network_device_tx_
     hdr->gso_sz = 0;
     hdr->csum_start = 0;
     hdr->csum_offset = 0;
-    hdr->num_buffers = 0;
 
     virtio_postcmd_noresp(device->common_state, VIRTIO_NET_Q_TX, data_buf, len + sizeof(virtio_net_cmd_hdr_t), NULL);
     virtio_notify(device->common_state, VIRTIO_NET_Q_TX);
@@ -172,8 +171,8 @@ int module_init(void *ecam) {
     virtio_notify(device.common_state, VIRTIO_NET_Q_TX);
 
     virtio_inited = true;
-/*
-    arp_t packet_a;
+
+    /*arp_t packet_a;
     arp_t *packet = (arp_t*)&packet_a;
 
     for(int i = 0; i < 6; i++)

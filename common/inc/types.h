@@ -57,13 +57,22 @@ int debug_handle_trap();
 #define NO_UBSAN __attribute__((no_sanitize("undefined")))
 
 #define SWAP_ENDIAN_16(x)                                                      \
-  ((x >> 8) | (x << 8))
+  (((x & 0xff00) >> 8) | ((x & 0x00ff) << 8))
 
 #define SWAP_ENDIAN_32(x)                                                      \
   (((x & 0x000000ff) << 24) | ((x & 0x0000ff00) << 8) |                        \
    ((x & 0x00ff0000) >> 8) | ((x & 0xff000000) >> 24))
 #define SWAP_ENDIAN_64(x)                                                      \
   ((SWAP_ENDIAN_32((x >> 32)) << 32) | (SWAP_ENDIAN_32(x & 0xFFFFFFFF)))
+
+
+#define TO_LE_FRM_BE_64(x) SWAP_ENDIAN_64(x)
+#define TO_LE_FRM_BE_32(x) SWAP_ENDIAN_32(x)
+#define TO_LE_FRM_BE_16(x) SWAP_ENDIAN_16(x)
+
+#define TO_BE_FRM_LE_64(x) SWAP_ENDIAN_64(x)
+#define TO_BE_FRM_LE_32(x) SWAP_ENDIAN_32(x)
+#define TO_BE_FRM_LE_16(x) SWAP_ENDIAN_16(x)
 
 #if CUR_ENDIAN == LE_ENDIAN
 #define TO_BE_64(x) SWAP_ENDIAN_64(x)
