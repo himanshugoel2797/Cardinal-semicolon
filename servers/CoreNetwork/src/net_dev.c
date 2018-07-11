@@ -94,6 +94,10 @@ int network_rx_packet(void *interface_handle, void *packet, int len) {
 int network_tx_packet(interface_def_t *interface, void *packet, int len, uint16_t protocol_type)
 {
     //TODO: build a transmission frame around the packet based on the interface type and submit to the driver for transmission
+    interface = NULL;
+    packet = NULL;
+    len = 0;
+    protocol_type = 0;
 
     return 0;
 }
