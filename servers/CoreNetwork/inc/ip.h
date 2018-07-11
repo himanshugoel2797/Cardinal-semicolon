@@ -32,6 +32,16 @@ typedef struct {
     uint8_t body[0];
 } ipv4_t;
 
+typedef struct {
+    uint32_t version_traffic_flow;
+    uint16_t payload_len;
+    uint8_t protocol;
+    uint8_t ttl;
+    uint8_t src_ip [16];
+    uint8_t dst_ip [16];
+    uint8_t body[0];
+} ipv6_t;
+
 int ipv4_rx(interface_def_t *interface, void *packet, int len);
 int ipv6_rx(interface_def_t *interface, void *packet, int len);
 

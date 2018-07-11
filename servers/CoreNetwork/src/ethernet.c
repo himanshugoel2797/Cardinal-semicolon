@@ -38,7 +38,6 @@ int ethernet_rx(interface_def_t *interface, void *packet, int len) {
             //Forward to the ipv4 layer
             ipv4_rx(interface, ether->body, len - sizeof(ethernet_frame_t));
         }else if(ether->type == ETHERNET_TYPE_IPv6) {
-            DEBUG_PRINT("IPv6 Unsupported\r\n");
             //Forward to the ipv6 layer
             ipv6_rx(interface, ether->body, len - sizeof(ethernet_frame_t));
         }

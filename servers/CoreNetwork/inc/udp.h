@@ -20,5 +20,6 @@ typedef struct {
 } udp_t;
 
 int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int len);
+int udp_ipv6_rx(interface_def_t *interface, ipv6_t *packet, int len);
 
 #endif
