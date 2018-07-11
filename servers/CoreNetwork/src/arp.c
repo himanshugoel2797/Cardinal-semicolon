@@ -10,7 +10,7 @@
 #include "arp.h"
 
 //TODO: Create a task to run the arp state machine
-//TODO: Add a scheduler based lock to reduce lock contention
+//TODO: Add a scheduler based lock to reduce lock contention, lock pulls the thread out of the scheduler until it's available
 
 int arp_rx(interface_def_t *interface, void *packet, int len) {
     //TODO: update the arp cache or respond to a request
