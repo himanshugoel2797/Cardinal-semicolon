@@ -21,8 +21,6 @@ static uint16_t udp_ipv4_verify_csum(ipv4_t *packet, udp_t *udp) {
     for(uint32_t i = 0; i < 4; i++)
         csum += TO_LE_FRM_BE_16(pseudo_ip[i]);
 
-    //__asm__("cli\n\thlt" :: "a"(TO_BE_FRM_LE_16(pseudo_ip[0])));
-
     for(uint32_t i = 0; i < udp->len / 2; i++)
         csum += TO_LE_FRM_BE_16(packet_ptr[i]);
 
@@ -42,7 +40,8 @@ int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int len) {
 
     if((udp_ipv4_verify_csum(packet, udp) == 0) | (udp->csum == 0)) {
         DEBUG_PRINT("UDP!!\r\n");
-        //From here, the packet gets queued into the udp port
+        //From here, the packet gets queued into the destination udp port, if present
+        //If not present, the packet is dropped
     }
 
     interface = NULL;
@@ -65,8 +64,6 @@ static uint16_t udp_ipv6_verify_csum(ipv6_t *packet, udp_t *udp) {
     for(uint32_t i = 0; i < 16; i++)
         csum += TO_LE_FRM_BE_16(pseudo_ip[i]);
 
-    //__asm__("cli\n\thlt" :: "a"(TO_BE_FRM_LE_16(pseudo_ip[0])));
-
     for(uint32_t i = 0; i < udp->len / 2; i++)
         csum += TO_LE_FRM_BE_16(packet_ptr[i]);
 
@@ -86,7 +83,8 @@ int udp_ipv6_rx(interface_def_t *interface, ipv6_t *packet, int len) {
 
     if((udp_ipv6_verify_csum(packet, udp) == 0) | (udp->csum == 0)) {
         DEBUG_PRINT("UDPv6!!\r\n");
-        //From here, the packet gets queued into the udp port
+        //From here, the packet gets queued into the destination udp port, if present
+        //If not present, the packet is dropped
     }
 
     interface = NULL;

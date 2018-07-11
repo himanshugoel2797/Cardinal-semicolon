@@ -41,6 +41,7 @@ int network_register(network_device_desc_t *desc, void **network_handle) {
     uint8_t mac[6];
 
     local_spinlock_lock(&dev_list_lock);
+    local_spinlock_lock(&desc->lock);
     {
         list_append(&dev_list, desc);
 
@@ -52,6 +53,7 @@ int network_register(network_device_desc_t *desc, void **network_handle) {
         DEBUG_PRINT(desc->name);
         DEBUG_PRINT("\r\n");
     }
+    local_spinlock_unlock(&desc->lock);
     local_spinlock_unlock(&dev_list_lock);
 
     local_spinlock_lock(&interface_list_lock);
@@ -85,6 +87,13 @@ int network_rx_packet(void *interface_handle, void *packet, int len) {
         DEBUG_PRINT("CoreNetwork: Network RX device type unknown.\r\n");
         return -1;
     }
+
+    return 0;
+}
+
+int network_tx_packet(interface_def_t *interface, void *packet, int len, uint16_t protocol_type)
+{
+    //TODO: build a transmission frame around the packet based on the interface type and submit to the driver for transmission
 
     return 0;
 }

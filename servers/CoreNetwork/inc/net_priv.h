@@ -22,4 +22,6 @@ PRIVATE int ethernet_rx(interface_def_t *interface, void *packet, int len);
 
 PRIVATE int wifi_rx(interface_def_t *interface, void *packet, int len);
 
+int network_tx_packet(interface_def_t *interface, void *packet, int len, uint16_t protocol_type);
+
 #endif

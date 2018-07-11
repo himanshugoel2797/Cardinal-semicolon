@@ -107,6 +107,7 @@ static network_device_desc_t device_desc = {
         .link_status = virtio_net_linkstatus,
     },
     .spec_features.ether = 0,
+    .lock = 0,
 };
 
 int module_init(void *ecam) {

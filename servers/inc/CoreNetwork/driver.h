@@ -65,6 +65,7 @@ typedef struct {
         network_wifi_features_t wifi;
     } spec_features;
 
+    int lock;
 } network_device_desc_t;
 
 int network_register(network_device_desc_t *desc, void **network_handle);
