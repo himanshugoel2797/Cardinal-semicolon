@@ -45,6 +45,8 @@ typedef struct {
     virtio_state_t *common_state;
     virtio_net_cfg_t *cfg;
 
+    void *handle;
+
     virtio_virtq_cmd_state_t *qstate[VIRTIO_NET_QUEUE_CNT];
     int avail_idx[VIRTIO_NET_QUEUE_CNT];
     int used_idx[VIRTIO_NET_QUEUE_CNT];
@@ -55,25 +57,5 @@ typedef struct {
     uintptr_t tx_buf_phys;
     uint8_t *tx_buf_virt;
 } virtio_net_driver_state_t;
-
-
-typedef struct {
-    uint8_t dst_mac[6];
-    uint8_t src_mac[6];
-    uint16_t type;
-} __attribute__((packed)) Ethernet_Frame;
-
-typedef struct {
-    Ethernet_Frame frame;
-    uint16_t hw_type;
-    uint16_t protocol_type;
-    uint8_t hw_addr_len;
-    uint8_t protocol_addr_len;
-    uint16_t opcode;
-    uint8_t src_mac[6];
-    uint8_t src_ip[4];
-    uint8_t dst_mac[6];
-    uint8_t dst_ip[4];
-} __attribute__((packed)) ARP_Packet;
 
 #endif

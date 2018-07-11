@@ -142,11 +142,12 @@ PRIVATE void* virtio_setupqueue(virtio_state_t *state, int idx, int entcnt);
 
 PRIVATE void virtio_notify(virtio_state_t *state, int idx);
 
-PRIVATE void virtio_addresponse(virtio_state_t *state, int idx, void *buf, int len);
+PRIVATE void virtio_addresponse(virtio_state_t *state, int idx, void *buf, int len, void (*resp_handler)(virtio_virtq_cmd_state_t*));
 
 PRIVATE void virtio_postcmd_noresp(virtio_state_t *state, int idx, void *cmd, int len, void (*resp_handler)(virtio_virtq_cmd_state_t*));
 
 PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t*));
 
 PRIVATE void virtio_accept_used(virtio_state_t *state, int idx);
+
 #endif

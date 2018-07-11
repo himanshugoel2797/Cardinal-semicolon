@@ -45,8 +45,7 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
             pci_cap_header_t *capEntry = (pci_cap_header_t*)(pci_base + ptr);
 
             if(capEntry->capID == pci_cap_msi || capEntry->capID == pci_cap_msix) {
-                DEBUG_PRINT("MSIX\r\n");
-
+                
                 //interrupt setup
                 int int_cnt = 0;
                 int msi_val = pci_getmsiinfo(device, &int_cnt);
@@ -156,7 +155,7 @@ PRIVATE void virtio_notify(virtio_state_t *state, int idx) {
         = (uint16_t)idx;
 }
 
-PRIVATE void virtio_addresponse(virtio_state_t *state, int idx, void *buf, int len) {
+PRIVATE void virtio_addresponse(virtio_state_t *state, int idx, void *buf, int len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
     state->common_cfg->queue_select = (uint16_t)idx;
     int q_len = state->common_cfg->queue_size;
 
@@ -175,7 +174,7 @@ PRIVATE void virtio_addresponse(virtio_state_t *state, int idx, void *buf, int l
     state->cmds[idx][cur_desc_idx].finished = false;
     state->cmds[idx][cur_desc_idx].q = idx;
     state->cmds[idx][cur_desc_idx].idx = cur_desc_idx;
-    state->cmds[idx][cur_desc_idx].handler = NULL;
+    state->cmds[idx][cur_desc_idx].handler = resp_handler;
 
     //Fill a descriptor with the cmd and update the available ring
     //Fill a descriptor with the response and update the available ring
@@ -207,9 +206,6 @@ PRIVATE void virtio_postcmd_noresp(virtio_state_t *state, int idx, void *cmd, in
     virtq_used_t *used = (virtq_used_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_used, q_len * 8 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     //avails->flags = 1;
 
-    if(used->idx == 0)
-        DEBUG_PRINT("Z\r\n");
-
     int cur_desc_idx = state->avail_idx[idx];
     state->avail_idx[idx] = (state->avail_idx[idx] + 1) % q_len;
 
@@ -238,7 +234,6 @@ PRIVATE void virtio_postcmd_noresp(virtio_state_t *state, int idx, void *cmd, in
     descs[cur_desc_idx].len = (uint32_t)len;
     descs[cur_desc_idx].flags = 0;
     descs[cur_desc_idx].addr = cmd_phys;
-    //__asm__("cli\n\thlt" :: "a"(used->idx), "b"(len));
 
     avails->ring[avails->idx % q_len] = cur_desc_idx;
     avails->idx ++;
@@ -303,7 +298,7 @@ PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, 
     avails->idx ++;
 }
 
-void virtio_accept_used(virtio_state_t *state, int idx) {
+PRIVATE void virtio_accept_used(virtio_state_t *state, int idx) {
     state->common_cfg->queue_select = (uint16_t)idx;
     int q_len = state->common_cfg->queue_size;
 
@@ -313,6 +308,17 @@ void virtio_accept_used(virtio_state_t *state, int idx) {
     do {
         for(int i = state->used_idx[idx]; i != d_idx; i++) {
             int r_id = descs->ring[i % q_len].id;
+
+            /*{
+                char tmp[10];
+                DEBUG_PRINT("IDX: ");
+                DEBUG_PRINT(itoa(idx, tmp, 10));
+                DEBUG_PRINT(" USED INDEX: ");
+                DEBUG_PRINT(itoa(r_id, tmp, 16));
+                DEBUG_PRINT(" DIDEX: ");
+                DEBUG_PRINT(itoa(d_idx, tmp, 16));
+                DEBUG_PRINT("\r\n");
+            }*/
 
             state->cmds[idx][r_id].waiting = false;
             if(state->cmds[idx][r_id].handler != NULL)

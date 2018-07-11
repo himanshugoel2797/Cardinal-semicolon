@@ -45,7 +45,9 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
     if(tasktype == cs_task_type_process) {
         //Create the process address space and add it to the list
         process_desc_t *proc_info = malloc(sizeof(process_desc_t));
-        DEBUG_PRINT("PROCESS CREATED\r\n");
+        DEBUG_PRINT("Process Created: ");
+        DEBUG_PRINT(name);
+        DEBUG_PRINT("\r\n");
         if(proc_info == NULL) {
             free(proc_info);
             return CS_OUTOFMEM;
