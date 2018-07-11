@@ -1,5 +1,5 @@
 // Copyright (c) 2018 Himanshu Goel
-// 
+//
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
@@ -26,13 +26,13 @@ typedef struct {
 } virtio_net_cfg_t;
 
 typedef struct {
-    #define VIRTIO_NET_HDR_F_NEEDS_CSUM 1
+#define VIRTIO_NET_HDR_F_NEEDS_CSUM 1
     uint8_t flags;
-    #define VIRTIO_NET_GSO_NONE 0
-    #define VIRTIO_NET_GSO_TCPV4 1
-    #define VIRTIO_NET_GSO_UDP 3
-    #define VIRTIO_NET_GSO_TCPV6 4
-    #define VIRTIO_NET_GSO_ECN 0x80
+#define VIRTIO_NET_GSO_NONE 0
+#define VIRTIO_NET_GSO_TCPV4 1
+#define VIRTIO_NET_GSO_UDP 3
+#define VIRTIO_NET_GSO_TCPV6 4
+#define VIRTIO_NET_GSO_ECN 0x80
     uint8_t gso_type;
     uint16_t hdr_len;
     uint16_t gso_sz;

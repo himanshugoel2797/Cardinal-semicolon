@@ -45,7 +45,7 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
             pci_cap_header_t *capEntry = (pci_cap_header_t*)(pci_base + ptr);
 
             if(capEntry->capID == pci_cap_msi || capEntry->capID == pci_cap_msix) {
-                
+
                 //interrupt setup
                 int int_cnt = 0;
                 int msi_val = pci_getmsiinfo(device, &int_cnt);

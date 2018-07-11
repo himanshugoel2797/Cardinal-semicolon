@@ -39,7 +39,7 @@ static void virtio_task_handler(void *arg) {
         while(virtio_signalled) {
             local_spinlock_lock(&virtio_queue_avl);
             virtio_signalled = false;
-            
+
             DEBUG_PRINT("VirtioNet Interrupt!\r\n");
 
             //acknowledge transmitted packets
@@ -69,7 +69,7 @@ static void virtio_net_resphandler(virtio_virtq_cmd_state_t *cmd) {
     sti(state);
 }
 
-int virtio_net_sendpacket(void *state, void *packet, int len, network_device_tx_flags_t gso){
+int virtio_net_sendpacket(void *state, void *packet, int len, network_device_tx_flags_t gso) {
     gso = 0;
 
     virtio_net_driver_state_t *device = (virtio_net_driver_state_t*)state;
@@ -92,7 +92,7 @@ int virtio_net_sendpacket(void *state, void *packet, int len, network_device_tx_
     return 0;
 }
 
-int virtio_net_linkstatus(void *state){
+int virtio_net_linkstatus(void *state) {
     virtio_net_driver_state_t *device = (virtio_net_driver_state_t*)state;
     return device->cfg->status == VIRTIO_NET_S_LINK_UP;
 }
@@ -121,7 +121,7 @@ int module_init(void *ecam) {
     if(ss_err != CS_OK)
         PANIC("VIRTIO_NET_ERR1");
 
-    for(int i = 0; i < VIRTIO_NET_QUEUE_CNT; i++){
+    for(int i = 0; i < VIRTIO_NET_QUEUE_CNT; i++) {
         device.qstate[i] = malloc(sizeof(virtio_virtq_cmd_state_t) * VIRTIO_NET_QUEUE_LEN);
         device.avail_idx[i] = 0;
         device.used_idx[i] = 0;
@@ -131,7 +131,7 @@ int module_init(void *ecam) {
 
     uint32_t features = virtio_getfeatures(device.common_state, 0);
 
-    if(features & VIRTIO_NET_F_CSUM){
+    if(features & VIRTIO_NET_F_CSUM) {
         device.checksum_offload = true;
         device_desc.features |= network_device_features_checksum_offload;
     }
@@ -160,7 +160,7 @@ int module_init(void *ecam) {
     //Allocate tx buffer
     device.tx_buf_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
     device.tx_buf_virt = (uint8_t*)vmem_phystovirt((intptr_t)device.tx_buf_phys, VIRTIO_NET_QUEUE_LEN * KiB(2), vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
-    
+
     //register as a network device
     for(int i = 0; i < 6; i++)
         device_desc.mac[i] = device.cfg->mac[i];
@@ -194,7 +194,7 @@ int module_init(void *ecam) {
 
     for(int i = 0; i < 4; i++)
         packet->src_ip[i] = 0;
-    
+
     for(int i = 0; i < 6; i++)
         packet->dst_mac[i] = 0x00;
 

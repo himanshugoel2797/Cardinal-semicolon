@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -40,7 +40,7 @@ static uint16_t udp_ipv4_verify_csum(ipv4_t *packet, udp_t *udp) {
 int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int len) {
     udp_t *udp = (udp_t*)packet->body;
 
-    if((udp_ipv4_verify_csum(packet, udp) == 0) | (udp->csum == 0)){
+    if((udp_ipv4_verify_csum(packet, udp) == 0) | (udp->csum == 0)) {
         DEBUG_PRINT("UDP!!\r\n");
         //From here, the packet gets queued into the udp port
     }
@@ -84,7 +84,7 @@ static uint16_t udp_ipv6_verify_csum(ipv6_t *packet, udp_t *udp) {
 int udp_ipv6_rx(interface_def_t *interface, ipv6_t *packet, int len) {
     udp_t *udp = (udp_t*)packet->body;
 
-    if((udp_ipv6_verify_csum(packet, udp) == 0) | (udp->csum == 0)){
+    if((udp_ipv6_verify_csum(packet, udp) == 0) | (udp->csum == 0)) {
         DEBUG_PRINT("UDPv6!!\r\n");
         //From here, the packet gets queued into the udp port
     }

@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -17,7 +17,7 @@ uint16_t ipv4_verify_csum(ipv4_t *packet) {
     for(uint32_t i = 0; i < sizeof(ipv4_t) / sizeof(uint16_t); i++)
         csum += TO_LE_FRM_BE_16(packet_ptr[i]);
 
-    while(csum > 0xffff){
+    while(csum > 0xffff) {
         csum = (csum & 0xffff) + (csum >> 16);
     }
 
@@ -31,13 +31,13 @@ int ipv4_rx(interface_def_t *interface, void *packet, int len) {
         if (ip_pack->protocol == IP_PROTOCOL_ICMP) {
             //TODO: Forward to ICMP layer
             DEBUG_PRINT("ICMP\r\n");
-        }else if (ip_pack->protocol == IP_PROTOCOL_TCP) {
+        } else if (ip_pack->protocol == IP_PROTOCOL_TCP) {
             //TODO: Forward to TCP layer
             DEBUG_PRINT("TCP\r\n");
-        }else if (ip_pack->protocol == IP_PROTOCOL_UDP) {
+        } else if (ip_pack->protocol == IP_PROTOCOL_UDP) {
             //Forward to UDP layer
             udp_ipv4_rx(interface, ip_pack, len - sizeof(ipv4_t));
-        }else{
+        } else {
             //TODO: Queue this packet into the raw queue, for potential user mode processing
         }
     }
@@ -51,15 +51,15 @@ int ipv6_rx(interface_def_t *interface, void *packet, int len) {
     if (ip_pack->protocol == IP_PROTOCOL_ICMP) {
         //TODO: Forward to ICMP layer
         DEBUG_PRINT("ICMPv6\r\n");
-    }else if (ip_pack->protocol == IP_PROTOCOL_TCP) {
+    } else if (ip_pack->protocol == IP_PROTOCOL_TCP) {
         //TODO: Forward to TCP layer
         DEBUG_PRINT("TCPv6\r\n");
-    }else if (ip_pack->protocol == IP_PROTOCOL_UDP) {
+    } else if (ip_pack->protocol == IP_PROTOCOL_UDP) {
         //Forward to UDP layer
         udp_ipv6_rx(interface, ip_pack, len - sizeof(ipv6_t));
-    }else{
+    } else {
         //TODO: Queue this packet into the raw queue, for potential user mode processing
     }
-    
+
     return 0;
 }

@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -21,7 +21,7 @@ int ethernet_rx(interface_def_t *interface, void *packet, int len) {
 
     bool mac_match = true;
     bool broadcast = true;
-    for(int i = 0; i < 6; i++){
+    for(int i = 0; i < 6; i++) {
         if(ether->dst_mac[i] != interface->mac[i])
             mac_match = false;
 
@@ -34,10 +34,10 @@ int ethernet_rx(interface_def_t *interface, void *packet, int len) {
         if(ether->type == ETHERNET_TYPE_ARP) {
             //Forward to the arp layer
             arp_rx(interface, ether->body, len - sizeof(ethernet_frame_t));
-        }else if(ether->type == ETHERNET_TYPE_IPv4) {
+        } else if(ether->type == ETHERNET_TYPE_IPv4) {
             //Forward to the ipv4 layer
             ipv4_rx(interface, ether->body, len - sizeof(ethernet_frame_t));
-        }else if(ether->type == ETHERNET_TYPE_IPv6) {
+        } else if(ether->type == ETHERNET_TYPE_IPv6) {
             //Forward to the ipv6 layer
             ipv6_rx(interface, ether->body, len - sizeof(ethernet_frame_t));
         }

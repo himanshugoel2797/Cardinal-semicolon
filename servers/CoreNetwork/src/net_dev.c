@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -24,7 +24,7 @@ static int rx_packets_lock = 0;
 
 static int devIDs[network_device_type_count];
 
-PRIVATE int network_init(void){
+PRIVATE int network_init(void) {
     list_init(&dev_list);
     list_init(&interface_list);
     list_init(&rx_packets);
@@ -64,7 +64,7 @@ int network_register(network_device_desc_t *desc, void **network_handle) {
             def->mac[i] = mac[i];
 
         *network_handle = def;
-    
+
         list_append(&interface_list, def);
     }
     local_spinlock_unlock(&interface_list_lock);
@@ -74,16 +74,16 @@ int network_register(network_device_desc_t *desc, void **network_handle) {
 
 int network_rx_packet(void *interface_handle, void *packet, int len) {
     interface_def_t *def = (interface_def_t*)interface_handle;
-    
+
     //Process this packet
     switch(def->type) {
-        case network_device_type_ethernet:
-            return ethernet_rx(def, packet, len);
-        case network_device_type_wifi:
-            return wifi_rx(def, packet, len);
-        default:
-            DEBUG_PRINT("CoreNetwork: Network RX device type unknown.\r\n");
-            return -1;
+    case network_device_type_ethernet:
+        return ethernet_rx(def, packet, len);
+    case network_device_type_wifi:
+        return wifi_rx(def, packet, len);
+    default:
+        DEBUG_PRINT("CoreNetwork: Network RX device type unknown.\r\n");
+        return -1;
     }
 
     return 0;
