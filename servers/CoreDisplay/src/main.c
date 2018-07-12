@@ -64,7 +64,7 @@ int coredisplay_postinit() {
     local_spinlock_unlock(&display_list_lock);
 
     if(len == 0) {
-        //TODO: Load the lfb driver
+        //Load the lfb driver
         if(module_load("./lfb.celf") != 0)
             PANIC("No framebuffer available!\r\n");
     }

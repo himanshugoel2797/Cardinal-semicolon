@@ -102,7 +102,7 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         thread_info->permissions = perms;
         thread_info->signalmask = 0xffffffff;
         thread_info->lock = 0;
-        thread_info->pid = (tasktype == cs_task_type_thread) ? core_descs->cur_task->pid : alloc_id;    //TODO: add this to the current process, unless it's an new process
+        thread_info->pid = (tasktype == cs_task_type_thread) ? core_descs->cur_task->pid : alloc_id;    //add this to the current process, unless it's an new process
         thread_info->id = alloc_id;
 
         //Allocate the kernel level stack

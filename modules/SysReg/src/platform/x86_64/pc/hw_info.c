@@ -8,7 +8,7 @@
 
 PRIVATE int add_cpuid();
 
-// TODO: parse and place CPUID information
+// parse and place CPUID information
 int add_platform_info() {
     int retVal = add_cpuid();
     if (retVal != 0)

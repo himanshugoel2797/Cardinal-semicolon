@@ -146,7 +146,6 @@ int elf_installkernelsymbols() {
     memcpy(shdr_cp, (uint8_t *)bInfo->elf_shdr_addr,
            bInfo->elf_shdr_num * sizeof(Elf64_Shdr));
 
-    //TODO: Verify that this is correct behavior on other machine
     for (uint32_t i = 0; i < bInfo->elf_shdr_num; i++) {
         shdr_cp[i].sh_addr += 0xffffffff80000000;
 

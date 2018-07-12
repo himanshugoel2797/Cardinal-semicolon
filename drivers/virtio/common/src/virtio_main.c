@@ -31,7 +31,6 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
 
     int msi_vector = 0;
 
-    //TODO: install msi interrupt servicing
     //traverse capabilities
     if(device->capabilitiesPtr != 0) {
         uint8_t ptr = device->capabilitiesPtr;
@@ -82,6 +81,7 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
     n_state->common_cfg->device_status = 0;
 
     //interrupt setup
+    //install msi interrupt servicing
     int int_cnt = 0;
     int msi_val = pci_getmsiinfo(device, &int_cnt);
 

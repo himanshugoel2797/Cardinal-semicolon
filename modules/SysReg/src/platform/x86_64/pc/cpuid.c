@@ -259,7 +259,7 @@ int add_cpuid() {
             return -1;
     }
 
-    // TODO: Determine initial cache parameters to configure the page allocator
+    // Determine initial cache parameters to configure the page allocator
     {
         uint32_t cache_idx = 0, cache_type, cache_level, apic_id_cnt, thread_cnt,
                  line_size, associativity, partition_cnt, set_cnt;
@@ -375,13 +375,5 @@ int add_cpuid() {
 
     }
 
-    // TODO: Setup proper IDT and GDT
-
-    // TODO: Come back after virtual memory and physical memory have been
-    // initialized
-
-    // TODO: Parse ACPI tables
-
-    // TODO: Parse PCI device tree
     return 0;
 }

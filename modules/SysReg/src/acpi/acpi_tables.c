@@ -268,10 +268,5 @@ int acpi_init() {
         }
     }
 
-    {
-        //TODO: This info goes into the PCI table
-        MCFG* mcfg = ACPITables_FindTable(MCFG_SIG);
-    }
-
     return 0;
 }
