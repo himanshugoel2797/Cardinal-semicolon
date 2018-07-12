@@ -13,7 +13,7 @@
 
 #include <cardinal/local_spinlock.h>
 
-#define BOOTSTRAP_ALLOC_AREA_SIZE (MiB(16))
+#define BOOTSTRAP_ALLOC_AREA_SIZE (MiB(256))
 
 static uint8_t bootstrap_alloc_area[BOOTSTRAP_ALLOC_AREA_SIZE];
 static uint64_t bootstrap_alloc_pos = 0;
@@ -108,6 +108,8 @@ int kernel_updatememhandlers() {
     free_hndl = (void (*)(void *))elf_resolvefunction("free");
     if (free_hndl == free)
         free_hndl = NULL;
+
+    //TODO: Provide a way for the remaining bootstrap region to be free'd
 
     return 0;
 }

@@ -227,6 +227,8 @@ int pagealloc_init() {
 
     // Compute the number of bits
     int32_t btm_sz = roundUp_po2(mem_size, BTM_LEVEL) / BTM_LEVEL;
+    //TODO: queue size becomes large with memory size increase, figure out how to keep it manageable
+    //TODO: also fix memsize calculation so it reflects usable memory size, rather than address space size
 
     // Allocate the blocks
     if (queue_init(&btm_level,
