@@ -494,6 +494,9 @@ intptr_t vmem_phystovirt(intptr_t phys, size_t sz, int flags) {
             return (phys + KERN_PHYSMAP_BASE_UC);
     }
 
+
+    char tmp[16];
+    DEBUG_PRINT(ltoa(phys, tmp, 16));
     PANIC("Invalid Address Detected!");
     return phys;
 }

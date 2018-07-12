@@ -63,16 +63,15 @@ PRIVATE void apic_timer_sethandler(timer_handlers_t *state, void (*handler)(int)
 
 static bool apic_init_done = false;
 PRIVATE int apic_timer_init() {
-    local_apic_timer_init(false, apic_handler, apic_init_done);
+
 
     if(apic_state == NULL) {
         apic_state = (TLS tls_apic_timer_state_t*)mp_tls_get(mp_tls_alloc(sizeof(tls_apic_timer_state_t)));
 
         {
-            timer_handlers_t main_counter;
+            timer_handlers_t main_counter = { .name = "apic_local"};
             timer_features_t main_features = timer_features_persistent | timer_features_oneshot | timer_features_periodic | timer_features_local;
 
-            strncpy(main_counter.name, "apic_local", 16);
             main_counter.rate = 20000;   //0.05ms
             main_counter.read = NULL;
             main_counter.write = NULL;
@@ -83,12 +82,15 @@ PRIVATE int apic_timer_init() {
             timer_register(main_features, &main_counter);
         }
     }
+    
 
     apic_state->tsc_mode = false;
     apic_state->enabled = false;
     apic_state->oneshot = false;
     apic_state->handler = NULL;
 
+    local_apic_timer_init(false, apic_handler, apic_init_done);
+    
     apic_init_done = true;
     return 0;
 }

@@ -31,8 +31,9 @@ PRIVATE bool use_tsc() {
     uint64_t apic_freq = 0;
     if(registry_readkey_uint("HW/PROC", "APIC_FREQ", &apic_freq) != registry_err_ok)
         return false;
-
-    return (tsc_valid && tsc_deadline && tsc_invar && tsc_freq != 0 && apic_freq != 0);
+    
+    return true;
+    //return (tsc_valid && tsc_deadline && tsc_invar && tsc_freq != 0 && apic_freq != 0);
 }
 
 PRIVATE uint64_t tsc_read(timer_handlers_t *handlers) {
@@ -52,13 +53,13 @@ PRIVATE int tsc_init() {
 
     //Add the tsc as a counter
     {
-        timer_handlers_t main_counter;
+        timer_handlers_t main_counter = { .name = "tsc" };
         timer_features_t main_features = timer_features_persistent | timer_features_counter | timer_features_read;
 
         if(registry_readkey_uint("HW/PROC", "TSC_FREQ", &main_counter.rate) != registry_err_ok)
             return -1;
 
-        strncpy(main_counter.name, "tsc", 16);
+        //strncpy(main_counter.name, "tsc", 16);
         main_counter.read = tsc_read;
         main_counter.write = NULL;
         main_counter.set_mode = NULL;

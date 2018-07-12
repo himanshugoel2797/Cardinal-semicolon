@@ -1,4 +1,5 @@
 ./VirtioGpu.celf|1AF4|1050|FFFF|FFFF|FFFF
+./VirtioNet.celf|1AF4|1041|FFFF|FFFF|FFFF
 ./VirtioNet.celf|1AF4|1000|FFFF|FFFF|FFFF
 ./HDAudio.celf|8086|293e|FFFF|FFFF|FFFF
 ./HDAudio.celf|8086|0a0c|FFFF|FFFF|FFFF

@@ -70,7 +70,7 @@ int module_init(void) {
     display_register(&display_config);
 
     uint32_t *addr = (uint32_t*)vmem_phystovirt((intptr_t)fbuf_phys_addr, pitch * height, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-    memset(addr, 0xff, pitch * height);
+    //memset(addr, 0xff, pitch * height);
 
     return 0;
 }

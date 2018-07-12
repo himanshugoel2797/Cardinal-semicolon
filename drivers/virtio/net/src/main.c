@@ -137,7 +137,7 @@ int module_init(void *ecam) {
         device_desc.features |= network_device_features_checksum_offload;
     }
 
-    virtio_setfeatures(device.common_state, VIRTIO_NET_F_STATUS | VIRTIO_NET_F_MAC | (device.checksum_offload ? VIRTIO_NET_F_CSUM : 0), 0);
+    virtio_setfeatures(device.common_state, 0, VIRTIO_NET_F_STATUS | VIRTIO_NET_F_MAC | (device.checksum_offload ? VIRTIO_NET_F_CSUM : 0));
 
     if(!virtio_features_ok(device.common_state))
         return -1;

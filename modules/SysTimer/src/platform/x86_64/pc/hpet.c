@@ -150,7 +150,6 @@ PRIVATE void hpet_timer_handler(int irq) {
             hpet->InterruptStatus = (1u << i);
         }
     }
-    DEBUG_PRINT("HPET\r\n");
 }
 
 PRIVATE int hpet_getcount() {
@@ -184,12 +183,11 @@ PRIVATE int hpet_init() {
 
     //Register main counter
     {
-        timer_handlers_t main_counter;
+        timer_handlers_t main_counter = { .name = "hpet_main" };
         timer_features_t main_features = common_features;
 
         main_features |= timer_features_counter | timer_features_write;
 
-        strncpy(main_counter.name, "hpet_main", 16);
         main_counter.rate = base_addr->Capabilities.ClockPeriod;
         main_counter.state = (uint64_t)base_addr;
         main_counter.read = hpet_main_read;
@@ -269,8 +267,6 @@ PRIVATE int hpet_init() {
         }
     }
 
-    while(true)
-        ;
     //Enable the counter
     base_addr->Configuration.GlobalEnable = 0;
 

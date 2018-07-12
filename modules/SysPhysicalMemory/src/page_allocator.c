@@ -111,6 +111,15 @@ static void insert_queue(uint64_t val) {
     }
 }
 
+static void insert_queue_front(uint64_t val) {
+    if (!queue_tryenqueue_front(&btm_level, val)) {
+        compact_queue();
+
+        if (!queue_tryenqueue_front(&btm_level, val))
+            PANIC("Failed to enqueue entry.");
+    }
+}
+
 void pagealloc_free(uintptr_t addr, uint64_t size) {
 
     if (addr % BTM_LEVEL != 0)
@@ -119,22 +128,22 @@ void pagealloc_free(uintptr_t addr, uint64_t size) {
     if (size % BTM_LEVEL != 0)
         PANIC("Misaligned size");
 
-    int32_t page_cnt = size / BTM_LEVEL;
+    uint64_t page_cnt = size / BTM_LEVEL;
     free_mem += size;
 
 //#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
     {
         char tmp_buf[10];
         DEBUG_PRINT("SysPhysicalMemory: Free addr=");
-        DEBUG_PRINT(itoa((int)addr, tmp_buf, 16));
+        DEBUG_PRINT(ltoa(addr, tmp_buf, 16));
         DEBUG_PRINT(" size=");
-        DEBUG_PRINT(itoa((int)size, tmp_buf, 16));
+        DEBUG_PRINT(ltoa(size, tmp_buf, 16));
         DEBUG_PRINT("\r\n");
     }
 //#endif
 
-    for (int32_t pg_0 = 0; pg_0 < page_cnt; pg_0 += MAX_ENTRIES) {
-        int32_t cur_pg = 0;
+    for (uint64_t pg_0 = 0; pg_0 < page_cnt; pg_0 += MAX_ENTRIES) {
+        uint64_t cur_pg = 0;
         if (page_cnt - pg_0 >= MAX_ENTRIES)
             cur_pg = MAX_ENTRIES;
         else
@@ -173,12 +182,19 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
             if (queue_trydequeue(&btm_level, &deq) == false)
                 PANIC("Out of Memory!");
 
+            {
+                    char tmp_buf[10];
+                    DEBUG_PRINT("SysPhysicalMemory: Deq=");
+                    DEBUG_PRINT(ltoa(deq, tmp_buf, 16));
+                    DEBUG_PRINT("\r\n");
+            }
+
             if ((int32_t)GET_PG_CNT(deq) >= pg_cnt) {
                 uint64_t ret_addr = GET_ADDR(deq);
                 uint64_t n_addr = ret_addr + pg_cnt * BTM_LEVEL;
                 int32_t n_pg_cnt = GET_PG_CNT(deq) - pg_cnt;
                 if (n_pg_cnt > 0)
-                    insert_queue(BUILD_ENTRY(n_addr, n_pg_cnt));
+                    insert_queue_front(BUILD_ENTRY(n_addr, n_pg_cnt));
 
                 free_mem -= size;
 
@@ -186,13 +202,14 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
                 {
                     char tmp_buf[10];
                     DEBUG_PRINT("SysPhysicalMemory: Allocated addr=");
-                    DEBUG_PRINT(itoa((int)ret_addr, tmp_buf, 16));
+                    DEBUG_PRINT(ltoa(ret_addr, tmp_buf, 16));
                     DEBUG_PRINT("\r\n");
                 }
 //#endif
 
                 return ret_addr;
-            }
+            }else
+                insert_queue(deq);
         }
         compact_queue();
     }
@@ -249,7 +266,7 @@ int pagealloc_init() {
             {
                 char tmp_buf[10];
                 DEBUG_PRINT("SysPhysicalMemory: Free zones, addr=");
-                DEBUG_PRINT(itoa((int)addr, tmp_buf, 16));
+                DEBUG_PRINT(ltoa(addr, tmp_buf, 16));
                 DEBUG_PRINT(" len=");
                 DEBUG_PRINT(itoa((int)len, tmp_buf, 16));
                 DEBUG_PRINT("\r\n");

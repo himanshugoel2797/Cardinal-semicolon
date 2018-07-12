@@ -435,11 +435,12 @@ int module_init(void *ecam) {
     device.resource_ids = 1;
 
     uint32_t features = virtio_getfeatures(device.common_state, 0);
+    
     device.virgl_mode = false;
     if(features & VIRTIO_GPU_F_VIRGL) {
         DEBUG_PRINT("VirGL Support Enabled.\r\n");
         device.virgl_mode = true;
-        virtio_setfeatures(device.common_state, VIRTIO_GPU_F_VIRGL, 0);
+        virtio_setfeatures(device.common_state, 0, VIRTIO_GPU_F_VIRGL);
     } else
         virtio_setfeatures(device.common_state, 0, 0);
 

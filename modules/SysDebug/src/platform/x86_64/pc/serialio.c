@@ -1,5 +1,8 @@
 #include "serialio.h"
 #include "elf.h"
+#include "boot_information.h"
+
+#include "font.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -20,6 +23,13 @@
 #define SET_RED_BG "\e[41m"
 #define SET_WHITE_BG "\e[47m"
 #define SET_GREEN_BG "\e[42m"
+
+static uint32_t *fbuf = NULL;
+static int stride;
+static int char_pos = 0;
+static int char_pos_limit = 0;
+static int line = 0;
+static int line_limit = 0;
 
 int kernel_updatetraphandlers();
 
@@ -51,13 +61,38 @@ static inline char serial_input() {
     return c;
 }
 
+static void render_char(char c) {
+    int x = 0;
+    int y = 0;
+    char *bitmap = font8x8_basic[(int)c];
+    //memset(fbuf, 0xff, stride * 500);
+    for (; x < 8; x++) {
+        for (y=0; y < 8; y++) {
+            bool set = bitmap[y] & 1 << x;
+            fbuf[ (y + line * 10) * stride / sizeof(uint32_t) + x + 8 * char_pos] = set ? 0xff0000ff : 0xffffffff;
+        }
+    }
+    char_pos = (char_pos + 1) % char_pos_limit;
+}
+
+int sysdebug_install_lfb(){
+
+    CardinalBootInfo *b_info = GetBootInfo();
+    fbuf = (uint32_t*)(b_info->FramebufferAddress + 0xffff808000000000);
+    stride = b_info->FramebufferPitch;
+    char_pos_limit = b_info->FramebufferWidth / 8;
+    line_limit = b_info->FramebufferHeight / 10;
+
+    return 0;
+}
+
 void print_stream(void (*output_stream)(char) NONNULL,
                   const char *str NONNULL) {
-    int state = cli();
-    while (*str != 0)
+    while (*str != 0){
+        if(fbuf != NULL)
+            render_char(*str);
         output_stream(*(str++));
-
-    sti(state);
+    }
 }
 
 static char priv_s[2048];
@@ -68,9 +103,20 @@ int WEAK debug_handle_trap() {
     return 0;
 }
 int WEAK print_str(const char *s) {
+    int state = cli();
     print_stream(serial_output, SET_RED_BG SET_WHITE_FG);
     print_stream(serial_output, s);
     print_stream(serial_output, SET_BLACK_BG SET_WHITE_FG);
+    
+    if(fbuf != NULL){
+        line = (line + 1) % line_limit;
+        char_pos = 0;
+
+        if(line == 0)
+            memset(fbuf, 0, stride * line_limit * 10);
+    }
+
+    sti(state);
     return 0;
 }
 

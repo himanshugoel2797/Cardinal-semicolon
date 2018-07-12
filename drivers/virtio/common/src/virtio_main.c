@@ -15,10 +15,6 @@
 #include "pci/pci.h"
 #include "virtio.h"
 
-void tmp_handler(int i) {
-    i = 0;
-}
-
 PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds, int *avail_idx, int *used_idx) {
     pci_config_t *device = (pci_config_t*)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
@@ -43,21 +39,8 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
 
         do {
             pci_cap_header_t *capEntry = (pci_cap_header_t*)(pci_base + ptr);
-
-            if(capEntry->capID == pci_cap_msi || capEntry->capID == pci_cap_msix) {
-
-                //interrupt setup
-                int int_cnt = 0;
-                int msi_val = pci_getmsiinfo(device, &int_cnt);
-
-                interrupt_allocate(1, interrupt_flags_exclusive, &msi_vector);
-                interrupt_registerhandler(msi_vector, int_handler);
-
-                uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
-                uint32_t msi_msg = msi_register_data(msi_vector);
-                pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
-
-            } else if(capEntry->capID == pci_cap_vendor) {
+            
+            if(capEntry->capID == pci_cap_vendor) {
                 intptr_t bar_addr = 0;
 
                 virtio_pci_cap_t *vendorCap = (virtio_pci_cap_t*)capEntry;
@@ -95,12 +78,34 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
         } while(ptr != 0);
     }
 
+    //Reset the device
+    n_state->common_cfg->device_status = 0;
+
+    //interrupt setup
+    int int_cnt = 0;
+    int msi_val = pci_getmsiinfo(device, &int_cnt);
+
+    interrupt_allocate(1, interrupt_flags_exclusive, &msi_vector);
+    interrupt_registerhandler(msi_vector, int_handler);
+
+    uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
+    uint32_t msi_msg = msi_register_data(msi_vector);
+    pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
+
     //Set ack bit
     //Set driver bit
     n_state->common_cfg->device_status |= (ACKNOWLEDGE);
     n_state->common_cfg->device_status |= (DRIVER);
+    
     n_state->common_cfg->msix_config = 0;
 
+    n_state->common_cfg->device_feature_select = 1;
+    if(n_state->common_cfg->device_feature & 1){
+        n_state->common_cfg->driver_feature_select = 1;
+        n_state->common_cfg->driver_feature = 1;
+    }else {
+        DEBUG_PRINT("Legacy Virtio device!\r\n");
+    }
 
     return n_state;
 }
@@ -120,6 +125,7 @@ PRIVATE bool virtio_features_ok(virtio_state_t *state) {
     //set FEATURES_OK
     //re-read FEATURES_OK bit to confirm it was accepted
     state->common_cfg->device_status |= (FEATURES_OK);
+    //__asm__("cli\n\thlt" :: "a"((uint64_t)state->common_cfg->device_status));
     return state->common_cfg->device_status & (FEATURES_OK);
 }
 
@@ -274,25 +280,32 @@ PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, 
         state->cmds[idx][cur_desc_idx].cmd.phys = cmd_phys;
         state->cmds[idx][cur_desc_idx].cmd.len = len;
 
+
         state->cmds[idx][cur_desc_idx].resp.virt = resp;
         state->cmds[idx][cur_desc_idx].resp.phys = resp_phys;
         state->cmds[idx][cur_desc_idx].resp.len = response_len;
     }
 
-    descs[cur_desc_idx].addr = cmd_phys;
     descs[cur_desc_idx].len = (uint32_t)len;
     descs[cur_desc_idx].flags = 0;
     descs[cur_desc_idx].next = 0;
+
+    if(len == 0)
+        {
+            DEBUG_PRINT("SZ0\r\n");
+            __asm__("cli\n\thlt" :: "a"(len));
+        }
 
     if(response_len > 0) {
         descs[cur_desc_idx].flags = VIRTQ_DESC_F_NEXT;
         descs[cur_desc_idx].next = cur_desc_idx + 1;
 
-        descs[cur_desc_idx + 1].addr = resp_phys;
         descs[cur_desc_idx + 1].len = response_len;
         descs[cur_desc_idx + 1].flags = VIRTQ_DESC_F_WRITE;
         descs[cur_desc_idx + 1].next = 0;
+        descs[cur_desc_idx + 1].addr = resp_phys;
     }
+    descs[cur_desc_idx].addr = cmd_phys;
 
     avails->ring[avails->idx % q_len] = cur_desc_idx;
     avails->idx ++;

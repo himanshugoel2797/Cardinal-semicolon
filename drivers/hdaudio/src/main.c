@@ -119,7 +119,7 @@ int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node,
     //Allocate the cmd entry for this verb
     int idx = (instance->cfg_regs->corb.wp + 1) % instance->corb.entcnt;
     while(instance->cmds[idx].waiting && !instance->cmds[idx].handled)
-        DEBUG_PRINT("WAITING\r\n");
+        //DEBUG_PRINT("WAITING\r\n");
     ;
 
     instance->cmds[idx].waiting = true;
@@ -403,6 +403,9 @@ int module_init(void *ecam_addr) {
     //interrupt setup
     int int_cnt = 0;
     int msi_val = pci_getmsiinfo(device, &int_cnt);
+
+    if(msi_val < 0)
+        DEBUG_PRINT("NO MSI\r\n");
 
     int int_val = 0;
     interrupt_allocate(1, interrupt_flags_none, &int_val);

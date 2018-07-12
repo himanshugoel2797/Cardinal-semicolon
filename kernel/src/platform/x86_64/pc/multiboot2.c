@@ -60,6 +60,7 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
                 multiboot_memory_map_t *mmap_e =
                     (multiboot_memory_map_t *)((uint8_t *)mmap->entries + j);
                 bootInfo.MemorySize = mmap_e->addr + mmap_e->len;
+                
 
                 //Check the address range and insert a split if necessary
                 //Reserve everything below 2M
@@ -80,8 +81,10 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
                     if (mmap_e->addr + mmap_e->len < kernel_end_phys)
                         continue;   //Skip this entry
 
-                    mmap_e->addr += diff;
-                    mmap_e->len -= diff;
+                    if(mmap_e->addr < kernel_end_phys){
+                        mmap_e->addr += diff;
+                        mmap_e->len -= diff;
+                    }
                 }
 
                 map[mmap_entry].addr = mmap_e->addr;

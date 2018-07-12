@@ -27,6 +27,8 @@ int32_t queue_entcnt(queue_t *q);
 
 bool queue_tryenqueue(queue_t *q, uint64_t val);
 
+bool queue_tryenqueue_front(queue_t *q, uint64_t val);
+
 bool queue_trydequeue(queue_t *q, uint64_t *val);
 
 #endif

@@ -63,6 +63,27 @@ bool queue_tryenqueue(queue_t *q, uint64_t val) {
     return true;
 }
 
+bool queue_tryenqueue_front(queue_t *q, uint64_t val) {
+    if(q == NULL)
+        return false;
+
+    int32_t curTail = q->tail;
+    int32_t curHead = q->head;
+    if (curHead == (curTail + 1) % q->size)
+        return false;
+
+    if(curHead > 0)
+        q->head = (curHead - 1) % q->size;
+    else
+        q->head = (q->size - 1);
+
+    q->queue[q->head] = val;
+
+    q->ent_cnt++;
+
+    return true;
+}
+
 bool queue_trydequeue(queue_t *q, uint64_t *val) {
     if(q == NULL)
         return false;

@@ -22,12 +22,20 @@ int WEAK debug_handle_trap() {
     __asm__("cli\n\thlt");
     return 0;
 }
+
+int force_crash(){
+    uint32_t *ptr = (uint32_t*)(0xdeadbeefdeadbee0);
+    *ptr = 0xDEADBEEF;
+    return 0;
+}
+
 int WEAK print_str(const char *s) {
     if (print_str_handler != NULL)
         return print_str_handler(s);
 
-    while (*s != 0)
+    while (*s != 0){
         outb(0x3f8, *(s++));
+    }
 
     return 0;
 }
@@ -66,7 +74,7 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
 
     //Move initrd into allocated memory
     b_info->InitrdStartAddress += 0xffffffff80000000;
-    //b_info->FramebufferAddress += 0xffffffff80000000;
+
 
     uint64_t initrd_copy = (uint64_t)malloc(b_info->InitrdLength + 512);
     if(initrd_copy % 512 != 0)

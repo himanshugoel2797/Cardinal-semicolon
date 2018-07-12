@@ -8,13 +8,13 @@ LOAD:./SysInterrupts.celf
 LOAD:./SysMP.celf
 CALL:mp_tls_setup
 CALL:vmem_init
+CALL:sysdebug_install_lfb
 CALL:mem_init
 CALL:acpi_init
 CALL:pci_reg_init
 CALL:intr_init
 LOAD:./SysFP.celf
 LOAD:./SysTimer.celf
-CALL:mp_init
 CALL:fp_mp_init
 LOAD:./SysUser.celf
 LOAD:./SysTaskMgr.celf

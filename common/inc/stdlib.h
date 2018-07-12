@@ -13,6 +13,8 @@ void free(void *ptr);
 
 char *itoa(int val, char *dst, int base);
 
+char *ltoa(long long val, char *dst, int base);
+
 int atoi(const char * ptr, int base);
 
 #endif
