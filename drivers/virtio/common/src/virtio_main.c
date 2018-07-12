@@ -38,7 +38,7 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
 
         do {
             pci_cap_header_t *capEntry = (pci_cap_header_t*)(pci_base + ptr);
-            
+
             if(capEntry->capID == pci_cap_vendor) {
                 intptr_t bar_addr = 0;
 
@@ -96,14 +96,14 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
     //Set driver bit
     n_state->common_cfg->device_status |= (ACKNOWLEDGE);
     n_state->common_cfg->device_status |= (DRIVER);
-    
+
     n_state->common_cfg->msix_config = 0;
 
     n_state->common_cfg->device_feature_select = 1;
-    if(n_state->common_cfg->device_feature & 1){
+    if(n_state->common_cfg->device_feature & 1) {
         n_state->common_cfg->driver_feature_select = 1;
         n_state->common_cfg->driver_feature = 1;
-    }else {
+    } else {
         DEBUG_PRINT("Legacy Virtio device!\r\n");
     }
 
@@ -290,11 +290,10 @@ PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, 
     descs[cur_desc_idx].flags = 0;
     descs[cur_desc_idx].next = 0;
 
-    if(len == 0)
-        {
-            DEBUG_PRINT("SZ0\r\n");
-            __asm__("cli\n\thlt" :: "a"(len));
-        }
+    if(len == 0) {
+        DEBUG_PRINT("SZ0\r\n");
+        __asm__("cli\n\thlt" :: "a"(len));
+    }
 
     if(response_len > 0) {
         descs[cur_desc_idx].flags = VIRTQ_DESC_F_NEXT;

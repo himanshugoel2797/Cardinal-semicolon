@@ -42,7 +42,7 @@ static _Atomic int timer_wait_target = 0;
 static timer_defs_t* timer_wait_d = NULL;
 PRIVATE void timer_wait_handler(int irq) {
     irq = 0;
-    if(++timer_wait_count >= timer_wait_target){
+    if(++timer_wait_count >= timer_wait_target) {
         DEBUG_PRINT("Timer Wait Done\r\n");
         timer_wait_pending = 0;
     }
@@ -89,7 +89,7 @@ void timer_wait(uint64_t ns) {
     //Halt the cpu
     while(timer_wait_pending)
         halt();
-    
+
     t->handlers.set_enable(&t->handlers, false);
 
     timer_wait_d = NULL;

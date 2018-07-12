@@ -75,7 +75,7 @@ static void render_char(char c) {
     char_pos = (char_pos + 1) % char_pos_limit;
 }
 
-int sysdebug_install_lfb(){
+int sysdebug_install_lfb() {
 
     CardinalBootInfo *b_info = GetBootInfo();
     fbuf = (uint32_t*)(b_info->FramebufferAddress + 0xffff808000000000);
@@ -88,7 +88,7 @@ int sysdebug_install_lfb(){
 
 void print_stream(void (*output_stream)(char) NONNULL,
                   const char *str NONNULL) {
-    while (*str != 0){
+    while (*str != 0) {
         if(fbuf != NULL)
             render_char(*str);
         output_stream(*(str++));
@@ -107,10 +107,10 @@ int WEAK print_str(const char *s) {
     //print_stream(serial_output, SET_RED_BG SET_WHITE_FG);
     print_stream(serial_output, s);
     //print_stream(serial_output, SET_BLACK_BG SET_WHITE_FG);
-    
-    if(fbuf != NULL){
+
+    if(fbuf != NULL) {
         line = (line + 1) % line_limit;
-        
+
         char_pos = 0;
 
         if(line == 0)

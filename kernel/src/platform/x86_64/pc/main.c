@@ -23,7 +23,7 @@ int WEAK debug_handle_trap() {
     return 0;
 }
 
-int force_crash(){
+int force_crash() {
     uint32_t *ptr = (uint32_t*)(0xdeadbeefdeadbee0);
     *ptr = 0xDEADBEEF;
     return 0;
@@ -33,7 +33,7 @@ int WEAK print_str(const char *s) {
     if (print_str_handler != NULL)
         return print_str_handler(s);
 
-    while (*s != 0){
+    while (*s != 0) {
         outb(0x3f8, *(s++));
     }
 

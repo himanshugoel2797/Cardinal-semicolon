@@ -208,7 +208,7 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
 #endif
 
                 return ret_addr;
-            }else
+            } else
                 insert_queue(deq);
         }
         compact_queue();

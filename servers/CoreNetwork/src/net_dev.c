@@ -91,8 +91,7 @@ int network_rx_packet(void *interface_handle, void *packet, int len) {
     return 0;
 }
 
-int network_tx_packet(interface_def_t *interface, void *packet, int len, uint16_t protocol_type)
-{
+int network_tx_packet(interface_def_t *interface, void *packet, int len, uint16_t protocol_type) {
     //TODO: build a transmission frame around the packet based on the interface type and submit to the driver for transmission
     interface = NULL;
     packet = NULL;

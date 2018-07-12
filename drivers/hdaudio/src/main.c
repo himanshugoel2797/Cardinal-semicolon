@@ -120,7 +120,7 @@ int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node,
     int idx = (instance->cfg_regs->corb.wp + 1) % instance->corb.entcnt;
     while(instance->cmds[idx].waiting && !instance->cmds[idx].handled)
         //DEBUG_PRINT("WAITING\r\n");
-    ;
+        ;
 
     instance->cmds[idx].waiting = true;
     instance->cmds[idx].handled = false;
@@ -163,7 +163,7 @@ static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_
         instance->nodes[addr][node].starting_sub_node = (resp >> (16)) & 0xFF;
         instance->nodes[addr][node].sub_node_cnt = (resp) & 0xFF;
 
-        if(instance->nodes[addr][node].sub_node_cnt != 0){
+        if(instance->nodes[addr][node].sub_node_cnt != 0) {
             int max_node_id_l = instance->nodes[addr][node].starting_sub_node + instance->nodes[addr][node].sub_node_cnt;
             if(max_node_id_l > max_node_id)
                 max_node_id = max_node_id_l;
@@ -243,7 +243,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
 
     //bring the device out of reset
     instance->cfg_regs->sdiwake = 0xFFFF;
-    
+
     instance->cfg_regs->gctl.crst = 0;
     while(instance->cfg_regs->gctl.crst != 0)
         ;
@@ -260,7 +260,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
     instance->cfg_regs->sdiwen = 0xFFFF;
     instance->cfg_regs->intctl.cie = 1;
     instance->cfg_regs->intctl.gie = 1;
-    
+
 
     //Configure CORB
     instance->cfg_regs->corb.ctl.corbrun = 0;
@@ -269,7 +269,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
 
     instance->cfg_regs->corb.lower_base = (uint32_t)instance->corb.buffer_phys;
     instance->cfg_regs->corb.upper_base = (uint32_t)(instance->corb.buffer_phys >> 32);
-    
+
     DEBUG_PRINT("Codecs Enumerated!\r\n");
     {
         char tmp[10];

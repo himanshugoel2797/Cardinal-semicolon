@@ -82,7 +82,7 @@ PRIVATE int apic_timer_init() {
             timer_register(main_features, &main_counter);
         }
     }
-    
+
 
     apic_state->tsc_mode = false;
     apic_state->enabled = false;
@@ -90,7 +90,7 @@ PRIVATE int apic_timer_init() {
     apic_state->handler = NULL;
 
     local_apic_timer_init(false, apic_handler, apic_init_done);
-    
+
     apic_init_done = true;
     return 0;
 }

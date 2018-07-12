@@ -31,7 +31,7 @@ PRIVATE bool use_tsc() {
     uint64_t apic_freq = 0;
     if(registry_readkey_uint("HW/PROC", "APIC_FREQ", &apic_freq) != registry_err_ok)
         return false;
-    
+
     return true;
     //return (tsc_valid && tsc_deadline && tsc_invar && tsc_freq != 0 && apic_freq != 0);
 }
