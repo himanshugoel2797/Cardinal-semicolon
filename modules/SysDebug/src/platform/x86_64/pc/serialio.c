@@ -69,7 +69,7 @@ static void render_char(char c) {
     for (; x < 8; x++) {
         for (y=0; y < 8; y++) {
             bool set = bitmap[y] & 1 << x;
-            fbuf[ (y + line * 10) * stride / sizeof(uint32_t) + x + 8 * char_pos] = set ? 0xff0000ff : 0xffffffff;
+            fbuf[ (y + line * 10) * stride / sizeof(uint32_t) + x + 8 * char_pos] = set ? 0xffffffff : 0x0;
         }
     }
     char_pos = (char_pos + 1) % char_pos_limit;
@@ -104,16 +104,20 @@ int WEAK debug_handle_trap() {
 }
 int WEAK print_str(const char *s) {
     int state = cli();
-    print_stream(serial_output, SET_RED_BG SET_WHITE_FG);
+    //print_stream(serial_output, SET_RED_BG SET_WHITE_FG);
     print_stream(serial_output, s);
-    print_stream(serial_output, SET_BLACK_BG SET_WHITE_FG);
+    //print_stream(serial_output, SET_BLACK_BG SET_WHITE_FG);
     
     if(fbuf != NULL){
         line = (line + 1) % line_limit;
+        
         char_pos = 0;
 
         if(line == 0)
             memset(fbuf, 0, stride * line_limit * 10);
+
+        for(int i = 0; i < 5000000; i++)
+            ;
     }
 
     sti(state);

@@ -90,10 +90,10 @@ static void tmp_handler(int int_num) {
             } else if(instance->cmds[cmd_idx].handler != NULL) {
                 //Solicited response
 
-                /*char tmp[10];
+                char tmp[10];
                 DEBUG_PRINT("HANDLED: ");
                 DEBUG_PRINT(itoa(cmd_idx, tmp, 16));
-                DEBUG_PRINT("\r\n");*/
+                DEBUG_PRINT("\r\n");
 
                 instance->cmds[cmd_idx].waiting = false;
                 instance->cmds[cmd_idx].handler(instance, &instance->cmds[cmd_idx], instance->rirb.buffer[idx * 2]);
@@ -130,13 +130,16 @@ int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node,
     instance->cmds[idx].handler = handler;
 
     char tmp[10];
-    //DEBUG_PRINT("USED: ");
-    //DEBUG_PRINT(itoa(idx, tmp, 16));
-    //DEBUG_PRINT("\r\n");
+    DEBUG_PRINT("USED: ");
+    DEBUG_PRINT(itoa(idx, tmp, 16));
+    DEBUG_PRINT("\r\n");
 
     //Write the verb and queue it
     instance->corb.buffer[idx] = verb_val;
     instance->cfg_regs->corb.wp = (instance->cfg_regs->corb.wp + 1) & 0xFF;
+
+    while(instance->cfg_regs->corb.rp < instance->cfg_regs->corb.wp)
+        DEBUG_PRINT("HOLDING\r\n");
 
     return 0;
 }
@@ -160,9 +163,11 @@ static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_
         instance->nodes[addr][node].starting_sub_node = (resp >> (16)) & 0xFF;
         instance->nodes[addr][node].sub_node_cnt = (resp) & 0xFF;
 
-        int max_node_id_l = instance->nodes[addr][node].starting_sub_node + instance->nodes[addr][node].sub_node_cnt;
-        if(max_node_id_l > max_node_id)
-            max_node_id = max_node_id_l;
+        if(instance->nodes[addr][node].sub_node_cnt != 0){
+            int max_node_id_l = instance->nodes[addr][node].starting_sub_node + instance->nodes[addr][node].sub_node_cnt;
+            if(max_node_id_l > max_node_id)
+                max_node_id = max_node_id_l;
+        }
 
         char tmp[10];
         DEBUG_PRINT("Parent Node: ");
@@ -238,7 +243,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
 
     //bring the device out of reset
     instance->cfg_regs->sdiwake = 0xFFFF;
-
+    
     instance->cfg_regs->gctl.crst = 0;
     while(instance->cfg_regs->gctl.crst != 0)
         ;
@@ -249,14 +254,13 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
     //Wait for the codecs to request state changes
     while(instance->cfg_regs->sdiwake == 0)
         ;
-    DEBUG_PRINT("Codecs Enumerated!\r\n");
-
-    instance->cfg_regs->gctl.crst |= (1 << 8);
+    //instance->cfg_regs->gctl.crst |= (1 << 8);
 
     //Enable state change interrupts
     instance->cfg_regs->sdiwen = 0xFFFF;
     instance->cfg_regs->intctl.cie = 1;
     instance->cfg_regs->intctl.gie = 1;
+    
 
     //Configure CORB
     instance->cfg_regs->corb.ctl.corbrun = 0;
@@ -265,6 +269,12 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
 
     instance->cfg_regs->corb.lower_base = (uint32_t)instance->corb.buffer_phys;
     instance->cfg_regs->corb.upper_base = (uint32_t)(instance->corb.buffer_phys >> 32);
+    
+    DEBUG_PRINT("Codecs Enumerated!\r\n");
+    {
+        char tmp[10];
+        DEBUG_PRINT(itoa((int)instance->codecs, tmp, 16));
+    }
 
     {
         //Reset the CORB read pointer
@@ -305,7 +315,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
     //Build the device graph
     DEBUG_PRINT("HD Audio initialized, Enumerating nodes\r\n");
     max_node_id = 1;
-    for(int i = 0; i < 32; i++) {
+    for(int i = 0; i < 16; i++) {
         if(instance->codecs & (1u << i)) {
             instance->nodes[i] = malloc(sizeof(hdaudio_node_t) * 256);
 

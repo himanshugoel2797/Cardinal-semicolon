@@ -131,7 +131,7 @@ void pagealloc_free(uintptr_t addr, uint64_t size) {
     uint64_t page_cnt = size / BTM_LEVEL;
     free_mem += size;
 
-//#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
+#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
     {
         char tmp_buf[10];
         DEBUG_PRINT("SysPhysicalMemory: Free addr=");
@@ -140,7 +140,7 @@ void pagealloc_free(uintptr_t addr, uint64_t size) {
         DEBUG_PRINT(ltoa(size, tmp_buf, 16));
         DEBUG_PRINT("\r\n");
     }
-//#endif
+#endif
 
     for (uint64_t pg_0 = 0; pg_0 < page_cnt; pg_0 += MAX_ENTRIES) {
         uint64_t cur_pg = 0;
@@ -182,12 +182,12 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
             if (queue_trydequeue(&btm_level, &deq) == false)
                 PANIC("Out of Memory!");
 
-            {
+            /*{
                     char tmp_buf[10];
                     DEBUG_PRINT("SysPhysicalMemory: Deq=");
                     DEBUG_PRINT(ltoa(deq, tmp_buf, 16));
                     DEBUG_PRINT("\r\n");
-            }
+            }*/
 
             if ((int32_t)GET_PG_CNT(deq) >= pg_cnt) {
                 uint64_t ret_addr = GET_ADDR(deq);
@@ -198,14 +198,14 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
 
                 free_mem -= size;
 
-//#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
+#ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
                 {
                     char tmp_buf[10];
                     DEBUG_PRINT("SysPhysicalMemory: Allocated addr=");
                     DEBUG_PRINT(ltoa(ret_addr, tmp_buf, 16));
                     DEBUG_PRINT("\r\n");
                 }
-//#endif
+#endif
 
                 return ret_addr;
             }else
@@ -262,7 +262,7 @@ int pagealloc_init() {
 
             addr = roundUp_po2(addr, BTM_LEVEL);
 
-//#ifdef PHYSMEM_DEBUG_VERBOSE_MID
+#ifdef PHYSMEM_DEBUG_VERBOSE_MID
             {
                 char tmp_buf[10];
                 DEBUG_PRINT("SysPhysicalMemory: Free zones, addr=");
@@ -271,7 +271,7 @@ int pagealloc_init() {
                 DEBUG_PRINT(itoa((int)len, tmp_buf, 16));
                 DEBUG_PRINT("\r\n");
             }
-//#endif
+#endif
 
             //if(addr <= initrd_addr && addr + len >= initrd_addr + initrd_len) {
             //    if(initrd_addr > addr) pagealloc_free(addr, initrd_addr - addr);

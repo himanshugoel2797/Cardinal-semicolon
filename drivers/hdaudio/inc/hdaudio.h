@@ -59,7 +59,7 @@ typedef struct hdaudio_instance {
     hdaudio_cmd_entry_t *cmds;
 
     int interrupt_vec;
-    uint32_t codecs;
+    uint16_t codecs;
     uint8_t rirb_rp;
 
     hdaudio_node_t **nodes;
