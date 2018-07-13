@@ -20,3 +20,5 @@
 ./intel_wifi.celf|8086|24f3|FFFF|FFFF|FFFF
 ./intel_wifi.celf|8086|24f4|FFFF|FFFF|FFFF
 ./intel_wifi.celf|8086|24fd|FFFF|FFFF|FFFF
+./intel_gfx.celf|8086|0a16|FFFF|FFFF|FFFF
+
