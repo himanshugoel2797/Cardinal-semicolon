@@ -99,7 +99,7 @@ void *WEAK realloc(void *ptr, size_t size) {
     return NULL;
 }
 
-int kernel_free_avl_bootstrap(){
+int kernel_free_avl_bootstrap() {
     void (*pagealloc_free_hndl) (uintptr_t, uint64_t) = (void (*)(uintptr_t, uint64_t))elf_resolvefunction("pagealloc_free");
     int (*vmem_virttophys_hndl)(intptr_t, intptr_t *) = (int (*)(intptr_t, intptr_t*))elf_resolvefunction("vmem_virttophys");
 

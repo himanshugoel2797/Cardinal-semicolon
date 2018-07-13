@@ -67,7 +67,7 @@ void apic_write(uint32_t off, uint64_t val) {
         apic->base_addr[off / sizeof(uint32_t)] = (uint32_t)val;
 }
 
-int pic_fini(){
+int pic_fini() {
     //Disable the PIC
     outb(0x20, ICW1_INIT+ICW1_ICW4); // starts the initialization sequence (in cascade mode)
     outb(0xA0, ICW1_INIT+ICW1_ICW4);
@@ -148,11 +148,11 @@ void interrupt_sendipi(int cpu, int vector, ipi_delivery_mode_t delivery_mode) {
 
     if(apic->x2apic_mode) {
         ipi_msg |= ((uint64_t)cpu << 32);
-        
+
         apic_write(APIC_ICR_x2APIC, ipi_msg);
     } else {
         ipi_msg |= ((uint64_t)cpu << 56);
-        
+
         apic_write(APIC_ICR_xAPIC_HI, (uint32_t)(ipi_msg >> 32));
         apic_write(APIC_ICR_xAPIC_LO, (uint32_t)ipi_msg);
     }
