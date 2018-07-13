@@ -176,6 +176,7 @@ void idt_mainhandler(regs_t *regs) {
     bool handled = false;
 
     int state = cli();
+
     local_spinlock_lock(&interrupt_alloc_lock);
     for(int i = 0; i < IDT_HANDLER_CNT; i++) {
         if(interrupt_funcs[regs->int_no][i] != NULL) {

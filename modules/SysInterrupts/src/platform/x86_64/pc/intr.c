@@ -13,6 +13,10 @@ int ioapic_init();
 int apic_init();
 int pic_fini();
 
+static void spurious_irq_handler(int int_num) {
+    int_num = 0;
+}
+
 int intr_init() {
     int err = 0;
 
@@ -25,6 +29,14 @@ int intr_init() {
     err = idt_init();
     if(err != 0)
         return err;
+
+    int irq0 = 0x27;
+    int irq1 = 0x2f;
+    interrupt_allocate(1, interrupt_flags_exclusive, &irq0);
+    interrupt_allocate(1, interrupt_flags_exclusive, &irq1);
+
+    interrupt_registerhandler(irq0, spurious_irq_handler);
+    interrupt_registerhandler(irq1, spurious_irq_handler);
 
     err = ioapic_init();
     if(err != 0)
