@@ -106,9 +106,9 @@ int kernel_free_avl_bootstrap(){
     local_spinlock_lock(&bootstrap_alloc_lock);
 
     uintptr_t cur_ptr = (uintptr_t)bootstrap_alloc_pos;
-    //cur_ptr = (cur_ptr + KiB(4) - 1) & ~(KiB(4) - 1);
     if(cur_ptr % KiB(4))
         cur_ptr += KiB(4) - (cur_ptr % KiB(4));
+
 
     uint64_t rem_sz = BOOTSTRAP_ALLOC_AREA_SIZE - cur_ptr;
 

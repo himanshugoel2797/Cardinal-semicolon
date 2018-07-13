@@ -191,8 +191,6 @@ int vmem_mp_init() {
     uint64_t *ktable = (uint64_t*)vmem_phystovirt(ktable_phys, KiB(4), vmem_flags_cachewriteback);
     memset(ktable, 0, KiB(4));
 
-    if(lcl == NULL)
-        lcl = (TLS struct lcl_data*)mp_tls_get(mp_tls_alloc(sizeof(struct lcl_data)));
     lcl->ktable = ktable_phys;
     lcl->cur_vmem = NULL;
 

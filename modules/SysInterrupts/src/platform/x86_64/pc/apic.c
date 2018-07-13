@@ -142,14 +142,17 @@ void interrupt_sendeoi(int irq) {
 
 void interrupt_sendipi(int cpu, int vector, ipi_delivery_mode_t delivery_mode) {
     uint64_t ipi_msg = 0;
-    ipi_msg |= ((uint64_t)cpu << 56);
     ipi_msg |= (vector & 0xff);
     ipi_msg |= (delivery_mode & 0x7) << 8;
     ipi_msg |= (1 << 14);
 
     if(apic->x2apic_mode) {
+        ipi_msg |= ((uint64_t)cpu << 32);
+        
         apic_write(APIC_ICR_x2APIC, ipi_msg);
     } else {
+        ipi_msg |= ((uint64_t)cpu << 56);
+        
         apic_write(APIC_ICR_xAPIC_HI, (uint32_t)(ipi_msg >> 32));
         apic_write(APIC_ICR_xAPIC_LO, (uint32_t)ipi_msg);
     }

@@ -15,7 +15,7 @@
 #include <string.h>
 #include <cardinal/local_spinlock.h>
 
-#define TLS_SIZE ((int)KiB(4))
+#define TLS_SIZE ((int)KiB(16))
 #define GS_BASE_MSR (0xC0000101)
 #define KERNEL_GS_BASE_MSR (0xC0000102)
 
@@ -94,6 +94,7 @@ int mp_tls_alloc(int bytes) {
     local_spinlock_lock(&mp_loc);
     if(pos + bytes >= TLS_SIZE) {
         local_spinlock_unlock(&mp_loc);
+        PANIC("TLS Allocation Failure\r\n");
         return -1;
     }
     int p = pos;

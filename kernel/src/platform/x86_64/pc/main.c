@@ -98,8 +98,8 @@ SECTION(".entry_point") int32_t main(void *param, uint64_t magic) {
 SECTION(".tramp_handler") uint64_t tramp_stack = 0xffffffff80000000;
 
 void alloc_ap_stack(void) {
-    uint64_t stack = (uint64_t)malloc(4096);
-    tramp_stack = stack + 4096;
+    uint64_t stack = (uint64_t)malloc(4096*4);
+    tramp_stack = stack + 4096 * 4;
 }
 
 SECTION(".tramp_handler") void smp_bootstrap(void) {

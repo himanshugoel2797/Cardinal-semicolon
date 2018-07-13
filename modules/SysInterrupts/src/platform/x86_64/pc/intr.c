@@ -7,6 +7,8 @@
 
 #include <types.h>
 
+#include "SysInterrupts/interrupts.h"
+
 int idt_init();
 int gdt_init();
 int ioapic_init();
