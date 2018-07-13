@@ -128,7 +128,5 @@ int kernel_updatememhandlers() {
     if (free_hndl == free)
         free_hndl = NULL;
 
-    //TODO: Provide a way for the remaining bootstrap region to be free'd
-
     return 0;
 }
