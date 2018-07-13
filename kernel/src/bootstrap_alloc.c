@@ -13,9 +13,9 @@
 
 #include <cardinal/local_spinlock.h>
 
-#define BOOTSTRAP_ALLOC_AREA_SIZE (MiB(256))
+#define BOOTSTRAP_ALLOC_AREA_SIZE (MiB(128))
 
-static uint8_t bootstrap_alloc_area[BOOTSTRAP_ALLOC_AREA_SIZE];
+static ALIGNED(KiB(4)) uint8_t bootstrap_alloc_area[BOOTSTRAP_ALLOC_AREA_SIZE];
 static uint64_t bootstrap_alloc_pos = 0;
 static int bootstrap_alloc_lock = 0;
 
@@ -95,12 +95,31 @@ void *WEAK realloc(void *ptr, size_t size) {
     ptr = NULL;
     size = 0;
 
-    PANIC("realloc unimplmented!");
+    PANIC("realloc unimplemented!");
     return NULL;
 }
 
-int kernel_updatememhandlers() {
+int kernel_free_avl_bootstrap(){
+    void (*pagealloc_free_hndl) (uintptr_t, uint64_t) = (void (*)(uintptr_t, uint64_t))elf_resolvefunction("pagealloc_free");
+    int (*vmem_virttophys_hndl)(intptr_t, intptr_t *) = (int (*)(intptr_t, intptr_t*))elf_resolvefunction("vmem_virttophys");
+
+    local_spinlock_lock(&bootstrap_alloc_lock);
+
+    uintptr_t cur_ptr = (uintptr_t)bootstrap_alloc_pos;
+    //cur_ptr = (cur_ptr + KiB(4) - 1) & ~(KiB(4) - 1);
+    if(cur_ptr % KiB(4))
+        cur_ptr += KiB(4) - (cur_ptr % KiB(4));
+
+    uint64_t rem_sz = BOOTSTRAP_ALLOC_AREA_SIZE - cur_ptr;
+
+    intptr_t phys_addr = 0;
+    vmem_virttophys_hndl((intptr_t)&bootstrap_alloc_area[cur_ptr], &phys_addr);
+
+    pagealloc_free_hndl((uintptr_t)phys_addr, rem_sz);
     return 0;
+}
+
+int kernel_updatememhandlers() {
     malloc_hndl = (void *(*)(size_t))elf_resolvefunction("malloc");
     if (malloc_hndl == malloc)
         malloc_hndl = NULL;

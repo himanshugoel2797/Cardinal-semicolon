@@ -36,6 +36,7 @@ int debug_handle_trap();
 #define GiB(x) (uint64_t)(MiB(1) * 1024ull * x)
 #define TiB(x) (uint64_t)(GiB(1) * 1024ull * x)
 
+#define ALIGNED(x) __attribute__((aligned(x)))
 #define UNUSED __attribute__((__unused__))
 #define NONNULL __attribute__((nonnull))
 #define PUBLIC __attribute__((visibility("default")))

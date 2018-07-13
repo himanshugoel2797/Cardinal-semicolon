@@ -59,7 +59,9 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
             for (uint32_t j = 0; j < (mmap->size - 16); j += mmap->entry_size) {
                 multiboot_memory_map_t *mmap_e =
                     (multiboot_memory_map_t *)((uint8_t *)mmap->entries + j);
-                bootInfo.MemorySize = mmap_e->addr + mmap_e->len;
+                
+                if(mmap_e->type == MULTIBOOT_MEMORY_AVAILABLE)
+                    bootInfo.MemorySize += mmap_e->len;
 
 
                 //Check the address range and insert a split if necessary

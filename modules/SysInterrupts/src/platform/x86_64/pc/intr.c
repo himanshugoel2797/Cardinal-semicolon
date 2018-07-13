@@ -11,9 +11,12 @@ int idt_init();
 int gdt_init();
 int ioapic_init();
 int apic_init();
+int pic_fini();
 
 int intr_init() {
     int err = 0;
+
+    pic_fini();
 
     err = gdt_init();
     if(err != 0)

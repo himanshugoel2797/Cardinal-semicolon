@@ -10,6 +10,7 @@ CALL:mp_tls_setup
 CALL:vmem_init
 CALL:sysdebug_install_lfb
 CALL:mem_init
+CALL:kernel_free_avl_bootstrap
 CALL:acpi_init
 CALL:pci_reg_init
 CALL:intr_init

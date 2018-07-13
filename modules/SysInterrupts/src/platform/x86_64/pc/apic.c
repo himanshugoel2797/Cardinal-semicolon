@@ -67,8 +67,7 @@ void apic_write(uint32_t off, uint64_t val) {
         apic->base_addr[off / sizeof(uint32_t)] = (uint32_t)val;
 }
 
-int apic_init() {
-
+int pic_fini(){
     //Disable the PIC
     outb(0x20, ICW1_INIT+ICW1_ICW4); // starts the initialization sequence (in cascade mode)
     outb(0xA0, ICW1_INIT+ICW1_ICW4);
@@ -83,6 +82,10 @@ int apic_init() {
     outb(0x21, 0xFF);
     outb(0xA1, 0xFF); //disable all interrupts from the PIC
 
+    return 0;
+}
+
+int apic_init() {
 
     if(apic == NULL) {
         int (*mp_tls_alloc)(int) = elf_resolvefunction("mp_tls_alloc");
@@ -90,6 +93,7 @@ int apic_init() {
 
         apic = (TLS tls_apic_t*)mp_tls_get(mp_tls_alloc(sizeof(tls_apic_t)));
     }
+
 
     uint64_t apic_base_reg = rdmsr(IA32_APIC_BASE);
     apic->base_addr = (uint32_t*)vmem_phystovirt(apic_base_reg & ~0xfff, KiB(8), vmem_flags_uncached);
