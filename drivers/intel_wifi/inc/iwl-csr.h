@@ -292,9 +292,9 @@
  *  hw_rev values
  */
 enum {
-	IWM_SILICON_A_STEP = 0,
-	IWM_SILICON_B_STEP,
-	IWM_SILICON_C_STEP,
+    IWM_SILICON_A_STEP = 0,
+    IWM_SILICON_B_STEP,
+    IWM_SILICON_C_STEP,
 };
 
 
@@ -415,18 +415,18 @@ enum {
 /* SECURE boot registers */
 #define IWM_CSR_SECURE_BOOT_CONFIG_ADDR	(0x100)
 enum iwm_secure_boot_config_reg {
-	IWM_CSR_SECURE_BOOT_CONFIG_INSPECTOR_BURNED_IN_OTP	= 0x00000001,
-	IWM_CSR_SECURE_BOOT_CONFIG_INSPECTOR_NOT_REQ	= 0x00000002,
+    IWM_CSR_SECURE_BOOT_CONFIG_INSPECTOR_BURNED_IN_OTP	= 0x00000001,
+    IWM_CSR_SECURE_BOOT_CONFIG_INSPECTOR_NOT_REQ	= 0x00000002,
 };
 
 #define IWM_CSR_SECURE_BOOT_CPU1_STATUS_ADDR	(0x100)
 #define IWM_CSR_SECURE_BOOT_CPU2_STATUS_ADDR	(0x100)
 enum iwm_secure_boot_status_reg {
-	IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_STATUS		= 0x00000003,
-	IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_COMPLETED	= 0x00000002,
-	IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_SUCCESS		= 0x00000004,
-	IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_FAIL		= 0x00000008,
-	IWM_CSR_SECURE_BOOT_CPU_STATUS_SIGN_VERF_FAIL	= 0x00000010,
+    IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_STATUS		= 0x00000003,
+    IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_COMPLETED	= 0x00000002,
+    IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_SUCCESS		= 0x00000004,
+    IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_FAIL		= 0x00000008,
+    IWM_CSR_SECURE_BOOT_CPU_STATUS_SIGN_VERF_FAIL	= 0x00000010,
 };
 
 #define IWM_FH_UCODE_LOAD_STATUS	0x1af0
@@ -539,13 +539,13 @@ enum iwm_secure_boot_status_reg {
 /**********************************************************
  * CSR values
  **********************************************************/
- /*
- * host interrupt timeout value
- * used with setting interrupt coalescing timer
- * the CSR_INT_COALESCING is an 8 bit register in 32-usec unit
- *
- * default interrupt coalescing timer is 64 x 32 = 2048 usecs
- */
+/*
+* host interrupt timeout value
+* used with setting interrupt coalescing timer
+* the CSR_INT_COALESCING is an 8 bit register in 32-usec unit
+*
+* default interrupt coalescing timer is 64 x 32 = 2048 usecs
+*/
 #define IWM_HOST_INT_TIMEOUT_MAX	(0xFF)
 #define IWM_HOST_INT_TIMEOUT_DEF	(0x40)
 #define IWM_HOST_INT_TIMEOUT_MIN	(0x0)
@@ -557,17 +557,17 @@ enum iwm_secure_boot_status_reg {
 
 /* Diode Results Register Structure: */
 enum iwm_dtd_diode_reg {
-	IWM_DTS_DIODE_REG_DIG_VAL		= 0x000000FF, /* bits [7:0] */
-	IWM_DTS_DIODE_REG_VREF_LOW		= 0x0000FF00, /* bits [15:8] */
-	IWM_DTS_DIODE_REG_VREF_HIGH		= 0x00FF0000, /* bits [23:16] */
-	IWM_DTS_DIODE_REG_VREF_ID		= 0x03000000, /* bits [25:24] */
-	IWM_DTS_DIODE_REG_PASS_ONCE		= 0x80000000, /* bits [31:31] */
-	IWM_DTS_DIODE_REG_FLAGS_MSK		= 0xFF000000, /* bits [31:24] */
-/* Those are the masks INSIDE the flags bit-field: */
-	IWM_DTS_DIODE_REG_FLAGS_VREFS_ID_POS	= 0,
-	IWM_DTS_DIODE_REG_FLAGS_VREFS_ID	= 0x00000003, /* bits [1:0] */
-	IWM_DTS_DIODE_REG_FLAGS_PASS_ONCE_POS	= 7,
-	IWM_DTS_DIODE_REG_FLAGS_PASS_ONCE	= 0x00000080, /* bits [7:7] */
+    IWM_DTS_DIODE_REG_DIG_VAL		= 0x000000FF, /* bits [7:0] */
+    IWM_DTS_DIODE_REG_VREF_LOW		= 0x0000FF00, /* bits [15:8] */
+    IWM_DTS_DIODE_REG_VREF_HIGH		= 0x00FF0000, /* bits [23:16] */
+    IWM_DTS_DIODE_REG_VREF_ID		= 0x03000000, /* bits [25:24] */
+    IWM_DTS_DIODE_REG_PASS_ONCE		= 0x80000000, /* bits [31:31] */
+    IWM_DTS_DIODE_REG_FLAGS_MSK		= 0xFF000000, /* bits [31:24] */
+    /* Those are the masks INSIDE the flags bit-field: */
+    IWM_DTS_DIODE_REG_FLAGS_VREFS_ID_POS	= 0,
+    IWM_DTS_DIODE_REG_FLAGS_VREFS_ID	= 0x00000003, /* bits [1:0] */
+    IWM_DTS_DIODE_REG_FLAGS_PASS_ONCE_POS	= 7,
+    IWM_DTS_DIODE_REG_FLAGS_PASS_ONCE	= 0x00000080, /* bits [7:7] */
 };
 
 /*

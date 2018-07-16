@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -20,7 +20,7 @@ PRIVATE int iwifi_getdevice(uint16_t devID, iwifi_dev_t **dev) {
     int idx = 0;
     iwifi_dev_t *iter = iwifi_devices;
     while(iter->name != NULL) {
-        if(iter->devID == devID){
+        if(iter->devID == devID) {
             *dev = iter;
             return 0;
         }
