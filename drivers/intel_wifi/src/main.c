@@ -71,10 +71,18 @@ int module_init(void *ecam_addr) {
     //Setup the device
     iwifi_notify_ready(dev_state);
 
+    //Allocate and configure memory for firmware transfer, tx scheduler, tx, rx
+
+    //Test the LEDs, as a visual debugging response
+
+    //Load and setup the firmware
+
+    //Find all supported channels and frequency bands
+
     DEBUG_PRINT("Wifi ready!\r\n");
+    //Register device to network stack
 
-    //Start by loading the firmware
-
+    //Perform a scan to test the implementation, listing all detected wifi networks
 
     return 0;
 }
