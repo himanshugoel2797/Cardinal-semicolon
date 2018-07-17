@@ -71,7 +71,23 @@ int module_init(void *ecam_addr) {
     //Setup the device
     iwifi_notify_ready(dev_state);
 
-    //Allocate and configure memory for firmware transfer, tx scheduler, tx, rx
+    //Allocate and configure memory for firmware transfer, kw, tx scheduler, tx, rx
+    size_t fw_sz = IWM_FH_MEM_TB_MAX_LENGTH; //16-byte aligned
+    size_t tx_sched_rings_sz = IWM_MVM_MAX_QUEUES * sizeof(struct iwm_agn_scd_bc_tbl); //1024-byte aligned
+    size_t kw_page_sz = 4096;  //4096 byte aligned
+    size_t rx_rings_sz = RX_RING_COUNT * sizeof(uint32_t) + sizeof(struct iwm_rb_status) + RBUF_SZ; //256-byte aligned
+    size_t tx_rings_sz = TX_RING_COUNT * (sizeof(struct iwm_tfd) + sizeof(struct iwm_device_cmd)); //256-byte aligned
+
+#define ROUNDUP(x, y) (((x - 1) | (y - 1)) + 1)
+
+    size_t net_sz = ROUNDUP(fw_sz, 1024);
+    net_sz = ROUNDUP((net_sz + tx_sched_rings_sz), 256);
+    net_sz = ROUNDUP((net_sz + rx_rings_sz), 256);
+    net_sz = ROUNDUP((net_sz + tx_rings_sz), 4096);
+    net_sz += kw_page_sz;
+    
+    uintptr_t buf_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, net_sz);
+
 
     //Test the LEDs, as a visual debugging response
 
