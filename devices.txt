@@ -1,12 +1,6 @@
 ./VirtioGpu.celf|1AF4|1050|FFFF|FFFF|FFFF
 ./VirtioNet.celf|1AF4|1041|FFFF|FFFF|FFFF
 ./VirtioNet.celf|1AF4|1000|FFFF|FFFF|FFFF
-./HDAudio.celf|8086|293e|FFFF|FFFF|FFFF
-./HDAudio.celf|8086|0a0c|FFFF|FFFF|FFFF
-./HDAudio.celf|8086|9c20|FFFF|FFFF|FFFF
-./HDAudio.celf|8086|2668|FFFF|FFFF|FFFF
-./HDAudio.celf|1022|1457|FFFF|FFFF|FFFF
-./HDAudio.celf|1002|aaf0|FFFF|FFFF|FFFF
 ./rtl8139.celf|10ec|8139|FFFF|FFFF|FFFF
 ./intel_wifi.celf|8086|08b3|FFFF|FFFF|FFFF
 ./intel_wifi.celf|8086|08b4|FFFF|FFFF|FFFF
@@ -21,4 +15,3 @@
 ./intel_wifi.celf|8086|24f4|FFFF|FFFF|FFFF
 ./intel_wifi.celf|8086|24fd|FFFF|FFFF|FFFF
 ./intel_gfx.celf|8086|0a16|FFFF|FFFF|FFFF
-

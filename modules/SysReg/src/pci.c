@@ -42,16 +42,6 @@ PCI_ReadDWord(uint32_t bus,
     return inl(PCI_DATA);
 }
 
-static void
-PCI_WriteDWord(uint32_t bus,
-               uint32_t device,
-               uint32_t function,
-               uint32_t offset,
-               uint32_t val) {
-    outl(PCI_ADDR, 0x80000000 | bus << 16 | device << 11 | function <<  8 | (offset & 0xfc));
-    outl(PCI_DATA, val);
-}
-
 static int
 PCI_GetNextDevice(uint32_t *bus,
                   uint32_t *device) {
@@ -59,7 +49,8 @@ PCI_GetNextDevice(uint32_t *bus,
     uint32_t b = *bus;
     uint32_t d = *device;
 
-    for(; b < 256; b++)
+
+    while(b < 256){
         for(; d < 32; d++) {
             uint32_t v_id = PCI_ReadDWord(b, d, 0, 0);
 
@@ -69,6 +60,12 @@ PCI_GetNextDevice(uint32_t *bus,
                 return 0;
             }
         }
+        
+        if(d >= 32){
+            d = 0;
+            b++;
+        }
+    }
 
     return -1;
 }
@@ -109,43 +106,6 @@ PCI_GetPCIDevice(uint32_t bus,
         devInfo->BarCount = 2;
 }
 
-static uint64_t
-PCI_GetBAR(PCI_Device *device,
-           uint32_t bar_index) {
-    uint32_t l_word = PCI_ReadDWord(device->Bus, device->Device, device->Function, 0x10 + (bar_index * 4));
-
-    if(l_word & 1) {
-        return l_word & ~1;
-    } else if(((l_word >> 1) & 3) == 0) {
-        return l_word & ~0xF;
-    } else if(((l_word >> 1) & 3) == 2) {
-        return (l_word & ~0xF) | (uint64_t)(PCI_ReadDWord(device->Bus, device->Device, device->Function, 0x10 + (bar_index + 1) * 4)) << 32;
-    }
-
-    return l_word;
-}
-
-static uint32_t
-PCI_IsIOSpaceBAR(PCI_Device *device,
-                 uint32_t bar_index) {
-    uint32_t l_word = PCI_ReadDWord(device->Bus, device->Device, device->Function, 0x10 + (bar_index * 4));
-
-    return l_word & 1;
-}
-
-static uint64_t
-PCI_GetBARSize(PCI_Device *device,
-               uint32_t bar_index) {
-    uint64_t bar_val = PCI_GetBAR(device, bar_index);
-
-    PCI_WriteDWord(device->Bus, device->Device, device->Function, 0x10 + (bar_index * 4), 0xFFFFFFFF);
-    uint32_t val = PCI_ReadDWord(device->Bus, device->Device, device->Function, 0x10 + (bar_index * 4));
-
-    PCI_WriteDWord(device->Bus, device->Device, device->Function, 0x10 + (bar_index * 4), bar_val);
-
-    return ~val + 1;
-}
-
 int pci_reg_init() {
 
     uint32_t bus = 0;
@@ -169,13 +129,17 @@ int pci_reg_init() {
             char idx_str[10] = "";
             char key_str[256] = "HW/PCI/";
             char *key_idx = strncat(key_str, itoa(idx, idx_str, 16), 255);
+            
+            PCI_Device devInfo;
+            PCI_GetPCIDevice(bus, device, f, &devInfo);
+            if((devInfo.VendorID == 0xffff) | (devInfo.DeviceID == 0xffff))
+                continue;
+            
             idx++;
 
             if(registry_createdirectory("HW/PCI", idx_str) != registry_err_ok)
                 return -1;
 
-            PCI_Device devInfo;
-            PCI_GetPCIDevice(bus, device, f, &devInfo);
 
             if(registry_addkey_uint(key_idx, "BUS", bus) != registry_err_ok)
                 return -2;
@@ -209,33 +173,6 @@ int pci_reg_init() {
 
                     break;
                 }
-
-            //Parse and store BARs
-            for(uint32_t b0 = 0; b0 < devInfo.BarCount; b0++) {
-                char idx2_str[10] = "";
-                char key2_str[256] = "";
-                char *key2_idx = strncpy(key2_str, key_str, 255);
-                itoa(b0, idx2_str, 16);
-
-                if(registry_createdirectory(key2_idx, idx2_str) != registry_err_ok)
-                    return -10;
-
-                key2_idx = strncat(key2_str, "/", 255);
-                key2_idx = strncat(key2_str, idx2_str, 255);
-
-                uint64_t bar_val = PCI_GetBAR(&devInfo, b0);
-                uint64_t bar_sz = PCI_GetBARSize(&devInfo, b0);
-                bool isIOspace = PCI_IsIOSpaceBAR(&devInfo, b0);
-
-                if(registry_addkey_uint(key2_idx, "ADDRESS", bar_val) != registry_err_ok)
-                    return -11;
-
-                if(registry_addkey_uint(key2_idx, "SIZE", bar_sz) != registry_err_ok)
-                    return -12;
-
-                if(registry_addkey_bool(key2_idx, "IS_IO", isIOspace) != registry_err_ok)
-                    return -13;
-            }
         }
 
         device++;

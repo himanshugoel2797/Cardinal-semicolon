@@ -493,7 +493,7 @@ intptr_t vmem_phystovirt(intptr_t phys, size_t sz, int flags) {
     }
 
 
-    char tmp[16];
+    char tmp[20];
     DEBUG_PRINT(ltoa(phys, tmp, 16));
     PANIC("Invalid Address Detected!");
     return phys;

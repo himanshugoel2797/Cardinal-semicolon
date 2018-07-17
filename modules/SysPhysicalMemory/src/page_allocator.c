@@ -133,7 +133,7 @@ void pagealloc_free(uintptr_t addr, uint64_t size) {
 
 #ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
     {
-        char tmp_buf[10];
+        char tmp_buf[20];
         DEBUG_PRINT("SysPhysicalMemory: Free addr=");
         DEBUG_PRINT(ltoa(addr, tmp_buf, 16));
         DEBUG_PRINT(" size=");
@@ -183,7 +183,7 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
                 PANIC("Out of Memory!");
 
             /*{
-                    char tmp_buf[10];
+                    char tmp_buf[20];
                     DEBUG_PRINT("SysPhysicalMemory: Deq=");
                     DEBUG_PRINT(ltoa(deq, tmp_buf, 16));
                     DEBUG_PRINT("\r\n");
@@ -200,7 +200,7 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
 
 #ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
                 {
-                    char tmp_buf[10];
+                    char tmp_buf[20];
                     DEBUG_PRINT("SysPhysicalMemory: Allocated addr=");
                     DEBUG_PRINT(ltoa(ret_addr, tmp_buf, 16));
                     DEBUG_PRINT("\r\n");
@@ -266,7 +266,7 @@ int pagealloc_init() {
 
 #ifdef PHYSMEM_DEBUG_VERBOSE_MID
             {
-                char tmp_buf[10];
+                char tmp_buf[20];
                 DEBUG_PRINT("SysPhysicalMemory: Free zones, addr=");
                 DEBUG_PRINT(ltoa(addr, tmp_buf, 16));
                 DEBUG_PRINT(" len=");

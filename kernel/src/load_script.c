@@ -26,9 +26,9 @@ int module_load(char *name) {
     if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
         PANIC("ELF LOAD FAILED");
 
-    char tmp_entry_addr[10];
+    char tmp_entry_addr[20];
     print_str("LOADED at ");
-    print_str(itoa((int)entry_pt, tmp_entry_addr, 16));
+    print_str(ltoa((uint64_t)entry_pt, tmp_entry_addr, 16));
     print_str("\r\n");
 
     int err = entry_pt();

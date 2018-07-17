@@ -25,7 +25,7 @@ int module_init() {
     uint64_t deviceCount = 0;
     if(registry_readkey_uint("HW/PCI", "COUNT", &deviceCount) != registry_err_ok)
         return -1;
-
+        
     const char *cursor = str;
     const char *end = str + str_sz;
     while(cursor < end) {
@@ -65,6 +65,7 @@ int module_init() {
             if(registry_readkey_uint(key_idx, "VENDOR_ID", &dev_vendorID) != registry_err_ok)
                 return -1;
 
+
             bool classMatch = (class == (int)dev_class) || (class == 0xFFFF);
             bool subclassMatch = (subclass == (int)dev_subclass) || (subclass == 0xFFFF);
             bool devIDMatch = (devID == (int)dev_devID) || (devID == 0xFFFF);
@@ -99,10 +100,13 @@ int module_init() {
                 if(registry_readkey_uint(key_idx, "ECAM_ADDR", &ecam_addr) != registry_err_ok)
                     return -1;
 
-                char tmp_entry_addr[10];
+                char tmp_entry_addr[20];
                 print_str("Device ECAM at ");
-                print_str(itoa((int)(ecam_addr >> 32), tmp_entry_addr, 16));
-                print_str(itoa((int)ecam_addr, tmp_entry_addr, 16));
+                print_str(ltoa(ecam_addr, tmp_entry_addr, 16));
+                print_str("\r\n");
+
+                print_str("LOADED at ");
+                print_str(ltoa((uint64_t)entry_pt, tmp_entry_addr, 16));
                 print_str("\r\n");
 
                 int err = entry_pt_real((void*)ecam_addr);
