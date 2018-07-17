@@ -66,7 +66,20 @@ int module_init(void *ecam_addr) {
 
     //Register ports to the driver
 
+    //Disable all ports
+    //Disable all planes
+    //Disable display pipe
+    //Disable DPLL
+    //Disable VGA emulation
+
+    //Enable DPLL, wait for stabalization
+
     //Initialize displays on all connected ports
+        //Read EDIDs via GMBUS
+        //Remove any display options that the gpu can't support
+        //Choose the highest supported resolution
+        //Callibrate it and bring the backlight pwm online
+        //If an audio device is associated, pass along the info to CoreAudio
 
     //Configure display planes
 
