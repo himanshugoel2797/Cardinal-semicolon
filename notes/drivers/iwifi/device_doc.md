@@ -134,7 +134,7 @@ Lots of work seems to be handled by the firmware.
 7. Attach the radiotap and register to the wifi stack (WIP, iwm_radiotap_attach)
 
 
-##Scan Steps
+## Scan Steps
 
 1. If firmware reports UMAC scan support:
     Setup a scan command with the desired scan channels and send to the device
@@ -143,7 +143,7 @@ Lots of work seems to be handled by the firmware.
     Setup a scan command with the desired scan channels and send to the device
 
 
-##Transmit Steps
+## Transmit Steps
 Fill a tx command to send to the firmware, encrypting the frame if necessary
 
 ## TX/TFD Scheduler
