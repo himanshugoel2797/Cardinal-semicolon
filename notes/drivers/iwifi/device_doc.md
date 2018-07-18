@@ -14,6 +14,9 @@ Lots of work seems to be handled by the firmware.
 0x008 : CSR_INT
     - Interrupt Status, same bits as CSR_INT_MASK
 
+0x010 : FH_INT_STS
+    - FH interrupt status
+
 0x00c : CSR_INT_MASK
     - FW_ALIVE =    0x00000001
     - WAKEUP =      0x00000002
@@ -45,6 +48,8 @@ Lots of work seems to be handled by the firmware.
 0x088 : CSR_MBOX_SET_REG
     - OS_ALIVE = 0x20
 
+0x0A8 : CSR_MAC_SHADOW_REG_CTRL
+
 1. Start by making the NIC prepare for use by setting the PREPARE and NIC_READY bits in CSR_HW_IF_CONFIG_REG, wait for NIC_READY to read as set.
 
 2. Signal that the OS is ready by setting the OS_ALIVE bit in CSR_MBOX_SET_REG
@@ -61,10 +66,47 @@ Lots of work seems to be handled by the firmware.
     - Reset the device by setting the SW_RESET bit of CSR_RESET and waiting 10us
     - Setup and enable the associated HW_KILL interrupt.
 
-5. Start the firmware (WIP, iwm_run_init_mvm_ucode)
-    - Disable if RF kill
-    - Wait for init notification (WIP, iwm_init_notification_wait)
+5. Start the firmware (iwm_run_init_mvm_ucode)
+    - Stop if RF kill
+    - Set iwm_wait_phy_db_entry to be called on notification of both IWM_INIT_COMPLETE_NOTIF and IWM_CALIB_RES_NOTIF_PHY_DB
+        - Parses and stores some information regarding the PAPD (?) and TXP (?)
+
     - Load ucode and wait for the fw to report being alive (WIP, iwm_mvm_load_ucode_wait_alive)
+        - Read the firmware (iwm_read_firmware)
+            - Load firmware into driver memory
+            - Parse firmware contents (WIP)
+        - Set iwm_alive_fn to be called on notification of IWM_MVM_ALIVE
+        - Start the firmware (WIP, iwm_start_fw)
+            - Check if NIC_READY bit is set, if not, redo step 1
+            - Clear interrupt flags, disable interrupts
+            - Ensure rfkill handshake is clear
+                - Set RFKILL bit in CSR_UCODE_DRV_GP1_CLR
+                - Set CMD_BLOCKED bit in CSR_UCODE_DRV_GP1_CLR
+            - Init the NIC (iwm_nic_init)
+                - Configure NIC (WIP, iwm_mvm_nic_config)
+                    - Get the radio information (presumably from the firmware) and configure the NIC's radios appropriately
+                - Setup RX queues (WIP, iwm_nic_rx_init)
+                    - Stop RX dma (iwm_pcie_rx_stop)
+                    - Reset pointers
+                    - Set physical address of RX ring
+                    - Set physical address of RX status
+                    - Enable RX DMA
+                    - Set the RB count
+                - Setup TX queues (WIP, iwm_nic_tx_init)
+                    - Deactivate TX scheduler (write 0 to peripheral register, SCD_TXFACT)
+                    - Set physical address of 'keep warm' page
+                    - Set physical addresses of TX rings
+                    - Set queues to auto-activate (set bit 18 of peripheral register, SCD_GP_CTRL)
+                - Enable MAC shadow registers by writing 0x800fffff to CSR_MAC_SHADOW_REG_CTRL
+
+            - Disable all interrupts besides FH_TX
+            - Ensure rfkill handshake is still clear
+            - Load the firmware (WIP, iwm_pcie_load_given_ucode, iwm_pcie_load_given_ucode_8000)
+
+        - Wait for IWM_MVM_ALIVE notification
+        - Setup the tx scheduler (WIP, iwm_trans_pcie_fw_alive)
+        - Configure firmware paging if necessary, based on the ucode information (WIP, iwm_save_fw_paging, iwm_send_paging_cmd)
+
     - Initialize nvm (WIP, iwm_nvm_init)
     - Initialize Bluetooth config (WIP, iwm_send_bt_init_conf)
     - Get valid TX antennas (WIP, iwm_mvm_get_valid_tx_ant)
@@ -139,7 +181,7 @@ struct cmd_hdr_wide {
 }
 
 = RX Ring (256-byte aligned) =
-There are 256 RX rings, represented by an array of 32-bit addresses, each ring entry has a byte aligned 32-bit address pointing to an RX buffer. (RX_BUFFER_SIZE = 4096)
+There are up to 4096 RX rings (only power of two sizes supported), represented by an array of 32-bit addresses, each ring entry has a byte aligned 32-bit address pointing to an RX buffer. (RX_BUFFER_SIZE = 4096 or 8192 or 16384)
 
 = RX Status Area (16-byte aligned) =
 This is a single region, that takes the following format:
@@ -161,3 +203,6 @@ finished_frame_num [0:11] : the index of the frame which was last transferred
 Read CSR_GP_CNTRL, bit HW_RF_KILL_SW to get the switch status, 
     0 = RF kill is on, turn off radio
     1 = RF kill is off, can turn on radio
+
+= Notification Mechanism =
+Firmware related communications are all done via queues, the device responds by sending response commands via the rx ring. The freebsd driver queues these into a notification queue.
