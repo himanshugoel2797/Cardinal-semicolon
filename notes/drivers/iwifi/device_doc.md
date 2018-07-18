@@ -24,6 +24,12 @@ Lots of work seems to be handled by the firmware.
     - TXQ_ADV =     0x04000000
     - FH_RX =       0x80000000
 
+0x020 : CSR_RESET
+    - SW_RESET =    0x00000080
+
+0x024 : CSR_GP_CNTRL
+    - HW_RF_KILL_SW = 0x08000000 
+
 0x028 : 32-bit Hardware Revision Register, used to identify specific version
     7000 Series Chips:
         31-16: Reserved
@@ -51,8 +57,21 @@ Lots of work seems to be handled by the firmware.
         - An rx ring - 256-byte aligned
         - tx rings - 256 byte aligned
 
-4. Startup the hardware (WIP, iwm_start_hw)
+4. Startup the hardware (iwm_start_hw)
+    - Reset the device by setting the SW_RESET bit of CSR_RESET and waiting 10us
+    - Setup and enable the associated HW_KILL interrupt.
+
 5. Start the firmware (WIP, iwm_run_init_mvm_ucode)
+    - Disable if RF kill
+    - Wait for init notification (WIP, iwm_init_notification_wait)
+    - Load ucode and wait for the fw to report being alive (WIP, iwm_mvm_load_ucode_wait_alive)
+    - Initialize nvm (WIP, iwm_nvm_init)
+    - Initialize Bluetooth config (WIP, iwm_send_bt_init_conf)
+    - Get valid TX antennas (WIP, iwm_mvm_get_valid_tx_ant)
+    - Send valid TX antennas (WIP, iwm_send_tx_ant_cfg)
+    - Send physical config command to initialize ucode, and start callibrations (WIP, iwm_send_phy_cfg_cmd)
+    - Wait for init notification (WIP, iwm_wait_notification)
+
 6. Initialize the channel map (WIP, iwm_init_channel_map)
 7. Attach the radiotap (WIP, iwm_radiotap_attach)
 
@@ -138,3 +157,7 @@ closed_frame_num [0:11] : the index of the frame that was last closed
 finished_rb_num [0:11] : the index of the current reserve buffer, to which the previous frame was written
 finished_frame_num [0:11] : the index of the frame which was last transferred
 
+= RF Hardware switch kill functionality =
+Read CSR_GP_CNTRL, bit HW_RF_KILL_SW to get the switch status, 
+    0 = RF kill is on, turn off radio
+    1 = RF kill is off, can turn on radio
