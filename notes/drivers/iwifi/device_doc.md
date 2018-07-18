@@ -59,7 +59,7 @@ Lots of work seems to be handled by the firmware.
 ```
 - 0x0A8 : CSR_MAC_SHADOW_REG_CTRL
 ```
-## Steps
+## Initialization Steps
 
 1. Start by making the NIC prepare for use by setting the PREPARE and NIC_READY bits in CSR_HW_IF_CONFIG_REG, wait for NIC_READY to read as set.
 
@@ -115,17 +115,36 @@ Lots of work seems to be handled by the firmware.
         - Wait for IWM_MVM_ALIVE notification
         - Setup the tx scheduler (WIP, iwm_trans_pcie_fw_alive)
         - Configure firmware paging if necessary, based on the ucode information (WIP, iwm_save_fw_paging, iwm_send_paging_cmd)
-    - Initialize nvm (WIP, iwm_nvm_init)
+    - Initialize nvm/eeprom (WIP, iwm_nvm_init)
+        - Reads and parses EEPROM
     - Initialize Bluetooth config (WIP, iwm_send_bt_init_conf)
+        - Sends Bluetooth initialization command
     - Get valid TX antennas (WIP, iwm_mvm_get_valid_tx_ant)
+        - Part of the information obtained from the eeprom
     - Send valid TX antennas (WIP, iwm_send_tx_ant_cfg)
+        - Sends a command with the previously obtained antenna configuration
     - Send physical config command to initialize ucode, and start callibrations (WIP, iwm_send_phy_cfg_cmd)
-    - Wait for init notification (WIP, iwm_wait_notification)
+        - Sends PHY_CONFIGURATION command
+    - Wait for init notification
+        - Wait for callibration complete notification
 
 6. Initialize the channel map (WIP, iwm_init_channel_map)
+    - Parse nvm data to determine the supported channels and wifi bands supported by the device
 
-7. Attach the radiotap (WIP, iwm_radiotap_attach)
+7. Attach the radiotap and register to the wifi stack (WIP, iwm_radiotap_attach)
 
+
+##Scan Steps
+
+1. If firmware reports UMAC scan support:
+    Setup a scan command with the desired scan channels and send to the device
+
+2. Otherwise, if firmware reports LMAC scan support:
+    Setup a scan command with the desired scan channels and send to the device
+
+
+##Transmit Steps
+Fill a tx command to send to the firmware, encrypting the frame if necessary
 
 ## TX/TFD Scheduler
 Each TX scheduler entry takes the following format:
