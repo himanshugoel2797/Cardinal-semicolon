@@ -5,6 +5,7 @@
  https://opensource.org/licenses/MIT
 -->
 
+Device Responses:
 ```
 enum {
 	MVM_ALIVE = 0x1,

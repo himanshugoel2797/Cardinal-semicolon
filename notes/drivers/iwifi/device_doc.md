@@ -156,7 +156,7 @@ Lots of work seems to be handled by the firmware.
 ## Transmit Steps
 Fill a tx command to send to the firmware, encrypting the frame if necessary
 
-##Firmware Transfers
+## Firmware Transfers
 Firmware transfers are done via a separate DMA engine.
 Sections are sent to it in chunks of 0x20000 bytes.
 
