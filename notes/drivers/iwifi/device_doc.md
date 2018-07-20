@@ -85,7 +85,7 @@ Lots of work seems to be handled by the firmware.
         - Read the firmware (iwm_read_firmware)
             - Load firmware into driver memory
             - Parse firmware contents (WIP)
-        - Set iwm_alive_fn to be called on notification of IWM_MVM_ALIVE
+        - Set iwm_alive_fn to be called on notification of MVM_ALIVE
         - Start the firmware (WIP, iwm_start_fw)
             - Check if NIC_READY bit is set, if not, redo step 1
             - Clear interrupt flags, disable interrupts
@@ -94,7 +94,7 @@ Lots of work seems to be handled by the firmware.
                 - Set CMD_BLOCKED bit in CSR_UCODE_DRV_GP1_CLR
             - Init the NIC (iwm_nic_init)
                 - Configure NIC (WIP, iwm_mvm_nic_config)
-                    - Get the radio information (presumably from the firmware) and configure the NIC's radios appropriately
+                    - Get the radio information (currently from the firmware, as we haven't read the nvm yet) and configure the NIC's radios appropriately
                 - Setup RX queues (WIP, iwm_nic_rx_init)
                     - Stop RX dma (iwm_pcie_rx_stop)
                     - Reset pointers
@@ -112,7 +112,17 @@ Lots of work seems to be handled by the firmware.
             - Disable all interrupts besides FH_TX
             - Ensure rfkill handshake is still clear
             - Load the firmware (WIP, iwm_pcie_load_given_ucode, iwm_pcie_load_given_ucode_8000)
-        - Wait for IWM_MVM_ALIVE notification
+                - For 7000 Series
+                    - Load the cpu sections (iwm_pcie_load_cpu_sections)
+                        - See 'Firmware Transfers' section for details.
+                    - If dual CPU
+                        - Write the CPU2 header address
+                        - Load the cpu sections for cpu2 (WIP, iwm_pcie_load_cpu_sections)
+                    - Re-enable interrupts
+                    - Release the CPUs from reset (Set CSR_RESET to 0)
+                - For 8000 Series
+                    - 
+        - Wait for MVM_ALIVE notification
         - Setup the tx scheduler (WIP, iwm_trans_pcie_fw_alive)
         - Configure firmware paging if necessary, based on the ucode information (WIP, iwm_save_fw_paging, iwm_send_paging_cmd)
     - Initialize nvm/eeprom (WIP, iwm_nvm_init)
@@ -145,6 +155,17 @@ Lots of work seems to be handled by the firmware.
 
 ## Transmit Steps
 Fill a tx command to send to the firmware, encrypting the frame if necessary
+
+##Firmware Transfers
+Firmware transfers are done via a separate DMA engine.
+Sections are sent to it in chunks of 0x20000 bytes.
+
+Target offsets over 0x40000 and under 0x57fff are treated as extended memory.
+
+Target offset of 0xFFFFCCCC specifies the CPU1 and CPU2 separator section.
+Target offset of 0xAAAABBBB specifies the paging separator section.
+
+See iwm_pcie_load_firmware_chunk for more information on how to program the DMA engine.
 
 ## TX/TFD Scheduler
 Each TX scheduler entry takes the following format:
@@ -212,6 +233,134 @@ struct cmd_hdr_wide {
     uint16_t length;
     uint8_t rsv;
     uint8_t ver;
+}
+```
+
+opcodes:
+```
+enum {
+	MVM_ALIVE = 0x1,
+	REPLY_ERROR = 0x2,
+
+	INIT_COMPLETE_NOTIF = 0x4,
+
+	PHY_CONTEXT_CMD = 0x8,
+	DBG_CFG = 0x9,
+
+	SCAN_ITERATION_COMPLETE_UMAC = 0xb5,
+	SCAN_CFG_CMD = 0xc,
+	SCAN_REQ_UMAC = 0xd,
+	SCAN_ABORT_UMAC = 0xe,
+	SCAN_COMPLETE_UMAC = 0xf,
+
+	ADD_STA_KEY = 0x17,
+	ADD_STA = 0x18,
+	REMOVE_STA = 0x19,
+
+	TX_CMD = 0x1c,
+	TXPATH_FLUSH = 0x1e,
+	MGMT_MCAST_KEY = 0x1f,
+
+	SCD_QUEUE_CFG = 0x1d,
+
+	WEP_KEY = 0x20,
+
+	MAC_CONTEXT_CMD = 0x28,
+	TIME_EVENT_CMD = 0x29, /* both CMD and response */
+	TIME_EVENT_NOTIFICATION = 0x2a,
+	BINDING_CONTEXT_CMD = 0x2b,
+	TIME_QUOTA_CMD = 0x2c,
+	NON_QOS_TX_COUNTER_CMD = 0x2d,
+
+	LQ_CMD = 0x4e,
+
+	FW_PAGING_BLOCK_CMD = 0x4f,
+
+	SCAN_OFFLOAD_REQUEST_CMD = 0x51,
+	SCAN_OFFLOAD_ABORT_CMD = 0x52,
+	HOT_SPOT_CMD = 0x53,
+	SCAN_OFFLOAD_COMPLETE = 0x6d,
+	SCAN_OFFLOAD_UPDATE_PROFILES_CMD = 0x6e,
+	SCAN_OFFLOAD_CONFIG_CMD = 0x6f,
+	MATCH_FOUND_NOTIFICATION = 0xd9,
+	SCAN_ITERATION_COMPLETE = 0xe7,
+
+	PHY_CONFIGURATION_CMD = 0x6a,
+	CALIB_RES_NOTIF_PHY_DB = 0x6b,
+	PHY_DB_CMD = 0x6c,
+
+	POWER_TABLE_CMD = 0x77,
+	PSM_UAPSD_AP_MISBEHAVING_NOTIFICATION = 0x78,
+
+	REPLY_THERMAL_MNG_BACKOFF = 0x7e,
+
+	SCAN_ABORT_CMD = 0x81,
+	SCAN_START_NOTIFICATION = 0x82,
+	SCAN_RESULTS_NOTIFICATION = 0x83,
+
+	NVM_ACCESS_CMD = 0x88,
+
+	SET_CALIB_DEFAULT_CMD = 0x8e,
+
+	BEACON_NOTIFICATION = 0x90,
+	BEACON_TEMPLATE_CMD = 0x91,
+	TX_ANT_CONFIGURATION_CMD = 0x98,
+	BT_CONFIG = 0x9b,
+	STATISTICS_NOTIFICATION = 0x9d,
+	REDUCE_TX_POWER_CMD = 0x9f,
+
+	CARD_STATE_CMD = 0xa0,
+	CARD_STATE_NOTIFICATION = 0xa1,
+
+	MISSED_BEACONS_NOTIFICATION = 0xa2,
+
+	MFUART_LOAD_NOTIFICATION = 0xb1,
+
+	MAC_PM_POWER_TABLE = 0xa9,
+
+	REPLY_RX_PHY_CMD = 0xc0,
+	REPLY_RX_MPDU_CMD = 0xc1,
+	BA_NOTIF = 0xc5,
+
+	MCC_UPDATE_CMD = 0xc8,
+	MCC_CHUB_UPDATE_CMD = 0xc9,
+
+	BT_COEX_PRIO_TABLE = 0xcc,
+	BT_COEX_PROT_ENV = 0xcd,
+	BT_PROFILE_NOTIFICATION = 0xce,
+	BT_COEX_CI = 0x5d,
+
+	REPLY_SF_CFG_CMD = 0xd1,
+	REPLY_BEACON_FILTERING_CMD = 0xd2,
+
+	CMD_DTS_MEASUREMENT_TRIGGER = 0xdc,
+	DTS_MEASUREMENT_NOTIFICATION = 0xdd,
+
+	REPLY_DEBUG_CMD = 0xf0,
+	DEBUG_LOG_MSG = 0xf7,
+
+	MCAST_FILTER_CMD = 0xd0,
+
+	D3_CONFIG_CMD = 0xd3,
+	PROT_OFFLOAD_CONFIG_CMD = 0xd4,
+	OFFLOADS_QUERY_CMD = 0xd5,
+	REMOTE_WAKE_CONFIG_CMD = 0xd6,
+
+	WOWLAN_PATTERNS = 0xe0,
+	WOWLAN_CONFIGURATION = 0xe1,
+	WOWLAN_TSC_RSC_PARAM = 0xe2,
+	WOWLAN_TKIP_PARAM = 0xe3,
+	WOWLAN_KEK_KCK_MATERIAL = 0xe4,
+	WOWLAN_GET_STATUSES = 0xe5,
+	WOWLAN_TX_POWER_PER_DB = 0xe6,
+
+	NET_DETECT_CONFIG_CMD = 0x54,
+	NET_DETECT_PROFILES_QUERY_CMD = 0x56,
+	NET_DETECT_PROFILES_CMD = 0x57,
+	NET_DETECT_HOTSPOTS_CMD = 0x58,
+	NET_DETECT_HOTSPOTS_QUERY_CMD = 0x59,
+
+	REPLY_MAX = 0xff,
 }
 ```
 
