@@ -18,6 +18,9 @@ bool iwifi_check_rfkill(iwifi_dev_state_t *state);
 void iwifi_disable_interrupts(iwifi_dev_state_t *state);
 void iwifi_clear_rfkillhandshake(iwifi_dev_state_t *state);
 void iwifi_rx_dma_state(iwifi_dev_state_t *state, bool enable);
-void iwifi_tx_dma_state(iwifi_dev_state_t *state, bool enable);
+void iwifi_tx_sched_dma_state(iwifi_dev_state_t *state, bool enable);
+
+void iwifi_lock(iwifi_dev_state_t *state);
+void iwifi_unlock(iwifi_dev_state_t *state);
 
 #endif

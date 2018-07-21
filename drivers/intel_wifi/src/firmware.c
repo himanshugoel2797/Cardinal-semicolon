@@ -10,18 +10,26 @@
 #include <string.h>
 
 #include "initrd.h"
+#include "SysVirtualMemory/vmem.h"
+#include "SysPhysicalMemory/phys_mem.h"
 
 #include "if_iwmreg.h"
+#include "constants.h"
 #include "devices.h"
 #include "device_helpers.h"
 #include "firmware.h"
 #include "fw_defs.h"
 
+#include <types.h>
+#define DEBUG_MSG 1
+
 static void fw_addsection(fw_info_t *fw_inf, fw_section_type_t type, void *data, size_t data_len) {
     uint32_t sec_ent = fw_inf->section_entries[type].section_ent;
     data_len -= sizeof(uint32_t);
+    
     fw_inf->section_entries[type].sections[sec_ent].data = malloc(data_len);
     memcpy(fw_inf->section_entries[type].sections[sec_ent].data, (uint8_t*)data + sizeof(uint32_t), data_len);
+    
     fw_inf->section_entries[type].sections[sec_ent].len = data_len;
     fw_inf->section_entries[type].sections[sec_ent].offset = *(uint32_t*)data;
     fw_inf->section_entries[type].section_ent++;
@@ -188,13 +196,92 @@ static int fw_parse(void *data, size_t data_len, fw_info_t *fw_inf) {
                 break;
             default:
 #ifdef DEBUG_MSG
-                DEBUG_PRINT("Unknown: %d\r\n", tlv->type);
+                DEBUG_PRINT("Unknown\r\n");
 #endif
             break;
         }
     }
 
     return 0;
+}
+
+void iwifi_push_dma(iwifi_dev_state_t *dev, uintptr_t paddr, uint32_t dest, uint32_t len){
+    iwifi_write32(dev, IWM_FH_TCSR_CHNL_TX_CONFIG_REG(IWM_FH_SRVC_CHNL), IWM_FH_TCSR_TX_CONFIG_REG_VAL_DMA_CHNL_PAUSE);
+
+	iwifi_write32(dev, IWM_FH_SRVC_CHNL_SRAM_ADDR_REG(IWM_FH_SRVC_CHNL), dest);
+
+	iwifi_write32(dev, IWM_FH_TFDIB_CTRL0_REG(IWM_FH_SRVC_CHNL), (uint32_t)paddr & IWM_FH_MEM_TFDIB_DRAM_ADDR_LSB_MSK);
+
+	iwifi_write32(dev, IWM_FH_TFDIB_CTRL1_REG(IWM_FH_SRVC_CHNL), len);
+
+	iwifi_write32(dev, IWM_FH_TCSR_CHNL_TX_BUF_STS_REG(IWM_FH_SRVC_CHNL),
+	    1 << IWM_FH_TCSR_CHNL_TX_BUF_STS_REG_POS_TB_NUM |
+	    1 << IWM_FH_TCSR_CHNL_TX_BUF_STS_REG_POS_TB_IDX |
+	    IWM_FH_TCSR_CHNL_TX_BUF_STS_REG_VAL_TFDB_VALID);
+
+	iwifi_write32(dev, IWM_FH_TCSR_CHNL_TX_CONFIG_REG(IWM_FH_SRVC_CHNL),
+	    IWM_FH_TCSR_TX_CONFIG_REG_VAL_DMA_CHNL_ENABLE    |
+	    IWM_FH_TCSR_TX_CONFIG_REG_VAL_DMA_CREDIT_DISABLE |
+	    IWM_FH_TCSR_TX_CONFIG_REG_VAL_CIRQ_HOST_ENDTFD);
+
+    //TODO: An FH_TX interrupt should be raised here
+}
+
+void iwifi_fw_dma(iwifi_dev_state_t *dev, fw_section_t *sect) {
+    uint32_t chunk_sz = MIN(IWM_FH_MEM_TB_MAX_LENGTH, sect->len);
+
+    //Allocate space for the chunk
+    uintptr_t buf_p = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, IWM_FH_MEM_TB_MAX_LENGTH);
+    uint8_t* buf_u8 = (uint8_t*)vmem_phystovirt((intptr_t)buf_p, IWM_FH_MEM_TB_MAX_LENGTH, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+
+    //Submit the chunk to the FH dma
+    for(uint32_t off = 0; off < sect->len; off += chunk_sz) {
+        uint32_t cur_chunk_sz = MIN(chunk_sz, sect->len - off);
+        uint32_t d_addr = sect->offset + off;
+
+        if(d_addr >= IWM_FW_MEM_EXTENDED_START && d_addr <= IWM_FW_MEM_EXTENDED_END)
+            iwifi_periph_setbits32(dev, IWM_LMPM_CHICK, IWM_LMPM_CHICK_EXTENDED_ADDR_SPACE);
+
+        memcpy(buf_u8, sect->data + off, cur_chunk_sz);
+        iwifi_push_dma(dev, buf_p, d_addr, cur_chunk_sz);
+
+        if(d_addr >= IWM_FW_MEM_EXTENDED_START && d_addr <= IWM_FW_MEM_EXTENDED_END)
+            iwifi_periph_clrbits32(dev, IWM_LMPM_CHICK, IWM_LMPM_CHICK_EXTENDED_ADDR_SPACE);
+    }
+}
+
+void iwifi_load_fw(iwifi_dev_state_t *dev, int cpu, fw_section_type_t type, uint32_t *section_cursor) {
+    int shft_p = 0;
+    int last_idx = 0;
+
+    if(cpu == 1){
+        shft_p = 16;
+        (*section_cursor)++;
+    }
+
+    for(int i = *section_cursor; i < MAX_SECTION_COUNT; i++) {
+        last_idx = i;
+
+        if((dev->fw_info.section_entries[type].sections[i].offset == IWM_CPU1_CPU2_SEPARATOR_SECTION) ||
+           (dev->fw_info.section_entries[type].sections[i].offset == IWM_PAGING_SEPARATOR_SECTION) ||
+           (dev->fw_info.section_entries[type].sections[i].data == NULL))
+                break;
+
+        iwifi_fw_dma(dev, &dev->fw_info.section_entries[type].sections[i]);
+    }
+
+    *section_cursor = last_idx;
+}
+
+void iwifi_setup_fw(iwifi_dev_state_t *dev, fw_section_type_t type) {
+    
+    uint32_t section_cursor = 0;
+    iwifi_load_fw(dev, 0, type, &section_cursor);
+    if(dev->fw_info.num_of_cpu == 2) {
+        //Load the CPU2 firmware
+        iwifi_periph_write32(dev, IWM_LMPM_SECURE_UCODE_LOAD_CPU2_HDR_ADDR, IWM_LMPM_SECURE_CPU2_HDR_MEM_SPACE);
+        iwifi_load_fw(dev, 0, type, &section_cursor);
+    }
 }
 
 int iwifi_fw_init(iwifi_dev_state_t *dev) {
@@ -210,6 +297,8 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
 
     if(fw_parse(fw_file, fw_len, &dev->fw_info) != 0)
         return -3;
+
+    iwifi_lock(dev);
 
     //Start the firmware
     iwifi_disable_interrupts(dev);
@@ -234,31 +323,49 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
     //NOTE: Potential issue here, if_iwm.c,1394
 
     //Setup RX queues
-    iwifi_rx_dma_state(dev, false);
+    {
+        iwifi_rx_dma_state(dev, false);
 
-    //Reset RX pointers
-    iwifi_write32(dev, IWM_FH_MEM_RCSR_CHNL0_RBDCB_WPTR, 0);
-    iwifi_write32(dev, IWM_FH_MEM_RCSR_CHNL0_FLUSH_RB_REQ, 0);
-    iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_RDPTR, 0);
-    iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_RBDCB_WPTR_REG, 0);
+        //Reset RX pointers
+        iwifi_write32(dev, IWM_FH_MEM_RCSR_CHNL0_RBDCB_WPTR, 0);
+        iwifi_write32(dev, IWM_FH_MEM_RCSR_CHNL0_FLUSH_RB_REQ, 0);
+        iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_RDPTR, 0);
+        iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_RBDCB_WPTR_REG, 0);
 
-    //Configure RX queue addresses
-	iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_RBDCB_BASE_REG, dev->rx_mem.paddr >> 8);
-    iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_STTS_WPTR_REG, dev->rx_status_mem.paddr >> 4);
+        //Configure RX queue addresses
+	    iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_RBDCB_BASE_REG, dev->rx_mem.paddr >> 8);
+        iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_STTS_WPTR_REG, dev->rx_status_mem.paddr >> 4);
 
-    //Re-enable RX dma
-    iwifi_rx_dma_state(dev, true);
+        iwifi_rx_dma_state(dev, true);
+    }
 
     //Setup TX queues
+    {
+        iwifi_tx_sched_dma_state(dev, false);
+
+        for(int i = 0; i < TX_RING_COUNT; i++) {
+            if(i < ACTIVE_TX_RING_COUNT) {
+                uintptr_t addr = dev->tx_mem.paddr + i * TX_RING_COUNT * sizeof(struct iwm_tfd);
+                iwifi_write32(dev, IWM_FH_MEM_CBBC_QUEUE(i), addr >> 8);
+            }else{
+                iwifi_write32(dev, IWM_FH_MEM_CBBC_QUEUE(i), 0);
+            }
+        }
+
+        iwifi_tx_sched_dma_state(dev, true);
+    }
 
     //Configure MAC shadowing
     iwifi_write32(dev, IWM_CSR_MAC_SHADOW_REG_CTRL, 0x800fffff);
 
     //Disable all interrupts besides FH_TX
-
+    iwifi_write32(dev, IWM_CSR_INT_MASK, IWM_CSR_INT_BIT_FH_TX);
     iwifi_clear_rfkillhandshake(dev);
 
     //Load the firmware
+    iwifi_setup_fw(dev, fw_section_init);
+
+    iwifi_unlock(dev);
 
     return 0;
 }

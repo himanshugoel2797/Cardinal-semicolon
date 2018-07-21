@@ -48,13 +48,14 @@ typedef struct {
 
     uint32_t int_mask;
     uint32_t hw_rev;
+    uint32_t fw_mem_offset;
     fw_info_t fw_info;
 
-    iwifi_addr_t fw_mem;
     iwifi_addr_t tx_sched_mem;
     iwifi_addr_t kw_mem;
     iwifi_addr_t rx_mem;
     iwifi_addr_t tx_mem;
+    iwifi_addr_t tx_cmd_mem;
     iwifi_addr_t rx_status_mem;
     iwifi_addr_t rx_bufs_mem;
 
@@ -73,6 +74,13 @@ void iwifi_write32(iwifi_dev_state_t *dev, int off, uint32_t val);
 void iwifi_write16(iwifi_dev_state_t *dev, int off, uint16_t val);
 void iwifi_write8(iwifi_dev_state_t *dev, int off, uint8_t val);
 
+void iwifi_periph_write32(iwifi_dev_state_t *dev, int off, uint32_t val);
+
 #define iwifi_setbits32(dev, off, flags) iwifi_write32(dev, off, iwifi_read32(dev, off) | flags)
+#define iwifi_clrbits32(dev, off, flags) iwifi_write32(dev, off, iwifi_read32(dev, off) & ~(flags))
+
+#define iwifi_periph_setbits32(dev, off, flags) iwifi_periph_write32(dev, off, iwifi_read32(dev, off) | flags)
+#define iwifi_periph_clrbits32(dev, off, flags) iwifi_periph_write32(dev, off, iwifi_read32(dev, off) & ~(flags))
+
 
 #endif

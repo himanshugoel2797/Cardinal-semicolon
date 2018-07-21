@@ -76,3 +76,27 @@ void iwifi_rx_dma_state(iwifi_dev_state_t *state, bool enable) {
                 break;
     }
 }
+
+void iwifi_tx_sched_dma_state(iwifi_dev_state_t *state, bool enable){
+    if(enable) {
+	    iwifi_periph_write32(state, IWM_SCD_GP_CTRL, IWM_SCD_GP_CTRL_AUTO_ACTIVE_MODE);
+    }else{
+        iwifi_periph_write32(state, IWM_SCD_TXFACT, 0);
+    }
+}
+
+void iwifi_lock(iwifi_dev_state_t *state) {
+    uint32_t cmp_val = IWM_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY | IWM_CSR_GP_CNTRL_REG_FLAG_GOING_TO_SLEEP;
+
+    iwifi_setbits32(state, IWM_CSR_GP_CNTRL, IWM_CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
+
+    iwifi_setbits32(state, IWM_CSR_GP_CNTRL, IWM_CSR_GP_CNTRL_REG_VAL_MAC_ACCESS_EN);
+    while(true) {
+        if((iwifi_read32(state, IWM_CSR_GP_CNTRL) & cmp_val) == cmp_val)
+            break;
+    }
+}
+
+void iwifi_unlock(iwifi_dev_state_t *state) {
+    iwifi_clrbits32(state, IWM_CSR_GP_CNTRL, IWM_CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
+}

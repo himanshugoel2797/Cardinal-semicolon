@@ -11,9 +11,11 @@
 
 #define ENABLED_CAPS_LEN 4
 #define ENABLED_API_LEN 1
+#define MAX_SECTION_COUNT 0x10
 
 typedef struct {
     void *data;
+    uintptr_t paddr;
     uint32_t len;
     uint32_t offset;
 } fw_section_t;
@@ -27,7 +29,7 @@ typedef enum {
 } fw_section_type_t;
 
 typedef struct {
-    fw_section_t sections[0x10];
+    fw_section_t sections[MAX_SECTION_COUNT];
     uint32_t section_ent;
     uint32_t flow_trigger;
     uint32_t event_trigger;

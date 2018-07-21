@@ -23,6 +23,7 @@
 
 static void intr_handler(int intr_num) {
     intr_num = 0;
+    DEBUG_PRINT("WiFi interrupt!\r\n");
 }
 
 int module_init(void *ecam_addr) {
@@ -73,34 +74,34 @@ int module_init(void *ecam_addr) {
     iwifi_prepare(dev_state);
 
     //Allocate and configure memory for firmware transfer, kw, tx scheduler, tx, rx
-    size_t fw_sz = IWM_FH_MEM_TB_MAX_LENGTH; //16-byte aligned
     size_t tx_sched_rings_sz = IWM_MVM_MAX_QUEUES * sizeof(struct iwm_agn_scd_bc_tbl); //1024-byte aligned
     size_t kw_page_sz = 4096;  //4096 byte aligned
     size_t rx_rings_sz = RX_RING_COUNT * sizeof(uint32_t) + sizeof(struct iwm_rb_status); //256-byte aligned
-    size_t tx_rings_sz = TX_RING_COUNT * (sizeof(struct iwm_tfd) + sizeof(struct iwm_device_cmd)); //256-byte aligned
+    size_t tx_rings_sz = IWM_MVM_MAX_QUEUES * TX_RING_COUNT * sizeof(struct iwm_tfd);
+    size_t tx_cmd_rings_sz = IWM_MVM_MAX_QUEUES * ACTIVE_TX_RING_COUNT * sizeof(struct iwm_device_cmd); //256-byte aligned
     size_t rx_bufs_sz = RX_RING_COUNT * RBUF_SZ;
 
 #define ROUNDUP(x, y) (((x - 1) | (y - 1)) + 1)
 
-    fw_sz = ROUNDUP(fw_sz, 4096);
     tx_sched_rings_sz = ROUNDUP(tx_sched_rings_sz, 4096);
     rx_rings_sz = ROUNDUP(rx_rings_sz, 4096);
     tx_rings_sz = ROUNDUP(tx_rings_sz, 4096);
+    tx_cmd_rings_sz = ROUNDUP(tx_cmd_rings_sz, 4096);
     rx_bufs_sz = ROUNDUP(rx_bufs_sz, 4096);
 
     //Allocate memory
-    dev_state->fw_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, fw_sz);
     dev_state->tx_sched_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, tx_sched_rings_sz);
     dev_state->kw_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, kw_page_sz);
     dev_state->rx_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, rx_rings_sz);
     dev_state->tx_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, tx_rings_sz);
+    dev_state->tx_cmd_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, tx_cmd_rings_sz);
     dev_state->rx_bufs_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, rx_bufs_sz);
 
-    dev_state->fw_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->fw_mem.paddr, fw_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
     dev_state->tx_sched_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->tx_sched_mem.paddr, tx_sched_rings_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
     dev_state->kw_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->kw_mem.paddr, kw_page_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
     dev_state->rx_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->rx_mem.paddr, rx_rings_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
     dev_state->tx_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->tx_mem.paddr, tx_rings_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+    dev_state->tx_cmd_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->tx_cmd_mem.paddr, tx_cmd_rings_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
     dev_state->rx_bufs_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->rx_bufs_mem.paddr, rx_bufs_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
 
     //Setup the rx memory
@@ -118,7 +119,10 @@ int module_init(void *ecam_addr) {
     iwifi_hw_start(dev_state);
 
     //Load and setup the firmware
-    iwifi_fw_init(dev_state);
+    if(iwifi_fw_init(dev_state) != 0){
+        DEBUG_PRINT("WiFi init failed!\r\n");
+        return 0;
+    }
 
     //Test the LEDs, as a visual debugging response
 

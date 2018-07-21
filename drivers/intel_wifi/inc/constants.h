@@ -10,5 +10,6 @@
 #define RBUF_SZ 4096
 
 #define TX_RING_COUNT 256
+#define ACTIVE_TX_RING_COUNT 256
 
 #endif

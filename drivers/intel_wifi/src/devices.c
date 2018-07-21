@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <types.h>
 
+#include "if_iwmreg.h"
+
 #include "devices.h"
 
 iwifi_dev_t iwifi_devices[] = {
@@ -71,4 +73,9 @@ void iwifi_write16(iwifi_dev_state_t *dev, int off, uint16_t val) {
 
 void iwifi_write8(iwifi_dev_state_t *dev, int off, uint8_t val) {
     WRITE_N(uint8_t)
+}
+
+void iwifi_periph_write32(iwifi_dev_state_t *dev, int off, uint32_t val) {
+    iwifi_write32(dev, IWM_HBUS_TARG_PRPH_WADDR, ((off & 0x000fffff) | (3 << 24)));
+    iwifi_write32(dev, IWM_HBUS_TARG_PRPH_WDAT, val);
 }
