@@ -189,6 +189,13 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
                     DEBUG_PRINT("\r\n");
             }*/
 
+            //Ensure allocations required to be 32bit are such
+            if(flags & physmem_alloc_flags_32bit)
+                if(GET_ADDR(deq) & ~0xffffffffull){
+                    insert_queue(deq);
+                    continue;
+                }
+
             if ((int32_t)GET_PG_CNT(deq) >= pg_cnt) {
                 uint64_t ret_addr = GET_ADDR(deq);
                 uint64_t n_addr = ret_addr + pg_cnt * BTM_LEVEL;

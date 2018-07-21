@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include <types.h>
 
+#include "firmware.h"
+
 #define	DEVID_3160_1 0x08b3
 #define	DEVID_3160_2 0x08b4
 #define	DEVID_3165_1 0x3165
@@ -35,11 +37,26 @@ typedef struct {
 extern iwifi_dev_t iwifi_devices[];
 
 typedef struct {
+    uintptr_t paddr;
+    uint8_t *vaddr;
+} iwifi_addr_t;
+
+typedef struct {
     iwifi_dev_t *device;
     uintptr_t bar_phys;
     uint8_t *bar;
 
+    uint32_t int_mask;
     uint32_t hw_rev;
+    fw_info_t fw_info;
+
+    iwifi_addr_t fw_mem;
+    iwifi_addr_t tx_sched_mem;
+    iwifi_addr_t kw_mem;
+    iwifi_addr_t rx_mem;
+    iwifi_addr_t tx_mem;
+    iwifi_addr_t rx_status_mem;
+    iwifi_addr_t rx_bufs_mem;
 
     void *state;
 } iwifi_dev_state_t;

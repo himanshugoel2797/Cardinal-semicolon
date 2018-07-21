@@ -15,10 +15,11 @@
 #include "SysInterrupts/interrupts.h"
 #include "pci/pci.h"
 
-#include "iwl-csr.h"
+#include "if_iwmreg.h"
 
 #include "devices.h"
-#include "pwm.h"
+#include "device_helpers.h"
+#include "constants.h"
 
 static void intr_handler(int intr_num) {
     intr_num = 0;
@@ -69,29 +70,57 @@ int module_init(void *ecam_addr) {
     dev_state->hw_rev = iwifi_read32(dev_state, IWM_CSR_HW_REV);
 
     //Setup the device
-    iwifi_notify_ready(dev_state);
+    iwifi_prepare(dev_state);
 
     //Allocate and configure memory for firmware transfer, kw, tx scheduler, tx, rx
     size_t fw_sz = IWM_FH_MEM_TB_MAX_LENGTH; //16-byte aligned
     size_t tx_sched_rings_sz = IWM_MVM_MAX_QUEUES * sizeof(struct iwm_agn_scd_bc_tbl); //1024-byte aligned
     size_t kw_page_sz = 4096;  //4096 byte aligned
-    size_t rx_rings_sz = RX_RING_COUNT * sizeof(uint32_t) + sizeof(struct iwm_rb_status) + RBUF_SZ; //256-byte aligned
+    size_t rx_rings_sz = RX_RING_COUNT * sizeof(uint32_t) + sizeof(struct iwm_rb_status); //256-byte aligned
     size_t tx_rings_sz = TX_RING_COUNT * (sizeof(struct iwm_tfd) + sizeof(struct iwm_device_cmd)); //256-byte aligned
+    size_t rx_bufs_sz = RX_RING_COUNT * RBUF_SZ;
 
 #define ROUNDUP(x, y) (((x - 1) | (y - 1)) + 1)
 
-    size_t net_sz = ROUNDUP(fw_sz, 1024);
-    net_sz = ROUNDUP((net_sz + tx_sched_rings_sz), 256);
-    net_sz = ROUNDUP((net_sz + rx_rings_sz), 256);
-    net_sz = ROUNDUP((net_sz + tx_rings_sz), 4096);
-    net_sz += kw_page_sz;
-    
-    uintptr_t buf_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, net_sz);
+    fw_sz = ROUNDUP(fw_sz, 4096);
+    tx_sched_rings_sz = ROUNDUP(tx_sched_rings_sz, 4096);
+    rx_rings_sz = ROUNDUP(rx_rings_sz, 4096);
+    tx_rings_sz = ROUNDUP(tx_rings_sz, 4096);
+    rx_bufs_sz = ROUNDUP(rx_bufs_sz, 4096);
+
+    //Allocate memory
+    dev_state->fw_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, fw_sz);
+    dev_state->tx_sched_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, tx_sched_rings_sz);
+    dev_state->kw_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, kw_page_sz);
+    dev_state->rx_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, rx_rings_sz);
+    dev_state->tx_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, tx_rings_sz);
+    dev_state->rx_bufs_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, rx_bufs_sz);
+
+    dev_state->fw_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->fw_mem.paddr, fw_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+    dev_state->tx_sched_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->tx_sched_mem.paddr, tx_sched_rings_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+    dev_state->kw_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->kw_mem.paddr, kw_page_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+    dev_state->rx_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->rx_mem.paddr, rx_rings_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+    dev_state->tx_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->tx_mem.paddr, tx_rings_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+    dev_state->rx_bufs_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->rx_bufs_mem.paddr, rx_bufs_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+
+    //Setup the rx memory
+    uint32_t *rx_ring = (uint32_t*)dev_state->rx_mem.vaddr;
+    for(int i = 0; i < RX_RING_COUNT; i++)
+        rx_ring[i] = dev_state->rx_bufs_mem.paddr + i * RBUF_SZ;
+
+    dev_state->rx_status_mem.vaddr = dev_state->rx_mem.vaddr + RX_RING_COUNT * sizeof(uint32_t);
+    dev_state->rx_status_mem.paddr = dev_state->rx_mem.paddr + RX_RING_COUNT * sizeof(uint32_t);
+
+    //Setup the tx memory
 
 
-    //Test the LEDs, as a visual debugging response
+    //Start the hw
+    iwifi_hw_start(dev_state);
 
     //Load and setup the firmware
+    iwifi_fw_init(dev_state);
+
+    //Test the LEDs, as a visual debugging response
 
     //Find all supported channels and frequency bands
 

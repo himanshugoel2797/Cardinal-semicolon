@@ -66,6 +66,11 @@
 #ifndef	__IF_IWM_REG_H__
 #define	__IF_IWM_REG_H__
 
+#include <stdint.h>
+#include <types.h>
+
+#define __packed PACKED
+
 #define	le16_to_cpup(_a_)	(le16toh(*(const uint16_t *)(_a_)))
 #define	le32_to_cpup(_a_)	(le32toh(*(const uint32_t *)(_a_)))
 
@@ -1627,10 +1632,6 @@ struct iwm_rb_status {
 #define IWM_TX_DMA_MASK        DMA_BIT_MASK(36)
 #define IWM_NUM_OF_TBS		20
 
-static inline uint8_t iwm_get_dma_hi_addr(bus_addr_t addr)
-{
-	return (sizeof(addr) > sizeof(uint32_t) ? (addr >> 16) >> 16 : 0) & 0xF;
-}
 /**
  * struct iwm_tfd_tb transmit buffer descriptor within transmit frame descriptor
  *
@@ -4339,7 +4340,7 @@ struct iwm_tx_cmd {
 	uint16_t pm_frame_timeout;
 	uint16_t driver_txop;
 	uint8_t payload[0];
-	struct ieee80211_frame hdr[0];
+	//TODO: struct ieee80211_frame hdr[0];
 } __packed; /* IWM_TX_CMD_API_S_VER_3 */
 
 /*
@@ -4626,7 +4627,7 @@ struct iwm_mac_beacon_cmd {
 	uint32_t template_id;
 	uint32_t tim_idx;
 	uint32_t tim_size;
-	struct ieee80211_frame frame[0];
+	//TODO: struct ieee80211_frame frame[0];
 } __packed;
 
 struct iwm_beacon_notif {
@@ -4655,25 +4656,6 @@ struct iwm_tx_path_flush_cmd {
 	uint16_t flush_ctl;
 	uint16_t reserved;
 } __packed; /* IWM_TX_PATH_FLUSH_CMD_API_S_VER_1 */
-
-/**
- * iwm_mvm_get_scd_ssn - returns the SSN of the SCD
- * @tx_resp: the Tx response from the fw (agg or non-agg)
- *
- * When the fw sends an AMPDU, it fetches the MPDUs one after the other. Since
- * it can't know that everything will go well until the end of the AMPDU, it
- * can't know in advance the number of MPDUs that will be sent in the current
- * batch. This is why it writes the agg Tx response while it fetches the MPDUs.
- * Hence, it can't know in advance what the SSN of the SCD will be at the end
- * of the batch. This is why the SSN of the SCD is written at the end of the
- * whole struct at a variable offset. This function knows how to cope with the
- * variable offset and returns the SSN of the SCD.
- */
-static inline uint32_t iwm_mvm_get_scd_ssn(struct iwm_mvm_tx_resp *tx_resp)
-{
-	return le32_to_cpup((uint32_t *)&tx_resp->status +
-			    tx_resp->frame_count) & 0xfff;
-}
 
 /*
  * END mvm/fw-api-tx.h
@@ -4743,7 +4725,7 @@ struct iwm_scd_txq_cfg_rsp {
 struct iwm_ssid_ie {
 	uint8_t id;
 	uint8_t len;
-	uint8_t ssid[IEEE80211_NWID_LEN];
+	//TODO: uint8_t ssid[IEEE80211_NWID_LEN];
 } __packed; /* IWM_SCAN_DIRECT_SSID_IE_API_S_VER_1 */
 
 /* scan offload */
@@ -5019,7 +5001,7 @@ enum iwm_scan_framework_client {
  * @client_bitmap: clients ignore this entry  - enum scan_framework_client
  */
 struct iwm_scan_offload_blacklist {
-	uint8_t ssid[IEEE80211_ADDR_LEN];
+	//TODO: uint8_t ssid[IEEE80211_ADDR_LEN];
 	uint8_t reported_rssi;
 	uint8_t client_bitmap;
 } __packed;
@@ -5207,7 +5189,7 @@ struct iwm_scan_config {
 	uint8_t dwell_passive;
 	uint8_t dwell_fragmented;
 	uint8_t dwell_extended;
-	uint8_t mac_addr[IEEE80211_ADDR_LEN];
+	//TODO: uint8_t mac_addr[IEEE80211_ADDR_LEN];
 	uint8_t bcast_sta_id;
 	uint8_t channel_flags;
 	uint8_t channel_array[];
@@ -5373,7 +5355,7 @@ struct iwm_umac_scan_complete {
  *	the channels passed in tue scan offload request
  */
 struct iwm_scan_offload_profile_match {
-	uint8_t bssid[IEEE80211_ADDR_LEN];
+	//TODO: uint8_t bssid[IEEE80211_ADDR_LEN];
 	uint16_t reserved;
 	uint8_t channel;
 	uint8_t energy;
@@ -5681,7 +5663,7 @@ struct iwm_mvm_add_sta_cmd {
 	uint8_t awake_acs;
 	uint16_t tid_disable_tx;
 	uint32_t mac_id_n_color;
-	uint8_t addr[IEEE80211_ADDR_LEN]; /* _STA_ID_MODIFY_INFO_API_S_VER_1 */
+	//TODO: uint8_t addr[IEEE80211_ADDR_LEN]; /* _STA_ID_MODIFY_INFO_API_S_VER_1 */
 	uint16_t reserved2;
 	uint8_t sta_id;
 	uint8_t modify_mask;
@@ -5990,35 +5972,6 @@ struct iwm_dts_measurement_notif_v2 {
 
 #define IWM_FRAME_LIMIT	64
 
-/*
- * These functions retrieve specific information from the id field in
- * the iwm_host_cmd struct which contains the command id, the group id,
- * and the version of the command and vice versa.
-*/
-static inline uint8_t
-iwm_cmd_opcode(uint32_t cmdid)
-{
-	return cmdid & 0xff;
-}
-
-static inline uint8_t
-iwm_cmd_groupid(uint32_t cmdid)
-{
-	return ((cmdid & 0xff00) >> 8);
-}
-
-static inline uint8_t
-iwm_cmd_version(uint32_t cmdid)
-{
-	return ((cmdid & 0xff0000) >> 16);
-}
-
-static inline uint32_t
-iwm_cmd_id(uint8_t opcode, uint8_t groupid, uint8_t version)
-{
-	return opcode + (groupid << 8) + (version << 16);
-}
-
 /* make uint16_t wide id out of uint8_t group and opcode */
 #define IWM_WIDE_ID(grp, opcode) ((grp << 8) | opcode)
 
@@ -6100,45 +6053,7 @@ struct iwm_rx_packet {
 #define IWM_FH_RSCSR_FRAME_INVALID	0x55550000
 #define IWM_FH_RSCSR_FRAME_ALIGN	0x40
 
-static inline uint32_t
-iwm_rx_packet_len(const struct iwm_rx_packet *pkt)
-{
-
-	return le32toh(pkt->len_n_flags) & IWM_FH_RSCSR_FRAME_SIZE_MSK;
-}
-
-static inline uint32_t
-iwm_rx_packet_payload_len(const struct iwm_rx_packet *pkt)
-{
-
-	return iwm_rx_packet_len(pkt) - sizeof(pkt->hdr);
-}
-
-
 #define IWM_MIN_DBM	-100
 #define IWM_MAX_DBM	-33	/* realistic guess */
-
-#define IWM_READ(sc, reg)						\
-	bus_space_read_4((sc)->sc_st, (sc)->sc_sh, (reg))
-
-#define IWM_WRITE(sc, reg, val)						\
-	bus_space_write_4((sc)->sc_st, (sc)->sc_sh, (reg), (val))
-
-#define IWM_WRITE_1(sc, reg, val)					\
-	bus_space_write_1((sc)->sc_st, (sc)->sc_sh, (reg), (val))
-
-#define IWM_SETBITS(sc, reg, mask)					\
-	IWM_WRITE(sc, reg, IWM_READ(sc, reg) | (mask))
-
-#define IWM_CLRBITS(sc, reg, mask)					\
-	IWM_WRITE(sc, reg, IWM_READ(sc, reg) & ~(mask))
-
-#define IWM_BARRIER_WRITE(sc)						\
-	bus_space_barrier((sc)->sc_st, (sc)->sc_sh, 0, (sc)->sc_sz,	\
-	    BUS_SPACE_BARRIER_WRITE)
-
-#define IWM_BARRIER_READ_WRITE(sc)					\
-	bus_space_barrier((sc)->sc_st, (sc)->sc_sh, 0, (sc)->sc_sz,	\
-	    BUS_SPACE_BARRIER_READ | BUS_SPACE_BARRIER_WRITE)
 
 #endif	/* __IF_IWM_REG_H__ */

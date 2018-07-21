@@ -14,6 +14,7 @@ typedef enum {
     physmem_alloc_flags_instr = (1 << 2),
     physmem_alloc_flags_pagetable = (1 << 3),
     physmem_alloc_flags_zero = (1 << 4),
+    physmem_alloc_flags_32bit = (1 << 5),
 } physmem_alloc_flags_t;
 
 uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags, uint64_t size);
