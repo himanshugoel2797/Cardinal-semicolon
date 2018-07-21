@@ -49,6 +49,8 @@ typedef struct {
     uint32_t int_mask;
     uint32_t hw_rev;
     uint32_t fw_mem_offset;
+    volatile uint8_t fh_tx_int;
+    volatile uint8_t rf_kill;
     fw_info_t fw_info;
 
     iwifi_addr_t tx_sched_mem;
@@ -75,12 +77,13 @@ void iwifi_write16(iwifi_dev_state_t *dev, int off, uint16_t val);
 void iwifi_write8(iwifi_dev_state_t *dev, int off, uint8_t val);
 
 void iwifi_periph_write32(iwifi_dev_state_t *dev, int off, uint32_t val);
+uint32_t iwifi_periph_read32(iwifi_dev_state_t *dev, int off);
 
 #define iwifi_setbits32(dev, off, flags) iwifi_write32(dev, off, iwifi_read32(dev, off) | flags)
 #define iwifi_clrbits32(dev, off, flags) iwifi_write32(dev, off, iwifi_read32(dev, off) & ~(flags))
 
-#define iwifi_periph_setbits32(dev, off, flags) iwifi_periph_write32(dev, off, iwifi_read32(dev, off) | flags)
-#define iwifi_periph_clrbits32(dev, off, flags) iwifi_periph_write32(dev, off, iwifi_read32(dev, off) & ~(flags))
+#define iwifi_periph_setbits32(dev, off, flags) iwifi_periph_write32(dev, off, iwifi_periph_read32(dev, off) | flags)
+#define iwifi_periph_clrbits32(dev, off, flags) iwifi_periph_write32(dev, off, iwifi_periph_read32(dev, off) & ~(flags))
 
 
 #endif

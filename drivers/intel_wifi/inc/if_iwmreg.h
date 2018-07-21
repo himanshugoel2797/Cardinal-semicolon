@@ -563,7 +563,7 @@ enum iwm_secure_boot_status_reg {
 #define IWM_HOST_INT_TIMEOUT_MAX	(0xFF)
 #define IWM_HOST_INT_TIMEOUT_DEF	(0x40)
 #define IWM_HOST_INT_TIMEOUT_MIN	(0x0)
-#define IWM_HOST_INT_OPER_MODE		(1 << 31)
+#define IWM_HOST_INT_OPER_MODE		(1u << 31)
 
 /*****************************************************************************
  *                        7000/3000 series SHR DTS addresses                 *

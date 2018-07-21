@@ -21,7 +21,6 @@
 #include "fw_defs.h"
 
 #include <types.h>
-#define DEBUG_MSG 1
 
 static void fw_addsection(fw_info_t *fw_inf, fw_section_type_t type, void *data, size_t data_len) {
     uint32_t sec_ent = fw_inf->section_entries[type].section_ent;
@@ -206,6 +205,11 @@ static int fw_parse(void *data, size_t data_len, fw_info_t *fw_inf) {
 }
 
 void iwifi_push_dma(iwifi_dev_state_t *dev, uintptr_t paddr, uint32_t dest, uint32_t len){
+    
+    dev->fh_tx_int = 0;
+    
+    iwifi_lock(dev);
+
     iwifi_write32(dev, IWM_FH_TCSR_CHNL_TX_CONFIG_REG(IWM_FH_SRVC_CHNL), IWM_FH_TCSR_TX_CONFIG_REG_VAL_DMA_CHNL_PAUSE);
 
 	iwifi_write32(dev, IWM_FH_SRVC_CHNL_SRAM_ADDR_REG(IWM_FH_SRVC_CHNL), dest);
@@ -224,7 +228,26 @@ void iwifi_push_dma(iwifi_dev_state_t *dev, uintptr_t paddr, uint32_t dest, uint
 	    IWM_FH_TCSR_TX_CONFIG_REG_VAL_DMA_CREDIT_DISABLE |
 	    IWM_FH_TCSR_TX_CONFIG_REG_VAL_CIRQ_HOST_ENDTFD);
 
+    iwifi_unlock(dev);
+
     //TODO: An FH_TX interrupt should be raised here
+    while(!dev->fh_tx_int){
+        if(iwifi_read32(dev, IWM_CSR_INT) & IWM_CSR_INT_BIT_FH_TX)
+            DEBUG_PRINT("FH_TX should be ready\r\n");
+        
+        char tmp[10];
+        DEBUG_PRINT("IWM_CSR_INT:");
+        DEBUG_PRINT(itoa(iwifi_read32(dev, IWM_CSR_INT), tmp, 16));
+
+        DEBUG_PRINT(" IWM_CSR_INT_MASK:");
+        DEBUG_PRINT(itoa(iwifi_read32(dev, IWM_CSR_INT_MASK), tmp, 16));
+
+        DEBUG_PRINT(" IWM_CSR_FH_INT_STATUS:");
+        DEBUG_PRINT(itoa(iwifi_read32(dev, IWM_CSR_FH_INT_STATUS), tmp, 16));
+
+        DEBUG_PRINT(" FH_TX Waiting\r\n");
+    }
+    DEBUG_PRINT("FW_TX SENT\r\n");
 }
 
 void iwifi_fw_dma(iwifi_dev_state_t *dev, fw_section_t *sect) {
@@ -239,23 +262,25 @@ void iwifi_fw_dma(iwifi_dev_state_t *dev, fw_section_t *sect) {
         uint32_t cur_chunk_sz = MIN(chunk_sz, sect->len - off);
         uint32_t d_addr = sect->offset + off;
 
+        iwifi_lock(dev);
         if(d_addr >= IWM_FW_MEM_EXTENDED_START && d_addr <= IWM_FW_MEM_EXTENDED_END)
             iwifi_periph_setbits32(dev, IWM_LMPM_CHICK, IWM_LMPM_CHICK_EXTENDED_ADDR_SPACE);
+        iwifi_unlock(dev);
 
         memcpy(buf_u8, sect->data + off, cur_chunk_sz);
         iwifi_push_dma(dev, buf_p, d_addr, cur_chunk_sz);
 
+        iwifi_lock(dev);
         if(d_addr >= IWM_FW_MEM_EXTENDED_START && d_addr <= IWM_FW_MEM_EXTENDED_END)
             iwifi_periph_clrbits32(dev, IWM_LMPM_CHICK, IWM_LMPM_CHICK_EXTENDED_ADDR_SPACE);
+        iwifi_unlock(dev);
     }
 }
 
 void iwifi_load_fw(iwifi_dev_state_t *dev, int cpu, fw_section_type_t type, uint32_t *section_cursor) {
-    int shft_p = 0;
     int last_idx = 0;
 
     if(cpu == 1){
-        shft_p = 16;
         (*section_cursor)++;
     }
 
@@ -279,15 +304,19 @@ void iwifi_setup_fw(iwifi_dev_state_t *dev, fw_section_type_t type) {
     iwifi_load_fw(dev, 0, type, &section_cursor);
     if(dev->fw_info.num_of_cpu == 2) {
         //Load the CPU2 firmware
+        iwifi_lock(dev);
         iwifi_periph_write32(dev, IWM_LMPM_SECURE_UCODE_LOAD_CPU2_HDR_ADDR, IWM_LMPM_SECURE_CPU2_HDR_MEM_SPACE);
+        iwifi_unlock(dev);
+
         iwifi_load_fw(dev, 0, type, &section_cursor);
     }
 }
 
 int iwifi_fw_init(iwifi_dev_state_t *dev) {
     
-    if(iwifi_check_rfkill(dev))
-        return -1;
+    //TODO: We don't check the rfkill switch the first time we init
+    //if(iwifi_check_rfkill(dev))
+    //    return -1;
 
     //Get the firmware file from the initrd and parse
     void *fw_file = NULL;
@@ -303,6 +332,12 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
     //Start the firmware
     iwifi_disable_interrupts(dev);
     iwifi_clear_rfkillhandshake(dev);
+    iwifi_unlock(dev);
+
+    iwifi_prepare(dev);
+    iwifi_hw_start(dev);
+
+    iwifi_lock(dev);
 
     //Setup radio information
     uint8_t r_cfg_type, r_cfg_step, r_cfg_dash;
@@ -321,6 +356,9 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
 
     iwifi_write32(dev, IWM_CSR_HW_IF_CONFIG_REG, r_v);
     //NOTE: Potential issue here, if_iwm.c,1394
+    uint32_t val = iwifi_periph_read32(dev, IWM_APMG_PS_CTRL_REG) & ~IWM_APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS;
+    val |= IWM_APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS;
+    iwifi_periph_write32(dev, IWM_APMG_PS_CTRL_REG, val);
 
     //Setup RX queues
     {
@@ -343,6 +381,9 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
     {
         iwifi_tx_sched_dma_state(dev, false);
 
+        //Setup keep warm page
+        iwifi_write32(dev, IWM_FH_KW_MEM_ADDR_REG, (uint32_t)dev->kw_mem.paddr >> 4);
+
         for(int i = 0; i < TX_RING_COUNT; i++) {
             if(i < ACTIVE_TX_RING_COUNT) {
                 uintptr_t addr = dev->tx_mem.paddr + i * TX_RING_COUNT * sizeof(struct iwm_tfd);
@@ -359,13 +400,19 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
     iwifi_write32(dev, IWM_CSR_MAC_SHADOW_REG_CTRL, 0x800fffff);
 
     //Disable all interrupts besides FH_TX
+    iwifi_disable_interrupts(dev);
     iwifi_write32(dev, IWM_CSR_INT_MASK, IWM_CSR_INT_BIT_FH_TX);
+    dev->int_mask |= IWM_CSR_INT_BIT_FH_TX;
+
+    iwifi_write32(dev, IWM_CSR_INT_MASK, ~0);
+    
     iwifi_clear_rfkillhandshake(dev);
 
+    iwifi_unlock(dev);
+    
     //Load the firmware
     iwifi_setup_fw(dev, fw_section_init);
 
-    iwifi_unlock(dev);
 
     return 0;
 }

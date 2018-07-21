@@ -21,9 +21,46 @@
 #include "device_helpers.h"
 #include "constants.h"
 
+static iwifi_dev_state_t *g_state;
+
 static void intr_handler(int intr_num) {
     intr_num = 0;
+
+    uint32_t cur_ints = iwifi_read32(g_state, IWM_CSR_INT_MASK);
+    iwifi_write32(g_state, IWM_CSR_INT_MASK, 0);
+    uint32_t handled_ints = iwifi_read32(g_state, IWM_CSR_INT) & cur_ints;
+
     DEBUG_PRINT("WiFi interrupt!\r\n");
+    if(handled_ints & IWM_CSR_INT_BIT_FH_TX) {
+        DEBUG_PRINT("FH_TX Interrupt!");
+        g_state->fh_tx_int = 1;
+    }
+
+    if(handled_ints & IWM_CSR_INT_BIT_ALIVE) {
+        DEBUG_PRINT("ALIVE Interrupt!");
+    }
+
+    if(handled_ints & IWM_CSR_INT_BIT_RF_KILL) {
+        DEBUG_PRINT("RF KILL Interrupt!");
+        if(iwifi_check_rfkill(g_state))
+            DEBUG_PRINT("RF KILL ON!");
+    }
+
+    if(handled_ints & IWM_CSR_INT_BIT_HW_ERR) {
+        DEBUG_PRINT("HW ERR Interrupt!");
+    }
+
+    if(handled_ints & IWM_CSR_INT_BIT_SW_ERR) {
+        DEBUG_PRINT("SW ERR Interrupt!");
+    }
+
+    if(handled_ints & IWM_CSR_INT_BIT_WAKEUP) {
+        DEBUG_PRINT("WAKEUP Interrupt!");
+    }
+
+    //Acknowledge all pending interrupts
+    iwifi_write32(g_state, IWM_CSR_INT, handled_ints);
+    iwifi_write32(g_state, IWM_CSR_INT_MASK, cur_ints);
 }
 
 int module_init(void *ecam_addr) {
@@ -39,6 +76,7 @@ int module_init(void *ecam_addr) {
         DEBUG_PRINT("iwifi driver loaded for unsupported device!");
         return 0;
     }
+    g_state = dev_state;
 
     //interrupt setup
     int int_cnt = 0;
@@ -57,13 +95,10 @@ int module_init(void *ecam_addr) {
 
     //figure out which bar to use
     uint64_t bar = 0;
-    for(int i = 0; i < 6; i++) {
-        if((device->bar[i] & 0x6) == 0x4) //Is 64-bit
-            bar = (device->bar[i] & 0xFFFFFFF0) + ((uint64_t)device->bar[i + 1] << 32);
-        else if((device->bar[i] & 0x6) == 0x0) //Is 32-bit
-            bar = (device->bar[i] & 0xFFFFFFF0);
-        if(bar) break;
-    }
+        if((device->bar[0] & 0x6) == 0x4) //Is 64-bit
+            bar = (device->bar[0] & 0xFFFFFFF0) + ((uint64_t)device->bar[1] << 32);
+        else if((device->bar[0] & 0x6) == 0x0) //Is 32-bit
+            bar = (device->bar[0] & 0xFFFFFFF0);
     dev_state->bar_phys = (uintptr_t)bar;
     dev_state->bar = (uint8_t*)vmem_phystovirt((intptr_t)bar, KiB(4), vmem_flags_rw | vmem_flags_uncached | vmem_flags_kernel);
 
@@ -113,7 +148,7 @@ int module_init(void *ecam_addr) {
     dev_state->rx_status_mem.paddr = dev_state->rx_mem.paddr + RX_RING_COUNT * sizeof(uint32_t);
 
     //Setup the tx memory
-
+    memset(dev_state->kw_mem.vaddr, 0, kw_page_sz);
 
     //Start the hw
     iwifi_hw_start(dev_state);

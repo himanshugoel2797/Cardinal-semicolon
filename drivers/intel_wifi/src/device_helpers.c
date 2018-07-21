@@ -42,6 +42,7 @@ void iwifi_hw_start(iwifi_dev_state_t *state) {
     //configure power management
     iwifi_setbits32(state, IWM_CSR_GIO_CHICKEN_BITS, IWM_CSR_GIO_CHICKEN_BITS_REG_BIT_DIS_L0S_EXIT_TIMER);
     iwifi_setbits32(state, IWM_CSR_GIO_CHICKEN_BITS, IWM_CSR_GIO_CHICKEN_BITS_REG_BIT_L1A_NO_L0S_RX);
+	iwifi_setbits32(state, IWM_CSR_DBG_HPET_MEM_REG, IWM_CSR_DBG_HPET_MEM_REG_VAL);
     iwifi_setbits32(state, IWM_CSR_HW_IF_CONFIG_REG, IWM_CSR_HW_IF_CONFIG_REG_BIT_HAP_WAKE_L1A);
     iwifi_clrbits32(state, IWM_CSR_GIO_REG, IWM_CSR_GIO_REG_VAL_L0S_ENABLED);
 
@@ -53,25 +54,41 @@ void iwifi_hw_start(iwifi_dev_state_t *state) {
     }
 
     iwifi_lock(state);
+    iwifi_periph_read32(state, IWM_OSC_CLK);
+	iwifi_periph_read32(state, IWM_OSC_CLK);
+	iwifi_periph_setbits32(state, IWM_OSC_CLK, IWM_OSC_CLK_FORCE_CONTROL);
+	iwifi_periph_read32(state, IWM_OSC_CLK);
+	iwifi_periph_read32(state, IWM_OSC_CLK);
+	iwifi_unlock(state);
+	
+    iwifi_lock(state);
     iwifi_periph_write32(state, IWM_APMG_CLK_EN_REG, IWM_APMG_CLK_VAL_DMA_CLK_RQT);
     iwifi_periph_setbits32(state, IWM_APMG_PCIDEV_STT_REG, IWM_APMG_PCIDEV_STT_VAL_L1_ACT_DIS);
     iwifi_periph_write32(state, IWM_APMG_RTC_INT_STT_REG, IWM_APMG_RTC_INT_STT_RFKILL);
+    
+    uint32_t reg = iwifi_periph_read32(state, IWM_APMG_PS_CTRL_REG);
+    reg = reg & ~IWM_APMG_PS_CTRL_MSK_PWR_SRC;
+    iwifi_periph_write32(state, IWM_APMG_PS_CTRL_REG, reg);
+    
     iwifi_unlock(state);
 
     //Setup the HW kill interrupt
-    iwifi_setbits32(state, IWM_CSR_INT_MASK, IWM_CSR_INT_BIT_RF_KILL);
-    state->int_mask |= IWM_CSR_INT_BIT_RF_KILL;
+    //iwifi_setbits32(state, IWM_CSR_INT_MASK, IWM_CSR_INT_BIT_RF_KILL);
+    //state->int_mask |= IWM_CSR_INT_BIT_RF_KILL;
 }
 
 bool iwifi_check_rfkill(iwifi_dev_state_t *state) {
     uint32_t gp = iwifi_read32(state, IWM_CSR_GP_CNTRL);
-    return (gp & IWM_CSR_GP_CNTRL_REG_FLAG_HW_RF_KILL_SW);
+    state->rf_kill = !(gp & IWM_CSR_GP_CNTRL_REG_FLAG_HW_RF_KILL_SW);
+
+    return state->rf_kill;
 }
 
 void iwifi_disable_interrupts(iwifi_dev_state_t *state) {
     state->int_mask = iwifi_read32(state, IWM_CSR_INT_MASK);
     iwifi_write32(state, IWM_CSR_INT_MASK, 0);
     iwifi_write32(state, IWM_CSR_INT, 0xffffffff);
+    iwifi_write32(state, IWM_CSR_FH_INT_STATUS, 0xffffffff);
 }
 
 void iwifi_clear_rfkillhandshake(iwifi_dev_state_t *state) {
@@ -89,6 +106,11 @@ void iwifi_rx_dma_state(iwifi_dev_state_t *state, bool enable) {
 	                    IWM_RX_QUEUE_SIZE_LOG << IWM_FH_RCSR_RX_CONFIG_RBDCB_SIZE_POS;
 
         iwifi_write32(state, IWM_FH_MEM_RCSR_CHNL0_CONFIG_REG, val);
+	    
+        iwifi_write8(state, IWM_CSR_INT_COALESCING, IWM_HOST_INT_TIMEOUT_DEF);
+        iwifi_setbits32(state, IWM_CSR_INT_COALESCING, IWM_HOST_INT_OPER_MODE);
+
+	    iwifi_write32(state, IWM_FH_RSCSR_CHNL0_WPTR, 8);
     }else{
         iwifi_write32(state, IWM_FH_MEM_RCSR_CHNL0_CONFIG_REG, 0);
 

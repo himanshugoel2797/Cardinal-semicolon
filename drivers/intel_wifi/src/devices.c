@@ -80,3 +80,8 @@ void iwifi_periph_write32(iwifi_dev_state_t *dev, int off, uint32_t val) {
     iwifi_write32(dev, IWM_HBUS_TARG_PRPH_WADDR, ((off & 0x000fffff) | (3 << 24)));
     iwifi_write32(dev, IWM_HBUS_TARG_PRPH_WDAT, val);
 }
+
+uint32_t iwifi_periph_read32(iwifi_dev_state_t *dev, int off) {
+    iwifi_write32(dev, IWM_HBUS_TARG_PRPH_RADDR, ((off & 0x000fffff) | (3 << 24)));
+    return iwifi_read32(dev, IWM_HBUS_TARG_PRPH_RDAT);
+}
