@@ -15,7 +15,8 @@
 
 iwifi_dev_t iwifi_devices[] = {
     {"Intel Dual Band Wireless-AC 3168", "./iwifi_fw/3168.ucode", DEVID_3168_1, FAMILY_7000},
-    {"Intel Dual Band Wireless-AC 3160", "./iwifi_fw/3160.ucode", DEVID_3168_1, FAMILY_7000},
+    {"Intel Dual Band Wireless-AC 3160", "./iwifi_fw/3160.ucode", DEVID_3160_1, FAMILY_7000},
+    {"Intel Dual Band Wireless-AC 3160", "./iwifi_fw/3160.ucode", DEVID_3160_2, FAMILY_7000},
     {NULL, NULL, 0, 0}
 };
 

@@ -116,8 +116,8 @@ int WEAK print_str(const char *s) {
         if(line == 0)
             memset(fbuf, 0, stride * line_limit * 10);
 
-        //for(int i = 0; i < 10000000; i++)
-        //    ;
+        for(int i = 0; i < 10000000; i++)
+            ;
     }
 
     sti(state);

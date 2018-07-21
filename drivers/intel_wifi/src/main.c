@@ -119,9 +119,10 @@ int module_init(void *ecam_addr) {
     iwifi_hw_start(dev_state);
 
     //Load and setup the firmware
-    if(iwifi_fw_init(dev_state) != 0){
+    int err = 0;
+    if((err = iwifi_fw_init(dev_state)) != 0){
         DEBUG_PRINT("WiFi init failed!\r\n");
-        return 0;
+        return err;
     }
 
     //Test the LEDs, as a visual debugging response

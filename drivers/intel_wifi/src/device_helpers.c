@@ -14,10 +14,12 @@
 #include "devices.h"
 
 void iwifi_prepare(iwifi_dev_state_t *dev) {
-    iwifi_setbits32(dev, IWM_CSR_HW_IF_CONFIG_REG, IWM_CSR_HW_IF_CONFIG_REG_PREPARE | IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY);
+    iwifi_setbits32(dev, IWM_CSR_HW_IF_CONFIG_REG, IWM_CSR_HW_IF_CONFIG_REG_PREPARE);
+    iwifi_setbits32(dev, IWM_CSR_HW_IF_CONFIG_REG, IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY);
 
     //Wait for NIC ready
     while(true) {
+        DEBUG_PRINT("NIC Ready Wait\r\n");
         if(iwifi_read32(dev, IWM_CSR_HW_IF_CONFIG_REG) & IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY)
             break;
     }
@@ -30,12 +32,31 @@ void iwifi_reset(iwifi_dev_state_t *dev_state) {
     iwifi_setbits32(dev_state, IWM_CSR_RESET, IWM_CSR_RESET_REG_FLAG_SW_RESET);
 
     //Wait for reset bit to read as being set
-    while(~iwifi_read32(dev_state, IWM_CSR_RESET) & IWM_CSR_RESET_REG_FLAG_SW_RESET)
-        ;
+    while(iwifi_read32(dev_state, IWM_CSR_RESET) & IWM_CSR_RESET_REG_FLAG_SW_RESET)
+        DEBUG_PRINT("Reset Wait\r\n");
 }
 
 void iwifi_hw_start(iwifi_dev_state_t *state) {
     iwifi_reset(state);
+
+    //configure power management
+    iwifi_setbits32(state, IWM_CSR_GIO_CHICKEN_BITS, IWM_CSR_GIO_CHICKEN_BITS_REG_BIT_DIS_L0S_EXIT_TIMER);
+    iwifi_setbits32(state, IWM_CSR_GIO_CHICKEN_BITS, IWM_CSR_GIO_CHICKEN_BITS_REG_BIT_L1A_NO_L0S_RX);
+    iwifi_setbits32(state, IWM_CSR_HW_IF_CONFIG_REG, IWM_CSR_HW_IF_CONFIG_REG_BIT_HAP_WAKE_L1A);
+    iwifi_clrbits32(state, IWM_CSR_GIO_REG, IWM_CSR_GIO_REG_VAL_L0S_ENABLED);
+
+    iwifi_setbits32(state, IWM_CSR_GP_CNTRL, IWM_CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
+    while(true) {
+        DEBUG_PRINT("MAC Ready Wait\r\n");
+        if(iwifi_read32(state, IWM_CSR_GP_CNTRL) & IWM_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY)
+            break;
+    }
+
+    iwifi_lock(state);
+    iwifi_periph_write32(state, IWM_APMG_CLK_EN_REG, IWM_APMG_CLK_VAL_DMA_CLK_RQT);
+    iwifi_periph_setbits32(state, IWM_APMG_PCIDEV_STT_REG, IWM_APMG_PCIDEV_STT_VAL_L1_ACT_DIS);
+    iwifi_periph_write32(state, IWM_APMG_RTC_INT_STT_REG, IWM_APMG_RTC_INT_STT_RFKILL);
+    iwifi_unlock(state);
 
     //Setup the HW kill interrupt
     iwifi_setbits32(state, IWM_CSR_INT_MASK, IWM_CSR_INT_BIT_RF_KILL);
@@ -44,7 +65,7 @@ void iwifi_hw_start(iwifi_dev_state_t *state) {
 
 bool iwifi_check_rfkill(iwifi_dev_state_t *state) {
     uint32_t gp = iwifi_read32(state, IWM_CSR_GP_CNTRL);
-    return ~gp & IWM_CSR_GP_CNTRL_REG_FLAG_HW_RF_KILL_SW;
+    return (gp & IWM_CSR_GP_CNTRL_REG_FLAG_HW_RF_KILL_SW);
 }
 
 void iwifi_disable_interrupts(iwifi_dev_state_t *state) {
@@ -71,9 +92,11 @@ void iwifi_rx_dma_state(iwifi_dev_state_t *state, bool enable) {
     }else{
         iwifi_write32(state, IWM_FH_MEM_RCSR_CHNL0_CONFIG_REG, 0);
 
-        while(true)
-            if(iwifi_read32(state, IWM_FH_MEM_RSSR_RX_STATUS_REG) & IWM_FH_MEM_RSSR_RX_STATUS_REG)
+        while(true){
+            DEBUG_PRINT("RX Wait\r\n");
+            if(iwifi_read32(state, IWM_FH_MEM_RSSR_RX_STATUS_REG) & IWM_FH_RSSR_CHNL0_RX_STATUS_CHNL_IDLE)
                 break;
+        }
     }
 }
 
@@ -90,9 +113,12 @@ void iwifi_lock(iwifi_dev_state_t *state) {
 
     iwifi_setbits32(state, IWM_CSR_GP_CNTRL, IWM_CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
 
-    iwifi_setbits32(state, IWM_CSR_GP_CNTRL, IWM_CSR_GP_CNTRL_REG_VAL_MAC_ACCESS_EN);
     while(true) {
-        if((iwifi_read32(state, IWM_CSR_GP_CNTRL) & cmp_val) == cmp_val)
+        DEBUG_PRINT("Lock Wait\r\n");
+        if(iwifi_read32(state, IWM_CSR_GP_CNTRL) & 0x10)
+            DEBUG_PRINT("Clock sleeping\r\n");
+
+        if((iwifi_read32(state, IWM_CSR_GP_CNTRL) & cmp_val) == IWM_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY)
             break;
     }
 }
