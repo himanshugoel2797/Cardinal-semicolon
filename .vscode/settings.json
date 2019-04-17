@@ -4,6 +4,7 @@
         "priv_timers.h": "c",
         "phys_mem.h": "c",
         "stdlist.h": "c",
-        "types.h": "c"
+        "types.h": "c",
+        "vmem.h": "c"
     },
 }
