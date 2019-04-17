@@ -16,8 +16,12 @@ SECTIONS
 		*(.multiboot)
     	*(.bootstrap_code)
 	}
+/*
+	.bootstrap_code ALIGN(4) : AT(ADDR(.bootstrap_code))
+	{
+	}*/
 
-	.bootstrap_stack ALIGN(4K) : AT(ADDR(.bootstrap_stack))
+	.bootstrap_stack : ALIGN(4K)
 	{
     	*(.bootstrap_stack)
 	}

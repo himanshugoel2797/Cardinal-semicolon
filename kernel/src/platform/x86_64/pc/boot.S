@@ -21,7 +21,7 @@
 .set SIZE, multiboot_end - multiboot_start
 .set CHECKSUM, -(MAGIC + SIZE)
 
-.section .multiboot
+.section .multiboot, "ax"
 .align 4
 multiboot_start:
 .long MAGIC
@@ -219,7 +219,7 @@ multiboot_end:
 
                                .size _start, . - _start
 
-                               .section .bootstrap_stack
+                               .section .bootstrap_stack, "ax"
                                stack_bottom:
                                .skip 16384 # 16 KiB	(16 KiB is enough for initialization until threading is setup)
                                stack_top:
