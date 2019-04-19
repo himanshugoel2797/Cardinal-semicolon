@@ -84,6 +84,6 @@ uint32_t iwifi_periph_read32(iwifi_dev_state_t *dev, int off);
 
 #define iwifi_periph_setbits32(dev, off, flags) iwifi_periph_write32(dev, off, iwifi_periph_read32(dev, off) | flags)
 #define iwifi_periph_clrbits32(dev, off, flags) iwifi_periph_write32(dev, off, iwifi_periph_read32(dev, off) & ~(flags))
-
+#define iwifi_periph_setbits_mask32(dev, bits, mask) iwifi_periph_write32(dev, off, (iwifi_periph_read32(dev, off) & mask) | bits)
 
 #endif

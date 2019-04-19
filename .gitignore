@@ -67,3 +67,4 @@ CTestTestfile.cmake
 *.img
 CMakeSettings.json
 .vs/
+.vscode/

@@ -312,6 +312,22 @@ void iwifi_setup_fw(iwifi_dev_state_t *dev, fw_section_type_t type) {
     }
 }
 
+int iwifi_prepare_card_hw(iwifi_dev_state_t *dev) {
+    //iwm_set_hw_ready
+        //SET(IF_CONFIG_REG, BIT_NIC_READY)
+        //POLL(IF_CONFIG_REG, BIT_NIC_READY)
+        //SET(MBOX_SET_REG, REG_OS_ALIVE)
+    iwifi_setbits32(dev, IWM_CSR_HW_IF_CONFIG_REG, IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY);
+
+    while(true){
+        if(iwifi_read32(dev, IWM_CSR_HW_IF_CONFIG_REG) & IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY == IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY)
+            return 0;
+
+        DEBUG_PRINT("WAITING on iwifi_prepare_card_hw\n");
+    }
+    return 1;
+}
+
 int iwifi_fw_init(iwifi_dev_state_t *dev) {
     
     //TODO: We don't check the rfkill switch the first time we init
@@ -327,17 +343,19 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
     if(fw_parse(fw_file, fw_len, &dev->fw_info) != 0)
         return -3;
 
-    iwifi_lock(dev);
+    //iwm_start_fw
+    iwifi_prepare_card_hw(dev);
 
     //Start the firmware
     iwifi_disable_interrupts(dev);
     iwifi_clear_rfkillhandshake(dev);
-    iwifi_unlock(dev);
 
-    iwifi_prepare(dev);
+    iwifi_write(dev, IWM_CSR_INT, 0xffffffff);
+
     iwifi_hw_start(dev);
 
-    iwifi_lock(dev);
+    //7000 only
+    iwifi_set_pwr(dev);
 
     //Setup radio information
     uint8_t r_cfg_type, r_cfg_step, r_cfg_dash;
@@ -355,10 +373,10 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
 	r_v |= r_cfg_dash << IWM_CSR_HW_IF_CONFIG_REG_POS_PHY_DASH;
 
     iwifi_write32(dev, IWM_CSR_HW_IF_CONFIG_REG, r_v);
-    //NOTE: Potential issue here, if_iwm.c,1394
-    uint32_t val = iwifi_periph_read32(dev, IWM_APMG_PS_CTRL_REG) & ~IWM_APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS;
-    val |= IWM_APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS;
-    iwifi_periph_write32(dev, IWM_APMG_PS_CTRL_REG, val);
+
+    //7000 only
+    iwifi_lock(dev);
+    iwifi_periph_setbits_mask32(dev, IWM_APMG_PS_CTRL_REG, IWM_APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS, ~IWM_APMG_PS_CTRL_EARLY_PWR_OFF_RESET_DIS);
 
     //Setup RX queues
     {
@@ -395,20 +413,16 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
 
         iwifi_tx_sched_dma_state(dev, true);
     }
+    iwifi_unlock(dev);
 
     //Configure MAC shadowing
     iwifi_write32(dev, IWM_CSR_MAC_SHADOW_REG_CTRL, 0x800fffff);
 
-    //Disable all interrupts besides FH_TX
-    iwifi_disable_interrupts(dev);
+    //Enable FH_TX interrupt
     iwifi_write32(dev, IWM_CSR_INT_MASK, IWM_CSR_INT_BIT_FH_TX);
-    dev->int_mask |= IWM_CSR_INT_BIT_FH_TX;
-
-    iwifi_write32(dev, IWM_CSR_INT_MASK, ~0);
+    dev->int_mask = IWM_CSR_INT_BIT_FH_TX;
     
     iwifi_clear_rfkillhandshake(dev);
-
-    iwifi_unlock(dev);
     
     //Load the firmware
     iwifi_setup_fw(dev, fw_section_init);

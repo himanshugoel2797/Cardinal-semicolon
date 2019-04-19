@@ -23,7 +23,9 @@ void iwifi_prepare(iwifi_dev_state_t *dev) {
         if(iwifi_read32(dev, IWM_CSR_HW_IF_CONFIG_REG) & IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY)
             break;
     }
+}
 
+void iwifi_os_alive(iwifi_dev_state_t *dev){
     //Signal that the OS is ready
     iwifi_setbits32(dev, IWM_CSR_MBOX_SET_REG, IWM_CSR_MBOX_SET_REG_OS_ALIVE);
 }
@@ -56,25 +58,41 @@ void iwifi_hw_start(iwifi_dev_state_t *state) {
     iwifi_lock(state);
     iwifi_periph_read32(state, IWM_OSC_CLK);
 	iwifi_periph_read32(state, IWM_OSC_CLK);
+    iwifi_unlock(state);
+
 	iwifi_periph_setbits32(state, IWM_OSC_CLK, IWM_OSC_CLK_FORCE_CONTROL);
-	iwifi_periph_read32(state, IWM_OSC_CLK);
+	
+    iwifi_lock(state);
+    iwifi_periph_read32(state, IWM_OSC_CLK);
 	iwifi_periph_read32(state, IWM_OSC_CLK);
 	iwifi_unlock(state);
 	
-    iwifi_lock(state);
-    iwifi_periph_write32(state, IWM_APMG_CLK_EN_REG, IWM_APMG_CLK_VAL_DMA_CLK_RQT);
-    iwifi_periph_setbits32(state, IWM_APMG_PCIDEV_STT_REG, IWM_APMG_PCIDEV_STT_VAL_L1_ACT_DIS);
-    iwifi_periph_write32(state, IWM_APMG_RTC_INT_STT_REG, IWM_APMG_RTC_INT_STT_RFKILL);
+    //Only family 7000 devices
+    {
+        iwifi_lock(state);
+        iwifi_periph_write32(state, IWM_APMG_CLK_EN_REG, IWM_APMG_CLK_VAL_DMA_CLK_RQT);
+        iwifi_unlock(state);
+
+        //delay 20us   
+        iwifi_periph_setbits32(state, IWM_APMG_PCIDEV_STT_REG, IWM_APMG_PCIDEV_STT_VAL_L1_ACT_DIS);
+        
+        iwifi_lock(state);
+        iwifi_periph_write32(state, IWM_APMG_RTC_INT_STT_REG, IWM_APMG_RTC_INT_STT_RFKILL);
+        iwifi_unlock(state);
+    }
     
-    uint32_t reg = iwifi_periph_read32(state, IWM_APMG_PS_CTRL_REG);
-    reg = reg & ~IWM_APMG_PS_CTRL_MSK_PWR_SRC;
-    iwifi_periph_write32(state, IWM_APMG_PS_CTRL_REG, reg);
+        //uint32_t reg = iwifi_periph_read32(state, IWM_APMG_PS_CTRL_REG);
+        //reg = reg & ~IWM_APMG_PS_CTRL_MSK_PWR_SRC;
+        //iwifi_periph_write32(state, IWM_APMG_PS_CTRL_REG, reg);
     
-    iwifi_unlock(state);
 
     //Setup the HW kill interrupt
-    //iwifi_setbits32(state, IWM_CSR_INT_MASK, IWM_CSR_INT_BIT_RF_KILL);
-    //state->int_mask |= IWM_CSR_INT_BIT_RF_KILL;
+    iwifi_write32(state, IWM_CSR_INT_MASK, IWM_CSR_INT_BIT_RF_KILL);
+    state->int_mask = IWM_CSR_INT_BIT_RF_KILL;
+}
+
+void iwifi_set_pwr(iwifi_dev_state_t *dev){
+    iwifi_periph_setbits_mask32(dev, IWM_APMG_PS_CTRL_REG, IWM_APMG_PS_CTRL_VAL_PWR_SRC_VMAIN, ~IWM_APMG_PS_CTRL_MSK_PWR_SRC);
 }
 
 bool iwifi_check_rfkill(iwifi_dev_state_t *state) {
