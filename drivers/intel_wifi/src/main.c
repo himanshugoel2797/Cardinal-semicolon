@@ -64,6 +64,7 @@ static void intr_handler(int intr_num) {
 }
 
 int module_init(void *ecam_addr) {
+    return 0;
 
     pci_config_t *device = (pci_config_t*)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 

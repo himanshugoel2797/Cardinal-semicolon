@@ -1,4 +1,5 @@
 #include "serialio.h"
+#include "debug_log.h"
 #include "elf.h"
 #include "boot_information.h"
 
@@ -105,6 +106,7 @@ int WEAK debug_handle_trap() {
 int WEAK print_str(const char *s) {
     int state = cli();
     //print_stream(serial_output, SET_RED_BG SET_WHITE_FG);
+    log(s);
     print_stream(serial_output, s);
     //print_stream(serial_output, SET_BLACK_BG SET_WHITE_FG);
 

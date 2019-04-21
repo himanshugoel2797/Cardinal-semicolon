@@ -19,6 +19,7 @@
 #include "SysUser/syscall.h"
 #include "SysTimer/timer.h"
 #include "SysInterrupts/interrupts.h"
+#include "SysReg/registry.h"
 
 #include "task_priv.h"
 #include "error.h"
@@ -33,11 +34,13 @@ static int task_lock = 0;
 
 // process descriptions
 static process_desc_t *processes = NULL;
+static _Atomic int process_count = 0;
 static int process_lock = 0;
 
 // current core description
 static TLS core_desc_t *core_descs = NULL;
 
+#define PIPE_BASE_ADDR (0x018000000000)
 
 cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_t perms, cs_id *id) {
     cs_id alloc_id = cur_id++;
@@ -54,14 +57,34 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         }
 
         memset(proc_info, 0, sizeof(process_desc_t));
+        strncpy(proc_info->name, name, 256);
         proc_info->id = alloc_id;
         proc_info->lock = 0;
         proc_info->thd_cnt = 0;
+        proc_info->desc_id = 0;
+        proc_info->pipe_base_vmem = (intptr_t)PIPE_BASE_ADDR;
 
-        if(vmem_create(&proc_info->mem) != 0) {
+        if(list_init(&proc_info->owned_caps) != 0) {
             free(proc_info);
             return CS_OUTOFMEM;
         }
+        if(list_init(&proc_info->pipes) != 0) {
+            list_fini(&proc_info->owned_caps);
+            free(proc_info);
+            return CS_OUTOFMEM;
+        }
+
+        if(vmem_create(&proc_info->mem) != 0) {
+            list_fini(&proc_info->owned_caps);
+            list_fini(&proc_info->pipes);
+            free(proc_info);
+            return CS_OUTOFMEM;
+        }
+
+        char name_buf[TASK_NAME_LEN + 1];
+        memset(name_buf, 0, TASK_NAME_LEN + 1);
+        strncpy(name_buf, name, TASK_NAME_LEN);
+        registry_createdirectory("PROCS", proc_info->name);
 
         *id = alloc_id;
 
@@ -84,8 +107,9 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
 
             processes = proc_info;
         }
-
         local_spinlock_unlock(&process_lock);
+        process_count++;
+
     }
 
     if(tasktype == cs_task_type_process || tasktype == cs_task_type_thread) {
@@ -100,10 +124,10 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         memcpy(thread_info->name, name, 256);
         thread_info->state = task_state_uninitialized;
         thread_info->permissions = perms;
-        thread_info->signalmask = 0xffffffff;
         thread_info->lock = 0;
         thread_info->pid = (tasktype == cs_task_type_thread) ? core_descs->cur_task->pid : alloc_id;    //add this to the current process, unless it's an new process
         thread_info->id = alloc_id;
+        thread_info->sleep_starttime = 0;
 
         //Allocate the kernel level stack
         thread_info->kernel_stack = malloc(KERNEL_STACK_LEN);
@@ -255,21 +279,309 @@ static void task_switch_handler(int irq) {
     }
 }
 
-cs_error send_ipc_syscall() {
-    return CS_OK;
-}
-cs_error receive_ipc_syscall() {
+cs_error create_pipe_syscall(const char *name, const char *capability_name, uint32_t sz, pipe_flags_t flags){
+    char path[TASK_NAME_LEN + 1 + 6] = "PROCS/";
+    
+    char name_buf[TASK_NAME_LEN + 1];
+    strncpy(name_buf, name, TASK_NAME_LEN);
+
+    local_spinlock_lock(&process_lock);
+    flags &= ~pipe_flags_nocap;
+    process_desc_t *iterator = processes;
+    do
+        iterator = iterator->next;
+    while(iterator->id != core_descs->cur_task->pid);
+
+    //Ensure that the process owns the capabilities it claims to require
+    if(capability_name != NULL){
+        bool capability_matched = false;
+        for(uint64_t i = 0; i < list_len(&iterator->owned_caps); i++){
+            owned_cap_t* cap = (owned_cap_t*)list_at(&iterator->owned_caps, i);
+            if(strncmp(cap->name, capability_name, TASK_NAME_LEN)){
+                capability_matched = true;
+                break;
+            }
+        }
+        if(!capability_matched){
+            local_spinlock_unlock(&process_lock);
+            return CS_UNKN; //The capability_name does not exist
+        }
+    }
+
+    pipe_info_t *pipe_info = malloc(sizeof(pipe_info_t));
+    pipe_info->id = cur_id++;
+    pipe_info->owner_process_id = core_descs->cur_task->pid;
+    pipe_info->user_process_id = 0;
+    pipe_info->flags |= flags;
+    pipe_info->sz = sz;
+    pipe_info->pages = NULL;
+    strncpy(pipe_info->name, name_buf, TASK_NAME_LEN);
+    if(capability_name != NULL)strncpy(pipe_info->cap_name, capability_name, TASK_NAME_LEN);
+    else pipe_info->flags |= pipe_flags_nocap;
+
+    strncat(path, iterator->name, TASK_NAME_LEN);
+    registry_addkey_uint(path, name_buf, (uint64_t)pipe_info);
+
+    local_spinlock_unlock(&process_lock);
     return CS_OK;
 }
 
-cs_error get_perms_syscall(int flag, uint64_t* result) {
-    flag = 0;
-    result = NULL;
+#define ROUNDUP(x, y) (((x - 1) | (y - 1)) + 1)
+static void delete_pipe(pipe_info_t *pipe, const char *path, const char *keyname){
+    registry_removekey(path, keyname);
+    if(pipe->pages != NULL){
+        int page_cnt = ROUNDUP(pipe->sz, 4096) / 4096;
+        for(int i = 0; i < page_cnt; i++)
+            pagealloc_free(pipe->pages[i], KiB(4));
+    }
+    free(pipe->pages);
+    free(pipe);
+}
+
+cs_error open_pipe_syscall(const char *name, intptr_t *mem, pipe_t *pipe_id){
+    //Allocate memory for the pipe, map it into the current process's memory
+    local_spinlock_lock(&process_lock);
+    process_desc_t *iterator = processes;
+    do
+        iterator = iterator->next;
+    while(iterator->id != core_descs->cur_task->pid);
+
+    char path[2 * TASK_NAME_LEN + 2] = "";
+    char proc_name[TASK_NAME_LEN + 1] = "";
+    char keyname[TASK_NAME_LEN + 1] = "";
+    memset(path, 0, 2 * TASK_NAME_LEN + 2);
+    memset(keyname, 0, TASK_NAME_LEN + 1);
+
+    int path_off = 0, keyname_off = 0, proc_name_off = 0;
+    int second_slash_off = -1;
+    int slash_cnt = 0;
+    for(int i = 0; i < TASK_NAME_LEN * 3 + 2 && name[i] != 0; i++){
+        if(slash_cnt < 2){
+            path[path_off++] = name[i];
+            path[path_off] = 0;
+        }
+        if(slash_cnt == 1){
+            proc_name[proc_name_off++] = name[i];
+            proc_name[proc_name_off] = 0;
+        }
+        if(slash_cnt == 2){
+            keyname[keyname_off++] = name[i];
+            keyname[keyname_off] = 0;
+        }
+
+        if(name[i] == '/'){
+            slash_cnt++;
+            if(slash_cnt == 2){
+                second_slash_off = i;
+                break;
+            }
+        }
+    }
+
+    pipe_info_t *pipe_info = NULL;
+    if(registry_readkey_uint(path, keyname, (uint64_t*)&pipe_info) != registry_err_ok){
+        local_spinlock_unlock(&process_lock);
+        return CS_UNKN;
+    }
+
+    int page_cnt = ROUNDUP(pipe_info->sz, 4096) / 4096;
+    if(pipe_info->pages == NULL){
+        pipe_info->pages = malloc(page_cnt * sizeof(uint64_t));
+        for(int i = 0; i < page_cnt; i++)
+            pipe_info->pages[i] = pagealloc_alloc(0, 0, physmem_alloc_flags_data, KiB(4));
+    }
+
+    //create a descriptor
+    pipe_descriptor_t *desc = malloc(sizeof(pipe_descriptor_t));
+    strncpy(desc->proc_name, proc_name, TASK_NAME_LEN);
+    strncpy(desc->pipe_name, keyname, TASK_NAME_LEN);
+    desc->descriptor = iterator->desc_id++;
+    desc->addr = iterator->pipe_base_vmem;
+
+    if(pipe_info->owner_process_id == core_descs->cur_task->pid){
+        //open the pipe as the owner
+        //map in the allocated memory
+        intptr_t ptr_base = desc->addr;
+        for(int i = 0; i < page_cnt; i++, ptr_base += KiB(4))
+            vmem_map(iterator->mem, ptr_base, (intptr_t)pipe_info->pages[i], KiB(4), vmem_flags_write | vmem_flags_read | vmem_flags_user | vmem_flags_cachewritethrough, 0);
+
+        iterator->pipe_base_vmem += page_cnt * KiB(4);
+        *pipe_id = pipe_info->id;
+        *mem = desc->addr;
+        list_append(&iterator->pipes, desc);
+    }else if(pipe_info->user_process_id == 0){
+        //check if the pipe requires any capabilities
+        //if so, verify that the current process has that capability
+        if((pipe_info->flags & pipe_flags_nocap) == 0){
+            bool has_perms = false;
+            process_desc_t *parent = processes;
+            do
+                parent = parent->next;
+            while(parent->id != pipe_info->owner_process_id && parent->next != processes);
+            for(uint64_t i = 0; i < list_len(&parent->owned_caps) && !has_perms; i++){
+                owned_cap_t* cap = (owned_cap_t*)list_at(&parent->owned_caps, i);
+                if(strncmp(cap->name, pipe_info->cap_name, TASK_NAME_LEN) == 0)
+                    for(uint64_t j = 0; j < list_len(&cap->shared_processes); j++){
+                        cs_id id = (cs_id)list_at(&cap->shared_processes, j);
+                        if(id == core_descs->cur_task->pid){
+                            has_perms = true;
+                            break;
+                        }
+                    }
+            }
+            if(!has_perms){
+                local_spinlock_unlock(&process_lock);
+                return CS_UNKN; //the process does not have the necessary permissions
+            }
+        }
+
+        //open the pipe as the user
+        pipe_info->user_process_id = core_descs->cur_task->pid;
+
+        //map in the allocated memory
+        intptr_t ptr_base = desc->addr;
+        for(int i = 0; i < page_cnt; i++, ptr_base += KiB(4))
+            vmem_map(iterator->mem, ptr_base, (intptr_t)pipe_info->pages[i], KiB(4), vmem_flags_write | vmem_flags_read | vmem_flags_user | vmem_flags_cachewritethrough, 0);
+        
+        iterator->pipe_base_vmem += page_cnt * KiB(4);
+        *pipe_id = pipe_info->id;
+        *mem = desc->addr;
+        list_append(&iterator->pipes, desc);
+    }else if(pipe_info->owner_process_id == 0){
+        //fail and remove the pipe entry
+        local_spinlock_unlock(&process_lock);
+        return CS_UNKN; //pipe has been deleted (does not exist anymore)
+    }else{
+        local_spinlock_unlock(&process_lock);
+        return CS_UNKN; //pipe is busy
+    }
+
+    local_spinlock_unlock(&process_lock);
     return CS_OK;
 }
-cs_error release_perms_syscall(int flag) {
-    flag = 0;
+
+cs_error close_pipe_syscall(pipe_t pipe_id){
+    //Unmap the pipe from the current process's memory and remove it from the descriptor list
+    local_spinlock_lock(&process_lock);
+    process_desc_t *iterator = processes;
+    do
+        iterator = iterator->next;
+    while(iterator->id != core_descs->cur_task->pid);
+
+    for(uint64_t i = 0; i < list_len(&iterator->pipes); i++){
+        pipe_descriptor_t* desc = (pipe_descriptor_t*)list_at(&iterator->pipes, i);
+        if(desc->descriptor == pipe_id){
+            //Get the pipe info
+            char path[TASK_NAME_LEN + 7] = "PROCS/";
+            strncat(path, desc->proc_name, TASK_NAME_LEN);
+
+            char pipe_name[TASK_NAME_LEN + 1] = "";
+            strncat(pipe_name, desc->pipe_name, TASK_NAME_LEN);
+
+            pipe_info_t* pipe_info = NULL;
+            if(registry_readkey_uint(path, pipe_name, (uint64_t*)&pipe_info) != registry_err_ok){
+                local_spinlock_unlock(&process_lock);
+                return CS_UNKN; //pipe does not exist
+            }
+
+            //Unmap the memory region
+            int page_cnt = ROUNDUP(pipe_info->sz, 4096) / 4096;
+            intptr_t vaddr = desc->addr;
+            for(int j = 0; j < page_cnt; j++, vaddr += KiB(4))
+                vmem_unmap(iterator->mem, vaddr, KiB(4));     
+
+            //Mark the end of the pipe as closed
+            if(pipe_info->owner_process_id == core_descs->cur_task->pid)
+                pipe_info->owner_process_id = 0;
+            else if(pipe_info->user_process_id == core_descs->cur_task->pid)
+                pipe_info->user_process_id = 0;
+
+            //Remove and free the descriptor
+            list_remove(&iterator->pipes, i);
+            free(desc);
+
+            //if the other end is also closed, delete the pipe
+            if(pipe_info->owner_process_id == 0 && pipe_info->user_process_id == 0){
+                delete_pipe(pipe_info, path, pipe_name);
+            }
+
+            local_spinlock_unlock(&process_lock);
+            return CS_OK;
+        }
+    }
+
+    local_spinlock_unlock(&process_lock);
+    return CS_UNKN; //pipe does not exist
+}
+    
+cs_error create_capability_syscall(const char *capability_name){
+    local_spinlock_lock(&process_lock);
+    process_desc_t *iterator = processes;
+    do
+        iterator = iterator->next;
+    while(iterator->id != core_descs->cur_task->pid);
+
+    //Check the list of capabilities of the current process to see if it already exists
+    local_spinlock_lock(&iterator->lock);
+    for(uint64_t i = 0; i < list_len(&iterator->owned_caps); i++){
+        owned_cap_t *tmp = (owned_cap_t*)list_at(&iterator->owned_caps, i);
+        if(strncmp(tmp->name, capability_name, TASK_NAME_LEN) == 0){
+            local_spinlock_unlock(&iterator->lock);
+            local_spinlock_unlock(&process_lock);
+            return CS_UNKN; //Capability already exists
+        }
+    }
+    local_spinlock_unlock(&iterator->lock);
+
+    owned_cap_t *cap = malloc(sizeof(owned_cap_t));
+    memset(cap, 0, sizeof(owned_cap_t));
+    strncpy(cap->name, capability_name, TASK_NAME_LEN);
+    if(list_init(&cap->shared_processes) != 0){
+        free(cap);
+        local_spinlock_unlock(&process_lock);
+        return CS_OUTOFMEM;
+    }
+
+    local_spinlock_lock(&iterator->lock);
+    list_append(&iterator->owned_caps, cap);
+    local_spinlock_unlock(&iterator->lock);
+
+    local_spinlock_unlock(&process_lock);
     return CS_OK;
+}
+
+cs_error share_capability_syscall(cs_id dst, const char *capability_name){
+    local_spinlock_lock(&process_lock);
+    process_desc_t *iterator = processes;
+    do
+        iterator = iterator->next;
+    while(iterator->id != core_descs->cur_task->pid);
+
+    process_desc_t *check_iter = processes;
+    do
+        check_iter = check_iter->next;
+    while(check_iter->id != dst && check_iter->next != processes);
+    if(check_iter->id != dst)
+    {
+        local_spinlock_unlock(&process_lock);
+        return CS_UNKN; //Process id does not exist
+    }
+
+    //Check the list of capabilities of the current process to see if it already exists
+    local_spinlock_lock(&iterator->lock);
+    for(uint64_t i = 0; i < list_len(&iterator->owned_caps); i++){
+        owned_cap_t *tmp = (owned_cap_t*)list_at(&iterator->owned_caps, i);
+        if(strncmp(tmp->name, capability_name, TASK_NAME_LEN) == 0){
+            list_append(&tmp->shared_processes, (void*)(uint64_t*)dst);
+
+            local_spinlock_unlock(&iterator->lock);
+            local_spinlock_unlock(&process_lock);
+            return CS_OK; //Capability made available to process
+        }
+    }
+    local_spinlock_unlock(&iterator->lock);
+    local_spinlock_unlock(&process_lock);
+    return CS_UNKN; //Capability does not exist
 }
 
 cs_error create_task_syscall(cs_task_type tasktype, char *name, cs_id *id) {
@@ -278,64 +590,16 @@ cs_error create_task_syscall(cs_task_type tasktype, char *name, cs_id *id) {
 cs_error start_task_syscall(cs_id id, void(*handler)(void *arg)) {
     return start_task_kernel(id, handler);
 }
-
-cs_error nanosleep_syscall() {
-    return CS_OK;
-}
-
-cs_error signal_syscall() {
-    return CS_OK;
-}
-cs_error register_signal_syscall() {
-    return CS_OK;
-}
-cs_error signal_mask_syscall() {
-    return CS_OK;
-}
-
 cs_error exit_syscall() {
+    //Release ownership of all pipes
+    //Delete all capabilities
     return CS_OK;
 }
 cs_error kill_task_syscall() {
     return CS_OK;
 }
 
-cs_error map_syscall(cs_id pid, intptr_t virt, intptr_t phys, size_t sz, int perms, int flags) {
-    pid = 0;
-    virt = 0;
-    phys = 0;
-    sz = 0;
-    perms = 0;
-    flags = 0;
-    return CS_OK;
-}
-cs_error unmap_syscall(cs_id pid, intptr_t virt, size_t sz) {
-    pid = 0;
-    virt = 0;
-    sz = 0;
-    return CS_OK;
-}
-cs_error read_mmap_syscall(cs_id pid, intptr_t virt, intptr_t *phys, size_t *sz, int *perms, int *flags) {
-    pid = 0;
-    virt = 0;
-    phys = NULL;
-    sz = NULL;
-    perms = NULL;
-    flags = NULL;
-    return CS_OK;
-}
-
-cs_error pmalloc_syscall(int flags, size_t sz, uintptr_t *addr) {
-    //pagealloc_alloc
-    *addr = pagealloc_alloc(0, 0, flags, sz);
-    if(*addr == (uintptr_t)-1)
-        return CS_OUTOFMEM;
-
-    return CS_OK;
-}
-cs_error pfree_syscall(uintptr_t addr, size_t sz) {
-    //pagealloc_free
-    pagealloc_free(addr, sz);
+cs_error nanosleep_syscall() {
     return CS_OK;
 }
 
@@ -347,7 +611,6 @@ void servicescript_handler(void *arg) {
 
     while(true) halt(); //TODO: Implemented process termination
 }
-
 
 int module_mp_init() {
 
@@ -379,38 +642,28 @@ int module_init() {
     if(core_descs == NULL)
         core_descs = (TLS core_desc_t*)mp_tls_get(mp_tls_alloc(sizeof(core_desc_t)));
 
+    registry_createdirectory("", "PROCS");
     module_mp_init();
 
     //Enable server load tasks
     //Server load tasks work by creating a new task with the elf loader and passing in the program tar for extraction and loading
-
-
-    //Install ipc, get_perms, release_perms, tasking syscalls
-    syscall_sethandler(0, (void*)send_ipc_syscall);
-    syscall_sethandler(1, (void*)receive_ipc_syscall);
-
-    syscall_sethandler(10, (void*)get_perms_syscall);
-    syscall_sethandler(11, (void*)release_perms_syscall);
+    syscall_sethandler(0, (void*)create_pipe_syscall);
+    syscall_sethandler(1, (void*)open_pipe_syscall);
+    syscall_sethandler(2, (void*)close_pipe_syscall);
+    
+    syscall_sethandler(10, (void*)create_capability_syscall);
+    syscall_sethandler(11, (void*)share_capability_syscall);
 
     syscall_sethandler(20, (void*)create_task_syscall);
-    syscall_sethandler(23, (void*)start_task_syscall);
+    syscall_sethandler(21, (void*)start_task_syscall);
+    syscall_sethandler(22, (void*)exit_syscall);
+    syscall_sethandler(23, (void*)kill_task_syscall);
 
-    syscall_sethandler(25, (void*)nanosleep_syscall);
+    syscall_sethandler(30, (void*)nanosleep_syscall);
 
-    syscall_sethandler(26, (void*)signal_syscall);
-    syscall_sethandler(27, (void*)register_signal_syscall);
-    syscall_sethandler(28, (void*)signal_mask_syscall);
-
-    syscall_sethandler(29, (void*)exit_syscall);
-    syscall_sethandler(30, (void*)kill_task_syscall);
-
-    //add map, unmap and pmalloc and pfree syscalls
-    syscall_sethandler(31, (void*)map_syscall);
-    syscall_sethandler(32, (void*)unmap_syscall);
-    syscall_sethandler(33, (void*)read_mmap_syscall);
-
-    syscall_sethandler(34, (void*)pmalloc_syscall);
-    syscall_sethandler(35, (void*)pfree_syscall);
+    //add map, unmap syscalls
+    //syscall_sethandler(31, (void*)map_syscall);
+    //syscall_sethandler(32, (void*)unmap_syscall);
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers
 

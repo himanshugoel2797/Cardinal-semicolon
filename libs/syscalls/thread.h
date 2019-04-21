@@ -21,8 +21,6 @@ typedef uint32_t cs_signalnum;
 typedef void (*cs_signalhandler)(cs_signalnum signal, int err);
 
 cs_error cs_createtask(cs_task_type tasktype, char *name, cs_id *id);
-cs_error cs_writeprocessmemory(cs_id id);
-cs_error cs_readprocessmemory(cs_id id);
 cs_error cs_starttask(cs_id id, void *start_address, void *argument);
 
 cs_error cs_nanosleep(uint64_t ns);

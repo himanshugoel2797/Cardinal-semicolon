@@ -320,7 +320,7 @@ int iwifi_prepare_card_hw(iwifi_dev_state_t *dev) {
     iwifi_setbits32(dev, IWM_CSR_HW_IF_CONFIG_REG, IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY);
 
     while(true){
-        if(iwifi_read32(dev, IWM_CSR_HW_IF_CONFIG_REG) & IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY == IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY)
+        if((iwifi_read32(dev, IWM_CSR_HW_IF_CONFIG_REG) & IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY) == IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY)
             return 0;
 
         DEBUG_PRINT("WAITING on iwifi_prepare_card_hw\n");
@@ -350,7 +350,7 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
     iwifi_disable_interrupts(dev);
     iwifi_clear_rfkillhandshake(dev);
 
-    iwifi_write(dev, IWM_CSR_INT, 0xffffffff);
+    iwifi_write32(dev, IWM_CSR_INT, 0xffffffff);
 
     iwifi_hw_start(dev);
 

@@ -25,6 +25,7 @@ typedef enum display_connection {
 typedef struct display_info {
     uint16_t h_sz;
     uint16_t w_sz;
+    uint8_t bit_dpth;
     uint16_t resolution_current;
     uint16_t resolutions_count;
     display_res_info_t *resolutions;

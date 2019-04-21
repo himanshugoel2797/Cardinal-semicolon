@@ -188,7 +188,7 @@ PRIVATE int hpet_init() {
 
         main_features |= timer_features_counter | timer_features_write;
 
-        main_counter.rate = base_addr->Capabilities.ClockPeriod;
+        main_counter.rate = 1000000000000000 / (uint64_t)base_addr->Capabilities.ClockPeriod;
         main_counter.state = (uint64_t)base_addr;
         main_counter.read = hpet_main_read;
         main_counter.write = hpet_main_write;
@@ -251,7 +251,7 @@ PRIVATE int hpet_init() {
             sub_counter.name[8] = (i + '0');
             sub_counter.name[9] = 0;
 
-            sub_counter.rate = base_addr->Capabilities.ClockPeriod;
+            sub_counter.rate = 1000000000000000 / (uint64_t)base_addr->Capabilities.ClockPeriod;
             sub_counter.state = i;
             sub_counter.read = hpet_timer_read;
             sub_counter.write = hpet_timer_write;

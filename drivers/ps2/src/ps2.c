@@ -25,7 +25,8 @@ static void ps2_kbd_irq(int int_num) {
                 break;
         }
     } while(1);
-    DEBUG_PRINT("Keyboard Interrupt\r\n");
+    if(c == 0x1c)
+        DEBUG_PRINT("Keyboard Interrupt\r\n");
 }
 
 static void ps2_mouse_irq(int int_num) {

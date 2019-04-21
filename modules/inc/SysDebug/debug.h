@@ -33,4 +33,7 @@ int debug_readstr(char *buf, int maxlen);
 int debug_setfg(DebugColor_t col);
 int debug_setbg(DebugColor_t col);
 
+const char* debug_getlogbase(void);
+uint32_t debug_getlogendoffset(void);
+
 #endif
