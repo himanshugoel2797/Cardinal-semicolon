@@ -191,7 +191,7 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
 
             //Ensure allocations required to be 32bit are such
             if(flags & physmem_alloc_flags_32bit)
-                if(GET_ADDR(deq) & ~0xffffffffull){
+                if(GET_ADDR(deq) & ~0xffffffffull) {
                     insert_queue(deq);
                     continue;
                 }

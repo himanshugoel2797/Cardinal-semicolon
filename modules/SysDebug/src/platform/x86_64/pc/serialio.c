@@ -112,11 +112,11 @@ int WEAK print_str(const char *s) {
 
     if(fbuf != NULL) {
 
-        while(*s != 0){
-            
+        while(*s != 0) {
+
             if(*(s++) != '\n')
                 continue;
-            
+
             line = (line + 1) % line_limit;
 
             char_pos = 0;

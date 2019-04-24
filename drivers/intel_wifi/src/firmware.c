@@ -25,10 +25,10 @@
 static void fw_addsection(fw_info_t *fw_inf, fw_section_type_t type, void *data, size_t data_len) {
     uint32_t sec_ent = fw_inf->section_entries[type].section_ent;
     data_len -= sizeof(uint32_t);
-    
+
     fw_inf->section_entries[type].sections[sec_ent].data = malloc(data_len);
     memcpy(fw_inf->section_entries[type].sections[sec_ent].data, (uint8_t*)data + sizeof(uint32_t), data_len);
-    
+
     fw_inf->section_entries[type].sections[sec_ent].len = data_len;
     fw_inf->section_entries[type].sections[sec_ent].offset = *(uint32_t*)data;
     fw_inf->section_entries[type].section_ent++;
@@ -61,141 +61,126 @@ static int fw_parse(void *data, size_t data_len, fw_info_t *fw_inf) {
 
 
         switch(tlv->type) {
-            case UCODE_TLV_PROBE_MAX_LEN:
-                {
+        case UCODE_TLV_PROBE_MAX_LEN: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("PROBE_MAX_LEN\r\n");
+            DEBUG_PRINT("PROBE_MAX_LEN\r\n");
 #endif
-                    fw_inf->probe_max_len = *(uint32_t*)tlv->data;
-                }
-                break;
-            case UCODE_TLV_PAGING:
-                {
+            fw_inf->probe_max_len = *(uint32_t*)tlv->data;
+        }
+        break;
+        case UCODE_TLV_PAGING: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("PAGING\r\n");
+            DEBUG_PRINT("PAGING\r\n");
 #endif
-                    fw_inf->paging_sz = *(uint32_t*)tlv->data;
-                }
-                break;
-            case UCODE_TLV_PHY_SKU:
-                {
+            fw_inf->paging_sz = *(uint32_t*)tlv->data;
+        }
+        break;
+        case UCODE_TLV_PHY_SKU: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("PHY SKU\r\n");
+            DEBUG_PRINT("PHY SKU\r\n");
 #endif
-                    fw_inf->phy_sku = *(uint32_t*)tlv->data;
-                }
-                break;
-            case UCODE_TLV_NUM_OF_CPU:
-                {
+            fw_inf->phy_sku = *(uint32_t*)tlv->data;
+        }
+        break;
+        case UCODE_TLV_NUM_OF_CPU: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("NUM OF CPU\r\n");
+            DEBUG_PRINT("NUM OF CPU\r\n");
 #endif
-                    fw_inf->num_of_cpu = *(uint32_t*)tlv->data;
-                }
-                break;
-            case UCODE_TLV_N_SCAN_CHANNELS:
-                {
+            fw_inf->num_of_cpu = *(uint32_t*)tlv->data;
+        }
+        break;
+        case UCODE_TLV_N_SCAN_CHANNELS: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("N SCAN CHANNELS\r\n");
+            DEBUG_PRINT("N SCAN CHANNELS\r\n");
 #endif
-                    fw_inf->n_scan_channels = *(uint32_t*)tlv->data;
-                }
-                break;
-            case UCODE_TLV_FW_VERSION:
-                {
+            fw_inf->n_scan_channels = *(uint32_t*)tlv->data;
+        }
+        break;
+        case UCODE_TLV_FW_VERSION: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("FW VERSION\r\n");
+            DEBUG_PRINT("FW VERSION\r\n");
 #endif
-                    fw_inf->fw_version[0] = ((uint32_t*)tlv->data)[0];
-                    fw_inf->fw_version[1] = ((uint32_t*)tlv->data)[1];
-                    fw_inf->fw_version[2] = ((uint32_t*)tlv->data)[2];
-                }
-                break;
-            case UCODE_TLV_PAN:
-                {
+            fw_inf->fw_version[0] = ((uint32_t*)tlv->data)[0];
+            fw_inf->fw_version[1] = ((uint32_t*)tlv->data)[1];
+            fw_inf->fw_version[2] = ((uint32_t*)tlv->data)[2];
+        }
+        break;
+        case UCODE_TLV_PAN: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("PAN\r\n");
+            DEBUG_PRINT("PAN\r\n");
 #endif
-                    fw_inf->flags |= 1;
-                }
-                break;
-            case UCODE_TLV_FLAGS:
-                {
+            fw_inf->flags |= 1;
+        }
+        break;
+        case UCODE_TLV_FLAGS: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("FLAGS\r\n");
+            DEBUG_PRINT("FLAGS\r\n");
 #endif
-                    fw_inf->flags = *(uint32_t*)tlv->data;
-                }
-                break;
-            case UCODE_TLV_SEC_RT:
-                {
+            fw_inf->flags = *(uint32_t*)tlv->data;
+        }
+        break;
+        case UCODE_TLV_SEC_RT: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("SEC RT\r\n");
+            DEBUG_PRINT("SEC RT\r\n");
 #endif
-                    fw_addsection(fw_inf, fw_section_regular, tlv->data, tlv_len);
-                }
-                break;
-            case UCODE_TLV_SEC_INIT:
-                {
+            fw_addsection(fw_inf, fw_section_regular, tlv->data, tlv_len);
+        }
+        break;
+        case UCODE_TLV_SEC_INIT: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("SEC INIT\r\n");
+            DEBUG_PRINT("SEC INIT\r\n");
 #endif
-                    fw_addsection(fw_inf, fw_section_init, tlv->data, tlv_len);
-                }
-                break;
-            case UCODE_TLV_SEC_WOWLAN:
-                {
+            fw_addsection(fw_inf, fw_section_init, tlv->data, tlv_len);
+        }
+        break;
+        case UCODE_TLV_SEC_WOWLAN: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("SEC WOWLAN\r\n");
+            DEBUG_PRINT("SEC WOWLAN\r\n");
 #endif
-                    fw_addsection(fw_inf, fw_section_wowlan, tlv->data, tlv_len);
-                }
-                break;
-            case UCODE_TLV_SEC_RT_USNIFFER:
-                {
+            fw_addsection(fw_inf, fw_section_wowlan, tlv->data, tlv_len);
+        }
+        break;
+        case UCODE_TLV_SEC_RT_USNIFFER: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("SEC RT USNIFFER\r\n");
+            DEBUG_PRINT("SEC RT USNIFFER\r\n");
 #endif
-                    fw_addsection(fw_inf, fw_section_usniffer, tlv->data, tlv_len);
-                }
-                break;
-            case UCODE_TLV_ENABLED_CAPABILITIES:
-                {
+            fw_addsection(fw_inf, fw_section_usniffer, tlv->data, tlv_len);
+        }
+        break;
+        case UCODE_TLV_ENABLED_CAPABILITIES: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("ENABLED CAPABILITIES\r\n");
+            DEBUG_PRINT("ENABLED CAPABILITIES\r\n");
 #endif
-                    uint32_t idx = ((uint32_t*)tlv->data)[0];
-                    uint32_t flags = ((uint32_t*)tlv->data)[1];
+            uint32_t idx = ((uint32_t*)tlv->data)[0];
+            uint32_t flags = ((uint32_t*)tlv->data)[1];
 
-                    if(idx < ENABLED_CAPS_LEN)
-                        fw_inf->enabled_caps[idx] |= flags;
-                }
-                break;
-            case UCODE_TLV_API_CHANGES_SET:
-                {
+            if(idx < ENABLED_CAPS_LEN)
+                fw_inf->enabled_caps[idx] |= flags;
+        }
+        break;
+        case UCODE_TLV_API_CHANGES_SET: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("API CHANGES SET\r\n");
+            DEBUG_PRINT("API CHANGES SET\r\n");
 #endif
-                    uint32_t idx = ((uint32_t*)tlv->data)[0];
-                    uint32_t flags = ((uint32_t*)tlv->data)[1];
+            uint32_t idx = ((uint32_t*)tlv->data)[0];
+            uint32_t flags = ((uint32_t*)tlv->data)[1];
 
-                    if(idx < ENABLED_API_LEN)
-                        fw_inf->enabled_api[idx] |= flags;
-                }
-                break;
-            case UCODE_TLV_DEF_CALIB:
-                {
+            if(idx < ENABLED_API_LEN)
+                fw_inf->enabled_api[idx] |= flags;
+        }
+        break;
+        case UCODE_TLV_DEF_CALIB: {
 #ifdef DEBUG_MSG
-                    DEBUG_PRINT("DEF CALIB\r\n");
+            DEBUG_PRINT("DEF CALIB\r\n");
 #endif
-                    struct tlv_def_calib *calib_data = (struct tlv_def_calib*)tlv->data;
-                    fw_inf->section_entries[calib_data->type].flow_trigger = calib_data->flow_trigger;
-                    fw_inf->section_entries[calib_data->type].event_trigger = calib_data->event_trigger;
-                }
-                break;
-            default:
+            struct tlv_def_calib *calib_data = (struct tlv_def_calib*)tlv->data;
+            fw_inf->section_entries[calib_data->type].flow_trigger = calib_data->flow_trigger;
+            fw_inf->section_entries[calib_data->type].event_trigger = calib_data->event_trigger;
+        }
+        break;
+        default:
 #ifdef DEBUG_MSG
-                DEBUG_PRINT("Unknown\r\n");
+            DEBUG_PRINT("Unknown\r\n");
 #endif
             break;
         }
@@ -204,37 +189,37 @@ static int fw_parse(void *data, size_t data_len, fw_info_t *fw_inf) {
     return 0;
 }
 
-void iwifi_push_dma(iwifi_dev_state_t *dev, uintptr_t paddr, uint32_t dest, uint32_t len){
-    
+void iwifi_push_dma(iwifi_dev_state_t *dev, uintptr_t paddr, uint32_t dest, uint32_t len) {
+
     dev->fh_tx_int = 0;
-    
+
     iwifi_lock(dev);
 
     iwifi_write32(dev, IWM_FH_TCSR_CHNL_TX_CONFIG_REG(IWM_FH_SRVC_CHNL), IWM_FH_TCSR_TX_CONFIG_REG_VAL_DMA_CHNL_PAUSE);
 
-	iwifi_write32(dev, IWM_FH_SRVC_CHNL_SRAM_ADDR_REG(IWM_FH_SRVC_CHNL), dest);
+    iwifi_write32(dev, IWM_FH_SRVC_CHNL_SRAM_ADDR_REG(IWM_FH_SRVC_CHNL), dest);
 
-	iwifi_write32(dev, IWM_FH_TFDIB_CTRL0_REG(IWM_FH_SRVC_CHNL), (uint32_t)paddr & IWM_FH_MEM_TFDIB_DRAM_ADDR_LSB_MSK);
+    iwifi_write32(dev, IWM_FH_TFDIB_CTRL0_REG(IWM_FH_SRVC_CHNL), (uint32_t)paddr & IWM_FH_MEM_TFDIB_DRAM_ADDR_LSB_MSK);
 
-	iwifi_write32(dev, IWM_FH_TFDIB_CTRL1_REG(IWM_FH_SRVC_CHNL), len);
+    iwifi_write32(dev, IWM_FH_TFDIB_CTRL1_REG(IWM_FH_SRVC_CHNL), len);
 
-	iwifi_write32(dev, IWM_FH_TCSR_CHNL_TX_BUF_STS_REG(IWM_FH_SRVC_CHNL),
-	    1 << IWM_FH_TCSR_CHNL_TX_BUF_STS_REG_POS_TB_NUM |
-	    1 << IWM_FH_TCSR_CHNL_TX_BUF_STS_REG_POS_TB_IDX |
-	    IWM_FH_TCSR_CHNL_TX_BUF_STS_REG_VAL_TFDB_VALID);
+    iwifi_write32(dev, IWM_FH_TCSR_CHNL_TX_BUF_STS_REG(IWM_FH_SRVC_CHNL),
+                  1 << IWM_FH_TCSR_CHNL_TX_BUF_STS_REG_POS_TB_NUM |
+                  1 << IWM_FH_TCSR_CHNL_TX_BUF_STS_REG_POS_TB_IDX |
+                  IWM_FH_TCSR_CHNL_TX_BUF_STS_REG_VAL_TFDB_VALID);
 
-	iwifi_write32(dev, IWM_FH_TCSR_CHNL_TX_CONFIG_REG(IWM_FH_SRVC_CHNL),
-	    IWM_FH_TCSR_TX_CONFIG_REG_VAL_DMA_CHNL_ENABLE    |
-	    IWM_FH_TCSR_TX_CONFIG_REG_VAL_DMA_CREDIT_DISABLE |
-	    IWM_FH_TCSR_TX_CONFIG_REG_VAL_CIRQ_HOST_ENDTFD);
+    iwifi_write32(dev, IWM_FH_TCSR_CHNL_TX_CONFIG_REG(IWM_FH_SRVC_CHNL),
+                  IWM_FH_TCSR_TX_CONFIG_REG_VAL_DMA_CHNL_ENABLE    |
+                  IWM_FH_TCSR_TX_CONFIG_REG_VAL_DMA_CREDIT_DISABLE |
+                  IWM_FH_TCSR_TX_CONFIG_REG_VAL_CIRQ_HOST_ENDTFD);
 
     iwifi_unlock(dev);
 
     //TODO: An FH_TX interrupt should be raised here
-    while(!dev->fh_tx_int){
+    while(!dev->fh_tx_int) {
         if(iwifi_read32(dev, IWM_CSR_INT) & IWM_CSR_INT_BIT_FH_TX)
             DEBUG_PRINT("FH_TX should be ready\r\n");
-        
+
         char tmp[10];
         DEBUG_PRINT("IWM_CSR_INT:");
         DEBUG_PRINT(itoa(iwifi_read32(dev, IWM_CSR_INT), tmp, 16));
@@ -280,7 +265,7 @@ void iwifi_fw_dma(iwifi_dev_state_t *dev, fw_section_t *sect) {
 void iwifi_load_fw(iwifi_dev_state_t *dev, int cpu, fw_section_type_t type, uint32_t *section_cursor) {
     int last_idx = 0;
 
-    if(cpu == 1){
+    if(cpu == 1) {
         (*section_cursor)++;
     }
 
@@ -288,9 +273,9 @@ void iwifi_load_fw(iwifi_dev_state_t *dev, int cpu, fw_section_type_t type, uint
         last_idx = i;
 
         if((dev->fw_info.section_entries[type].sections[i].offset == IWM_CPU1_CPU2_SEPARATOR_SECTION) ||
-           (dev->fw_info.section_entries[type].sections[i].offset == IWM_PAGING_SEPARATOR_SECTION) ||
-           (dev->fw_info.section_entries[type].sections[i].data == NULL))
-                break;
+                (dev->fw_info.section_entries[type].sections[i].offset == IWM_PAGING_SEPARATOR_SECTION) ||
+                (dev->fw_info.section_entries[type].sections[i].data == NULL))
+            break;
 
         iwifi_fw_dma(dev, &dev->fw_info.section_entries[type].sections[i]);
     }
@@ -299,7 +284,7 @@ void iwifi_load_fw(iwifi_dev_state_t *dev, int cpu, fw_section_type_t type, uint
 }
 
 void iwifi_setup_fw(iwifi_dev_state_t *dev, fw_section_type_t type) {
-    
+
     uint32_t section_cursor = 0;
     iwifi_load_fw(dev, 0, type, &section_cursor);
     if(dev->fw_info.num_of_cpu == 2) {
@@ -314,12 +299,12 @@ void iwifi_setup_fw(iwifi_dev_state_t *dev, fw_section_type_t type) {
 
 int iwifi_prepare_card_hw(iwifi_dev_state_t *dev) {
     //iwm_set_hw_ready
-        //SET(IF_CONFIG_REG, BIT_NIC_READY)
-        //POLL(IF_CONFIG_REG, BIT_NIC_READY)
-        //SET(MBOX_SET_REG, REG_OS_ALIVE)
+    //SET(IF_CONFIG_REG, BIT_NIC_READY)
+    //POLL(IF_CONFIG_REG, BIT_NIC_READY)
+    //SET(MBOX_SET_REG, REG_OS_ALIVE)
     iwifi_setbits32(dev, IWM_CSR_HW_IF_CONFIG_REG, IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY);
 
-    while(true){
+    while(true) {
         if((iwifi_read32(dev, IWM_CSR_HW_IF_CONFIG_REG) & IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY) == IWM_CSR_HW_IF_CONFIG_REG_BIT_NIC_READY)
             return 0;
 
@@ -329,7 +314,7 @@ int iwifi_prepare_card_hw(iwifi_dev_state_t *dev) {
 }
 
 int iwifi_fw_init(iwifi_dev_state_t *dev) {
-    
+
     //TODO: We don't check the rfkill switch the first time we init
     //if(iwifi_check_rfkill(dev))
     //    return -1;
@@ -368,9 +353,9 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
 
     r_v |= IWM_CSR_HW_REV_STEP(dev->hw_rev) << IWM_CSR_HW_IF_CONFIG_REG_POS_MAC_STEP;
     r_v |= IWM_CSR_HW_REV_DASH(dev->hw_rev) << IWM_CSR_HW_IF_CONFIG_REG_POS_MAC_DASH;
-	r_v |= r_cfg_type << IWM_CSR_HW_IF_CONFIG_REG_POS_PHY_TYPE;
-	r_v |= r_cfg_step << IWM_CSR_HW_IF_CONFIG_REG_POS_PHY_STEP;
-	r_v |= r_cfg_dash << IWM_CSR_HW_IF_CONFIG_REG_POS_PHY_DASH;
+    r_v |= r_cfg_type << IWM_CSR_HW_IF_CONFIG_REG_POS_PHY_TYPE;
+    r_v |= r_cfg_step << IWM_CSR_HW_IF_CONFIG_REG_POS_PHY_STEP;
+    r_v |= r_cfg_dash << IWM_CSR_HW_IF_CONFIG_REG_POS_PHY_DASH;
 
     iwifi_write32(dev, IWM_CSR_HW_IF_CONFIG_REG, r_v);
 
@@ -389,7 +374,7 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
         iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_RBDCB_WPTR_REG, 0);
 
         //Configure RX queue addresses
-	    iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_RBDCB_BASE_REG, dev->rx_mem.paddr >> 8);
+        iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_RBDCB_BASE_REG, dev->rx_mem.paddr >> 8);
         iwifi_write32(dev, IWM_FH_RSCSR_CHNL0_STTS_WPTR_REG, dev->rx_status_mem.paddr >> 4);
 
         iwifi_rx_dma_state(dev, true);
@@ -406,7 +391,7 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
             if(i < ACTIVE_TX_RING_COUNT) {
                 uintptr_t addr = dev->tx_mem.paddr + i * TX_RING_COUNT * sizeof(struct iwm_tfd);
                 iwifi_write32(dev, IWM_FH_MEM_CBBC_QUEUE(i), addr >> 8);
-            }else{
+            } else {
                 iwifi_write32(dev, IWM_FH_MEM_CBBC_QUEUE(i), 0);
             }
         }
@@ -421,9 +406,9 @@ int iwifi_fw_init(iwifi_dev_state_t *dev) {
     //Enable FH_TX interrupt
     iwifi_write32(dev, IWM_CSR_INT_MASK, IWM_CSR_INT_BIT_FH_TX);
     dev->int_mask = IWM_CSR_INT_BIT_FH_TX;
-    
+
     iwifi_clear_rfkillhandshake(dev);
-    
+
     //Load the firmware
     iwifi_setup_fw(dev, fw_section_init);
 

@@ -96,10 +96,10 @@ int module_init(void *ecam_addr) {
 
     //figure out which bar to use
     uint64_t bar = 0;
-        if((device->bar[0] & 0x6) == 0x4) //Is 64-bit
-            bar = (device->bar[0] & 0xFFFFFFF0) + ((uint64_t)device->bar[1] << 32);
-        else if((device->bar[0] & 0x6) == 0x0) //Is 32-bit
-            bar = (device->bar[0] & 0xFFFFFFF0);
+    if((device->bar[0] & 0x6) == 0x4) //Is 64-bit
+        bar = (device->bar[0] & 0xFFFFFFF0) + ((uint64_t)device->bar[1] << 32);
+    else if((device->bar[0] & 0x6) == 0x0) //Is 32-bit
+        bar = (device->bar[0] & 0xFFFFFFF0);
     dev_state->bar_phys = (uintptr_t)bar;
     dev_state->bar = (uint8_t*)vmem_phystovirt((intptr_t)bar, KiB(4), vmem_flags_rw | vmem_flags_uncached | vmem_flags_kernel);
 
@@ -156,7 +156,7 @@ int module_init(void *ecam_addr) {
 
     //Load and setup the firmware
     int err = 0;
-    if((err = iwifi_fw_init(dev_state)) != 0){
+    if((err = iwifi_fw_init(dev_state)) != 0) {
         DEBUG_PRINT("WiFi init failed!\r\n");
         return err;
     }

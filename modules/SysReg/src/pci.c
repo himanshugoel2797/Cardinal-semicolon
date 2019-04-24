@@ -50,7 +50,7 @@ PCI_GetNextDevice(uint32_t *bus,
     uint32_t d = *device;
 
 
-    while(b < 256){
+    while(b < 256) {
         for(; d < 32; d++) {
             uint32_t v_id = PCI_ReadDWord(b, d, 0, 0);
 
@@ -60,8 +60,8 @@ PCI_GetNextDevice(uint32_t *bus,
                 return 0;
             }
         }
-        
-        if(d >= 32){
+
+        if(d >= 32) {
             d = 0;
             b++;
         }
@@ -129,12 +129,12 @@ int pci_reg_init() {
             char idx_str[10] = "";
             char key_str[256] = "HW/PCI/";
             char *key_idx = strncat(key_str, itoa(idx, idx_str, 16), 255);
-            
+
             PCI_Device devInfo;
             PCI_GetPCIDevice(bus, device, f, &devInfo);
             if((devInfo.VendorID == 0xffff) | (devInfo.DeviceID == 0xffff))
                 continue;
-            
+
             idx++;
 
             if(registry_createdirectory("HW/PCI", idx_str) != registry_err_ok)

@@ -22,7 +22,7 @@ static void intr_handler(int intr_num) {
 }
 
 int module_init(void *ecam_addr) {
-    
+
     pci_config_t *device = (pci_config_t*)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     //enable pci bus master
@@ -75,11 +75,11 @@ int module_init(void *ecam_addr) {
     //Enable DPLL, wait for stabalization
 
     //Initialize displays on all connected ports
-        //Read EDIDs via GMBUS
-        //Remove any display options that the gpu can't support
-        //Choose the highest supported resolution
-        //Callibrate it and bring the backlight pwm online
-        //If an audio device is associated, pass along the info to CoreAudio
+    //Read EDIDs via GMBUS
+    //Remove any display options that the gpu can't support
+    //Choose the highest supported resolution
+    //Callibrate it and bring the backlight pwm online
+    //If an audio device is associated, pass along the info to CoreAudio
 
     //Configure display planes
 

@@ -25,7 +25,7 @@ int module_init() {
     uint64_t deviceCount = 0;
     if(registry_readkey_uint("HW/PCI", "COUNT", &deviceCount) != registry_err_ok)
         return -1;
-        
+
     const char *cursor = str;
     const char *end = str + str_sz;
     while(cursor < end) {

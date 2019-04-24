@@ -44,69 +44,69 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id) {
     DEBUG_PRINT("Process Created: ");
     DEBUG_PRINT(name);
     DEBUG_PRINT("\r\n");
-        if(proc_info == NULL) {
-            free(proc_info);
-            return CS_OUTOFMEM;
-        }
+    if(proc_info == NULL) {
+        free(proc_info);
+        return CS_OUTOFMEM;
+    }
 
-        memset(proc_info, 0, sizeof(process_desc_t));
-        strncpy(proc_info->name, name, 256);
-        proc_info->id = alloc_id;
-        proc_info->lock = 0;
-        
-        if(vmem_create(&proc_info->mem) != 0) {
-            free(proc_info);
-            return CS_OUTOFMEM;
-        }
+    memset(proc_info, 0, sizeof(process_desc_t));
+    strncpy(proc_info->name, name, 256);
+    proc_info->id = alloc_id;
+    proc_info->lock = 0;
 
-        *id = alloc_id;
+    if(vmem_create(&proc_info->mem) != 0) {
+        free(proc_info);
+        return CS_OUTOFMEM;
+    }
 
-        proc_info->state = task_state_uninitialized;
-        proc_info->permissions = perms;
-        
-        //Allocate the kernel level stack
-        proc_info->kernel_stack = malloc(KERNEL_STACK_LEN);
-        if(proc_info->kernel_stack == NULL)
-            PANIC("Unexpected memory allocaiton failure.");
-        proc_info->kernel_stack += KERNEL_STACK_LEN;
+    *id = alloc_id;
 
-        proc_info->fpu_state = malloc(fp_platform_getstatesize() + fp_platform_getalign());
-        if(proc_info->fpu_state == NULL)
-            PANIC("Unexpected memory allocation failure.");
+    proc_info->state = task_state_uninitialized;
+    proc_info->permissions = perms;
 
-        //Align the FPU state properly
-        if((uintptr_t)proc_info->fpu_state % fp_platform_getalign() != 0)
-            proc_info->fpu_state += fp_platform_getalign() - ((uintptr_t)proc_info->fpu_state % fp_platform_getalign());
+    //Allocate the kernel level stack
+    proc_info->kernel_stack = malloc(KERNEL_STACK_LEN);
+    if(proc_info->kernel_stack == NULL)
+        PANIC("Unexpected memory allocaiton failure.");
+    proc_info->kernel_stack += KERNEL_STACK_LEN;
 
-        fp_platform_getdefaultstate(proc_info->fpu_state);
+    proc_info->fpu_state = malloc(fp_platform_getstatesize() + fp_platform_getalign());
+    if(proc_info->fpu_state == NULL)
+        PANIC("Unexpected memory allocation failure.");
 
-        proc_info->reg_state = malloc(mp_platform_getstatesize());
-        if(proc_info->reg_state == NULL)
-            PANIC("Unexpected memory allocation failure.");
-        mp_platform_getdefaultstate(proc_info->reg_state, proc_info->kernel_stack, NULL, NULL);
+    //Align the FPU state properly
+    if((uintptr_t)proc_info->fpu_state % fp_platform_getalign() != 0)
+        proc_info->fpu_state += fp_platform_getalign() - ((uintptr_t)proc_info->fpu_state % fp_platform_getalign());
+
+    fp_platform_getdefaultstate(proc_info->fpu_state);
+
+    proc_info->reg_state = malloc(mp_platform_getstatesize());
+    if(proc_info->reg_state == NULL)
+        PANIC("Unexpected memory allocation failure.");
+    mp_platform_getdefaultstate(proc_info->reg_state, proc_info->kernel_stack, NULL, NULL);
 
 
-        //add this to the process queue
-        local_spinlock_lock(&process_lock);
+    //add this to the process queue
+    local_spinlock_lock(&process_lock);
 
-        if(processes == NULL) {
-            proc_info->prev = proc_info;
-            proc_info->next = proc_info;
-            processes = proc_info;
-        } else {
-            local_spinlock_lock(&processes->lock);
+    if(processes == NULL) {
+        proc_info->prev = proc_info;
+        proc_info->next = proc_info;
+        processes = proc_info;
+    } else {
+        local_spinlock_lock(&processes->lock);
 
-            proc_info->next = processes->next;
-            proc_info->prev = processes;
-            processes->next->prev = proc_info;
-            processes->next = proc_info;
+        proc_info->next = processes->next;
+        proc_info->prev = processes;
+        processes->next->prev = proc_info;
+        processes->next = proc_info;
 
-            local_spinlock_unlock(&processes->lock);
+        local_spinlock_unlock(&processes->lock);
 
-            processes = proc_info;
-        }
-        local_spinlock_unlock(&process_lock);
-        process_count++;
+        processes = proc_info;
+    }
+    local_spinlock_unlock(&process_lock);
+    process_count++;
 
     return CS_OK;
 }
@@ -160,7 +160,7 @@ int module_init() {
     //Enable server load tasks
     //Server load tasks work by creating a new task with the elf loader and passing in the program tar for extraction and loading
     //syscall_sethandler(0, (void*)create_pipe_syscall);
-    
+
     //syscall_sethandler(30, (void*)nanosleep_syscall);
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers

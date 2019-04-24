@@ -1,6 +1,6 @@
 /**
  * Copyright (c) 2018 Himanshu Goel
- * 
+ *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
@@ -25,7 +25,7 @@ void iwifi_prepare(iwifi_dev_state_t *dev) {
     }
 }
 
-void iwifi_os_alive(iwifi_dev_state_t *dev){
+void iwifi_os_alive(iwifi_dev_state_t *dev) {
     //Signal that the OS is ready
     iwifi_setbits32(dev, IWM_CSR_MBOX_SET_REG, IWM_CSR_MBOX_SET_REG_OS_ALIVE);
 }
@@ -44,7 +44,7 @@ void iwifi_hw_start(iwifi_dev_state_t *state) {
     //configure power management
     iwifi_setbits32(state, IWM_CSR_GIO_CHICKEN_BITS, IWM_CSR_GIO_CHICKEN_BITS_REG_BIT_DIS_L0S_EXIT_TIMER);
     iwifi_setbits32(state, IWM_CSR_GIO_CHICKEN_BITS, IWM_CSR_GIO_CHICKEN_BITS_REG_BIT_L1A_NO_L0S_RX);
-	iwifi_setbits32(state, IWM_CSR_DBG_HPET_MEM_REG, IWM_CSR_DBG_HPET_MEM_REG_VAL);
+    iwifi_setbits32(state, IWM_CSR_DBG_HPET_MEM_REG, IWM_CSR_DBG_HPET_MEM_REG_VAL);
     iwifi_setbits32(state, IWM_CSR_HW_IF_CONFIG_REG, IWM_CSR_HW_IF_CONFIG_REG_BIT_HAP_WAKE_L1A);
     iwifi_clrbits32(state, IWM_CSR_GIO_REG, IWM_CSR_GIO_REG_VAL_L0S_ENABLED);
 
@@ -57,41 +57,41 @@ void iwifi_hw_start(iwifi_dev_state_t *state) {
 
     iwifi_lock(state);
     iwifi_periph_read32(state, IWM_OSC_CLK);
-	iwifi_periph_read32(state, IWM_OSC_CLK);
+    iwifi_periph_read32(state, IWM_OSC_CLK);
     iwifi_unlock(state);
 
-	iwifi_periph_setbits32(state, IWM_OSC_CLK, IWM_OSC_CLK_FORCE_CONTROL);
-	
+    iwifi_periph_setbits32(state, IWM_OSC_CLK, IWM_OSC_CLK_FORCE_CONTROL);
+
     iwifi_lock(state);
     iwifi_periph_read32(state, IWM_OSC_CLK);
-	iwifi_periph_read32(state, IWM_OSC_CLK);
-	iwifi_unlock(state);
-	
+    iwifi_periph_read32(state, IWM_OSC_CLK);
+    iwifi_unlock(state);
+
     //Only family 7000 devices
     {
         iwifi_lock(state);
         iwifi_periph_write32(state, IWM_APMG_CLK_EN_REG, IWM_APMG_CLK_VAL_DMA_CLK_RQT);
         iwifi_unlock(state);
 
-        //delay 20us   
+        //delay 20us
         iwifi_periph_setbits32(state, IWM_APMG_PCIDEV_STT_REG, IWM_APMG_PCIDEV_STT_VAL_L1_ACT_DIS);
-        
+
         iwifi_lock(state);
         iwifi_periph_write32(state, IWM_APMG_RTC_INT_STT_REG, IWM_APMG_RTC_INT_STT_RFKILL);
         iwifi_unlock(state);
     }
-    
-        //uint32_t reg = iwifi_periph_read32(state, IWM_APMG_PS_CTRL_REG);
-        //reg = reg & ~IWM_APMG_PS_CTRL_MSK_PWR_SRC;
-        //iwifi_periph_write32(state, IWM_APMG_PS_CTRL_REG, reg);
-    
+
+    //uint32_t reg = iwifi_periph_read32(state, IWM_APMG_PS_CTRL_REG);
+    //reg = reg & ~IWM_APMG_PS_CTRL_MSK_PWR_SRC;
+    //iwifi_periph_write32(state, IWM_APMG_PS_CTRL_REG, reg);
+
 
     //Setup the HW kill interrupt
     iwifi_write32(state, IWM_CSR_INT_MASK, IWM_CSR_INT_BIT_RF_KILL);
     state->int_mask = IWM_CSR_INT_BIT_RF_KILL;
 }
 
-void iwifi_set_pwr(iwifi_dev_state_t *dev){
+void iwifi_set_pwr(iwifi_dev_state_t *dev) {
     iwifi_periph_setbits_mask32(dev, IWM_APMG_PS_CTRL_REG, IWM_APMG_PS_CTRL_VAL_PWR_SRC_VMAIN, ~IWM_APMG_PS_CTRL_MSK_PWR_SRC);
 }
 
@@ -117,22 +117,22 @@ void iwifi_clear_rfkillhandshake(iwifi_dev_state_t *state) {
 void iwifi_rx_dma_state(iwifi_dev_state_t *state, bool enable) {
     if(enable) {
         uint32_t val =  IWM_FH_RCSR_RX_CONFIG_CHNL_EN_ENABLE_VAL |
-	                    IWM_FH_RCSR_CHNL0_RX_IGNORE_RXF_EMPTY |
-	                    IWM_FH_RCSR_CHNL0_RX_CONFIG_IRQ_DEST_INT_HOST_VAL |
-	                    IWM_FH_RCSR_RX_CONFIG_REG_VAL_RB_SIZE_4K |
-	                    (IWM_RX_RB_TIMEOUT << IWM_FH_RCSR_RX_CONFIG_REG_IRQ_RBTH_POS) |
-	                    IWM_RX_QUEUE_SIZE_LOG << IWM_FH_RCSR_RX_CONFIG_RBDCB_SIZE_POS;
+                        IWM_FH_RCSR_CHNL0_RX_IGNORE_RXF_EMPTY |
+                        IWM_FH_RCSR_CHNL0_RX_CONFIG_IRQ_DEST_INT_HOST_VAL |
+                        IWM_FH_RCSR_RX_CONFIG_REG_VAL_RB_SIZE_4K |
+                        (IWM_RX_RB_TIMEOUT << IWM_FH_RCSR_RX_CONFIG_REG_IRQ_RBTH_POS) |
+                        IWM_RX_QUEUE_SIZE_LOG << IWM_FH_RCSR_RX_CONFIG_RBDCB_SIZE_POS;
 
         iwifi_write32(state, IWM_FH_MEM_RCSR_CHNL0_CONFIG_REG, val);
-	    
+
         iwifi_write8(state, IWM_CSR_INT_COALESCING, IWM_HOST_INT_TIMEOUT_DEF);
         iwifi_setbits32(state, IWM_CSR_INT_COALESCING, IWM_HOST_INT_OPER_MODE);
 
-	    iwifi_write32(state, IWM_FH_RSCSR_CHNL0_WPTR, 8);
-    }else{
+        iwifi_write32(state, IWM_FH_RSCSR_CHNL0_WPTR, 8);
+    } else {
         iwifi_write32(state, IWM_FH_MEM_RCSR_CHNL0_CONFIG_REG, 0);
 
-        while(true){
+        while(true) {
             DEBUG_PRINT("RX Wait\r\n");
             if(iwifi_read32(state, IWM_FH_MEM_RSSR_RX_STATUS_REG) & IWM_FH_RSSR_CHNL0_RX_STATUS_CHNL_IDLE)
                 break;
@@ -140,10 +140,10 @@ void iwifi_rx_dma_state(iwifi_dev_state_t *state, bool enable) {
     }
 }
 
-void iwifi_tx_sched_dma_state(iwifi_dev_state_t *state, bool enable){
+void iwifi_tx_sched_dma_state(iwifi_dev_state_t *state, bool enable) {
     if(enable) {
-	    iwifi_periph_write32(state, IWM_SCD_GP_CTRL, IWM_SCD_GP_CTRL_AUTO_ACTIVE_MODE);
-    }else{
+        iwifi_periph_write32(state, IWM_SCD_GP_CTRL, IWM_SCD_GP_CTRL_AUTO_ACTIVE_MODE);
+    } else {
         iwifi_periph_write32(state, IWM_SCD_TXFACT, 0);
     }
 }

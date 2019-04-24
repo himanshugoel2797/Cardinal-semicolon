@@ -43,10 +43,10 @@ typedef struct process_desc {
     vmem_t *mem;
     cs_id id;
     int lock;
-    
+
     task_state_t state;
     task_permissions_t permissions;
-    
+
     uint8_t *fpu_state;
     uint8_t *reg_state;
     uint8_t *kernel_stack;

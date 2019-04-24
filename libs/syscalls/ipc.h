@@ -32,7 +32,7 @@ typedef struct {
 } cs_str_t;
 
 typedef struct {
-    union{
+    union {
         int64_t i;
         uint64_t ui;
         float f;
@@ -44,7 +44,7 @@ typedef struct {
 typedef struct {
     cs_functype_t type;
     char name[FUNCNAME_LEN];
-    union{
+    union {
         struct {
             uint16_t param_cnt;
             uint16_t ret_cnt;

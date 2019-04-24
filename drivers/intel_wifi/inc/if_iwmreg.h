@@ -306,9 +306,9 @@
  *  hw_rev values
  */
 enum {
-	IWM_SILICON_A_STEP = 0,
-	IWM_SILICON_B_STEP,
-	IWM_SILICON_C_STEP,
+    IWM_SILICON_A_STEP = 0,
+    IWM_SILICON_B_STEP,
+    IWM_SILICON_C_STEP,
 };
 
 
@@ -429,18 +429,18 @@ enum {
 /* SECURE boot registers */
 #define IWM_CSR_SECURE_BOOT_CONFIG_ADDR	(0x100)
 enum iwm_secure_boot_config_reg {
-	IWM_CSR_SECURE_BOOT_CONFIG_INSPECTOR_BURNED_IN_OTP	= 0x00000001,
-	IWM_CSR_SECURE_BOOT_CONFIG_INSPECTOR_NOT_REQ	= 0x00000002,
+    IWM_CSR_SECURE_BOOT_CONFIG_INSPECTOR_BURNED_IN_OTP	= 0x00000001,
+    IWM_CSR_SECURE_BOOT_CONFIG_INSPECTOR_NOT_REQ	= 0x00000002,
 };
 
 #define IWM_CSR_SECURE_BOOT_CPU1_STATUS_ADDR	(0x100)
 #define IWM_CSR_SECURE_BOOT_CPU2_STATUS_ADDR	(0x100)
 enum iwm_secure_boot_status_reg {
-	IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_STATUS		= 0x00000003,
-	IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_COMPLETED	= 0x00000002,
-	IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_SUCCESS		= 0x00000004,
-	IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_FAIL		= 0x00000008,
-	IWM_CSR_SECURE_BOOT_CPU_STATUS_SIGN_VERF_FAIL	= 0x00000010,
+    IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_STATUS		= 0x00000003,
+    IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_COMPLETED	= 0x00000002,
+    IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_SUCCESS		= 0x00000004,
+    IWM_CSR_SECURE_BOOT_CPU_STATUS_VERF_FAIL		= 0x00000008,
+    IWM_CSR_SECURE_BOOT_CPU_STATUS_SIGN_VERF_FAIL	= 0x00000010,
 };
 
 #define IWM_FH_UCODE_LOAD_STATUS	0x1af0
@@ -553,13 +553,13 @@ enum iwm_secure_boot_status_reg {
 /**********************************************************
  * CSR values
  **********************************************************/
- /*
- * host interrupt timeout value
- * used with setting interrupt coalescing timer
- * the CSR_INT_COALESCING is an 8 bit register in 32-usec unit
- *
- * default interrupt coalescing timer is 64 x 32 = 2048 usecs
- */
+/*
+* host interrupt timeout value
+* used with setting interrupt coalescing timer
+* the CSR_INT_COALESCING is an 8 bit register in 32-usec unit
+*
+* default interrupt coalescing timer is 64 x 32 = 2048 usecs
+*/
 #define IWM_HOST_INT_TIMEOUT_MAX	(0xFF)
 #define IWM_HOST_INT_TIMEOUT_DEF	(0x40)
 #define IWM_HOST_INT_TIMEOUT_MIN	(0x0)
@@ -571,17 +571,17 @@ enum iwm_secure_boot_status_reg {
 
 /* Diode Results Register Structure: */
 enum iwm_dtd_diode_reg {
-	IWM_DTS_DIODE_REG_DIG_VAL		= 0x000000FF, /* bits [7:0] */
-	IWM_DTS_DIODE_REG_VREF_LOW		= 0x0000FF00, /* bits [15:8] */
-	IWM_DTS_DIODE_REG_VREF_HIGH		= 0x00FF0000, /* bits [23:16] */
-	IWM_DTS_DIODE_REG_VREF_ID		= 0x03000000, /* bits [25:24] */
-	IWM_DTS_DIODE_REG_PASS_ONCE		= 0x80000000, /* bits [31:31] */
-	IWM_DTS_DIODE_REG_FLAGS_MSK		= 0xFF000000, /* bits [31:24] */
-/* Those are the masks INSIDE the flags bit-field: */
-	IWM_DTS_DIODE_REG_FLAGS_VREFS_ID_POS	= 0,
-	IWM_DTS_DIODE_REG_FLAGS_VREFS_ID	= 0x00000003, /* bits [1:0] */
-	IWM_DTS_DIODE_REG_FLAGS_PASS_ONCE_POS	= 7,
-	IWM_DTS_DIODE_REG_FLAGS_PASS_ONCE	= 0x00000080, /* bits [7:7] */
+    IWM_DTS_DIODE_REG_DIG_VAL		= 0x000000FF, /* bits [7:0] */
+    IWM_DTS_DIODE_REG_VREF_LOW		= 0x0000FF00, /* bits [15:8] */
+    IWM_DTS_DIODE_REG_VREF_HIGH		= 0x00FF0000, /* bits [23:16] */
+    IWM_DTS_DIODE_REG_VREF_ID		= 0x03000000, /* bits [25:24] */
+    IWM_DTS_DIODE_REG_PASS_ONCE		= 0x80000000, /* bits [31:31] */
+    IWM_DTS_DIODE_REG_FLAGS_MSK		= 0xFF000000, /* bits [31:24] */
+    /* Those are the masks INSIDE the flags bit-field: */
+    IWM_DTS_DIODE_REG_FLAGS_VREFS_ID_POS	= 0,
+    IWM_DTS_DIODE_REG_FLAGS_VREFS_ID	= 0x00000003, /* bits [1:0] */
+    IWM_DTS_DIODE_REG_FLAGS_PASS_ONCE_POS	= 7,
+    IWM_DTS_DIODE_REG_FLAGS_PASS_ONCE	= 0x00000080, /* bits [7:7] */
 };
 
 /*
@@ -614,18 +614,18 @@ enum iwm_dtd_diode_reg {
  * @IWM_UCODE_TLV_FLAGS_BCAST_FILTERING: uCode supports broadcast filtering.
  */
 enum iwm_ucode_tlv_flag {
-	IWM_UCODE_TLV_FLAGS_PAN			= (1 << 0),
-	IWM_UCODE_TLV_FLAGS_NEWSCAN		= (1 << 1),
-	IWM_UCODE_TLV_FLAGS_MFP			= (1 << 2),
-	IWM_UCODE_TLV_FLAGS_SHORT_BL		= (1 << 7),
-	IWM_UCODE_TLV_FLAGS_D3_6_IPV6_ADDRS	= (1 << 10),
-	IWM_UCODE_TLV_FLAGS_NO_BASIC_SSID	= (1 << 12),
-	IWM_UCODE_TLV_FLAGS_NEW_NSOFFL_SMALL	= (1 << 15),
-	IWM_UCODE_TLV_FLAGS_NEW_NSOFFL_LARGE	= (1 << 16),
-	IWM_UCODE_TLV_FLAGS_UAPSD_SUPPORT	= (1 << 24),
-	IWM_UCODE_TLV_FLAGS_EBS_SUPPORT		= (1 << 25),
-	IWM_UCODE_TLV_FLAGS_P2P_PS_UAPSD	= (1 << 26),
-	IWM_UCODE_TLV_FLAGS_BCAST_FILTERING	= (1 << 29),
+    IWM_UCODE_TLV_FLAGS_PAN			= (1 << 0),
+    IWM_UCODE_TLV_FLAGS_NEWSCAN		= (1 << 1),
+    IWM_UCODE_TLV_FLAGS_MFP			= (1 << 2),
+    IWM_UCODE_TLV_FLAGS_SHORT_BL		= (1 << 7),
+    IWM_UCODE_TLV_FLAGS_D3_6_IPV6_ADDRS	= (1 << 10),
+    IWM_UCODE_TLV_FLAGS_NO_BASIC_SSID	= (1 << 12),
+    IWM_UCODE_TLV_FLAGS_NEW_NSOFFL_SMALL	= (1 << 15),
+    IWM_UCODE_TLV_FLAGS_NEW_NSOFFL_LARGE	= (1 << 16),
+    IWM_UCODE_TLV_FLAGS_UAPSD_SUPPORT	= (1 << 24),
+    IWM_UCODE_TLV_FLAGS_EBS_SUPPORT		= (1 << 25),
+    IWM_UCODE_TLV_FLAGS_P2P_PS_UAPSD	= (1 << 26),
+    IWM_UCODE_TLV_FLAGS_BCAST_FILTERING	= (1 << 29),
 };
 
 #define IWM_UCODE_TLV_FLAG_BITS \
@@ -644,11 +644,11 @@ P2P_PS_SCM\31UAPSD_SUPPORT\32EBS\33P2P_PS_UAPSD\36BCAST_FILTERING\37GO_UAPSD\40L
  * @IWM_NUM_UCODE_TLV_API: number of bits used
  */
 enum iwm_ucode_tlv_api {
-	IWM_UCODE_TLV_API_FRAGMENTED_SCAN	= 8,
-	IWM_UCODE_TLV_API_WIFI_MCC_UPDATE	= 9,
-	IWM_UCODE_TLV_API_LQ_SS_PARAMS		= 18,
+    IWM_UCODE_TLV_API_FRAGMENTED_SCAN	= 8,
+    IWM_UCODE_TLV_API_WIFI_MCC_UPDATE	= 9,
+    IWM_UCODE_TLV_API_LQ_SS_PARAMS		= 18,
 
-	IWM_NUM_UCODE_TLV_API = 32
+    IWM_NUM_UCODE_TLV_API = 32
 };
 
 #define IWM_UCODE_TLV_API_BITS \
@@ -713,47 +713,47 @@ enum iwm_ucode_tlv_api {
  * @IWM_NUM_UCODE_TLV_CAPA: number of bits used
  */
 enum iwm_ucode_tlv_capa {
-	IWM_UCODE_TLV_CAPA_D0I3_SUPPORT			= 0,
-	IWM_UCODE_TLV_CAPA_LAR_SUPPORT			= 1,
-	IWM_UCODE_TLV_CAPA_UMAC_SCAN			= 2,
-	IWM_UCODE_TLV_CAPA_BEAMFORMER			= 3,
-	IWM_UCODE_TLV_CAPA_TOF_SUPPORT                  = 5,
-	IWM_UCODE_TLV_CAPA_TDLS_SUPPORT			= 6,
-	IWM_UCODE_TLV_CAPA_TXPOWER_INSERTION_SUPPORT	= 8,
-	IWM_UCODE_TLV_CAPA_DS_PARAM_SET_IE_SUPPORT	= 9,
-	IWM_UCODE_TLV_CAPA_WFA_TPC_REP_IE_SUPPORT	= 10,
-	IWM_UCODE_TLV_CAPA_QUIET_PERIOD_SUPPORT		= 11,
-	IWM_UCODE_TLV_CAPA_DQA_SUPPORT			= 12,
-	IWM_UCODE_TLV_CAPA_TDLS_CHANNEL_SWITCH		= 13,
-	IWM_UCODE_TLV_CAPA_CNSLDTD_D3_D0_IMG		= 17,
-	IWM_UCODE_TLV_CAPA_HOTSPOT_SUPPORT		= 18,
-	IWM_UCODE_TLV_CAPA_DC2DC_CONFIG_SUPPORT		= 19,
-	IWM_UCODE_TLV_CAPA_2G_COEX_SUPPORT		= 20,
-	IWM_UCODE_TLV_CAPA_CSUM_SUPPORT			= 21,
-	IWM_UCODE_TLV_CAPA_RADIO_BEACON_STATS		= 22,
-	IWM_UCODE_TLV_CAPA_P2P_STANDALONE_UAPSD		= 26,
-	IWM_UCODE_TLV_CAPA_BT_COEX_PLCR			= 28,
-	IWM_UCODE_TLV_CAPA_LAR_MULTI_MCC		= 29,
-	IWM_UCODE_TLV_CAPA_BT_COEX_RRC			= 30,
-	IWM_UCODE_TLV_CAPA_GSCAN_SUPPORT		= 31,
-	IWM_UCODE_TLV_CAPA_NAN_SUPPORT			= 34,
-	IWM_UCODE_TLV_CAPA_UMAC_UPLOAD			= 35,
-	IWM_UCODE_TLV_CAPA_EXTENDED_DTS_MEASURE		= 64,
-	IWM_UCODE_TLV_CAPA_SHORT_PM_TIMEOUTS		= 65,
-	IWM_UCODE_TLV_CAPA_BT_MPLUT_SUPPORT		= 67,
-	IWM_UCODE_TLV_CAPA_MULTI_QUEUE_RX_SUPPORT	= 68,
-	IWM_UCODE_TLV_CAPA_BEACON_ANT_SELECTION		= 71,
-	IWM_UCODE_TLV_CAPA_BEACON_STORING		= 72,
-	IWM_UCODE_TLV_CAPA_LAR_SUPPORT_V2		= 73,
-	IWM_UCODE_TLV_CAPA_CT_KILL_BY_FW		= 74,
-	IWM_UCODE_TLV_CAPA_TEMP_THS_REPORT_SUPPORT	= 75,
-	IWM_UCODE_TLV_CAPA_CTDP_SUPPORT			= 76,
-	IWM_UCODE_TLV_CAPA_USNIFFER_UNIFIED		= 77,
-	IWM_UCODE_TLV_CAPA_LMAC_UPLOAD			= 79,
-	IWM_UCODE_TLV_CAPA_EXTEND_SHARED_MEM_CFG	= 80,
-	IWM_UCODE_TLV_CAPA_LQM_SUPPORT			= 81,
+    IWM_UCODE_TLV_CAPA_D0I3_SUPPORT			= 0,
+    IWM_UCODE_TLV_CAPA_LAR_SUPPORT			= 1,
+    IWM_UCODE_TLV_CAPA_UMAC_SCAN			= 2,
+    IWM_UCODE_TLV_CAPA_BEAMFORMER			= 3,
+    IWM_UCODE_TLV_CAPA_TOF_SUPPORT                  = 5,
+    IWM_UCODE_TLV_CAPA_TDLS_SUPPORT			= 6,
+    IWM_UCODE_TLV_CAPA_TXPOWER_INSERTION_SUPPORT	= 8,
+    IWM_UCODE_TLV_CAPA_DS_PARAM_SET_IE_SUPPORT	= 9,
+    IWM_UCODE_TLV_CAPA_WFA_TPC_REP_IE_SUPPORT	= 10,
+    IWM_UCODE_TLV_CAPA_QUIET_PERIOD_SUPPORT		= 11,
+    IWM_UCODE_TLV_CAPA_DQA_SUPPORT			= 12,
+    IWM_UCODE_TLV_CAPA_TDLS_CHANNEL_SWITCH		= 13,
+    IWM_UCODE_TLV_CAPA_CNSLDTD_D3_D0_IMG		= 17,
+    IWM_UCODE_TLV_CAPA_HOTSPOT_SUPPORT		= 18,
+    IWM_UCODE_TLV_CAPA_DC2DC_CONFIG_SUPPORT		= 19,
+    IWM_UCODE_TLV_CAPA_2G_COEX_SUPPORT		= 20,
+    IWM_UCODE_TLV_CAPA_CSUM_SUPPORT			= 21,
+    IWM_UCODE_TLV_CAPA_RADIO_BEACON_STATS		= 22,
+    IWM_UCODE_TLV_CAPA_P2P_STANDALONE_UAPSD		= 26,
+    IWM_UCODE_TLV_CAPA_BT_COEX_PLCR			= 28,
+    IWM_UCODE_TLV_CAPA_LAR_MULTI_MCC		= 29,
+    IWM_UCODE_TLV_CAPA_BT_COEX_RRC			= 30,
+    IWM_UCODE_TLV_CAPA_GSCAN_SUPPORT		= 31,
+    IWM_UCODE_TLV_CAPA_NAN_SUPPORT			= 34,
+    IWM_UCODE_TLV_CAPA_UMAC_UPLOAD			= 35,
+    IWM_UCODE_TLV_CAPA_EXTENDED_DTS_MEASURE		= 64,
+    IWM_UCODE_TLV_CAPA_SHORT_PM_TIMEOUTS		= 65,
+    IWM_UCODE_TLV_CAPA_BT_MPLUT_SUPPORT		= 67,
+    IWM_UCODE_TLV_CAPA_MULTI_QUEUE_RX_SUPPORT	= 68,
+    IWM_UCODE_TLV_CAPA_BEACON_ANT_SELECTION		= 71,
+    IWM_UCODE_TLV_CAPA_BEACON_STORING		= 72,
+    IWM_UCODE_TLV_CAPA_LAR_SUPPORT_V2		= 73,
+    IWM_UCODE_TLV_CAPA_CT_KILL_BY_FW		= 74,
+    IWM_UCODE_TLV_CAPA_TEMP_THS_REPORT_SUPPORT	= 75,
+    IWM_UCODE_TLV_CAPA_CTDP_SUPPORT			= 76,
+    IWM_UCODE_TLV_CAPA_USNIFFER_UNIFIED		= 77,
+    IWM_UCODE_TLV_CAPA_LMAC_UPLOAD			= 79,
+    IWM_UCODE_TLV_CAPA_EXTEND_SHARED_MEM_CFG	= 80,
+    IWM_UCODE_TLV_CAPA_LQM_SUPPORT			= 81,
 
-	IWM_NUM_UCODE_TLV_CAPA = 128
+    IWM_NUM_UCODE_TLV_CAPA = 128
 };
 
 /* The default calibrate table size if not specified by firmware file */
@@ -772,8 +772,8 @@ enum iwm_ucode_tlv_capa {
  * some debugging code accesses that.
  */
 enum iwm_ucode_sec {
-	IWM_UCODE_SECTION_DATA,
-	IWM_UCODE_SECTION_INST,
+    IWM_UCODE_SECTION_DATA,
+    IWM_UCODE_SECTION_INST,
 };
 /*
  * For 16.0 uCode and above, there is no differentiation between sections,
@@ -797,21 +797,21 @@ enum iwm_ucode_sec {
  *		event triggers.
  */
 struct iwm_tlv_calib_ctrl {
-	uint32_t flow_trigger;
-	uint32_t event_trigger;
+    uint32_t flow_trigger;
+    uint32_t event_trigger;
 } __packed;
 
 enum iwm_fw_phy_cfg {
-	IWM_FW_PHY_CFG_RADIO_TYPE_POS = 0,
-	IWM_FW_PHY_CFG_RADIO_TYPE = 0x3 << IWM_FW_PHY_CFG_RADIO_TYPE_POS,
-	IWM_FW_PHY_CFG_RADIO_STEP_POS = 2,
-	IWM_FW_PHY_CFG_RADIO_STEP = 0x3 << IWM_FW_PHY_CFG_RADIO_STEP_POS,
-	IWM_FW_PHY_CFG_RADIO_DASH_POS = 4,
-	IWM_FW_PHY_CFG_RADIO_DASH = 0x3 << IWM_FW_PHY_CFG_RADIO_DASH_POS,
-	IWM_FW_PHY_CFG_TX_CHAIN_POS = 16,
-	IWM_FW_PHY_CFG_TX_CHAIN = 0xf << IWM_FW_PHY_CFG_TX_CHAIN_POS,
-	IWM_FW_PHY_CFG_RX_CHAIN_POS = 20,
-	IWM_FW_PHY_CFG_RX_CHAIN = 0xf << IWM_FW_PHY_CFG_RX_CHAIN_POS,
+    IWM_FW_PHY_CFG_RADIO_TYPE_POS = 0,
+    IWM_FW_PHY_CFG_RADIO_TYPE = 0x3 << IWM_FW_PHY_CFG_RADIO_TYPE_POS,
+    IWM_FW_PHY_CFG_RADIO_STEP_POS = 2,
+    IWM_FW_PHY_CFG_RADIO_STEP = 0x3 << IWM_FW_PHY_CFG_RADIO_STEP_POS,
+    IWM_FW_PHY_CFG_RADIO_DASH_POS = 4,
+    IWM_FW_PHY_CFG_RADIO_DASH = 0x3 << IWM_FW_PHY_CFG_RADIO_DASH_POS,
+    IWM_FW_PHY_CFG_TX_CHAIN_POS = 16,
+    IWM_FW_PHY_CFG_TX_CHAIN = 0xf << IWM_FW_PHY_CFG_TX_CHAIN_POS,
+    IWM_FW_PHY_CFG_RX_CHAIN_POS = 20,
+    IWM_FW_PHY_CFG_RX_CHAIN = 0xf << IWM_FW_PHY_CFG_RX_CHAIN_POS,
 };
 
 #define IWM_UCODE_MAX_CS		1
@@ -830,16 +830,16 @@ enum iwm_fw_phy_cfg {
  * @hw_cipher: a HW cipher index used in host commands
  */
 struct iwm_fw_cipher_scheme {
-	uint32_t cipher;
-	uint8_t flags;
-	uint8_t hdr_len;
-	uint8_t pn_len;
-	uint8_t pn_off;
-	uint8_t key_idx_off;
-	uint8_t key_idx_mask;
-	uint8_t key_idx_shift;
-	uint8_t mic_len;
-	uint8_t hw_cipher;
+    uint32_t cipher;
+    uint8_t flags;
+    uint8_t hdr_len;
+    uint8_t pn_len;
+    uint8_t pn_off;
+    uint8_t key_idx_off;
+    uint8_t key_idx_mask;
+    uint8_t key_idx_shift;
+    uint8_t mic_len;
+    uint8_t hw_cipher;
 } __packed;
 
 /**
@@ -848,8 +848,8 @@ struct iwm_fw_cipher_scheme {
  * @cs: cipher scheme entries
  */
 struct iwm_fw_cscheme_list {
-	uint8_t size;
-	struct iwm_fw_cipher_scheme cs[];
+    uint8_t size;
+    struct iwm_fw_cipher_scheme cs[];
 } __packed;
 
 /*
@@ -862,26 +862,26 @@ struct iwm_fw_cscheme_list {
 
 /* v1/v2 uCode file layout */
 struct iwm_ucode_header {
-	uint32_t ver;	/* major/minor/API/serial */
-	union {
-		struct {
-			uint32_t inst_size;	/* bytes of runtime code */
-			uint32_t data_size;	/* bytes of runtime data */
-			uint32_t init_size;	/* bytes of init code */
-			uint32_t init_data_size;	/* bytes of init data */
-			uint32_t boot_size;	/* bytes of bootstrap code */
-			uint8_t data[0];		/* in same order as sizes */
-		} v1;
-		struct {
-			uint32_t build;		/* build number */
-			uint32_t inst_size;	/* bytes of runtime code */
-			uint32_t data_size;	/* bytes of runtime data */
-			uint32_t init_size;	/* bytes of init code */
-			uint32_t init_data_size;	/* bytes of init data */
-			uint32_t boot_size;	/* bytes of bootstrap code */
-			uint8_t data[0];		/* in same order as sizes */
-		} v2;
-	} u;
+    uint32_t ver;	/* major/minor/API/serial */
+    union {
+        struct {
+            uint32_t inst_size;	/* bytes of runtime code */
+            uint32_t data_size;	/* bytes of runtime data */
+            uint32_t init_size;	/* bytes of init code */
+            uint32_t init_data_size;	/* bytes of init data */
+            uint32_t boot_size;	/* bytes of bootstrap code */
+            uint8_t data[0];		/* in same order as sizes */
+        } v1;
+        struct {
+            uint32_t build;		/* build number */
+            uint32_t inst_size;	/* bytes of runtime code */
+            uint32_t data_size;	/* bytes of runtime data */
+            uint32_t init_size;	/* bytes of init code */
+            uint32_t init_data_size;	/* bytes of init data */
+            uint32_t boot_size;	/* bytes of bootstrap code */
+            uint8_t data[0];		/* in same order as sizes */
+        } v2;
+    } u;
 };
 
 /*
@@ -892,93 +892,93 @@ struct iwm_ucode_header {
  */
 
 enum iwm_ucode_tlv_type {
-	IWM_UCODE_TLV_INVALID		= 0, /* unused */
-	IWM_UCODE_TLV_INST		= 1,
-	IWM_UCODE_TLV_DATA		= 2,
-	IWM_UCODE_TLV_INIT		= 3,
-	IWM_UCODE_TLV_INIT_DATA		= 4,
-	IWM_UCODE_TLV_BOOT		= 5,
-	IWM_UCODE_TLV_PROBE_MAX_LEN	= 6, /* a uint32_t value */
-	IWM_UCODE_TLV_PAN		= 7,
-	IWM_UCODE_TLV_RUNT_EVTLOG_PTR	= 8,
-	IWM_UCODE_TLV_RUNT_EVTLOG_SIZE	= 9,
-	IWM_UCODE_TLV_RUNT_ERRLOG_PTR	= 10,
-	IWM_UCODE_TLV_INIT_EVTLOG_PTR	= 11,
-	IWM_UCODE_TLV_INIT_EVTLOG_SIZE	= 12,
-	IWM_UCODE_TLV_INIT_ERRLOG_PTR	= 13,
-	IWM_UCODE_TLV_ENHANCE_SENS_TBL	= 14,
-	IWM_UCODE_TLV_PHY_CALIBRATION_SIZE = 15,
-	IWM_UCODE_TLV_WOWLAN_INST	= 16,
-	IWM_UCODE_TLV_WOWLAN_DATA	= 17,
-	IWM_UCODE_TLV_FLAGS		= 18,
-	IWM_UCODE_TLV_SEC_RT		= 19,
-	IWM_UCODE_TLV_SEC_INIT		= 20,
-	IWM_UCODE_TLV_SEC_WOWLAN	= 21,
-	IWM_UCODE_TLV_DEF_CALIB		= 22,
-	IWM_UCODE_TLV_PHY_SKU		= 23,
-	IWM_UCODE_TLV_SECURE_SEC_RT	= 24,
-	IWM_UCODE_TLV_SECURE_SEC_INIT	= 25,
-	IWM_UCODE_TLV_SECURE_SEC_WOWLAN	= 26,
-	IWM_UCODE_TLV_NUM_OF_CPU	= 27,
-	IWM_UCODE_TLV_CSCHEME		= 28,
+    IWM_UCODE_TLV_INVALID		= 0, /* unused */
+    IWM_UCODE_TLV_INST		= 1,
+    IWM_UCODE_TLV_DATA		= 2,
+    IWM_UCODE_TLV_INIT		= 3,
+    IWM_UCODE_TLV_INIT_DATA		= 4,
+    IWM_UCODE_TLV_BOOT		= 5,
+    IWM_UCODE_TLV_PROBE_MAX_LEN	= 6, /* a uint32_t value */
+    IWM_UCODE_TLV_PAN		= 7,
+    IWM_UCODE_TLV_RUNT_EVTLOG_PTR	= 8,
+    IWM_UCODE_TLV_RUNT_EVTLOG_SIZE	= 9,
+    IWM_UCODE_TLV_RUNT_ERRLOG_PTR	= 10,
+    IWM_UCODE_TLV_INIT_EVTLOG_PTR	= 11,
+    IWM_UCODE_TLV_INIT_EVTLOG_SIZE	= 12,
+    IWM_UCODE_TLV_INIT_ERRLOG_PTR	= 13,
+    IWM_UCODE_TLV_ENHANCE_SENS_TBL	= 14,
+    IWM_UCODE_TLV_PHY_CALIBRATION_SIZE = 15,
+    IWM_UCODE_TLV_WOWLAN_INST	= 16,
+    IWM_UCODE_TLV_WOWLAN_DATA	= 17,
+    IWM_UCODE_TLV_FLAGS		= 18,
+    IWM_UCODE_TLV_SEC_RT		= 19,
+    IWM_UCODE_TLV_SEC_INIT		= 20,
+    IWM_UCODE_TLV_SEC_WOWLAN	= 21,
+    IWM_UCODE_TLV_DEF_CALIB		= 22,
+    IWM_UCODE_TLV_PHY_SKU		= 23,
+    IWM_UCODE_TLV_SECURE_SEC_RT	= 24,
+    IWM_UCODE_TLV_SECURE_SEC_INIT	= 25,
+    IWM_UCODE_TLV_SECURE_SEC_WOWLAN	= 26,
+    IWM_UCODE_TLV_NUM_OF_CPU	= 27,
+    IWM_UCODE_TLV_CSCHEME		= 28,
 
-	/*
-	 * Following two are not in our base tag, but allow
-	 * handling ucode version 9.
-	 */
-	IWM_UCODE_TLV_API_CHANGES_SET	= 29,
-	IWM_UCODE_TLV_ENABLED_CAPABILITIES = 30,
+    /*
+     * Following two are not in our base tag, but allow
+     * handling ucode version 9.
+     */
+    IWM_UCODE_TLV_API_CHANGES_SET	= 29,
+    IWM_UCODE_TLV_ENABLED_CAPABILITIES = 30,
 
-	IWM_UCODE_TLV_N_SCAN_CHANNELS	= 31,
-	IWM_UCODE_TLV_PAGING		= 32,
-	IWM_UCODE_TLV_SEC_RT_USNIFFER	= 34,
-	IWM_UCODE_TLV_SDIO_ADMA_ADDR	= 35,
-	IWM_UCODE_TLV_FW_VERSION	= 36,
-	IWM_UCODE_TLV_FW_DBG_DEST	= 38,
-	IWM_UCODE_TLV_FW_DBG_CONF	= 39,
-	IWM_UCODE_TLV_FW_DBG_TRIGGER	= 40,
-	IWM_UCODE_TLV_FW_GSCAN_CAPA	= 50,
-	IWM_UCODE_TLV_FW_MEM_SEG	= 51,
+    IWM_UCODE_TLV_N_SCAN_CHANNELS	= 31,
+    IWM_UCODE_TLV_PAGING		= 32,
+    IWM_UCODE_TLV_SEC_RT_USNIFFER	= 34,
+    IWM_UCODE_TLV_SDIO_ADMA_ADDR	= 35,
+    IWM_UCODE_TLV_FW_VERSION	= 36,
+    IWM_UCODE_TLV_FW_DBG_DEST	= 38,
+    IWM_UCODE_TLV_FW_DBG_CONF	= 39,
+    IWM_UCODE_TLV_FW_DBG_TRIGGER	= 40,
+    IWM_UCODE_TLV_FW_GSCAN_CAPA	= 50,
+    IWM_UCODE_TLV_FW_MEM_SEG	= 51,
 };
 
 struct iwm_ucode_tlv {
-	uint32_t type;		/* see above */
-	uint32_t length;		/* not including type/length fields */
-	uint8_t data[0];
+    uint32_t type;		/* see above */
+    uint32_t length;		/* not including type/length fields */
+    uint8_t data[0];
 };
 
 struct iwm_ucode_api {
-	uint32_t api_index;
-	uint32_t api_flags;
+    uint32_t api_index;
+    uint32_t api_flags;
 } __packed;
 
 struct iwm_ucode_capa {
-	uint32_t api_index;
-	uint32_t api_capa;
+    uint32_t api_index;
+    uint32_t api_capa;
 } __packed;
 
 #define IWM_TLV_UCODE_MAGIC	0x0a4c5749
 
 struct iwm_tlv_ucode_header {
-	/*
-	 * The TLV style ucode header is distinguished from
-	 * the v1/v2 style header by first four bytes being
-	 * zero, as such is an invalid combination of
-	 * major/minor/API/serial versions.
-	 */
-	uint32_t zero;
-	uint32_t magic;
-	uint8_t human_readable[64];
-	uint32_t ver;		/* major/minor/API/serial */
-	uint32_t build;
-	uint64_t ignore;
-	/*
-	 * The data contained herein has a TLV layout,
-	 * see above for the TLV header and types.
-	 * Note that each TLV is padded to a length
-	 * that is a multiple of 4 for alignment.
-	 */
-	uint8_t data[0];
+    /*
+     * The TLV style ucode header is distinguished from
+     * the v1/v2 style header by first four bytes being
+     * zero, as such is an invalid combination of
+     * major/minor/API/serial versions.
+     */
+    uint32_t zero;
+    uint32_t magic;
+    uint8_t human_readable[64];
+    uint32_t ver;		/* major/minor/API/serial */
+    uint32_t build;
+    uint64_t ignore;
+    /*
+     * The data contained herein has a TLV layout,
+     * see above for the TLV header and types.
+     * Note that each TLV is padded to a length
+     * that is a multiple of 4 for alignment.
+     */
+    uint8_t data[0];
 };
 
 /*
@@ -1193,25 +1193,22 @@ struct iwm_tlv_ucode_header {
 #define IWM_SCD_GP_CTRL		(IWM_SCD_BASE + 0x1a8)
 #define IWM_SCD_EN_CTRL		(IWM_SCD_BASE + 0x254)
 
-static inline unsigned int IWM_SCD_QUEUE_WRPTR(unsigned int chnl)
-{
-	if (chnl < 20)
-		return IWM_SCD_BASE + 0x18 + chnl * 4;
-	return IWM_SCD_BASE + 0x284 + (chnl - 20) * 4;
+static inline unsigned int IWM_SCD_QUEUE_WRPTR(unsigned int chnl) {
+    if (chnl < 20)
+        return IWM_SCD_BASE + 0x18 + chnl * 4;
+    return IWM_SCD_BASE + 0x284 + (chnl - 20) * 4;
 }
 
-static inline unsigned int IWM_SCD_QUEUE_RDPTR(unsigned int chnl)
-{
-	if (chnl < 20)
-		return IWM_SCD_BASE + 0x68 + chnl * 4;
-	return IWM_SCD_BASE + 0x2B4 + (chnl - 20) * 4;
+static inline unsigned int IWM_SCD_QUEUE_RDPTR(unsigned int chnl) {
+    if (chnl < 20)
+        return IWM_SCD_BASE + 0x68 + chnl * 4;
+    return IWM_SCD_BASE + 0x2B4 + (chnl - 20) * 4;
 }
 
-static inline unsigned int IWM_SCD_QUEUE_STATUS_BITS(unsigned int chnl)
-{
-	if (chnl < 20)
-		return IWM_SCD_BASE + 0x10c + chnl * 4;
-	return IWM_SCD_BASE + 0x384 + (chnl - 20) * 4;
+static inline unsigned int IWM_SCD_QUEUE_STATUS_BITS(unsigned int chnl) {
+    if (chnl < 20)
+        return IWM_SCD_BASE + 0x10c + chnl * 4;
+    return IWM_SCD_BASE + 0x384 + (chnl - 20) * 4;
 }
 
 /*********************** END TX SCHEDULER *************************************/
@@ -1281,13 +1278,12 @@ static inline unsigned int IWM_SCD_QUEUE_STATUS_BITS(unsigned int chnl)
 #define IWM_FH_MEM_CBBC_20_31_UPPER_BOUND	(IWM_FH_MEM_LOWER_BOUND + 0xB80)
 
 /* Find TFD CB base pointer for given queue */
-static inline unsigned int IWM_FH_MEM_CBBC_QUEUE(unsigned int chnl)
-{
-	if (chnl < 16)
-		return IWM_FH_MEM_CBBC_0_15_LOWER_BOUND + 4 * chnl;
-	if (chnl < 20)
-		return IWM_FH_MEM_CBBC_16_19_LOWER_BOUND + 4 * (chnl - 16);
-	return IWM_FH_MEM_CBBC_20_31_LOWER_BOUND + 4 * (chnl - 20);
+static inline unsigned int IWM_FH_MEM_CBBC_QUEUE(unsigned int chnl) {
+    if (chnl < 16)
+        return IWM_FH_MEM_CBBC_0_15_LOWER_BOUND + 4 * chnl;
+    if (chnl < 20)
+        return IWM_FH_MEM_CBBC_16_19_LOWER_BOUND + 4 * (chnl - 16);
+    return IWM_FH_MEM_CBBC_20_31_LOWER_BOUND + 4 * (chnl - 20);
 }
 
 
@@ -1617,11 +1613,11 @@ static inline unsigned int IWM_FH_MEM_CBBC_QUEUE(unsigned int chnl)
  * 	which was transferred
  */
 struct iwm_rb_status {
-	uint16_t closed_rb_num;
-	uint16_t closed_fr_num;
-	uint16_t finished_rb_num;
-	uint16_t finished_fr_nam;
-	uint32_t unused;
+    uint16_t closed_rb_num;
+    uint16_t closed_fr_num;
+    uint16_t finished_rb_num;
+    uint16_t finished_fr_nam;
+    uint32_t unused;
 } __packed;
 
 
@@ -1643,8 +1639,8 @@ struct iwm_rb_status {
  *	     4-15 length of the tx buffer
  */
 struct iwm_tfd_tb {
-	uint32_t lo;
-	uint16_t hi_n_len;
+    uint32_t lo;
+    uint16_t hi_n_len;
 } __packed;
 
 /**
@@ -1676,10 +1672,10 @@ struct iwm_tfd_tb {
  * A maximum of 255 (not 256!) TFDs may be on a queue waiting for Tx.
  */
 struct iwm_tfd {
-	uint8_t __reserved1[3];
-	uint8_t num_tbs;
-	struct iwm_tfd_tb tbs[IWM_NUM_OF_TBS];
-	uint32_t __pad;
+    uint8_t __reserved1[3];
+    uint8_t num_tbs;
+    struct iwm_tfd_tb tbs[IWM_NUM_OF_TBS];
+    uint32_t __pad;
 } __packed;
 
 /* Keep Warm Size */
@@ -1694,7 +1690,7 @@ struct iwm_tfd {
  *	       12-16 - station index
  */
 struct iwm_agn_scd_bc_tbl {
-	uint16_t tfd_offset[IWM_TFD_QUEUE_BC_SIZE];
+    uint16_t tfd_offset[IWM_TFD_QUEUE_BC_SIZE];
 } __packed;
 
 /*
@@ -1710,187 +1706,187 @@ struct iwm_agn_scd_bc_tbl {
 
 /* Tx queue numbers */
 enum {
-	IWM_MVM_OFFCHANNEL_QUEUE = 8,
-	IWM_MVM_CMD_QUEUE = 9,
-	IWM_MVM_AUX_QUEUE = 15,
+    IWM_MVM_OFFCHANNEL_QUEUE = 8,
+    IWM_MVM_CMD_QUEUE = 9,
+    IWM_MVM_AUX_QUEUE = 15,
 };
 
 enum iwm_mvm_tx_fifo {
-	IWM_MVM_TX_FIFO_BK = 0,
-	IWM_MVM_TX_FIFO_BE,
-	IWM_MVM_TX_FIFO_VI,
-	IWM_MVM_TX_FIFO_VO,
-	IWM_MVM_TX_FIFO_MCAST = 5,
-	IWM_MVM_TX_FIFO_CMD = 7,
+    IWM_MVM_TX_FIFO_BK = 0,
+    IWM_MVM_TX_FIFO_BE,
+    IWM_MVM_TX_FIFO_VI,
+    IWM_MVM_TX_FIFO_VO,
+    IWM_MVM_TX_FIFO_MCAST = 5,
+    IWM_MVM_TX_FIFO_CMD = 7,
 };
 
 #define IWM_MVM_STATION_COUNT	16
 
 /* commands */
 enum {
-	IWM_MVM_ALIVE = 0x1,
-	IWM_REPLY_ERROR = 0x2,
+    IWM_MVM_ALIVE = 0x1,
+    IWM_REPLY_ERROR = 0x2,
 
-	IWM_INIT_COMPLETE_NOTIF = 0x4,
+    IWM_INIT_COMPLETE_NOTIF = 0x4,
 
-	/* PHY context commands */
-	IWM_PHY_CONTEXT_CMD = 0x8,
-	IWM_DBG_CFG = 0x9,
+    /* PHY context commands */
+    IWM_PHY_CONTEXT_CMD = 0x8,
+    IWM_DBG_CFG = 0x9,
 
-	/* UMAC scan commands */
-	IWM_SCAN_ITERATION_COMPLETE_UMAC = 0xb5,
-	IWM_SCAN_CFG_CMD = 0xc,
-	IWM_SCAN_REQ_UMAC = 0xd,
-	IWM_SCAN_ABORT_UMAC = 0xe,
-	IWM_SCAN_COMPLETE_UMAC = 0xf,
+    /* UMAC scan commands */
+    IWM_SCAN_ITERATION_COMPLETE_UMAC = 0xb5,
+    IWM_SCAN_CFG_CMD = 0xc,
+    IWM_SCAN_REQ_UMAC = 0xd,
+    IWM_SCAN_ABORT_UMAC = 0xe,
+    IWM_SCAN_COMPLETE_UMAC = 0xf,
 
-	/* station table */
-	IWM_ADD_STA_KEY = 0x17,
-	IWM_ADD_STA = 0x18,
-	IWM_REMOVE_STA = 0x19,
+    /* station table */
+    IWM_ADD_STA_KEY = 0x17,
+    IWM_ADD_STA = 0x18,
+    IWM_REMOVE_STA = 0x19,
 
-	/* TX */
-	IWM_TX_CMD = 0x1c,
-	IWM_TXPATH_FLUSH = 0x1e,
-	IWM_MGMT_MCAST_KEY = 0x1f,
+    /* TX */
+    IWM_TX_CMD = 0x1c,
+    IWM_TXPATH_FLUSH = 0x1e,
+    IWM_MGMT_MCAST_KEY = 0x1f,
 
-	/* scheduler config */
-	IWM_SCD_QUEUE_CFG = 0x1d,
+    /* scheduler config */
+    IWM_SCD_QUEUE_CFG = 0x1d,
 
-	/* global key */
-	IWM_WEP_KEY = 0x20,
+    /* global key */
+    IWM_WEP_KEY = 0x20,
 
-	/* MAC and Binding commands */
-	IWM_MAC_CONTEXT_CMD = 0x28,
-	IWM_TIME_EVENT_CMD = 0x29, /* both CMD and response */
-	IWM_TIME_EVENT_NOTIFICATION = 0x2a,
-	IWM_BINDING_CONTEXT_CMD = 0x2b,
-	IWM_TIME_QUOTA_CMD = 0x2c,
-	IWM_NON_QOS_TX_COUNTER_CMD = 0x2d,
+    /* MAC and Binding commands */
+    IWM_MAC_CONTEXT_CMD = 0x28,
+    IWM_TIME_EVENT_CMD = 0x29, /* both CMD and response */
+    IWM_TIME_EVENT_NOTIFICATION = 0x2a,
+    IWM_BINDING_CONTEXT_CMD = 0x2b,
+    IWM_TIME_QUOTA_CMD = 0x2c,
+    IWM_NON_QOS_TX_COUNTER_CMD = 0x2d,
 
-	IWM_LQ_CMD = 0x4e,
+    IWM_LQ_CMD = 0x4e,
 
-	/* paging block to FW cpu2 */
-	IWM_FW_PAGING_BLOCK_CMD = 0x4f,
+    /* paging block to FW cpu2 */
+    IWM_FW_PAGING_BLOCK_CMD = 0x4f,
 
-	/* Scan offload */
-	IWM_SCAN_OFFLOAD_REQUEST_CMD = 0x51,
-	IWM_SCAN_OFFLOAD_ABORT_CMD = 0x52,
-	IWM_HOT_SPOT_CMD = 0x53,
-	IWM_SCAN_OFFLOAD_COMPLETE = 0x6d,
-	IWM_SCAN_OFFLOAD_UPDATE_PROFILES_CMD = 0x6e,
-	IWM_SCAN_OFFLOAD_CONFIG_CMD = 0x6f,
-	IWM_MATCH_FOUND_NOTIFICATION = 0xd9,
-	IWM_SCAN_ITERATION_COMPLETE = 0xe7,
+    /* Scan offload */
+    IWM_SCAN_OFFLOAD_REQUEST_CMD = 0x51,
+    IWM_SCAN_OFFLOAD_ABORT_CMD = 0x52,
+    IWM_HOT_SPOT_CMD = 0x53,
+    IWM_SCAN_OFFLOAD_COMPLETE = 0x6d,
+    IWM_SCAN_OFFLOAD_UPDATE_PROFILES_CMD = 0x6e,
+    IWM_SCAN_OFFLOAD_CONFIG_CMD = 0x6f,
+    IWM_MATCH_FOUND_NOTIFICATION = 0xd9,
+    IWM_SCAN_ITERATION_COMPLETE = 0xe7,
 
-	/* Phy */
-	IWM_PHY_CONFIGURATION_CMD = 0x6a,
-	IWM_CALIB_RES_NOTIF_PHY_DB = 0x6b,
-	IWM_PHY_DB_CMD = 0x6c,
+    /* Phy */
+    IWM_PHY_CONFIGURATION_CMD = 0x6a,
+    IWM_CALIB_RES_NOTIF_PHY_DB = 0x6b,
+    IWM_PHY_DB_CMD = 0x6c,
 
-	/* Power - legacy power table command */
-	IWM_POWER_TABLE_CMD = 0x77,
-	IWM_PSM_UAPSD_AP_MISBEHAVING_NOTIFICATION = 0x78,
+    /* Power - legacy power table command */
+    IWM_POWER_TABLE_CMD = 0x77,
+    IWM_PSM_UAPSD_AP_MISBEHAVING_NOTIFICATION = 0x78,
 
-	/* Thermal Throttling*/
-	IWM_REPLY_THERMAL_MNG_BACKOFF = 0x7e,
+    /* Thermal Throttling*/
+    IWM_REPLY_THERMAL_MNG_BACKOFF = 0x7e,
 
-	/* Scanning */
-	IWM_SCAN_ABORT_CMD = 0x81,
-	IWM_SCAN_START_NOTIFICATION = 0x82,
-	IWM_SCAN_RESULTS_NOTIFICATION = 0x83,
+    /* Scanning */
+    IWM_SCAN_ABORT_CMD = 0x81,
+    IWM_SCAN_START_NOTIFICATION = 0x82,
+    IWM_SCAN_RESULTS_NOTIFICATION = 0x83,
 
-	/* NVM */
-	IWM_NVM_ACCESS_CMD = 0x88,
+    /* NVM */
+    IWM_NVM_ACCESS_CMD = 0x88,
 
-	IWM_SET_CALIB_DEFAULT_CMD = 0x8e,
+    IWM_SET_CALIB_DEFAULT_CMD = 0x8e,
 
-	IWM_BEACON_NOTIFICATION = 0x90,
-	IWM_BEACON_TEMPLATE_CMD = 0x91,
-	IWM_TX_ANT_CONFIGURATION_CMD = 0x98,
-	IWM_BT_CONFIG = 0x9b,
-	IWM_STATISTICS_NOTIFICATION = 0x9d,
-	IWM_REDUCE_TX_POWER_CMD = 0x9f,
+    IWM_BEACON_NOTIFICATION = 0x90,
+    IWM_BEACON_TEMPLATE_CMD = 0x91,
+    IWM_TX_ANT_CONFIGURATION_CMD = 0x98,
+    IWM_BT_CONFIG = 0x9b,
+    IWM_STATISTICS_NOTIFICATION = 0x9d,
+    IWM_REDUCE_TX_POWER_CMD = 0x9f,
 
-	/* RF-KILL commands and notifications */
-	IWM_CARD_STATE_CMD = 0xa0,
-	IWM_CARD_STATE_NOTIFICATION = 0xa1,
+    /* RF-KILL commands and notifications */
+    IWM_CARD_STATE_CMD = 0xa0,
+    IWM_CARD_STATE_NOTIFICATION = 0xa1,
 
-	IWM_MISSED_BEACONS_NOTIFICATION = 0xa2,
+    IWM_MISSED_BEACONS_NOTIFICATION = 0xa2,
 
-	IWM_MFUART_LOAD_NOTIFICATION = 0xb1,
+    IWM_MFUART_LOAD_NOTIFICATION = 0xb1,
 
-	/* Power - new power table command */
-	IWM_MAC_PM_POWER_TABLE = 0xa9,
+    /* Power - new power table command */
+    IWM_MAC_PM_POWER_TABLE = 0xa9,
 
-	IWM_REPLY_RX_PHY_CMD = 0xc0,
-	IWM_REPLY_RX_MPDU_CMD = 0xc1,
-	IWM_BA_NOTIF = 0xc5,
+    IWM_REPLY_RX_PHY_CMD = 0xc0,
+    IWM_REPLY_RX_MPDU_CMD = 0xc1,
+    IWM_BA_NOTIF = 0xc5,
 
-	/* Location Aware Regulatory */
-	IWM_MCC_UPDATE_CMD = 0xc8,
-	IWM_MCC_CHUB_UPDATE_CMD = 0xc9,
+    /* Location Aware Regulatory */
+    IWM_MCC_UPDATE_CMD = 0xc8,
+    IWM_MCC_CHUB_UPDATE_CMD = 0xc9,
 
-	/* BT Coex */
-	IWM_BT_COEX_PRIO_TABLE = 0xcc,
-	IWM_BT_COEX_PROT_ENV = 0xcd,
-	IWM_BT_PROFILE_NOTIFICATION = 0xce,
-	IWM_BT_COEX_CI = 0x5d,
+    /* BT Coex */
+    IWM_BT_COEX_PRIO_TABLE = 0xcc,
+    IWM_BT_COEX_PROT_ENV = 0xcd,
+    IWM_BT_PROFILE_NOTIFICATION = 0xce,
+    IWM_BT_COEX_CI = 0x5d,
 
-	IWM_REPLY_SF_CFG_CMD = 0xd1,
-	IWM_REPLY_BEACON_FILTERING_CMD = 0xd2,
+    IWM_REPLY_SF_CFG_CMD = 0xd1,
+    IWM_REPLY_BEACON_FILTERING_CMD = 0xd2,
 
-	/* DTS measurements */
-	IWM_CMD_DTS_MEASUREMENT_TRIGGER = 0xdc,
-	IWM_DTS_MEASUREMENT_NOTIFICATION = 0xdd,
+    /* DTS measurements */
+    IWM_CMD_DTS_MEASUREMENT_TRIGGER = 0xdc,
+    IWM_DTS_MEASUREMENT_NOTIFICATION = 0xdd,
 
-	IWM_REPLY_DEBUG_CMD = 0xf0,
-	IWM_DEBUG_LOG_MSG = 0xf7,
+    IWM_REPLY_DEBUG_CMD = 0xf0,
+    IWM_DEBUG_LOG_MSG = 0xf7,
 
-	IWM_MCAST_FILTER_CMD = 0xd0,
+    IWM_MCAST_FILTER_CMD = 0xd0,
 
-	/* D3 commands/notifications */
-	IWM_D3_CONFIG_CMD = 0xd3,
-	IWM_PROT_OFFLOAD_CONFIG_CMD = 0xd4,
-	IWM_OFFLOADS_QUERY_CMD = 0xd5,
-	IWM_REMOTE_WAKE_CONFIG_CMD = 0xd6,
+    /* D3 commands/notifications */
+    IWM_D3_CONFIG_CMD = 0xd3,
+    IWM_PROT_OFFLOAD_CONFIG_CMD = 0xd4,
+    IWM_OFFLOADS_QUERY_CMD = 0xd5,
+    IWM_REMOTE_WAKE_CONFIG_CMD = 0xd6,
 
-	/* for WoWLAN in particular */
-	IWM_WOWLAN_PATTERNS = 0xe0,
-	IWM_WOWLAN_CONFIGURATION = 0xe1,
-	IWM_WOWLAN_TSC_RSC_PARAM = 0xe2,
-	IWM_WOWLAN_TKIP_PARAM = 0xe3,
-	IWM_WOWLAN_KEK_KCK_MATERIAL = 0xe4,
-	IWM_WOWLAN_GET_STATUSES = 0xe5,
-	IWM_WOWLAN_TX_POWER_PER_DB = 0xe6,
+    /* for WoWLAN in particular */
+    IWM_WOWLAN_PATTERNS = 0xe0,
+    IWM_WOWLAN_CONFIGURATION = 0xe1,
+    IWM_WOWLAN_TSC_RSC_PARAM = 0xe2,
+    IWM_WOWLAN_TKIP_PARAM = 0xe3,
+    IWM_WOWLAN_KEK_KCK_MATERIAL = 0xe4,
+    IWM_WOWLAN_GET_STATUSES = 0xe5,
+    IWM_WOWLAN_TX_POWER_PER_DB = 0xe6,
 
-	/* and for NetDetect */
-	IWM_NET_DETECT_CONFIG_CMD = 0x54,
-	IWM_NET_DETECT_PROFILES_QUERY_CMD = 0x56,
-	IWM_NET_DETECT_PROFILES_CMD = 0x57,
-	IWM_NET_DETECT_HOTSPOTS_CMD = 0x58,
-	IWM_NET_DETECT_HOTSPOTS_QUERY_CMD = 0x59,
+    /* and for NetDetect */
+    IWM_NET_DETECT_CONFIG_CMD = 0x54,
+    IWM_NET_DETECT_PROFILES_QUERY_CMD = 0x56,
+    IWM_NET_DETECT_PROFILES_CMD = 0x57,
+    IWM_NET_DETECT_HOTSPOTS_CMD = 0x58,
+    IWM_NET_DETECT_HOTSPOTS_QUERY_CMD = 0x59,
 
-	IWM_REPLY_MAX = 0xff,
+    IWM_REPLY_MAX = 0xff,
 };
 
 enum iwm_phy_ops_subcmd_ids {
-	IWM_CMD_DTS_MEASUREMENT_TRIGGER_WIDE = 0x0,
-	IWM_CTDP_CONFIG_CMD = 0x03,
-	IWM_TEMP_REPORTING_THRESHOLDS_CMD = 0x04,
-	IWM_CT_KILL_NOTIFICATION = 0xFE,
-	IWM_DTS_MEASUREMENT_NOTIF_WIDE = 0xFF,
+    IWM_CMD_DTS_MEASUREMENT_TRIGGER_WIDE = 0x0,
+    IWM_CTDP_CONFIG_CMD = 0x03,
+    IWM_TEMP_REPORTING_THRESHOLDS_CMD = 0x04,
+    IWM_CT_KILL_NOTIFICATION = 0xFE,
+    IWM_DTS_MEASUREMENT_NOTIF_WIDE = 0xFF,
 };
 
 /* command groups */
 enum {
-	IWM_LEGACY_GROUP = 0x0,
-	IWM_LONG_GROUP = 0x1,
-	IWM_SYSTEM_GROUP = 0x2,
-	IWM_MAC_CONF_GROUP = 0x3,
-	IWM_PHY_OPS_GROUP = 0x4,
-	IWM_DATA_PATH_GROUP = 0x5,
-	IWM_PROT_OFFLOAD_GROUP = 0xb,
+    IWM_LEGACY_GROUP = 0x0,
+    IWM_LONG_GROUP = 0x1,
+    IWM_SYSTEM_GROUP = 0x2,
+    IWM_MAC_CONF_GROUP = 0x3,
+    IWM_PHY_OPS_GROUP = 0x4,
+    IWM_DATA_PATH_GROUP = 0x5,
+    IWM_PROT_OFFLOAD_GROUP = 0xb,
 };
 
 /**
@@ -1898,7 +1894,7 @@ enum {
  * @status: status of the command asked, changes for each one
  */
 struct iwm_cmd_response {
-	uint32_t status;
+    uint32_t status;
 };
 
 /*
@@ -1906,7 +1902,7 @@ struct iwm_cmd_response {
  * @valid: valid antenna configuration
  */
 struct iwm_tx_ant_cfg_cmd {
-	uint32_t valid;
+    uint32_t valid;
 } __packed;
 
 /**
@@ -1917,9 +1913,9 @@ struct iwm_tx_ant_cfg_cmd {
  * @pwr_restriction: TX power restriction in dBms.
  */
 struct iwm_reduce_tx_power_cmd {
-	uint8_t flags;
-	uint8_t mac_context_id;
-	uint16_t pwr_restriction;
+    uint8_t flags;
+    uint8_t mac_context_id;
+    uint16_t pwr_restriction;
 } __packed; /* IWM_TX_REDUCED_POWER_API_S_VER_1 */
 
 /*
@@ -1931,41 +1927,41 @@ struct iwm_reduce_tx_power_cmd {
  *		event triggers.
  */
 struct iwm_calib_ctrl {
-	uint32_t flow_trigger;
-	uint32_t event_trigger;
+    uint32_t flow_trigger;
+    uint32_t event_trigger;
 } __packed;
 
 /* This enum defines the bitmap of various calibrations to enable in both
  * init ucode and runtime ucode through IWM_CALIBRATION_CFG_CMD.
  */
 enum iwm_calib_cfg {
-	IWM_CALIB_CFG_XTAL_IDX			= (1 << 0),
-	IWM_CALIB_CFG_TEMPERATURE_IDX		= (1 << 1),
-	IWM_CALIB_CFG_VOLTAGE_READ_IDX		= (1 << 2),
-	IWM_CALIB_CFG_PAPD_IDX			= (1 << 3),
-	IWM_CALIB_CFG_TX_PWR_IDX		= (1 << 4),
-	IWM_CALIB_CFG_DC_IDX			= (1 << 5),
-	IWM_CALIB_CFG_BB_FILTER_IDX		= (1 << 6),
-	IWM_CALIB_CFG_LO_LEAKAGE_IDX		= (1 << 7),
-	IWM_CALIB_CFG_TX_IQ_IDX			= (1 << 8),
-	IWM_CALIB_CFG_TX_IQ_SKEW_IDX		= (1 << 9),
-	IWM_CALIB_CFG_RX_IQ_IDX			= (1 << 10),
-	IWM_CALIB_CFG_RX_IQ_SKEW_IDX		= (1 << 11),
-	IWM_CALIB_CFG_SENSITIVITY_IDX		= (1 << 12),
-	IWM_CALIB_CFG_CHAIN_NOISE_IDX		= (1 << 13),
-	IWM_CALIB_CFG_DISCONNECTED_ANT_IDX	= (1 << 14),
-	IWM_CALIB_CFG_ANT_COUPLING_IDX		= (1 << 15),
-	IWM_CALIB_CFG_DAC_IDX			= (1 << 16),
-	IWM_CALIB_CFG_ABS_IDX			= (1 << 17),
-	IWM_CALIB_CFG_AGC_IDX			= (1 << 18),
+    IWM_CALIB_CFG_XTAL_IDX			= (1 << 0),
+    IWM_CALIB_CFG_TEMPERATURE_IDX		= (1 << 1),
+    IWM_CALIB_CFG_VOLTAGE_READ_IDX		= (1 << 2),
+    IWM_CALIB_CFG_PAPD_IDX			= (1 << 3),
+    IWM_CALIB_CFG_TX_PWR_IDX		= (1 << 4),
+    IWM_CALIB_CFG_DC_IDX			= (1 << 5),
+    IWM_CALIB_CFG_BB_FILTER_IDX		= (1 << 6),
+    IWM_CALIB_CFG_LO_LEAKAGE_IDX		= (1 << 7),
+    IWM_CALIB_CFG_TX_IQ_IDX			= (1 << 8),
+    IWM_CALIB_CFG_TX_IQ_SKEW_IDX		= (1 << 9),
+    IWM_CALIB_CFG_RX_IQ_IDX			= (1 << 10),
+    IWM_CALIB_CFG_RX_IQ_SKEW_IDX		= (1 << 11),
+    IWM_CALIB_CFG_SENSITIVITY_IDX		= (1 << 12),
+    IWM_CALIB_CFG_CHAIN_NOISE_IDX		= (1 << 13),
+    IWM_CALIB_CFG_DISCONNECTED_ANT_IDX	= (1 << 14),
+    IWM_CALIB_CFG_ANT_COUPLING_IDX		= (1 << 15),
+    IWM_CALIB_CFG_DAC_IDX			= (1 << 16),
+    IWM_CALIB_CFG_ABS_IDX			= (1 << 17),
+    IWM_CALIB_CFG_AGC_IDX			= (1 << 18),
 };
 
 /*
  * Phy configuration command.
  */
 struct iwm_phy_cfg_cmd {
-	uint32_t	phy_cfg;
-	struct iwm_calib_ctrl calib_control;
+    uint32_t	phy_cfg;
+    struct iwm_calib_ctrl calib_control;
 } __packed;
 
 #define IWM_PHY_CFG_RADIO_TYPE	((1 << 0) | (1 << 1))
@@ -1982,20 +1978,20 @@ struct iwm_phy_cfg_cmd {
 
 /* Target of the IWM_NVM_ACCESS_CMD */
 enum {
-	IWM_NVM_ACCESS_TARGET_CACHE = 0,
-	IWM_NVM_ACCESS_TARGET_OTP = 1,
-	IWM_NVM_ACCESS_TARGET_EEPROM = 2,
+    IWM_NVM_ACCESS_TARGET_CACHE = 0,
+    IWM_NVM_ACCESS_TARGET_OTP = 1,
+    IWM_NVM_ACCESS_TARGET_EEPROM = 2,
 };
 
 /* Section types for IWM_NVM_ACCESS_CMD */
 enum {
-	IWM_NVM_SECTION_TYPE_SW = 1,
-	IWM_NVM_SECTION_TYPE_REGULATORY = 3,
-	IWM_NVM_SECTION_TYPE_CALIBRATION = 4,
-	IWM_NVM_SECTION_TYPE_PRODUCTION = 5,
-	IWM_NVM_SECTION_TYPE_MAC_OVERRIDE = 11,
-	IWM_NVM_SECTION_TYPE_PHY_SKU = 12,
-	IWM_NVM_MAX_NUM_SECTIONS = 13,
+    IWM_NVM_SECTION_TYPE_SW = 1,
+    IWM_NVM_SECTION_TYPE_REGULATORY = 3,
+    IWM_NVM_SECTION_TYPE_CALIBRATION = 4,
+    IWM_NVM_SECTION_TYPE_PRODUCTION = 5,
+    IWM_NVM_SECTION_TYPE_MAC_OVERRIDE = 11,
+    IWM_NVM_SECTION_TYPE_PHY_SKU = 12,
+    IWM_NVM_MAX_NUM_SECTIONS = 13,
 };
 
 /**
@@ -2008,12 +2004,12 @@ enum {
  * @data: if write operation, the data to write. On read its empty
  */
 struct iwm_nvm_access_cmd {
-	uint8_t op_code;
-	uint8_t target;
-	uint16_t type;
-	uint16_t offset;
-	uint16_t length;
-	uint8_t data[];
+    uint8_t op_code;
+    uint8_t target;
+    uint16_t type;
+    uint16_t offset;
+    uint16_t length;
+    uint8_t data[];
 } __packed; /* IWM_NVM_ACCESS_CMD_API_S_VER_2 */
 
 #define IWM_NUM_OF_FW_PAGING_BLOCKS 33 /* 32 for data and 1 block for CSS */
@@ -2031,10 +2027,10 @@ struct iwm_nvm_access_cmd {
  * @device_phy_addr: virtual addresses from device side
 */
 struct iwm_fw_paging_cmd {
-	uint32_t flags;
-	uint32_t block_size;
-	uint32_t block_num;
-	uint32_t device_phy_addr[IWM_NUM_OF_FW_PAGING_BLOCKS];
+    uint32_t flags;
+    uint32_t block_size;
+    uint32_t block_num;
+    uint32_t device_phy_addr[IWM_NUM_OF_FW_PAGING_BLOCKS];
 } __packed; /* IWM_FW_PAGING_BLOCK_CMD_API_S_VER_1 */
 
 /*
@@ -2044,14 +2040,14 @@ struct iwm_fw_paging_cmd {
  *      download
  */
 enum iwm_fw_item_id {
-	IWM_FW_ITEM_ID_PAGING = 3,
+    IWM_FW_ITEM_ID_PAGING = 3,
 };
 
 /*
  * struct iwm_fw_get_item_cmd - get an item from the fw
  */
 struct iwm_fw_get_item_cmd {
-	uint32_t item_id;
+    uint32_t item_id;
 } __packed; /* IWM_FW_GET_ITEM_CMD_API_S_VER_1 */
 
 /**
@@ -2063,11 +2059,11 @@ struct iwm_fw_get_item_cmd {
  * @data: if read operation, the data returned. Empty on write.
  */
 struct iwm_nvm_access_resp {
-	uint16_t offset;
-	uint16_t length;
-	uint16_t type;
-	uint16_t status;
-	uint8_t data[];
+    uint16_t offset;
+    uint16_t length;
+    uint16_t type;
+    uint16_t status;
+    uint8_t data[];
 } __packed; /* IWM_NVM_ACCESS_CMD_RESP_API_S_VER_2 */
 
 /* IWM_MVM_ALIVE 0x1 */
@@ -2078,24 +2074,24 @@ struct iwm_nvm_access_resp {
 
 /* alive response ver_type values */
 enum {
-	IWM_FW_TYPE_HW = 0,
-	IWM_FW_TYPE_PROT = 1,
-	IWM_FW_TYPE_AP = 2,
-	IWM_FW_TYPE_WOWLAN = 3,
-	IWM_FW_TYPE_TIMING = 4,
-	IWM_FW_TYPE_WIPAN = 5
+    IWM_FW_TYPE_HW = 0,
+    IWM_FW_TYPE_PROT = 1,
+    IWM_FW_TYPE_AP = 2,
+    IWM_FW_TYPE_WOWLAN = 3,
+    IWM_FW_TYPE_TIMING = 4,
+    IWM_FW_TYPE_WIPAN = 5
 };
 
 /* alive response ver_subtype values */
 enum {
-	IWM_FW_SUBTYPE_FULL_FEATURE = 0,
-	IWM_FW_SUBTYPE_BOOTSRAP = 1, /* Not valid */
-	IWM_FW_SUBTYPE_REDUCED = 2,
-	IWM_FW_SUBTYPE_ALIVE_ONLY = 3,
-	IWM_FW_SUBTYPE_WOWLAN = 4,
-	IWM_FW_SUBTYPE_AP_SUBTYPE = 5,
-	IWM_FW_SUBTYPE_WIPAN = 6,
-	IWM_FW_SUBTYPE_INITIALIZE = 9
+    IWM_FW_SUBTYPE_FULL_FEATURE = 0,
+    IWM_FW_SUBTYPE_BOOTSRAP = 1, /* Not valid */
+    IWM_FW_SUBTYPE_REDUCED = 2,
+    IWM_FW_SUBTYPE_ALIVE_ONLY = 3,
+    IWM_FW_SUBTYPE_WOWLAN = 4,
+    IWM_FW_SUBTYPE_AP_SUBTYPE = 5,
+    IWM_FW_SUBTYPE_WIPAN = 6,
+    IWM_FW_SUBTYPE_INITIALIZE = 9
 };
 
 #define IWM_ALIVE_STATUS_ERR 0xDEAD
@@ -2104,93 +2100,93 @@ enum {
 #define IWM_ALIVE_FLG_RFKILL	(1 << 0)
 
 struct iwm_mvm_alive_resp_ver1 {
-	uint16_t status;
-	uint16_t flags;
-	uint8_t ucode_minor;
-	uint8_t ucode_major;
-	uint16_t id;
-	uint8_t api_minor;
-	uint8_t api_major;
-	uint8_t ver_subtype;
-	uint8_t ver_type;
-	uint8_t mac;
-	uint8_t opt;
-	uint16_t reserved2;
-	uint32_t timestamp;
-	uint32_t error_event_table_ptr;	/* SRAM address for error log */
-	uint32_t log_event_table_ptr;	/* SRAM address for event log */
-	uint32_t cpu_register_ptr;
-	uint32_t dbgm_config_ptr;
-	uint32_t alive_counter_ptr;
-	uint32_t scd_base_ptr;		/* SRAM address for SCD */
+    uint16_t status;
+    uint16_t flags;
+    uint8_t ucode_minor;
+    uint8_t ucode_major;
+    uint16_t id;
+    uint8_t api_minor;
+    uint8_t api_major;
+    uint8_t ver_subtype;
+    uint8_t ver_type;
+    uint8_t mac;
+    uint8_t opt;
+    uint16_t reserved2;
+    uint32_t timestamp;
+    uint32_t error_event_table_ptr;	/* SRAM address for error log */
+    uint32_t log_event_table_ptr;	/* SRAM address for event log */
+    uint32_t cpu_register_ptr;
+    uint32_t dbgm_config_ptr;
+    uint32_t alive_counter_ptr;
+    uint32_t scd_base_ptr;		/* SRAM address for SCD */
 } __packed; /* IWM_ALIVE_RES_API_S_VER_1 */
 
 struct iwm_mvm_alive_resp_ver2 {
-	uint16_t status;
-	uint16_t flags;
-	uint8_t ucode_minor;
-	uint8_t ucode_major;
-	uint16_t id;
-	uint8_t api_minor;
-	uint8_t api_major;
-	uint8_t ver_subtype;
-	uint8_t ver_type;
-	uint8_t mac;
-	uint8_t opt;
-	uint16_t reserved2;
-	uint32_t timestamp;
-	uint32_t error_event_table_ptr;	/* SRAM address for error log */
-	uint32_t log_event_table_ptr;	/* SRAM address for LMAC event log */
-	uint32_t cpu_register_ptr;
-	uint32_t dbgm_config_ptr;
-	uint32_t alive_counter_ptr;
-	uint32_t scd_base_ptr;		/* SRAM address for SCD */
-	uint32_t st_fwrd_addr;		/* pointer to Store and forward */
-	uint32_t st_fwrd_size;
-	uint8_t umac_minor;		/* UMAC version: minor */
-	uint8_t umac_major;		/* UMAC version: major */
-	uint16_t umac_id;		/* UMAC version: id */
-	uint32_t error_info_addr;	/* SRAM address for UMAC error log */
-	uint32_t dbg_print_buff_addr;
+    uint16_t status;
+    uint16_t flags;
+    uint8_t ucode_minor;
+    uint8_t ucode_major;
+    uint16_t id;
+    uint8_t api_minor;
+    uint8_t api_major;
+    uint8_t ver_subtype;
+    uint8_t ver_type;
+    uint8_t mac;
+    uint8_t opt;
+    uint16_t reserved2;
+    uint32_t timestamp;
+    uint32_t error_event_table_ptr;	/* SRAM address for error log */
+    uint32_t log_event_table_ptr;	/* SRAM address for LMAC event log */
+    uint32_t cpu_register_ptr;
+    uint32_t dbgm_config_ptr;
+    uint32_t alive_counter_ptr;
+    uint32_t scd_base_ptr;		/* SRAM address for SCD */
+    uint32_t st_fwrd_addr;		/* pointer to Store and forward */
+    uint32_t st_fwrd_size;
+    uint8_t umac_minor;		/* UMAC version: minor */
+    uint8_t umac_major;		/* UMAC version: major */
+    uint16_t umac_id;		/* UMAC version: id */
+    uint32_t error_info_addr;	/* SRAM address for UMAC error log */
+    uint32_t dbg_print_buff_addr;
 } __packed; /* ALIVE_RES_API_S_VER_2 */
 
 struct iwm_mvm_alive_resp {
-	uint16_t status;
-	uint16_t flags;
-	uint32_t ucode_minor;
-	uint32_t ucode_major;
-	uint8_t ver_subtype;
-	uint8_t ver_type;
-	uint8_t mac;
-	uint8_t opt;
-	uint32_t timestamp;
-	uint32_t error_event_table_ptr;	/* SRAM address for error log */
-	uint32_t log_event_table_ptr;	/* SRAM address for LMAC event log */
-	uint32_t cpu_register_ptr;
-	uint32_t dbgm_config_ptr;
-	uint32_t alive_counter_ptr;
-	uint32_t scd_base_ptr;		/* SRAM address for SCD */
-	uint32_t st_fwrd_addr;		/* pointer to Store and forward */
-	uint32_t st_fwrd_size;
-	uint32_t umac_minor;		/* UMAC version: minor */
-	uint32_t umac_major;		/* UMAC version: major */
-	uint32_t error_info_addr;	/* SRAM address for UMAC error log */
-	uint32_t dbg_print_buff_addr;
+    uint16_t status;
+    uint16_t flags;
+    uint32_t ucode_minor;
+    uint32_t ucode_major;
+    uint8_t ver_subtype;
+    uint8_t ver_type;
+    uint8_t mac;
+    uint8_t opt;
+    uint32_t timestamp;
+    uint32_t error_event_table_ptr;	/* SRAM address for error log */
+    uint32_t log_event_table_ptr;	/* SRAM address for LMAC event log */
+    uint32_t cpu_register_ptr;
+    uint32_t dbgm_config_ptr;
+    uint32_t alive_counter_ptr;
+    uint32_t scd_base_ptr;		/* SRAM address for SCD */
+    uint32_t st_fwrd_addr;		/* pointer to Store and forward */
+    uint32_t st_fwrd_size;
+    uint32_t umac_minor;		/* UMAC version: minor */
+    uint32_t umac_major;		/* UMAC version: major */
+    uint32_t error_info_addr;	/* SRAM address for UMAC error log */
+    uint32_t dbg_print_buff_addr;
 } __packed; /* ALIVE_RES_API_S_VER_3 */
 
 /* Error response/notification */
 enum {
-	IWM_FW_ERR_UNKNOWN_CMD = 0x0,
-	IWM_FW_ERR_INVALID_CMD_PARAM = 0x1,
-	IWM_FW_ERR_SERVICE = 0x2,
-	IWM_FW_ERR_ARC_MEMORY = 0x3,
-	IWM_FW_ERR_ARC_CODE = 0x4,
-	IWM_FW_ERR_WATCH_DOG = 0x5,
-	IWM_FW_ERR_WEP_GRP_KEY_INDX = 0x10,
-	IWM_FW_ERR_WEP_KEY_SIZE = 0x11,
-	IWM_FW_ERR_OBSOLETE_FUNC = 0x12,
-	IWM_FW_ERR_UNEXPECTED = 0xFE,
-	IWM_FW_ERR_FATAL = 0xFF
+    IWM_FW_ERR_UNKNOWN_CMD = 0x0,
+    IWM_FW_ERR_INVALID_CMD_PARAM = 0x1,
+    IWM_FW_ERR_SERVICE = 0x2,
+    IWM_FW_ERR_ARC_MEMORY = 0x3,
+    IWM_FW_ERR_ARC_CODE = 0x4,
+    IWM_FW_ERR_WATCH_DOG = 0x5,
+    IWM_FW_ERR_WEP_GRP_KEY_INDX = 0x10,
+    IWM_FW_ERR_WEP_KEY_SIZE = 0x11,
+    IWM_FW_ERR_OBSOLETE_FUNC = 0x12,
+    IWM_FW_ERR_UNEXPECTED = 0xFE,
+    IWM_FW_ERR_FATAL = 0xFF
 };
 
 /**
@@ -2204,12 +2200,12 @@ enum {
  * @timestamp: TSF in usecs.
  */
 struct iwm_error_resp {
-	uint32_t error_type;
-	uint8_t cmd_id;
-	uint8_t reserved1;
-	uint16_t bad_cmd_seq_num;
-	uint32_t error_service;
-	uint64_t timestamp;
+    uint32_t error_type;
+    uint8_t cmd_id;
+    uint8_t reserved1;
+    uint16_t bad_cmd_seq_num;
+    uint32_t error_service;
+    uint64_t timestamp;
 } __packed;
 
 
@@ -2232,43 +2228,43 @@ struct iwm_error_resp {
 
 /* Possible actions on PHYs, MACs and Bindings */
 enum {
-	IWM_FW_CTXT_ACTION_STUB = 0,
-	IWM_FW_CTXT_ACTION_ADD,
-	IWM_FW_CTXT_ACTION_MODIFY,
-	IWM_FW_CTXT_ACTION_REMOVE,
-	IWM_FW_CTXT_ACTION_NUM
+    IWM_FW_CTXT_ACTION_STUB = 0,
+    IWM_FW_CTXT_ACTION_ADD,
+    IWM_FW_CTXT_ACTION_MODIFY,
+    IWM_FW_CTXT_ACTION_REMOVE,
+    IWM_FW_CTXT_ACTION_NUM
 }; /* COMMON_CONTEXT_ACTION_API_E_VER_1 */
 
 /* Time Events */
 
 /* Time Event types, according to MAC type */
 enum iwm_time_event_type {
-	/* BSS Station Events */
-	IWM_TE_BSS_STA_AGGRESSIVE_ASSOC,
-	IWM_TE_BSS_STA_ASSOC,
-	IWM_TE_BSS_EAP_DHCP_PROT,
-	IWM_TE_BSS_QUIET_PERIOD,
+    /* BSS Station Events */
+    IWM_TE_BSS_STA_AGGRESSIVE_ASSOC,
+    IWM_TE_BSS_STA_ASSOC,
+    IWM_TE_BSS_EAP_DHCP_PROT,
+    IWM_TE_BSS_QUIET_PERIOD,
 
-	/* P2P Device Events */
-	IWM_TE_P2P_DEVICE_DISCOVERABLE,
-	IWM_TE_P2P_DEVICE_LISTEN,
-	IWM_TE_P2P_DEVICE_ACTION_SCAN,
-	IWM_TE_P2P_DEVICE_FULL_SCAN,
+    /* P2P Device Events */
+    IWM_TE_P2P_DEVICE_DISCOVERABLE,
+    IWM_TE_P2P_DEVICE_LISTEN,
+    IWM_TE_P2P_DEVICE_ACTION_SCAN,
+    IWM_TE_P2P_DEVICE_FULL_SCAN,
 
-	/* P2P Client Events */
-	IWM_TE_P2P_CLIENT_AGGRESSIVE_ASSOC,
-	IWM_TE_P2P_CLIENT_ASSOC,
-	IWM_TE_P2P_CLIENT_QUIET_PERIOD,
+    /* P2P Client Events */
+    IWM_TE_P2P_CLIENT_AGGRESSIVE_ASSOC,
+    IWM_TE_P2P_CLIENT_ASSOC,
+    IWM_TE_P2P_CLIENT_QUIET_PERIOD,
 
-	/* P2P GO Events */
-	IWM_TE_P2P_GO_ASSOC_PROT,
-	IWM_TE_P2P_GO_REPETITIVE_NOA,
-	IWM_TE_P2P_GO_CT_WINDOW,
+    /* P2P GO Events */
+    IWM_TE_P2P_GO_ASSOC_PROT,
+    IWM_TE_P2P_GO_REPETITIVE_NOA,
+    IWM_TE_P2P_GO_CT_WINDOW,
 
-	/* WiDi Sync Events */
-	IWM_TE_WIDI_TX_SYNC,
+    /* WiDi Sync Events */
+    IWM_TE_WIDI_TX_SYNC,
 
-	IWM_TE_MAX
+    IWM_TE_MAX
 }; /* IWM_MAC_EVENT_TYPE_API_E_VER_1 */
 
 
@@ -2289,10 +2285,10 @@ enum iwm_time_event_type {
  * scheduled.
  */
 enum {
-	IWM_TE_V1_FRAG_NONE = 0,
-	IWM_TE_V1_FRAG_SINGLE = 1,
-	IWM_TE_V1_FRAG_DUAL = 2,
-	IWM_TE_V1_FRAG_ENDLESS = 0xffffffff
+    IWM_TE_V1_FRAG_NONE = 0,
+    IWM_TE_V1_FRAG_SINGLE = 1,
+    IWM_TE_V1_FRAG_DUAL = 2,
+    IWM_TE_V1_FRAG_ENDLESS = 0xffffffff
 };
 
 /* If a Time Event can be fragmented, this is the max number of fragments */
@@ -2304,10 +2300,10 @@ enum {
 
 /* Time Event dependencies: none, on another TE, or in a specific time */
 enum {
-	IWM_TE_V1_INDEPENDENT		= 0,
-	IWM_TE_V1_DEP_OTHER		= (1 << 0),
-	IWM_TE_V1_DEP_TSF		= (1 << 1),
-	IWM_TE_V1_EVENT_SOCIOPATHIC	= (1 << 2),
+    IWM_TE_V1_INDEPENDENT		= 0,
+    IWM_TE_V1_DEP_OTHER		= (1 << 0),
+    IWM_TE_V1_DEP_TSF		= (1 << 1),
+    IWM_TE_V1_EVENT_SOCIOPATHIC	= (1 << 2),
 }; /* IWM_MAC_EVENT_DEPENDENCY_POLICY_API_E_VER_2 */
 
 /*
@@ -2328,16 +2324,16 @@ enum {
  * notification for monolithic events.
  */
 enum {
-	IWM_TE_V1_NOTIF_NONE = 0,
-	IWM_TE_V1_NOTIF_HOST_EVENT_START = (1 << 0),
-	IWM_TE_V1_NOTIF_HOST_EVENT_END = (1 << 1),
-	IWM_TE_V1_NOTIF_INTERNAL_EVENT_START = (1 << 2),
-	IWM_TE_V1_NOTIF_INTERNAL_EVENT_END = (1 << 3),
-	IWM_TE_V1_NOTIF_HOST_FRAG_START = (1 << 4),
-	IWM_TE_V1_NOTIF_HOST_FRAG_END = (1 << 5),
-	IWM_TE_V1_NOTIF_INTERNAL_FRAG_START = (1 << 6),
-	IWM_TE_V1_NOTIF_INTERNAL_FRAG_END = (1 << 7),
-	IWM_T2_V2_START_IMMEDIATELY = (1 << 11),
+    IWM_TE_V1_NOTIF_NONE = 0,
+    IWM_TE_V1_NOTIF_HOST_EVENT_START = (1 << 0),
+    IWM_TE_V1_NOTIF_HOST_EVENT_END = (1 << 1),
+    IWM_TE_V1_NOTIF_INTERNAL_EVENT_START = (1 << 2),
+    IWM_TE_V1_NOTIF_INTERNAL_EVENT_END = (1 << 3),
+    IWM_TE_V1_NOTIF_HOST_FRAG_START = (1 << 4),
+    IWM_TE_V1_NOTIF_HOST_FRAG_END = (1 << 5),
+    IWM_TE_V1_NOTIF_INTERNAL_FRAG_START = (1 << 6),
+    IWM_TE_V1_NOTIF_INTERNAL_FRAG_END = (1 << 7),
+    IWM_T2_V2_START_IMMEDIATELY = (1 << 11),
 }; /* IWM_MAC_EVENT_ACTION_API_E_VER_2 */
 
 /* Time event - defines for command API */
@@ -2356,11 +2352,11 @@ enum {
  * scheduled.
  */
 enum {
-	IWM_TE_V2_FRAG_NONE = 0,
-	IWM_TE_V2_FRAG_SINGLE = 1,
-	IWM_TE_V2_FRAG_DUAL = 2,
-	IWM_TE_V2_FRAG_MAX = 0xfe,
-	IWM_TE_V2_FRAG_ENDLESS = 0xff
+    IWM_TE_V2_FRAG_NONE = 0,
+    IWM_TE_V2_FRAG_SINGLE = 1,
+    IWM_TE_V2_FRAG_DUAL = 2,
+    IWM_TE_V2_FRAG_MAX = 0xfe,
+    IWM_TE_V2_FRAG_ENDLESS = 0xff
 };
 
 /* Repeat the time event endlessly (until removed) */
@@ -2392,28 +2388,28 @@ enum {
  * @IWM_TE_V2_ABSENCE: are we present or absent during the Time Event.
  */
 enum {
-	IWM_TE_V2_DEFAULT_POLICY = 0x0,
+    IWM_TE_V2_DEFAULT_POLICY = 0x0,
 
-	/* notifications (event start/stop, fragment start/stop) */
-	IWM_TE_V2_NOTIF_HOST_EVENT_START = (1 << 0),
-	IWM_TE_V2_NOTIF_HOST_EVENT_END = (1 << 1),
-	IWM_TE_V2_NOTIF_INTERNAL_EVENT_START = (1 << 2),
-	IWM_TE_V2_NOTIF_INTERNAL_EVENT_END = (1 << 3),
+    /* notifications (event start/stop, fragment start/stop) */
+    IWM_TE_V2_NOTIF_HOST_EVENT_START = (1 << 0),
+    IWM_TE_V2_NOTIF_HOST_EVENT_END = (1 << 1),
+    IWM_TE_V2_NOTIF_INTERNAL_EVENT_START = (1 << 2),
+    IWM_TE_V2_NOTIF_INTERNAL_EVENT_END = (1 << 3),
 
-	IWM_TE_V2_NOTIF_HOST_FRAG_START = (1 << 4),
-	IWM_TE_V2_NOTIF_HOST_FRAG_END = (1 << 5),
-	IWM_TE_V2_NOTIF_INTERNAL_FRAG_START = (1 << 6),
-	IWM_TE_V2_NOTIF_INTERNAL_FRAG_END = (1 << 7),
+    IWM_TE_V2_NOTIF_HOST_FRAG_START = (1 << 4),
+    IWM_TE_V2_NOTIF_HOST_FRAG_END = (1 << 5),
+    IWM_TE_V2_NOTIF_INTERNAL_FRAG_START = (1 << 6),
+    IWM_TE_V2_NOTIF_INTERNAL_FRAG_END = (1 << 7),
 
-	IWM_TE_V2_NOTIF_MSK = 0xff,
+    IWM_TE_V2_NOTIF_MSK = 0xff,
 
-	/* placement characteristics */
-	IWM_TE_V2_DEP_OTHER = (1 << IWM_TE_V2_PLACEMENT_POS),
-	IWM_TE_V2_DEP_TSF = (1 << (IWM_TE_V2_PLACEMENT_POS + 1)),
-	IWM_TE_V2_EVENT_SOCIOPATHIC = (1 << (IWM_TE_V2_PLACEMENT_POS + 2)),
+    /* placement characteristics */
+    IWM_TE_V2_DEP_OTHER = (1 << IWM_TE_V2_PLACEMENT_POS),
+    IWM_TE_V2_DEP_TSF = (1 << (IWM_TE_V2_PLACEMENT_POS + 1)),
+    IWM_TE_V2_EVENT_SOCIOPATHIC = (1 << (IWM_TE_V2_PLACEMENT_POS + 2)),
 
-	/* are we present or absent during the Time Event. */
-	IWM_TE_V2_ABSENCE = (1 << IWM_TE_V2_ABSENCE_POS),
+    /* are we present or absent during the Time Event. */
+    IWM_TE_V2_ABSENCE = (1 << IWM_TE_V2_ABSENCE_POS),
 };
 
 /**
@@ -2441,19 +2437,19 @@ enum {
  *	using IWM_TE_ABSENCE and using IWM_TE_NOTIF_*
  */
 struct iwm_time_event_cmd {
-	/* COMMON_INDEX_HDR_API_S_VER_1 */
-	uint32_t id_and_color;
-	uint32_t action;
-	uint32_t id;
-	/* IWM_MAC_TIME_EVENT_DATA_API_S_VER_2 */
-	uint32_t apply_time;
-	uint32_t max_delay;
-	uint32_t depends_on;
-	uint32_t interval;
-	uint32_t duration;
-	uint8_t repeat;
-	uint8_t max_frags;
-	uint16_t policy;
+    /* COMMON_INDEX_HDR_API_S_VER_1 */
+    uint32_t id_and_color;
+    uint32_t action;
+    uint32_t id;
+    /* IWM_MAC_TIME_EVENT_DATA_API_S_VER_2 */
+    uint32_t apply_time;
+    uint32_t max_delay;
+    uint32_t depends_on;
+    uint32_t interval;
+    uint32_t duration;
+    uint8_t repeat;
+    uint8_t max_frags;
+    uint16_t policy;
 } __packed; /* IWM_MAC_TIME_EVENT_CMD_API_S_VER_2 */
 
 /**
@@ -2464,10 +2460,10 @@ struct iwm_time_event_cmd {
  * @id_and_color: ID and color of the relevant MAC
  */
 struct iwm_time_event_resp {
-	uint32_t status;
-	uint32_t id;
-	uint32_t unique_id;
-	uint32_t id_and_color;
+    uint32_t status;
+    uint32_t id;
+    uint32_t unique_id;
+    uint32_t id_and_color;
 } __packed; /* IWM_MAC_TIME_EVENT_RSP_API_S_VER_1 */
 
 /**
@@ -2481,12 +2477,12 @@ struct iwm_time_event_resp {
  * @status: true if scheduled, false otherwise (not executed)
  */
 struct iwm_time_event_notif {
-	uint32_t timestamp;
-	uint32_t session_id;
-	uint32_t unique_id;
-	uint32_t id_and_color;
-	uint32_t action;
-	uint32_t status;
+    uint32_t timestamp;
+    uint32_t session_id;
+    uint32_t unique_id;
+    uint32_t id_and_color;
+    uint32_t action;
+    uint32_t status;
 } __packed; /* IWM_MAC_TIME_EVENT_NTFY_API_S_VER_1 */
 
 
@@ -2501,12 +2497,12 @@ struct iwm_time_event_notif {
  * @phy: PHY id and color which belongs to the binding
  */
 struct iwm_binding_cmd {
-	/* COMMON_INDEX_HDR_API_S_VER_1 */
-	uint32_t id_and_color;
-	uint32_t action;
-	/* IWM_BINDING_DATA_API_S_VER_1 */
-	uint32_t macs[IWM_MAX_MACS_IN_BINDING];
-	uint32_t phy;
+    /* COMMON_INDEX_HDR_API_S_VER_1 */
+    uint32_t id_and_color;
+    uint32_t action;
+    /* IWM_BINDING_DATA_API_S_VER_1 */
+    uint32_t macs[IWM_MAX_MACS_IN_BINDING];
+    uint32_t phy;
 } __packed; /* IWM_BINDING_CMD_API_S_VER_1 */
 
 /* The maximal number of fragments in the FW's schedule session */
@@ -2520,9 +2516,9 @@ struct iwm_binding_cmd {
  * @max_duration: max uninterrupted context duration in TU
  */
 struct iwm_time_quota_data {
-	uint32_t id_and_color;
-	uint32_t quota;
-	uint32_t max_duration;
+    uint32_t id_and_color;
+    uint32_t quota;
+    uint32_t max_duration;
 } __packed; /* IWM_TIME_QUOTA_DATA_API_S_VER_1 */
 
 /**
@@ -2531,7 +2527,7 @@ struct iwm_time_quota_data {
  * @quotas: allocations per binding
  */
 struct iwm_time_quota_cmd {
-	struct iwm_time_quota_data quotas[IWM_MAX_BINDINGS];
+    struct iwm_time_quota_data quotas[IWM_MAX_BINDINGS];
 } __packed; /* IWM_TIME_QUOTA_ALLOCATION_CMD_API_S_VER_1 */
 
 
@@ -2575,10 +2571,10 @@ struct iwm_time_quota_cmd {
  * @ctrl channel: PHY_[VHT|LEGACY]_CTRL_*
  */
 struct iwm_fw_channel_info {
-	uint8_t band;
-	uint8_t channel;
-	uint8_t width;
-	uint8_t ctrl_pos;
+    uint8_t band;
+    uint8_t channel;
+    uint8_t width;
+    uint8_t ctrl_pos;
 } __packed;
 
 #define IWM_PHY_RX_CHAIN_DRIVER_FORCE_POS	(0)
@@ -2622,17 +2618,17 @@ struct iwm_fw_channel_info {
  * @dsp_cfg_flags: set to 0
  */
 struct iwm_phy_context_cmd {
-	/* COMMON_INDEX_HDR_API_S_VER_1 */
-	uint32_t id_and_color;
-	uint32_t action;
-	/* IWM_PHY_CONTEXT_DATA_API_S_VER_1 */
-	uint32_t apply_time;
-	uint32_t tx_param_color;
-	struct iwm_fw_channel_info ci;
-	uint32_t txchain_info;
-	uint32_t rxchain_info;
-	uint32_t acquisition_data;
-	uint32_t dsp_cfg_flags;
+    /* COMMON_INDEX_HDR_API_S_VER_1 */
+    uint32_t id_and_color;
+    uint32_t action;
+    /* IWM_PHY_CONTEXT_DATA_API_S_VER_1 */
+    uint32_t apply_time;
+    uint32_t tx_param_color;
+    struct iwm_fw_channel_info ci;
+    uint32_t txchain_info;
+    uint32_t rxchain_info;
+    uint32_t acquisition_data;
+    uint32_t dsp_cfg_flags;
 } __packed; /* IWM_PHY_CONTEXT_CMD_API_VER_1 */
 
 #define IWM_RX_INFO_PHY_CNT 8
@@ -2684,28 +2680,28 @@ struct iwm_phy_context_cmd {
  * about the reception of the packet.
  */
 struct iwm_rx_phy_info {
-	uint8_t non_cfg_phy_cnt;
-	uint8_t cfg_phy_cnt;
-	uint8_t stat_id;
-	uint8_t reserved1;
-	uint32_t system_timestamp;
-	uint64_t timestamp;
-	uint32_t beacon_time_stamp;
-	uint16_t phy_flags;
+    uint8_t non_cfg_phy_cnt;
+    uint8_t cfg_phy_cnt;
+    uint8_t stat_id;
+    uint8_t reserved1;
+    uint32_t system_timestamp;
+    uint64_t timestamp;
+    uint32_t beacon_time_stamp;
+    uint16_t phy_flags;
 #define IWM_PHY_INFO_FLAG_SHPREAMBLE	(1 << 2)
-	uint16_t channel;
-	uint32_t non_cfg_phy[IWM_RX_INFO_PHY_CNT];
-	uint8_t rate;
-	uint8_t rflags;
-	uint16_t xrflags;
-	uint32_t byte_count;
-	uint16_t mac_active_msk;
-	uint16_t frame_time;
+    uint16_t channel;
+    uint32_t non_cfg_phy[IWM_RX_INFO_PHY_CNT];
+    uint8_t rate;
+    uint8_t rflags;
+    uint16_t xrflags;
+    uint32_t byte_count;
+    uint16_t mac_active_msk;
+    uint16_t frame_time;
 } __packed;
 
 struct iwm_rx_mpdu_res_start {
-	uint16_t byte_count;
-	uint16_t reserved;
+    uint16_t byte_count;
+    uint16_t reserved;
 } __packed;
 
 /**
@@ -2721,16 +2717,16 @@ struct iwm_rx_mpdu_res_start {
  * @IWM_RX_RES_PHY_FLAGS_OFDM_VHT: The frame was a VHT frame
  */
 enum iwm_rx_phy_flags {
-	IWM_RX_RES_PHY_FLAGS_BAND_24		= (1 << 0),
-	IWM_RX_RES_PHY_FLAGS_MOD_CCK		= (1 << 1),
-	IWM_RX_RES_PHY_FLAGS_SHORT_PREAMBLE	= (1 << 2),
-	IWM_RX_RES_PHY_FLAGS_NARROW_BAND	= (1 << 3),
-	IWM_RX_RES_PHY_FLAGS_ANTENNA		= (0x7 << 4),
-	IWM_RX_RES_PHY_FLAGS_ANTENNA_POS	= 4,
-	IWM_RX_RES_PHY_FLAGS_AGG		= (1 << 7),
-	IWM_RX_RES_PHY_FLAGS_OFDM_HT		= (1 << 8),
-	IWM_RX_RES_PHY_FLAGS_OFDM_GF		= (1 << 9),
-	IWM_RX_RES_PHY_FLAGS_OFDM_VHT		= (1 << 10),
+    IWM_RX_RES_PHY_FLAGS_BAND_24		= (1 << 0),
+    IWM_RX_RES_PHY_FLAGS_MOD_CCK		= (1 << 1),
+    IWM_RX_RES_PHY_FLAGS_SHORT_PREAMBLE	= (1 << 2),
+    IWM_RX_RES_PHY_FLAGS_NARROW_BAND	= (1 << 3),
+    IWM_RX_RES_PHY_FLAGS_ANTENNA		= (0x7 << 4),
+    IWM_RX_RES_PHY_FLAGS_ANTENNA_POS	= 4,
+    IWM_RX_RES_PHY_FLAGS_AGG		= (1 << 7),
+    IWM_RX_RES_PHY_FLAGS_OFDM_HT		= (1 << 8),
+    IWM_RX_RES_PHY_FLAGS_OFDM_GF		= (1 << 9),
+    IWM_RX_RES_PHY_FLAGS_OFDM_VHT		= (1 << 10),
 };
 
 /**
@@ -2766,33 +2762,33 @@ enum iwm_rx_phy_flags {
  * @IWM_RX_MPDU_RES_STATUS2_FILTERING_MSK:
  */
 enum iwm_mvm_rx_status {
-	IWM_RX_MPDU_RES_STATUS_CRC_OK			= (1 << 0),
-	IWM_RX_MPDU_RES_STATUS_OVERRUN_OK		= (1 << 1),
-	IWM_RX_MPDU_RES_STATUS_SRC_STA_FOUND		= (1 << 2),
-	IWM_RX_MPDU_RES_STATUS_KEY_VALID		= (1 << 3),
-	IWM_RX_MPDU_RES_STATUS_KEY_PARAM_OK		= (1 << 4),
-	IWM_RX_MPDU_RES_STATUS_ICV_OK			= (1 << 5),
-	IWM_RX_MPDU_RES_STATUS_MIC_OK			= (1 << 6),
-	IWM_RX_MPDU_RES_STATUS_TTAK_OK			= (1 << 7),
-	IWM_RX_MPDU_RES_STATUS_MNG_FRAME_REPLAY_ERR	= (1 << 7),
-	IWM_RX_MPDU_RES_STATUS_SEC_NO_ENC		= (0 << 8),
-	IWM_RX_MPDU_RES_STATUS_SEC_WEP_ENC		= (1 << 8),
-	IWM_RX_MPDU_RES_STATUS_SEC_CCM_ENC		= (2 << 8),
-	IWM_RX_MPDU_RES_STATUS_SEC_TKIP_ENC		= (3 << 8),
-	IWM_RX_MPDU_RES_STATUS_SEC_EXT_ENC		= (4 << 8),
-	IWM_RX_MPDU_RES_STATUS_SEC_CCM_CMAC_ENC		= (6 << 8),
-	IWM_RX_MPDU_RES_STATUS_SEC_ENC_ERR		= (7 << 8),
-	IWM_RX_MPDU_RES_STATUS_SEC_ENC_MSK		= (7 << 8),
-	IWM_RX_MPDU_RES_STATUS_DEC_DONE			= (1 << 11),
-	IWM_RX_MPDU_RES_STATUS_PROTECT_FRAME_BIT_CMP	= (1 << 12),
-	IWM_RX_MPDU_RES_STATUS_EXT_IV_BIT_CMP		= (1 << 13),
-	IWM_RX_MPDU_RES_STATUS_KEY_ID_CMP_BIT		= (1 << 14),
-	IWM_RX_MPDU_RES_STATUS_ROBUST_MNG_FRAME		= (1 << 15),
-	IWM_RX_MPDU_RES_STATUS_HASH_INDEX_MSK		= (0x3F0000),
-	IWM_RX_MPDU_RES_STATUS_STA_ID_MSK		= (0x1f000000),
-	IWM_RX_MPDU_RES_STATUS_RRF_KILL			= (1 << 29),
-	IWM_RX_MPDU_RES_STATUS_FILTERING_MSK		= (0xc00000),
-	IWM_RX_MPDU_RES_STATUS2_FILTERING_MSK		= (0xc0000000),
+    IWM_RX_MPDU_RES_STATUS_CRC_OK			= (1 << 0),
+    IWM_RX_MPDU_RES_STATUS_OVERRUN_OK		= (1 << 1),
+    IWM_RX_MPDU_RES_STATUS_SRC_STA_FOUND		= (1 << 2),
+    IWM_RX_MPDU_RES_STATUS_KEY_VALID		= (1 << 3),
+    IWM_RX_MPDU_RES_STATUS_KEY_PARAM_OK		= (1 << 4),
+    IWM_RX_MPDU_RES_STATUS_ICV_OK			= (1 << 5),
+    IWM_RX_MPDU_RES_STATUS_MIC_OK			= (1 << 6),
+    IWM_RX_MPDU_RES_STATUS_TTAK_OK			= (1 << 7),
+    IWM_RX_MPDU_RES_STATUS_MNG_FRAME_REPLAY_ERR	= (1 << 7),
+    IWM_RX_MPDU_RES_STATUS_SEC_NO_ENC		= (0 << 8),
+    IWM_RX_MPDU_RES_STATUS_SEC_WEP_ENC		= (1 << 8),
+    IWM_RX_MPDU_RES_STATUS_SEC_CCM_ENC		= (2 << 8),
+    IWM_RX_MPDU_RES_STATUS_SEC_TKIP_ENC		= (3 << 8),
+    IWM_RX_MPDU_RES_STATUS_SEC_EXT_ENC		= (4 << 8),
+    IWM_RX_MPDU_RES_STATUS_SEC_CCM_CMAC_ENC		= (6 << 8),
+    IWM_RX_MPDU_RES_STATUS_SEC_ENC_ERR		= (7 << 8),
+    IWM_RX_MPDU_RES_STATUS_SEC_ENC_MSK		= (7 << 8),
+    IWM_RX_MPDU_RES_STATUS_DEC_DONE			= (1 << 11),
+    IWM_RX_MPDU_RES_STATUS_PROTECT_FRAME_BIT_CMP	= (1 << 12),
+    IWM_RX_MPDU_RES_STATUS_EXT_IV_BIT_CMP		= (1 << 13),
+    IWM_RX_MPDU_RES_STATUS_KEY_ID_CMP_BIT		= (1 << 14),
+    IWM_RX_MPDU_RES_STATUS_ROBUST_MNG_FRAME		= (1 << 15),
+    IWM_RX_MPDU_RES_STATUS_HASH_INDEX_MSK		= (0x3F0000),
+    IWM_RX_MPDU_RES_STATUS_STA_ID_MSK		= (0x1f000000),
+    IWM_RX_MPDU_RES_STATUS_RRF_KILL			= (1 << 29),
+    IWM_RX_MPDU_RES_STATUS_FILTERING_MSK		= (0xc00000),
+    IWM_RX_MPDU_RES_STATUS2_FILTERING_MSK		= (0xc0000000),
 };
 
 /**
@@ -2803,19 +2799,19 @@ enum iwm_mvm_rx_status {
  * @radio_dash:
  */
 struct iwm_radio_version_notif {
-	uint32_t radio_flavor;
-	uint32_t radio_step;
-	uint32_t radio_dash;
+    uint32_t radio_flavor;
+    uint32_t radio_step;
+    uint32_t radio_dash;
 } __packed; /* IWM_RADIO_VERSION_NOTOFICATION_S_VER_1 */
 
 enum iwm_card_state_flags {
-	IWM_CARD_ENABLED		= 0x00,
-	IWM_HW_CARD_DISABLED	= 0x01,
-	IWM_SW_CARD_DISABLED	= 0x02,
-	IWM_CT_KILL_CARD_DISABLED	= 0x04,
-	IWM_HALT_CARD_DISABLED	= 0x08,
-	IWM_CARD_DISABLED_MSK	= 0x0f,
-	IWM_CARD_IS_RX_ON		= 0x10,
+    IWM_CARD_ENABLED		= 0x00,
+    IWM_HW_CARD_DISABLED	= 0x01,
+    IWM_SW_CARD_DISABLED	= 0x02,
+    IWM_CT_KILL_CARD_DISABLED	= 0x04,
+    IWM_HALT_CARD_DISABLED	= 0x08,
+    IWM_CARD_DISABLED_MSK	= 0x0f,
+    IWM_CARD_IS_RX_ON		= 0x10,
 };
 
 /**
@@ -2824,7 +2820,7 @@ enum iwm_card_state_flags {
  * @flags: %iwm_card_state_flags
  */
 struct iwm_card_state_notif {
-	uint32_t flags;
+    uint32_t flags;
 } __packed; /* CARD_STATE_NTFY_API_S_VER_1 */
 
 /**
@@ -2838,11 +2834,11 @@ struct iwm_card_state_notif {
  * @num_recvd_beacons:
  */
 struct iwm_missed_beacons_notif {
-	uint32_t mac_id;
-	uint32_t consec_missed_beacons_since_last_rx;
-	uint32_t consec_missed_beacons;
-	uint32_t num_expected_beacons;
-	uint32_t num_recvd_beacons;
+    uint32_t mac_id;
+    uint32_t consec_missed_beacons_since_last_rx;
+    uint32_t consec_missed_beacons;
+    uint32_t num_expected_beacons;
+    uint32_t num_recvd_beacons;
 } __packed; /* IWM_MISSED_BEACON_NTFY_API_S_VER_3 */
 
 /**
@@ -2854,10 +2850,10 @@ struct iwm_missed_beacons_notif {
  * @duration: MFUART loading time
 */
 struct iwm_mfuart_load_notif {
-	uint32_t installed_ver;
-	uint32_t external_ver;
-	uint32_t status;
-	uint32_t duration;
+    uint32_t installed_ver;
+    uint32_t external_ver;
+    uint32_t status;
+    uint32_t duration;
 } __packed; /*MFU_LOADER_NTFY_API_S_VER_1*/
 
 /**
@@ -2868,9 +2864,9 @@ struct iwm_mfuart_load_notif {
  * @data: the value to set for the calibration result
  */
 struct iwm_set_calib_default_cmd {
-	uint16_t calib_index;
-	uint16_t length;
-	uint8_t data[0];
+    uint16_t calib_index;
+    uint16_t length;
+    uint8_t data[0];
 } __packed; /* IWM_PHY_CALIB_OVERRIDE_VALUES_S */
 
 #define IWM_MAX_PORT_ID_NUM	2
@@ -2890,13 +2886,13 @@ struct iwm_set_calib_default_cmd {
  *		IMPORTANT: add padding if necessary to ensure DWORD alignment.
  */
 struct iwm_mcast_filter_cmd {
-	uint8_t filter_own;
-	uint8_t port_id;
-	uint8_t count;
-	uint8_t pass_all;
-	uint8_t bssid[6];
-	uint8_t reserved[2];
-	uint8_t addr_list[0];
+    uint8_t filter_own;
+    uint8_t port_id;
+    uint8_t count;
+    uint8_t pass_all;
+    uint8_t bssid[6];
+    uint8_t reserved[2];
+    uint8_t addr_list[0];
 } __packed; /* IWM_MCAST_FILTERING_CMD_API_S_VER_1 */
 
 /*
@@ -2912,193 +2908,193 @@ struct iwm_mcast_filter_cmd {
  * Statistics API
  ***********************************/
 struct iwm_mvm_statistics_dbg {
-	uint32_t burst_check;
-	uint32_t burst_count;
-	uint32_t wait_for_silence_timeout_cnt;
-	uint32_t reserved[3];
+    uint32_t burst_check;
+    uint32_t burst_count;
+    uint32_t wait_for_silence_timeout_cnt;
+    uint32_t reserved[3];
 } __packed; /* IWM_STATISTICS_DEBUG_API_S_VER_2 */
 
 struct iwm_mvm_statistics_div {
-	uint32_t tx_on_a;
-	uint32_t tx_on_b;
-	uint32_t exec_time;
-	uint32_t probe_time;
-	uint32_t rssi_ant;
-	uint32_t reserved2;
+    uint32_t tx_on_a;
+    uint32_t tx_on_b;
+    uint32_t exec_time;
+    uint32_t probe_time;
+    uint32_t rssi_ant;
+    uint32_t reserved2;
 } __packed; /* IWM_STATISTICS_SLOW_DIV_API_S_VER_2 */
 
 struct iwm_mvm_statistics_rx_non_phy {
-	uint32_t bogus_cts;	/* CTS received when not expecting CTS */
-	uint32_t bogus_ack;	/* ACK received when not expecting ACK */
-	uint32_t non_bssid_frames;	/* number of frames with BSSID that
+    uint32_t bogus_cts;	/* CTS received when not expecting CTS */
+    uint32_t bogus_ack;	/* ACK received when not expecting ACK */
+    uint32_t non_bssid_frames;	/* number of frames with BSSID that
 					 * doesn't belong to the STA BSSID */
-	uint32_t filtered_frames;	/* count frames that were dumped in the
+    uint32_t filtered_frames;	/* count frames that were dumped in the
 				 * filtering process */
-	uint32_t non_channel_beacons;	/* beacons with our bss id but not on
+    uint32_t non_channel_beacons;	/* beacons with our bss id but not on
 					 * our serving channel */
-	uint32_t channel_beacons;	/* beacons with our bss id and in our
+    uint32_t channel_beacons;	/* beacons with our bss id and in our
 				 * serving channel */
-	uint32_t num_missed_bcon;	/* number of missed beacons */
-	uint32_t adc_rx_saturation_time;	/* count in 0.8us units the time the
+    uint32_t num_missed_bcon;	/* number of missed beacons */
+    uint32_t adc_rx_saturation_time;	/* count in 0.8us units the time the
 					 * ADC was in saturation */
-	uint32_t ina_detection_search_time;/* total time (in 0.8us) searched
+    uint32_t ina_detection_search_time;/* total time (in 0.8us) searched
 					  * for INA */
-	uint32_t beacon_silence_rssi[3];/* RSSI silence after beacon frame */
-	uint32_t interference_data_flag;	/* flag for interference data
+    uint32_t beacon_silence_rssi[3];/* RSSI silence after beacon frame */
+    uint32_t interference_data_flag;	/* flag for interference data
 					 * availability. 1 when data is
 					 * available. */
-	uint32_t channel_load;		/* counts RX Enable time in uSec */
-	uint32_t dsp_false_alarms;	/* DSP false alarm (both OFDM
+    uint32_t channel_load;		/* counts RX Enable time in uSec */
+    uint32_t dsp_false_alarms;	/* DSP false alarm (both OFDM
 					 * and CCK) counter */
-	uint32_t beacon_rssi_a;
-	uint32_t beacon_rssi_b;
-	uint32_t beacon_rssi_c;
-	uint32_t beacon_energy_a;
-	uint32_t beacon_energy_b;
-	uint32_t beacon_energy_c;
-	uint32_t num_bt_kills;
-	uint32_t mac_id;
-	uint32_t directed_data_mpdu;
+    uint32_t beacon_rssi_a;
+    uint32_t beacon_rssi_b;
+    uint32_t beacon_rssi_c;
+    uint32_t beacon_energy_a;
+    uint32_t beacon_energy_b;
+    uint32_t beacon_energy_c;
+    uint32_t num_bt_kills;
+    uint32_t mac_id;
+    uint32_t directed_data_mpdu;
 } __packed; /* IWM_STATISTICS_RX_NON_PHY_API_S_VER_3 */
 
 struct iwm_mvm_statistics_rx_phy {
-	uint32_t ina_cnt;
-	uint32_t fina_cnt;
-	uint32_t plcp_err;
-	uint32_t crc32_err;
-	uint32_t overrun_err;
-	uint32_t early_overrun_err;
-	uint32_t crc32_good;
-	uint32_t false_alarm_cnt;
-	uint32_t fina_sync_err_cnt;
-	uint32_t sfd_timeout;
-	uint32_t fina_timeout;
-	uint32_t unresponded_rts;
-	uint32_t rxe_frame_limit_overrun;
-	uint32_t sent_ack_cnt;
-	uint32_t sent_cts_cnt;
-	uint32_t sent_ba_rsp_cnt;
-	uint32_t dsp_self_kill;
-	uint32_t mh_format_err;
-	uint32_t re_acq_main_rssi_sum;
-	uint32_t reserved;
+    uint32_t ina_cnt;
+    uint32_t fina_cnt;
+    uint32_t plcp_err;
+    uint32_t crc32_err;
+    uint32_t overrun_err;
+    uint32_t early_overrun_err;
+    uint32_t crc32_good;
+    uint32_t false_alarm_cnt;
+    uint32_t fina_sync_err_cnt;
+    uint32_t sfd_timeout;
+    uint32_t fina_timeout;
+    uint32_t unresponded_rts;
+    uint32_t rxe_frame_limit_overrun;
+    uint32_t sent_ack_cnt;
+    uint32_t sent_cts_cnt;
+    uint32_t sent_ba_rsp_cnt;
+    uint32_t dsp_self_kill;
+    uint32_t mh_format_err;
+    uint32_t re_acq_main_rssi_sum;
+    uint32_t reserved;
 } __packed; /* IWM_STATISTICS_RX_PHY_API_S_VER_2 */
 
 struct iwm_mvm_statistics_rx_ht_phy {
-	uint32_t plcp_err;
-	uint32_t overrun_err;
-	uint32_t early_overrun_err;
-	uint32_t crc32_good;
-	uint32_t crc32_err;
-	uint32_t mh_format_err;
-	uint32_t agg_crc32_good;
-	uint32_t agg_mpdu_cnt;
-	uint32_t agg_cnt;
-	uint32_t unsupport_mcs;
+    uint32_t plcp_err;
+    uint32_t overrun_err;
+    uint32_t early_overrun_err;
+    uint32_t crc32_good;
+    uint32_t crc32_err;
+    uint32_t mh_format_err;
+    uint32_t agg_crc32_good;
+    uint32_t agg_mpdu_cnt;
+    uint32_t agg_cnt;
+    uint32_t unsupport_mcs;
 } __packed;  /* IWM_STATISTICS_HT_RX_PHY_API_S_VER_1 */
 
 struct iwm_mvm_statistics_tx_non_phy {
-	uint32_t preamble_cnt;
-	uint32_t rx_detected_cnt;
-	uint32_t bt_prio_defer_cnt;
-	uint32_t bt_prio_kill_cnt;
-	uint32_t few_bytes_cnt;
-	uint32_t cts_timeout;
-	uint32_t ack_timeout;
-	uint32_t expected_ack_cnt;
-	uint32_t actual_ack_cnt;
-	uint32_t dump_msdu_cnt;
-	uint32_t burst_abort_next_frame_mismatch_cnt;
-	uint32_t burst_abort_missing_next_frame_cnt;
-	uint32_t cts_timeout_collision;
-	uint32_t ack_or_ba_timeout_collision;
+    uint32_t preamble_cnt;
+    uint32_t rx_detected_cnt;
+    uint32_t bt_prio_defer_cnt;
+    uint32_t bt_prio_kill_cnt;
+    uint32_t few_bytes_cnt;
+    uint32_t cts_timeout;
+    uint32_t ack_timeout;
+    uint32_t expected_ack_cnt;
+    uint32_t actual_ack_cnt;
+    uint32_t dump_msdu_cnt;
+    uint32_t burst_abort_next_frame_mismatch_cnt;
+    uint32_t burst_abort_missing_next_frame_cnt;
+    uint32_t cts_timeout_collision;
+    uint32_t ack_or_ba_timeout_collision;
 } __packed; /* IWM_STATISTICS_TX_NON_PHY_API_S_VER_3 */
 
 #define IWM_MAX_CHAINS 3
 
 struct iwm_mvm_statistics_tx_non_phy_agg {
-	uint32_t ba_timeout;
-	uint32_t ba_reschedule_frames;
-	uint32_t scd_query_agg_frame_cnt;
-	uint32_t scd_query_no_agg;
-	uint32_t scd_query_agg;
-	uint32_t scd_query_mismatch;
-	uint32_t frame_not_ready;
-	uint32_t underrun;
-	uint32_t bt_prio_kill;
-	uint32_t rx_ba_rsp_cnt;
-	int8_t txpower[IWM_MAX_CHAINS];
-	int8_t reserved;
-	uint32_t reserved2;
+    uint32_t ba_timeout;
+    uint32_t ba_reschedule_frames;
+    uint32_t scd_query_agg_frame_cnt;
+    uint32_t scd_query_no_agg;
+    uint32_t scd_query_agg;
+    uint32_t scd_query_mismatch;
+    uint32_t frame_not_ready;
+    uint32_t underrun;
+    uint32_t bt_prio_kill;
+    uint32_t rx_ba_rsp_cnt;
+    int8_t txpower[IWM_MAX_CHAINS];
+    int8_t reserved;
+    uint32_t reserved2;
 } __packed; /* IWM_STATISTICS_TX_NON_PHY_AGG_API_S_VER_1 */
 
 struct iwm_mvm_statistics_tx_channel_width {
-	uint32_t ext_cca_narrow_ch20[1];
-	uint32_t ext_cca_narrow_ch40[2];
-	uint32_t ext_cca_narrow_ch80[3];
-	uint32_t ext_cca_narrow_ch160[4];
-	uint32_t last_tx_ch_width_indx;
-	uint32_t rx_detected_per_ch_width[4];
-	uint32_t success_per_ch_width[4];
-	uint32_t fail_per_ch_width[4];
+    uint32_t ext_cca_narrow_ch20[1];
+    uint32_t ext_cca_narrow_ch40[2];
+    uint32_t ext_cca_narrow_ch80[3];
+    uint32_t ext_cca_narrow_ch160[4];
+    uint32_t last_tx_ch_width_indx;
+    uint32_t rx_detected_per_ch_width[4];
+    uint32_t success_per_ch_width[4];
+    uint32_t fail_per_ch_width[4];
 }; /* IWM_STATISTICS_TX_CHANNEL_WIDTH_API_S_VER_1 */
 
 struct iwm_mvm_statistics_tx {
-	struct iwm_mvm_statistics_tx_non_phy general;
-	struct iwm_mvm_statistics_tx_non_phy_agg agg;
-	struct iwm_mvm_statistics_tx_channel_width channel_width;
+    struct iwm_mvm_statistics_tx_non_phy general;
+    struct iwm_mvm_statistics_tx_non_phy_agg agg;
+    struct iwm_mvm_statistics_tx_channel_width channel_width;
 } __packed; /* IWM_STATISTICS_TX_API_S_VER_4 */
 
 
 struct iwm_mvm_statistics_bt_activity {
-	uint32_t hi_priority_tx_req_cnt;
-	uint32_t hi_priority_tx_denied_cnt;
-	uint32_t lo_priority_tx_req_cnt;
-	uint32_t lo_priority_tx_denied_cnt;
-	uint32_t hi_priority_rx_req_cnt;
-	uint32_t hi_priority_rx_denied_cnt;
-	uint32_t lo_priority_rx_req_cnt;
-	uint32_t lo_priority_rx_denied_cnt;
+    uint32_t hi_priority_tx_req_cnt;
+    uint32_t hi_priority_tx_denied_cnt;
+    uint32_t lo_priority_tx_req_cnt;
+    uint32_t lo_priority_tx_denied_cnt;
+    uint32_t hi_priority_rx_req_cnt;
+    uint32_t hi_priority_rx_denied_cnt;
+    uint32_t lo_priority_rx_req_cnt;
+    uint32_t lo_priority_rx_denied_cnt;
 } __packed;  /* IWM_STATISTICS_BT_ACTIVITY_API_S_VER_1 */
 
 struct iwm_mvm_statistics_general_v8 {
-	uint32_t radio_temperature;
-	uint32_t radio_voltage;
-	struct iwm_mvm_statistics_dbg dbg;
-	uint32_t sleep_time;
-	uint32_t slots_out;
-	uint32_t slots_idle;
-	uint32_t ttl_timestamp;
-	struct iwm_mvm_statistics_div slow_div;
-	uint32_t rx_enable_counter;
-	/*
-	 * num_of_sos_states:
-	 *  count the number of times we have to re-tune
-	 *  in order to get out of bad PHY status
-	 */
-	uint32_t num_of_sos_states;
-	uint32_t beacon_filtered;
-	uint32_t missed_beacons;
-	uint8_t beacon_filter_average_energy;
-	uint8_t beacon_filter_reason;
-	uint8_t beacon_filter_current_energy;
-	uint8_t beacon_filter_reserved;
-	uint32_t beacon_filter_delta_time;
-	struct iwm_mvm_statistics_bt_activity bt_activity;
-	uint64_t rx_time;
-	uint64_t on_time_rf;
-	uint64_t on_time_scan;
-	uint64_t tx_time;
-	uint32_t beacon_counter[IWM_NUM_MAC_INDEX];
-	uint8_t beacon_average_energy[IWM_NUM_MAC_INDEX];
-	uint8_t reserved[4 - (IWM_NUM_MAC_INDEX % 4)];
+    uint32_t radio_temperature;
+    uint32_t radio_voltage;
+    struct iwm_mvm_statistics_dbg dbg;
+    uint32_t sleep_time;
+    uint32_t slots_out;
+    uint32_t slots_idle;
+    uint32_t ttl_timestamp;
+    struct iwm_mvm_statistics_div slow_div;
+    uint32_t rx_enable_counter;
+    /*
+     * num_of_sos_states:
+     *  count the number of times we have to re-tune
+     *  in order to get out of bad PHY status
+     */
+    uint32_t num_of_sos_states;
+    uint32_t beacon_filtered;
+    uint32_t missed_beacons;
+    uint8_t beacon_filter_average_energy;
+    uint8_t beacon_filter_reason;
+    uint8_t beacon_filter_current_energy;
+    uint8_t beacon_filter_reserved;
+    uint32_t beacon_filter_delta_time;
+    struct iwm_mvm_statistics_bt_activity bt_activity;
+    uint64_t rx_time;
+    uint64_t on_time_rf;
+    uint64_t on_time_scan;
+    uint64_t tx_time;
+    uint32_t beacon_counter[IWM_NUM_MAC_INDEX];
+    uint8_t beacon_average_energy[IWM_NUM_MAC_INDEX];
+    uint8_t reserved[4 - (IWM_NUM_MAC_INDEX % 4)];
 } __packed; /* IWM_STATISTICS_GENERAL_API_S_VER_8 */
 
 struct iwm_mvm_statistics_rx {
-	struct iwm_mvm_statistics_rx_phy ofdm;
-	struct iwm_mvm_statistics_rx_phy cck;
-	struct iwm_mvm_statistics_rx_non_phy general;
-	struct iwm_mvm_statistics_rx_ht_phy ofdm_ht;
+    struct iwm_mvm_statistics_rx_phy ofdm;
+    struct iwm_mvm_statistics_rx_phy cck;
+    struct iwm_mvm_statistics_rx_non_phy general;
+    struct iwm_mvm_statistics_rx_ht_phy ofdm_ht;
 } __packed; /* IWM_STATISTICS_RX_API_S_VER_3 */
 
 /*
@@ -3110,17 +3106,17 @@ struct iwm_mvm_statistics_rx {
  */
 
 struct iwm_notif_statistics_v10 {
-	uint32_t flag;
-	struct iwm_mvm_statistics_rx rx;
-	struct iwm_mvm_statistics_tx tx;
-	struct iwm_mvm_statistics_general_v8 general;
+    uint32_t flag;
+    struct iwm_mvm_statistics_rx rx;
+    struct iwm_mvm_statistics_tx tx;
+    struct iwm_mvm_statistics_general_v8 general;
 } __packed; /* IWM_STATISTICS_NTFY_API_S_VER_10 */
 
 #define IWM_STATISTICS_FLG_CLEAR		0x1
 #define IWM_STATISTICS_FLG_DISABLE_NOTIF	0x2
 
 struct iwm_statistics_cmd {
-	uint32_t flags;
+    uint32_t flags;
 } __packed; /* IWM_STATISTICS_CMD_API_S_VER_1 */
 
 /***********************************
@@ -3128,21 +3124,21 @@ struct iwm_statistics_cmd {
  ***********************************/
 /* Smart Fifo state */
 enum iwm_sf_state {
-	IWM_SF_LONG_DELAY_ON = 0, /* should never be called by driver */
-	IWM_SF_FULL_ON,
-	IWM_SF_UNINIT,
-	IWM_SF_INIT_OFF,
-	IWM_SF_HW_NUM_STATES
+    IWM_SF_LONG_DELAY_ON = 0, /* should never be called by driver */
+    IWM_SF_FULL_ON,
+    IWM_SF_UNINIT,
+    IWM_SF_INIT_OFF,
+    IWM_SF_HW_NUM_STATES
 };
 
 /* Smart Fifo possible scenario */
 enum iwm_sf_scenario {
-	IWM_SF_SCENARIO_SINGLE_UNICAST,
-	IWM_SF_SCENARIO_AGG_UNICAST,
-	IWM_SF_SCENARIO_MULTICAST,
-	IWM_SF_SCENARIO_BA_RESP,
-	IWM_SF_SCENARIO_TX_RESP,
-	IWM_SF_NUM_SCENARIO
+    IWM_SF_SCENARIO_SINGLE_UNICAST,
+    IWM_SF_SCENARIO_AGG_UNICAST,
+    IWM_SF_SCENARIO_MULTICAST,
+    IWM_SF_SCENARIO_BA_RESP,
+    IWM_SF_SCENARIO_TX_RESP,
+    IWM_SF_NUM_SCENARIO
 };
 
 #define IWM_SF_TRANSIENT_STATES_NUMBER 2 /* IWM_SF_LONG_DELAY_ON and IWM_SF_FULL_ON */
@@ -3192,10 +3188,10 @@ enum iwm_sf_scenario {
  * @full_on_timeouts: timer values for each scenario in full on state.
  */
 struct iwm_sf_cfg_cmd {
-	uint32_t state;
-	uint32_t watermark[IWM_SF_TRANSIENT_STATES_NUMBER];
-	uint32_t long_delay_timeouts[IWM_SF_NUM_SCENARIO][IWM_SF_NUM_TIMEOUT_TYPES];
-	uint32_t full_on_timeouts[IWM_SF_NUM_SCENARIO][IWM_SF_NUM_TIMEOUT_TYPES];
+    uint32_t state;
+    uint32_t watermark[IWM_SF_TRANSIENT_STATES_NUMBER];
+    uint32_t long_delay_timeouts[IWM_SF_NUM_SCENARIO][IWM_SF_NUM_TIMEOUT_TYPES];
+    uint32_t full_on_timeouts[IWM_SF_NUM_SCENARIO][IWM_SF_NUM_TIMEOUT_TYPES];
 } __packed; /* IWM_SF_CFG_API_S_VER_2 */
 
 /*
@@ -3207,11 +3203,11 @@ struct iwm_sf_cfg_cmd {
  */
 
 enum iwm_ac {
-	IWM_AC_BK,
-	IWM_AC_BE,
-	IWM_AC_VI,
-	IWM_AC_VO,
-	IWM_AC_NUM,
+    IWM_AC_BK,
+    IWM_AC_BE,
+    IWM_AC_VI,
+    IWM_AC_VO,
+    IWM_AC_NUM,
 };
 
 /**
@@ -3224,10 +3220,10 @@ enum iwm_ac {
  * @IWM_MAC_PROT_FLG_SELF_CTS_EN: allow CTS2self
  */
 enum iwm_mac_protection_flags {
-	IWM_MAC_PROT_FLG_TGG_PROTECT	= (1 << 3),
-	IWM_MAC_PROT_FLG_HT_PROT		= (1 << 23),
-	IWM_MAC_PROT_FLG_FAT_PROT		= (1 << 24),
-	IWM_MAC_PROT_FLG_SELF_CTS_EN	= (1 << 30),
+    IWM_MAC_PROT_FLG_TGG_PROTECT	= (1 << 3),
+    IWM_MAC_PROT_FLG_HT_PROT		= (1 << 23),
+    IWM_MAC_PROT_FLG_FAT_PROT		= (1 << 24),
+    IWM_MAC_PROT_FLG_SELF_CTS_EN	= (1 << 30),
 };
 
 #define IWM_MAC_FLG_SHORT_SLOT		(1 << 4)
@@ -3248,17 +3244,17 @@ enum iwm_mac_protection_flags {
  * @IWM_FW_MAC_TYPE_MAX: highest support MAC type
  */
 enum iwm_mac_types {
-	IWM_FW_MAC_TYPE_FIRST = 1,
-	IWM_FW_MAC_TYPE_AUX = IWM_FW_MAC_TYPE_FIRST,
-	IWM_FW_MAC_TYPE_LISTENER,
-	IWM_FW_MAC_TYPE_PIBSS,
-	IWM_FW_MAC_TYPE_IBSS,
-	IWM_FW_MAC_TYPE_BSS_STA,
-	IWM_FW_MAC_TYPE_P2P_DEVICE,
-	IWM_FW_MAC_TYPE_P2P_STA,
-	IWM_FW_MAC_TYPE_GO,
-	IWM_FW_MAC_TYPE_TEST,
-	IWM_FW_MAC_TYPE_MAX = IWM_FW_MAC_TYPE_TEST
+    IWM_FW_MAC_TYPE_FIRST = 1,
+    IWM_FW_MAC_TYPE_AUX = IWM_FW_MAC_TYPE_FIRST,
+    IWM_FW_MAC_TYPE_LISTENER,
+    IWM_FW_MAC_TYPE_PIBSS,
+    IWM_FW_MAC_TYPE_IBSS,
+    IWM_FW_MAC_TYPE_BSS_STA,
+    IWM_FW_MAC_TYPE_P2P_DEVICE,
+    IWM_FW_MAC_TYPE_P2P_STA,
+    IWM_FW_MAC_TYPE_GO,
+    IWM_FW_MAC_TYPE_TEST,
+    IWM_FW_MAC_TYPE_MAX = IWM_FW_MAC_TYPE_TEST
 }; /* IWM_MAC_CONTEXT_TYPE_API_E_VER_1 */
 
 /**
@@ -3270,11 +3266,11 @@ enum iwm_mac_types {
  * @IWM_NUM_TSF_IDS: number of TSF timers available
  */
 enum iwm_tsf_id {
-	IWM_TSF_ID_A = 0,
-	IWM_TSF_ID_B = 1,
-	IWM_TSF_ID_C = 2,
-	IWM_TSF_ID_D = 3,
-	IWM_NUM_TSF_IDS = 4,
+    IWM_TSF_ID_A = 0,
+    IWM_TSF_ID_B = 1,
+    IWM_TSF_ID_C = 2,
+    IWM_TSF_ID_D = 3,
+    IWM_NUM_TSF_IDS = 4,
 }; /* IWM_TSF_ID_API_E_VER_1 */
 
 /**
@@ -3289,14 +3285,14 @@ enum iwm_tsf_id {
  * @beacon_template: beacon template ID
  */
 struct iwm_mac_data_ap {
-	uint32_t beacon_time;
-	uint64_t beacon_tsf;
-	uint32_t bi;
-	uint32_t bi_reciprocal;
-	uint32_t dtim_interval;
-	uint32_t dtim_reciprocal;
-	uint32_t mcast_qid;
-	uint32_t beacon_template;
+    uint32_t beacon_time;
+    uint64_t beacon_tsf;
+    uint32_t bi;
+    uint32_t bi_reciprocal;
+    uint32_t dtim_interval;
+    uint32_t dtim_reciprocal;
+    uint32_t mcast_qid;
+    uint32_t beacon_template;
 } __packed; /* AP_MAC_DATA_API_S_VER_1 */
 
 /**
@@ -3308,11 +3304,11 @@ struct iwm_mac_data_ap {
  * @beacon_template: beacon template ID
  */
 struct iwm_mac_data_ibss {
-	uint32_t beacon_time;
-	uint64_t beacon_tsf;
-	uint32_t bi;
-	uint32_t bi_reciprocal;
-	uint32_t beacon_template;
+    uint32_t beacon_time;
+    uint64_t beacon_tsf;
+    uint32_t bi;
+    uint32_t bi_reciprocal;
+    uint32_t beacon_template;
 } __packed; /* IBSS_MAC_DATA_API_S_VER_1 */
 
 /**
@@ -3328,16 +3324,16 @@ struct iwm_mac_data_ibss {
  * @assoc_id: unique ID assigned by the AP during association
  */
 struct iwm_mac_data_sta {
-	uint32_t is_assoc;
-	uint32_t dtim_time;
-	uint64_t dtim_tsf;
-	uint32_t bi;
-	uint32_t bi_reciprocal;
-	uint32_t dtim_interval;
-	uint32_t dtim_reciprocal;
-	uint32_t listen_interval;
-	uint32_t assoc_id;
-	uint32_t assoc_beacon_arrive_time;
+    uint32_t is_assoc;
+    uint32_t dtim_time;
+    uint64_t dtim_tsf;
+    uint32_t bi;
+    uint32_t bi_reciprocal;
+    uint32_t dtim_interval;
+    uint32_t dtim_reciprocal;
+    uint32_t listen_interval;
+    uint32_t assoc_id;
+    uint32_t assoc_beacon_arrive_time;
 } __packed; /* IWM_STA_MAC_DATA_API_S_VER_1 */
 
 /**
@@ -3348,9 +3344,9 @@ struct iwm_mac_data_sta {
  * @opp_ps_enabled: indicate that opportunistic PS allowed
  */
 struct iwm_mac_data_go {
-	struct iwm_mac_data_ap ap;
-	uint32_t ctwin;
-	uint32_t opp_ps_enabled;
+    struct iwm_mac_data_ap ap;
+    uint32_t ctwin;
+    uint32_t opp_ps_enabled;
 } __packed; /* GO_MAC_DATA_API_S_VER_1 */
 
 /**
@@ -3360,8 +3356,8 @@ struct iwm_mac_data_go {
  *	0 indicates that there is no CT window.
  */
 struct iwm_mac_data_p2p_sta {
-	struct iwm_mac_data_sta sta;
-	uint32_t ctwin;
+    struct iwm_mac_data_sta sta;
+    uint32_t ctwin;
 } __packed; /* P2P_STA_MAC_DATA_API_S_VER_1 */
 
 /**
@@ -3369,7 +3365,7 @@ struct iwm_mac_data_p2p_sta {
  * @stats_interval: interval in TU between statistics notifications to host.
  */
 struct iwm_mac_data_pibss {
-	uint32_t stats_interval;
+    uint32_t stats_interval;
 } __packed; /* PIBSS_MAC_DATA_API_S_VER_1 */
 
 /*
@@ -3383,7 +3379,7 @@ struct iwm_mac_data_pibss {
  *	all macs.
  */
 struct iwm_mac_data_p2p_dev {
-	uint32_t is_disc_extended;
+    uint32_t is_disc_extended;
 } __packed; /* _P2P_DEV_MAC_DATA_API_S_VER_1 */
 
 /**
@@ -3401,15 +3397,15 @@ struct iwm_mac_data_p2p_dev {
  * @IWM_MAC_FILTER_IN_PROBE_REQUEST: pass probe requests to host
  */
 enum iwm_mac_filter_flags {
-	IWM_MAC_FILTER_IN_PROMISC		= (1 << 0),
-	IWM_MAC_FILTER_IN_CONTROL_AND_MGMT	= (1 << 1),
-	IWM_MAC_FILTER_ACCEPT_GRP		= (1 << 2),
-	IWM_MAC_FILTER_DIS_DECRYPT		= (1 << 3),
-	IWM_MAC_FILTER_DIS_GRP_DECRYPT		= (1 << 4),
-	IWM_MAC_FILTER_IN_BEACON		= (1 << 6),
-	IWM_MAC_FILTER_OUT_BCAST		= (1 << 8),
-	IWM_MAC_FILTER_IN_CRC32			= (1 << 11),
-	IWM_MAC_FILTER_IN_PROBE_REQUEST		= (1 << 12),
+    IWM_MAC_FILTER_IN_PROMISC		= (1 << 0),
+    IWM_MAC_FILTER_IN_CONTROL_AND_MGMT	= (1 << 1),
+    IWM_MAC_FILTER_ACCEPT_GRP		= (1 << 2),
+    IWM_MAC_FILTER_DIS_DECRYPT		= (1 << 3),
+    IWM_MAC_FILTER_DIS_GRP_DECRYPT		= (1 << 4),
+    IWM_MAC_FILTER_IN_BEACON		= (1 << 6),
+    IWM_MAC_FILTER_OUT_BCAST		= (1 << 8),
+    IWM_MAC_FILTER_IN_CRC32			= (1 << 11),
+    IWM_MAC_FILTER_IN_PROBE_REQUEST		= (1 << 12),
 };
 
 /**
@@ -3420,9 +3416,9 @@ enum iwm_mac_filter_flags {
  *
  */
 enum iwm_mac_qos_flags {
-	IWM_MAC_QOS_FLG_UPDATE_EDCA	= (1 << 0),
-	IWM_MAC_QOS_FLG_TGN		= (1 << 1),
-	IWM_MAC_QOS_FLG_TXOP_TYPE	= (1 << 4),
+    IWM_MAC_QOS_FLG_UPDATE_EDCA	= (1 << 0),
+    IWM_MAC_QOS_FLG_TGN		= (1 << 1),
+    IWM_MAC_QOS_FLG_TXOP_TYPE	= (1 << 4),
 };
 
 /**
@@ -3444,11 +3440,11 @@ enum iwm_mac_qos_flags {
  * value, to cap the CW value.
  */
 struct iwm_ac_qos {
-	uint16_t cw_min;
-	uint16_t cw_max;
-	uint8_t aifsn;
-	uint8_t fifos_mask;
-	uint16_t edca_txop;
+    uint16_t cw_min;
+    uint16_t cw_max;
+    uint8_t aifsn;
+    uint8_t fifos_mask;
+    uint16_t edca_txop;
 } __packed; /* IWM_AC_QOS_API_S_VER_2 */
 
 /**
@@ -3471,51 +3467,50 @@ struct iwm_ac_qos {
  * @mac_specific: one of struct iwm_mac_data_*, according to mac_type
  */
 struct iwm_mac_ctx_cmd {
-	/* COMMON_INDEX_HDR_API_S_VER_1 */
-	uint32_t id_and_color;
-	uint32_t action;
-	/* IWM_MAC_CONTEXT_COMMON_DATA_API_S_VER_1 */
-	uint32_t mac_type;
-	uint32_t tsf_id;
-	uint8_t node_addr[6];
-	uint16_t reserved_for_node_addr;
-	uint8_t bssid_addr[6];
-	uint16_t reserved_for_bssid_addr;
-	uint32_t cck_rates;
-	uint32_t ofdm_rates;
-	uint32_t protection_flags;
-	uint32_t cck_short_preamble;
-	uint32_t short_slot;
-	uint32_t filter_flags;
-	/* IWM_MAC_QOS_PARAM_API_S_VER_1 */
-	uint32_t qos_flags;
-	struct iwm_ac_qos ac[IWM_AC_NUM+1];
-	/* IWM_MAC_CONTEXT_COMMON_DATA_API_S */
-	union {
-		struct iwm_mac_data_ap ap;
-		struct iwm_mac_data_go go;
-		struct iwm_mac_data_sta sta;
-		struct iwm_mac_data_p2p_sta p2p_sta;
-		struct iwm_mac_data_p2p_dev p2p_dev;
-		struct iwm_mac_data_pibss pibss;
-		struct iwm_mac_data_ibss ibss;
-	};
+    /* COMMON_INDEX_HDR_API_S_VER_1 */
+    uint32_t id_and_color;
+    uint32_t action;
+    /* IWM_MAC_CONTEXT_COMMON_DATA_API_S_VER_1 */
+    uint32_t mac_type;
+    uint32_t tsf_id;
+    uint8_t node_addr[6];
+    uint16_t reserved_for_node_addr;
+    uint8_t bssid_addr[6];
+    uint16_t reserved_for_bssid_addr;
+    uint32_t cck_rates;
+    uint32_t ofdm_rates;
+    uint32_t protection_flags;
+    uint32_t cck_short_preamble;
+    uint32_t short_slot;
+    uint32_t filter_flags;
+    /* IWM_MAC_QOS_PARAM_API_S_VER_1 */
+    uint32_t qos_flags;
+    struct iwm_ac_qos ac[IWM_AC_NUM+1];
+    /* IWM_MAC_CONTEXT_COMMON_DATA_API_S */
+    union {
+        struct iwm_mac_data_ap ap;
+        struct iwm_mac_data_go go;
+        struct iwm_mac_data_sta sta;
+        struct iwm_mac_data_p2p_sta p2p_sta;
+        struct iwm_mac_data_p2p_dev p2p_dev;
+        struct iwm_mac_data_pibss pibss;
+        struct iwm_mac_data_ibss ibss;
+    };
 } __packed; /* IWM_MAC_CONTEXT_CMD_API_S_VER_1 */
 
-static inline uint32_t iwm_mvm_reciprocal(uint32_t v)
-{
-	if (!v)
-		return 0;
-	return 0xFFFFFFFF / v;
+static inline uint32_t iwm_mvm_reciprocal(uint32_t v) {
+    if (!v)
+        return 0;
+    return 0xFFFFFFFF / v;
 }
 
 #define IWM_NONQOS_SEQ_GET	0x1
 #define IWM_NONQOS_SEQ_SET	0x2
 struct iwm_nonqos_seq_query_cmd {
-	uint32_t get_set_flag;
-	uint32_t mac_id_n_color;
-	uint16_t value;
-	uint16_t reserved;
+    uint32_t get_set_flag;
+    uint32_t mac_id_n_color;
+    uint16_t value;
+    uint16_t reserved;
 } __packed; /* IWM_NON_QOS_TX_COUNTER_GET_SET_API_S_VER_1 */
 
 /*
@@ -3551,14 +3546,14 @@ struct iwm_nonqos_seq_query_cmd {
  *		detection enablement
 */
 enum iwm_power_flags {
-	IWM_POWER_FLAGS_POWER_SAVE_ENA_MSK		= (1 << 0),
-	IWM_POWER_FLAGS_POWER_MANAGEMENT_ENA_MSK	= (1 << 1),
-	IWM_POWER_FLAGS_SKIP_OVER_DTIM_MSK		= (1 << 2),
-	IWM_POWER_FLAGS_SNOOZE_ENA_MSK		= (1 << 5),
-	IWM_POWER_FLAGS_BT_SCO_ENA			= (1 << 8),
-	IWM_POWER_FLAGS_ADVANCE_PM_ENA_MSK		= (1 << 9),
-	IWM_POWER_FLAGS_LPRX_ENA_MSK		= (1 << 11),
-	IWM_POWER_FLAGS_UAPSD_MISBEHAVING_ENA_MSK	= (1 << 12),
+    IWM_POWER_FLAGS_POWER_SAVE_ENA_MSK		= (1 << 0),
+    IWM_POWER_FLAGS_POWER_MANAGEMENT_ENA_MSK	= (1 << 1),
+    IWM_POWER_FLAGS_SKIP_OVER_DTIM_MSK		= (1 << 2),
+    IWM_POWER_FLAGS_SNOOZE_ENA_MSK		= (1 << 5),
+    IWM_POWER_FLAGS_BT_SCO_ENA			= (1 << 8),
+    IWM_POWER_FLAGS_ADVANCE_PM_ENA_MSK		= (1 << 9),
+    IWM_POWER_FLAGS_LPRX_ENA_MSK		= (1 << 11),
+    IWM_POWER_FLAGS_UAPSD_MISBEHAVING_ENA_MSK	= (1 << 12),
 };
 
 #define IWM_POWER_VEC_SIZE 5
@@ -3585,15 +3580,15 @@ enum iwm_power_flags {
  *			Default: 80dbm
  */
 struct iwm_powertable_cmd {
-	/* PM_POWER_TABLE_CMD_API_S_VER_6 */
-	uint16_t flags;
-	uint8_t keep_alive_seconds;
-	uint8_t debug_flags;
-	uint32_t rx_data_timeout;
-	uint32_t tx_data_timeout;
-	uint32_t sleep_interval[IWM_POWER_VEC_SIZE];
-	uint32_t skip_dtim_periods;
-	uint32_t lprx_rssi_threshold;
+    /* PM_POWER_TABLE_CMD_API_S_VER_6 */
+    uint16_t flags;
+    uint8_t keep_alive_seconds;
+    uint8_t debug_flags;
+    uint32_t rx_data_timeout;
+    uint32_t tx_data_timeout;
+    uint32_t sleep_interval[IWM_POWER_VEC_SIZE];
+    uint32_t skip_dtim_periods;
+    uint32_t lprx_rssi_threshold;
 } __packed;
 
 /**
@@ -3602,7 +3597,7 @@ struct iwm_powertable_cmd {
  *	receiver and transmitter. '0' - does not allow.
  */
 enum iwm_device_power_flags {
-	IWM_DEVICE_POWER_FLAGS_POWER_SAVE_ENA_MSK	= (1 << 0),
+    IWM_DEVICE_POWER_FLAGS_POWER_SAVE_ENA_MSK	= (1 << 0),
 };
 
 /**
@@ -3612,9 +3607,9 @@ enum iwm_device_power_flags {
  * @flags:	Power table command flags from IWM_DEVICE_POWER_FLAGS_*
  */
 struct iwm_device_power_cmd {
-	/* PM_POWER_TABLE_CMD_API_S_VER_6 */
-	uint16_t flags;
-	uint16_t reserved;
+    /* PM_POWER_TABLE_CMD_API_S_VER_6 */
+    uint16_t flags;
+    uint16_t reserved;
 } __packed;
 
 /**
@@ -3661,30 +3656,30 @@ struct iwm_device_power_cmd {
  * @limited_ps_threshold:
 */
 struct iwm_mac_power_cmd {
-	/* CONTEXT_DESC_API_T_VER_1 */
-	uint32_t id_and_color;
+    /* CONTEXT_DESC_API_T_VER_1 */
+    uint32_t id_and_color;
 
-	/* CLIENT_PM_POWER_TABLE_S_VER_1 */
-	uint16_t flags;
-	uint16_t keep_alive_seconds;
-	uint32_t rx_data_timeout;
-	uint32_t tx_data_timeout;
-	uint32_t rx_data_timeout_uapsd;
-	uint32_t tx_data_timeout_uapsd;
-	uint8_t lprx_rssi_threshold;
-	uint8_t skip_dtim_periods;
-	uint16_t snooze_interval;
-	uint16_t snooze_window;
-	uint8_t snooze_step;
-	uint8_t qndp_tid;
-	uint8_t uapsd_ac_flags;
-	uint8_t uapsd_max_sp;
-	uint8_t heavy_tx_thld_packets;
-	uint8_t heavy_rx_thld_packets;
-	uint8_t heavy_tx_thld_percentage;
-	uint8_t heavy_rx_thld_percentage;
-	uint8_t limited_ps_threshold;
-	uint8_t reserved;
+    /* CLIENT_PM_POWER_TABLE_S_VER_1 */
+    uint16_t flags;
+    uint16_t keep_alive_seconds;
+    uint32_t rx_data_timeout;
+    uint32_t tx_data_timeout;
+    uint32_t rx_data_timeout_uapsd;
+    uint32_t tx_data_timeout_uapsd;
+    uint8_t lprx_rssi_threshold;
+    uint8_t skip_dtim_periods;
+    uint16_t snooze_interval;
+    uint16_t snooze_window;
+    uint8_t snooze_step;
+    uint8_t qndp_tid;
+    uint8_t uapsd_ac_flags;
+    uint8_t uapsd_max_sp;
+    uint8_t heavy_tx_thld_packets;
+    uint8_t heavy_rx_thld_packets;
+    uint8_t heavy_tx_thld_percentage;
+    uint8_t heavy_rx_thld_percentage;
+    uint8_t limited_ps_threshold;
+    uint8_t reserved;
 } __packed;
 
 /*
@@ -3695,9 +3690,9 @@ struct iwm_mac_power_cmd {
  *	    this context.
  */
 struct iwm_uapsd_misbehaving_ap_notif {
-	uint32_t sta_id;
-	uint8_t mac_id;
-	uint8_t reserved[3];
+    uint32_t sta_id;
+    uint8_t mac_id;
+    uint8_t reserved[3];
 } __packed;
 
 /**
@@ -3742,17 +3737,17 @@ struct iwm_uapsd_misbehaving_ap_notif {
  * @ba_enable_beacon_abort: 1, beacon abort is enabled; 0, disabled.
  */
 struct iwm_beacon_filter_cmd {
-	uint32_t bf_energy_delta;
-	uint32_t bf_roaming_energy_delta;
-	uint32_t bf_roaming_state;
-	uint32_t bf_temp_threshold;
-	uint32_t bf_temp_fast_filter;
-	uint32_t bf_temp_slow_filter;
-	uint32_t bf_enable_beacon_filter;
-	uint32_t bf_debug_flag;
-	uint32_t bf_escape_timer;
-	uint32_t ba_escape_timer;
-	uint32_t ba_enable_beacon_abort;
+    uint32_t bf_energy_delta;
+    uint32_t bf_roaming_energy_delta;
+    uint32_t bf_roaming_state;
+    uint32_t bf_temp_threshold;
+    uint32_t bf_temp_fast_filter;
+    uint32_t bf_temp_slow_filter;
+    uint32_t bf_enable_beacon_filter;
+    uint32_t bf_debug_flag;
+    uint32_t bf_escape_timer;
+    uint32_t ba_escape_timer;
+    uint32_t ba_enable_beacon_abort;
 } __packed;
 
 /* Beacon filtering and beacon abort */
@@ -3821,58 +3816,58 @@ struct iwm_beacon_filter_cmd {
  * TODO: avoid overlap between legacy and HT rates
  */
 enum {
-	IWM_RATE_1M_INDEX = 0,
-	IWM_FIRST_CCK_RATE = IWM_RATE_1M_INDEX,
-	IWM_RATE_2M_INDEX,
-	IWM_RATE_5M_INDEX,
-	IWM_RATE_11M_INDEX,
-	IWM_LAST_CCK_RATE = IWM_RATE_11M_INDEX,
-	IWM_RATE_6M_INDEX,
-	IWM_FIRST_OFDM_RATE = IWM_RATE_6M_INDEX,
-	IWM_RATE_MCS_0_INDEX = IWM_RATE_6M_INDEX,
-	IWM_FIRST_HT_RATE = IWM_RATE_MCS_0_INDEX,
-	IWM_FIRST_VHT_RATE = IWM_RATE_MCS_0_INDEX,
-	IWM_RATE_9M_INDEX,
-	IWM_RATE_12M_INDEX,
-	IWM_RATE_MCS_1_INDEX = IWM_RATE_12M_INDEX,
-	IWM_RATE_18M_INDEX,
-	IWM_RATE_MCS_2_INDEX = IWM_RATE_18M_INDEX,
-	IWM_RATE_24M_INDEX,
-	IWM_RATE_MCS_3_INDEX = IWM_RATE_24M_INDEX,
-	IWM_RATE_36M_INDEX,
-	IWM_RATE_MCS_4_INDEX = IWM_RATE_36M_INDEX,
-	IWM_RATE_48M_INDEX,
-	IWM_RATE_MCS_5_INDEX = IWM_RATE_48M_INDEX,
-	IWM_RATE_54M_INDEX,
-	IWM_RATE_MCS_6_INDEX = IWM_RATE_54M_INDEX,
-	IWM_LAST_NON_HT_RATE = IWM_RATE_54M_INDEX,
-	IWM_RATE_60M_INDEX,
-	IWM_RATE_MCS_7_INDEX = IWM_RATE_60M_INDEX,
-	IWM_LAST_HT_RATE = IWM_RATE_MCS_7_INDEX,
-	IWM_RATE_MCS_8_INDEX,
-	IWM_RATE_MCS_9_INDEX,
-	IWM_LAST_VHT_RATE = IWM_RATE_MCS_9_INDEX,
-	IWM_RATE_COUNT_LEGACY = IWM_LAST_NON_HT_RATE + 1,
-	IWM_RATE_COUNT = IWM_LAST_VHT_RATE + 1,
+    IWM_RATE_1M_INDEX = 0,
+    IWM_FIRST_CCK_RATE = IWM_RATE_1M_INDEX,
+    IWM_RATE_2M_INDEX,
+    IWM_RATE_5M_INDEX,
+    IWM_RATE_11M_INDEX,
+    IWM_LAST_CCK_RATE = IWM_RATE_11M_INDEX,
+    IWM_RATE_6M_INDEX,
+    IWM_FIRST_OFDM_RATE = IWM_RATE_6M_INDEX,
+    IWM_RATE_MCS_0_INDEX = IWM_RATE_6M_INDEX,
+    IWM_FIRST_HT_RATE = IWM_RATE_MCS_0_INDEX,
+    IWM_FIRST_VHT_RATE = IWM_RATE_MCS_0_INDEX,
+    IWM_RATE_9M_INDEX,
+    IWM_RATE_12M_INDEX,
+    IWM_RATE_MCS_1_INDEX = IWM_RATE_12M_INDEX,
+    IWM_RATE_18M_INDEX,
+    IWM_RATE_MCS_2_INDEX = IWM_RATE_18M_INDEX,
+    IWM_RATE_24M_INDEX,
+    IWM_RATE_MCS_3_INDEX = IWM_RATE_24M_INDEX,
+    IWM_RATE_36M_INDEX,
+    IWM_RATE_MCS_4_INDEX = IWM_RATE_36M_INDEX,
+    IWM_RATE_48M_INDEX,
+    IWM_RATE_MCS_5_INDEX = IWM_RATE_48M_INDEX,
+    IWM_RATE_54M_INDEX,
+    IWM_RATE_MCS_6_INDEX = IWM_RATE_54M_INDEX,
+    IWM_LAST_NON_HT_RATE = IWM_RATE_54M_INDEX,
+    IWM_RATE_60M_INDEX,
+    IWM_RATE_MCS_7_INDEX = IWM_RATE_60M_INDEX,
+    IWM_LAST_HT_RATE = IWM_RATE_MCS_7_INDEX,
+    IWM_RATE_MCS_8_INDEX,
+    IWM_RATE_MCS_9_INDEX,
+    IWM_LAST_VHT_RATE = IWM_RATE_MCS_9_INDEX,
+    IWM_RATE_COUNT_LEGACY = IWM_LAST_NON_HT_RATE + 1,
+    IWM_RATE_COUNT = IWM_LAST_VHT_RATE + 1,
 };
 
 #define IWM_RATE_BIT_MSK(r) (1 << (IWM_RATE_##r##M_INDEX))
 
 /* fw API values for legacy bit rates, both OFDM and CCK */
 enum {
-	IWM_RATE_6M_PLCP  = 13,
-	IWM_RATE_9M_PLCP  = 15,
-	IWM_RATE_12M_PLCP = 5,
-	IWM_RATE_18M_PLCP = 7,
-	IWM_RATE_24M_PLCP = 9,
-	IWM_RATE_36M_PLCP = 11,
-	IWM_RATE_48M_PLCP = 1,
-	IWM_RATE_54M_PLCP = 3,
-	IWM_RATE_1M_PLCP  = 10,
-	IWM_RATE_2M_PLCP  = 20,
-	IWM_RATE_5M_PLCP  = 55,
-	IWM_RATE_11M_PLCP = 110,
-	IWM_RATE_INVM_PLCP = -1,
+    IWM_RATE_6M_PLCP  = 13,
+    IWM_RATE_9M_PLCP  = 15,
+    IWM_RATE_12M_PLCP = 5,
+    IWM_RATE_18M_PLCP = 7,
+    IWM_RATE_24M_PLCP = 9,
+    IWM_RATE_36M_PLCP = 11,
+    IWM_RATE_48M_PLCP = 1,
+    IWM_RATE_54M_PLCP = 3,
+    IWM_RATE_1M_PLCP  = 10,
+    IWM_RATE_2M_PLCP  = 20,
+    IWM_RATE_5M_PLCP  = 55,
+    IWM_RATE_11M_PLCP = 110,
+    IWM_RATE_INVM_PLCP = -1,
 };
 
 /*
@@ -4118,22 +4113,22 @@ enum {
  * @ss_params: single stream features. declare whether STBC or BFER are allowed.
  */
 struct iwm_lq_cmd {
-	uint8_t sta_id;
-	uint8_t reduced_tpc;
-	uint16_t control;
-	/* LINK_QUAL_GENERAL_PARAMS_API_S_VER_1 */
-	uint8_t flags;
-	uint8_t mimo_delim;
-	uint8_t single_stream_ant_msk;
-	uint8_t dual_stream_ant_msk;
-	uint8_t initial_rate_index[IWM_AC_NUM];
-	/* LINK_QUAL_AGG_PARAMS_API_S_VER_1 */
-	uint16_t agg_time_limit;
-	uint8_t agg_disable_start_th;
-	uint8_t agg_frame_cnt_limit;
-	uint32_t reserved2;
-	uint32_t rs_table[IWM_LQ_MAX_RETRY_NUM];
-	uint32_t ss_params;
+    uint8_t sta_id;
+    uint8_t reduced_tpc;
+    uint16_t control;
+    /* LINK_QUAL_GENERAL_PARAMS_API_S_VER_1 */
+    uint8_t flags;
+    uint8_t mimo_delim;
+    uint8_t single_stream_ant_msk;
+    uint8_t dual_stream_ant_msk;
+    uint8_t initial_rate_index[IWM_AC_NUM];
+    /* LINK_QUAL_AGG_PARAMS_API_S_VER_1 */
+    uint16_t agg_time_limit;
+    uint8_t agg_disable_start_th;
+    uint8_t agg_frame_cnt_limit;
+    uint32_t reserved2;
+    uint32_t rs_table[IWM_LQ_MAX_RETRY_NUM];
+    uint32_t ss_params;
 }; /* LINK_QUALITY_CMD_API_S_VER_1 */
 
 /*
@@ -4178,31 +4173,31 @@ struct iwm_lq_cmd {
  * @IWM_TX_CMD_FLG_HCCA_CHUNK: mark start of TSPEC chunk
  */
 enum iwm_tx_flags {
-	IWM_TX_CMD_FLG_PROT_REQUIRE	= (1 << 0),
-	IWM_TX_CMD_FLG_ACK		= (1 << 3),
-	IWM_TX_CMD_FLG_STA_RATE		= (1 << 4),
-	IWM_TX_CMD_FLG_BA		= (1 << 5),
-	IWM_TX_CMD_FLG_BAR		= (1 << 6),
-	IWM_TX_CMD_FLG_TXOP_PROT	= (1 << 7),
-	IWM_TX_CMD_FLG_VHT_NDPA		= (1 << 8),
-	IWM_TX_CMD_FLG_HT_NDPA		= (1 << 9),
-	IWM_TX_CMD_FLG_CSI_FDBK2HOST	= (1 << 10),
-	IWM_TX_CMD_FLG_BT_DIS		= (1 << 12),
-	IWM_TX_CMD_FLG_SEQ_CTL		= (1 << 13),
-	IWM_TX_CMD_FLG_MORE_FRAG	= (1 << 14),
-	IWM_TX_CMD_FLG_NEXT_FRAME	= (1 << 15),
-	IWM_TX_CMD_FLG_TSF		= (1 << 16),
-	IWM_TX_CMD_FLG_CALIB		= (1 << 17),
-	IWM_TX_CMD_FLG_KEEP_SEQ_CTL	= (1 << 18),
-	IWM_TX_CMD_FLG_AGG_START	= (1 << 19),
-	IWM_TX_CMD_FLG_MH_PAD		= (1 << 20),
-	IWM_TX_CMD_FLG_RESP_TO_DRV	= (1 << 21),
-	IWM_TX_CMD_FLG_TKIP_MIC_DONE	= (1 << 23),
-	IWM_TX_CMD_FLG_DUR		= (1 << 25),
-	IWM_TX_CMD_FLG_FW_DROP		= (1 << 26),
-	IWM_TX_CMD_FLG_EXEC_PAPD	= (1 << 27),
-	IWM_TX_CMD_FLG_PAPD_TYPE	= (1 << 28),
-	IWM_TX_CMD_FLG_HCCA_CHUNK	= (1 << 31)
+    IWM_TX_CMD_FLG_PROT_REQUIRE	= (1 << 0),
+    IWM_TX_CMD_FLG_ACK		= (1 << 3),
+    IWM_TX_CMD_FLG_STA_RATE		= (1 << 4),
+    IWM_TX_CMD_FLG_BA		= (1 << 5),
+    IWM_TX_CMD_FLG_BAR		= (1 << 6),
+    IWM_TX_CMD_FLG_TXOP_PROT	= (1 << 7),
+    IWM_TX_CMD_FLG_VHT_NDPA		= (1 << 8),
+    IWM_TX_CMD_FLG_HT_NDPA		= (1 << 9),
+    IWM_TX_CMD_FLG_CSI_FDBK2HOST	= (1 << 10),
+    IWM_TX_CMD_FLG_BT_DIS		= (1 << 12),
+    IWM_TX_CMD_FLG_SEQ_CTL		= (1 << 13),
+    IWM_TX_CMD_FLG_MORE_FRAG	= (1 << 14),
+    IWM_TX_CMD_FLG_NEXT_FRAME	= (1 << 15),
+    IWM_TX_CMD_FLG_TSF		= (1 << 16),
+    IWM_TX_CMD_FLG_CALIB		= (1 << 17),
+    IWM_TX_CMD_FLG_KEEP_SEQ_CTL	= (1 << 18),
+    IWM_TX_CMD_FLG_AGG_START	= (1 << 19),
+    IWM_TX_CMD_FLG_MH_PAD		= (1 << 20),
+    IWM_TX_CMD_FLG_RESP_TO_DRV	= (1 << 21),
+    IWM_TX_CMD_FLG_TKIP_MIC_DONE	= (1 << 23),
+    IWM_TX_CMD_FLG_DUR		= (1 << 25),
+    IWM_TX_CMD_FLG_FW_DROP		= (1 << 26),
+    IWM_TX_CMD_FLG_EXEC_PAPD	= (1 << 27),
+    IWM_TX_CMD_FLG_PAPD_TYPE	= (1 << 28),
+    IWM_TX_CMD_FLG_HCCA_CHUNK	= (1 << 31)
 }; /* IWM_TX_FLAGS_BITS_API_S_VER_1 */
 
 /**
@@ -4212,9 +4207,9 @@ enum iwm_tx_flags {
  * @IWM_PM_FRAME_ASSOC: fw suspend sleep mode for 10sec
  */
 enum iwm_tx_pm_timeouts {
-	IWM_PM_FRAME_NONE           = 0,
-	IWM_PM_FRAME_MGMT           = 2,
-	IWM_PM_FRAME_ASSOC          = 3,
+    IWM_PM_FRAME_NONE           = 0,
+    IWM_PM_FRAME_MGMT           = 2,
+    IWM_PM_FRAME_ASSOC          = 3,
 };
 
 /*
@@ -4315,32 +4310,32 @@ enum iwm_tx_pm_timeouts {
  * and then the actial payload.
  */
 struct iwm_tx_cmd {
-	uint16_t len;
-	uint16_t next_frame_len;
-	uint32_t tx_flags;
-	struct {
-		uint8_t try_cnt;
-		uint8_t btkill_cnt;
-		uint16_t reserved;
-	} scratch; /* DRAM_SCRATCH_API_U_VER_1 */
-	uint32_t rate_n_flags;
-	uint8_t sta_id;
-	uint8_t sec_ctl;
-	uint8_t initial_rate_index;
-	uint8_t reserved2;
-	uint8_t key[16];
-	uint16_t next_frame_flags;
-	uint16_t reserved3;
-	uint32_t life_time;
-	uint32_t dram_lsb_ptr;
-	uint8_t dram_msb_ptr;
-	uint8_t rts_retry_limit;
-	uint8_t data_retry_limit;
-	uint8_t tid_tspec;
-	uint16_t pm_frame_timeout;
-	uint16_t driver_txop;
-	uint8_t payload[0];
-	//TODO: struct ieee80211_frame hdr[0];
+    uint16_t len;
+    uint16_t next_frame_len;
+    uint32_t tx_flags;
+    struct {
+        uint8_t try_cnt;
+        uint8_t btkill_cnt;
+        uint16_t reserved;
+    } scratch; /* DRAM_SCRATCH_API_U_VER_1 */
+    uint32_t rate_n_flags;
+    uint8_t sta_id;
+    uint8_t sec_ctl;
+    uint8_t initial_rate_index;
+    uint8_t reserved2;
+    uint8_t key[16];
+    uint16_t next_frame_flags;
+    uint16_t reserved3;
+    uint32_t life_time;
+    uint32_t dram_lsb_ptr;
+    uint8_t dram_msb_ptr;
+    uint8_t rts_retry_limit;
+    uint8_t data_retry_limit;
+    uint8_t tid_tspec;
+    uint16_t pm_frame_timeout;
+    uint16_t driver_txop;
+    uint8_t payload[0];
+    //TODO: struct ieee80211_frame hdr[0];
 } __packed; /* IWM_TX_CMD_API_S_VER_3 */
 
 /*
@@ -4385,43 +4380,43 @@ struct iwm_tx_cmd {
  * TODO: complete documentation
  */
 enum iwm_tx_status {
-	IWM_TX_STATUS_MSK = 0x000000ff,
-	IWM_TX_STATUS_SUCCESS = 0x01,
-	IWM_TX_STATUS_DIRECT_DONE = 0x02,
-	/* postpone TX */
-	IWM_TX_STATUS_POSTPONE_DELAY = 0x40,
-	IWM_TX_STATUS_POSTPONE_FEW_BYTES = 0x41,
-	IWM_TX_STATUS_POSTPONE_BT_PRIO = 0x42,
-	IWM_TX_STATUS_POSTPONE_QUIET_PERIOD = 0x43,
-	IWM_TX_STATUS_POSTPONE_CALC_TTAK = 0x44,
-	/* abort TX */
-	IWM_TX_STATUS_FAIL_INTERNAL_CROSSED_RETRY = 0x81,
-	IWM_TX_STATUS_FAIL_SHORT_LIMIT = 0x82,
-	IWM_TX_STATUS_FAIL_LONG_LIMIT = 0x83,
-	IWM_TX_STATUS_FAIL_UNDERRUN = 0x84,
-	IWM_TX_STATUS_FAIL_DRAIN_FLOW = 0x85,
-	IWM_TX_STATUS_FAIL_RFKILL_FLUSH = 0x86,
-	IWM_TX_STATUS_FAIL_LIFE_EXPIRE = 0x87,
-	IWM_TX_STATUS_FAIL_DEST_PS = 0x88,
-	IWM_TX_STATUS_FAIL_HOST_ABORTED = 0x89,
-	IWM_TX_STATUS_FAIL_BT_RETRY = 0x8a,
-	IWM_TX_STATUS_FAIL_STA_INVALID = 0x8b,
-	IWM_TX_STATUS_FAIL_FRAG_DROPPED = 0x8c,
-	IWM_TX_STATUS_FAIL_TID_DISABLE = 0x8d,
-	IWM_TX_STATUS_FAIL_FIFO_FLUSHED = 0x8e,
-	IWM_TX_STATUS_FAIL_SMALL_CF_POLL = 0x8f,
-	IWM_TX_STATUS_FAIL_FW_DROP = 0x90,
-	IWM_TX_STATUS_FAIL_STA_COLOR_MISMATCH = 0x91,
-	IWM_TX_STATUS_INTERNAL_ABORT = 0x92,
-	IWM_TX_MODE_MSK = 0x00000f00,
-	IWM_TX_MODE_NO_BURST = 0x00000000,
-	IWM_TX_MODE_IN_BURST_SEQ = 0x00000100,
-	IWM_TX_MODE_FIRST_IN_BURST = 0x00000200,
-	IWM_TX_QUEUE_NUM_MSK = 0x0001f000,
-	IWM_TX_NARROW_BW_MSK = 0x00060000,
-	IWM_TX_NARROW_BW_1DIV2 = 0x00020000,
-	IWM_TX_NARROW_BW_1DIV4 = 0x00040000,
-	IWM_TX_NARROW_BW_1DIV8 = 0x00060000,
+    IWM_TX_STATUS_MSK = 0x000000ff,
+    IWM_TX_STATUS_SUCCESS = 0x01,
+    IWM_TX_STATUS_DIRECT_DONE = 0x02,
+    /* postpone TX */
+    IWM_TX_STATUS_POSTPONE_DELAY = 0x40,
+    IWM_TX_STATUS_POSTPONE_FEW_BYTES = 0x41,
+    IWM_TX_STATUS_POSTPONE_BT_PRIO = 0x42,
+    IWM_TX_STATUS_POSTPONE_QUIET_PERIOD = 0x43,
+    IWM_TX_STATUS_POSTPONE_CALC_TTAK = 0x44,
+    /* abort TX */
+    IWM_TX_STATUS_FAIL_INTERNAL_CROSSED_RETRY = 0x81,
+    IWM_TX_STATUS_FAIL_SHORT_LIMIT = 0x82,
+    IWM_TX_STATUS_FAIL_LONG_LIMIT = 0x83,
+    IWM_TX_STATUS_FAIL_UNDERRUN = 0x84,
+    IWM_TX_STATUS_FAIL_DRAIN_FLOW = 0x85,
+    IWM_TX_STATUS_FAIL_RFKILL_FLUSH = 0x86,
+    IWM_TX_STATUS_FAIL_LIFE_EXPIRE = 0x87,
+    IWM_TX_STATUS_FAIL_DEST_PS = 0x88,
+    IWM_TX_STATUS_FAIL_HOST_ABORTED = 0x89,
+    IWM_TX_STATUS_FAIL_BT_RETRY = 0x8a,
+    IWM_TX_STATUS_FAIL_STA_INVALID = 0x8b,
+    IWM_TX_STATUS_FAIL_FRAG_DROPPED = 0x8c,
+    IWM_TX_STATUS_FAIL_TID_DISABLE = 0x8d,
+    IWM_TX_STATUS_FAIL_FIFO_FLUSHED = 0x8e,
+    IWM_TX_STATUS_FAIL_SMALL_CF_POLL = 0x8f,
+    IWM_TX_STATUS_FAIL_FW_DROP = 0x90,
+    IWM_TX_STATUS_FAIL_STA_COLOR_MISMATCH = 0x91,
+    IWM_TX_STATUS_INTERNAL_ABORT = 0x92,
+    IWM_TX_MODE_MSK = 0x00000f00,
+    IWM_TX_MODE_NO_BURST = 0x00000000,
+    IWM_TX_MODE_IN_BURST_SEQ = 0x00000100,
+    IWM_TX_MODE_FIRST_IN_BURST = 0x00000200,
+    IWM_TX_QUEUE_NUM_MSK = 0x0001f000,
+    IWM_TX_NARROW_BW_MSK = 0x00060000,
+    IWM_TX_NARROW_BW_1DIV2 = 0x00020000,
+    IWM_TX_NARROW_BW_1DIV4 = 0x00040000,
+    IWM_TX_NARROW_BW_1DIV8 = 0x00060000,
 };
 
 /*
@@ -4450,22 +4445,22 @@ enum iwm_tx_status {
  * TODO: complete documentation
  */
 enum iwm_tx_agg_status {
-	IWM_AGG_TX_STATE_STATUS_MSK = 0x00fff,
-	IWM_AGG_TX_STATE_TRANSMITTED = 0x000,
-	IWM_AGG_TX_STATE_UNDERRUN = 0x001,
-	IWM_AGG_TX_STATE_BT_PRIO = 0x002,
-	IWM_AGG_TX_STATE_FEW_BYTES = 0x004,
-	IWM_AGG_TX_STATE_ABORT = 0x008,
-	IWM_AGG_TX_STATE_LAST_SENT_TTL = 0x010,
-	IWM_AGG_TX_STATE_LAST_SENT_TRY_CNT = 0x020,
-	IWM_AGG_TX_STATE_LAST_SENT_BT_KILL = 0x040,
-	IWM_AGG_TX_STATE_SCD_QUERY = 0x080,
-	IWM_AGG_TX_STATE_TEST_BAD_CRC32 = 0x0100,
-	IWM_AGG_TX_STATE_RESPONSE = 0x1ff,
-	IWM_AGG_TX_STATE_DUMP_TX = 0x200,
-	IWM_AGG_TX_STATE_DELAY_TX = 0x400,
-	IWM_AGG_TX_STATE_TRY_CNT_POS = 12,
-	IWM_AGG_TX_STATE_TRY_CNT_MSK = 0xf << IWM_AGG_TX_STATE_TRY_CNT_POS,
+    IWM_AGG_TX_STATE_STATUS_MSK = 0x00fff,
+    IWM_AGG_TX_STATE_TRANSMITTED = 0x000,
+    IWM_AGG_TX_STATE_UNDERRUN = 0x001,
+    IWM_AGG_TX_STATE_BT_PRIO = 0x002,
+    IWM_AGG_TX_STATE_FEW_BYTES = 0x004,
+    IWM_AGG_TX_STATE_ABORT = 0x008,
+    IWM_AGG_TX_STATE_LAST_SENT_TTL = 0x010,
+    IWM_AGG_TX_STATE_LAST_SENT_TRY_CNT = 0x020,
+    IWM_AGG_TX_STATE_LAST_SENT_BT_KILL = 0x040,
+    IWM_AGG_TX_STATE_SCD_QUERY = 0x080,
+    IWM_AGG_TX_STATE_TEST_BAD_CRC32 = 0x0100,
+    IWM_AGG_TX_STATE_RESPONSE = 0x1ff,
+    IWM_AGG_TX_STATE_DUMP_TX = 0x200,
+    IWM_AGG_TX_STATE_DELAY_TX = 0x400,
+    IWM_AGG_TX_STATE_TRY_CNT_POS = 12,
+    IWM_AGG_TX_STATE_TRY_CNT_MSK = 0xf << IWM_AGG_TX_STATE_TRY_CNT_POS,
 };
 
 #define IWM_AGG_TX_STATE_LAST_SENT_MSK  (IWM_AGG_TX_STATE_LAST_SENT_TTL| \
@@ -4510,8 +4505,8 @@ enum iwm_tx_agg_status {
  * @sequence: Sequence # for this frame's Tx cmd (not SSN!)
  */
 struct iwm_agg_tx_status {
-	uint16_t status;
-	uint16_t sequence;
+    uint16_t status;
+    uint16_t sequence;
 } __packed;
 
 /*
@@ -4558,29 +4553,29 @@ struct iwm_agg_tx_status {
  * %iwm_mvm_get_scd_ssn for more details.
  */
 struct iwm_mvm_tx_resp {
-	uint8_t frame_count;
-	uint8_t bt_kill_count;
-	uint8_t failure_rts;
-	uint8_t failure_frame;
-	uint32_t initial_rate;
-	uint16_t wireless_media_time;
+    uint8_t frame_count;
+    uint8_t bt_kill_count;
+    uint8_t failure_rts;
+    uint8_t failure_frame;
+    uint32_t initial_rate;
+    uint16_t wireless_media_time;
 
-	uint8_t pa_status;
-	uint8_t pa_integ_res_a[3];
-	uint8_t pa_integ_res_b[3];
-	uint8_t pa_integ_res_c[3];
-	uint16_t measurement_req_id;
-	uint8_t reduced_tpc;
-	uint8_t reserved;
+    uint8_t pa_status;
+    uint8_t pa_integ_res_a[3];
+    uint8_t pa_integ_res_b[3];
+    uint8_t pa_integ_res_c[3];
+    uint16_t measurement_req_id;
+    uint8_t reduced_tpc;
+    uint8_t reserved;
 
-	uint32_t tfd_info;
-	uint16_t seq_ctl;
-	uint16_t byte_cnt;
-	uint8_t tlc_info;
-	uint8_t ra_tid;
-	uint16_t frame_ctrl;
+    uint32_t tfd_info;
+    uint16_t seq_ctl;
+    uint16_t byte_cnt;
+    uint8_t tlc_info;
+    uint8_t ra_tid;
+    uint16_t frame_ctrl;
 
-	struct iwm_agg_tx_status status;
+    struct iwm_agg_tx_status status;
 } __packed; /* IWM_TX_RSP_API_S_VER_3 */
 
 /**
@@ -4598,19 +4593,19 @@ struct iwm_mvm_tx_resp {
  * @txed_2_done: number of Acked frames in this batch
  */
 struct iwm_mvm_ba_notif {
-	uint32_t sta_addr_lo32;
-	uint16_t sta_addr_hi16;
-	uint16_t reserved;
+    uint32_t sta_addr_lo32;
+    uint16_t sta_addr_hi16;
+    uint16_t reserved;
 
-	uint8_t sta_id;
-	uint8_t tid;
-	uint16_t seq_ctl;
-	uint64_t bitmap;
-	uint16_t scd_flow;
-	uint16_t scd_ssn;
-	uint8_t txed;
-	uint8_t txed_2_done;
-	uint16_t reserved1;
+    uint8_t sta_id;
+    uint8_t tid;
+    uint16_t seq_ctl;
+    uint64_t bitmap;
+    uint16_t scd_flow;
+    uint16_t scd_ssn;
+    uint8_t txed;
+    uint8_t txed_2_done;
+    uint16_t reserved1;
 } __packed;
 
 /*
@@ -4623,17 +4618,17 @@ struct iwm_mvm_ba_notif {
  * @frame: the template of the beacon frame
  */
 struct iwm_mac_beacon_cmd {
-	struct iwm_tx_cmd tx;
-	uint32_t template_id;
-	uint32_t tim_idx;
-	uint32_t tim_size;
-	//TODO: struct ieee80211_frame frame[0];
+    struct iwm_tx_cmd tx;
+    uint32_t template_id;
+    uint32_t tim_idx;
+    uint32_t tim_size;
+    //TODO: struct ieee80211_frame frame[0];
 } __packed;
 
 struct iwm_beacon_notif {
-	struct iwm_mvm_tx_resp beacon_notify_hdr;
-	uint64_t tsf;
-	uint32_t ibss_mgr_status;
+    struct iwm_mvm_tx_resp beacon_notify_hdr;
+    uint64_t tsf;
+    uint32_t ibss_mgr_status;
 } __packed;
 
 /**
@@ -4642,7 +4637,7 @@ struct iwm_beacon_notif {
  *	and the TFD queues are empty.
  */
 enum iwm_dump_control {
-	IWM_DUMP_TX_FIFO_FLUSH	= (1 << 1),
+    IWM_DUMP_TX_FIFO_FLUSH	= (1 << 1),
 };
 
 /**
@@ -4652,9 +4647,9 @@ enum iwm_dump_control {
  * @reserved: reserved
  */
 struct iwm_tx_path_flush_cmd {
-	uint32_t queues_ctl;
-	uint16_t flush_ctl;
-	uint16_t reserved;
+    uint32_t queues_ctl;
+    uint16_t flush_ctl;
+    uint16_t reserved;
 } __packed; /* IWM_TX_PATH_FLUSH_CMD_API_S_VER_1 */
 
 /*
@@ -4678,16 +4673,16 @@ struct iwm_tx_path_flush_cmd {
  * @ssn: SSN for the BA agreement
  */
 struct iwm_scd_txq_cfg_cmd {
-	uint8_t token;
-	uint8_t sta_id;
-	uint8_t tid;
-	uint8_t scd_queue;
-	uint8_t enable;
-	uint8_t aggregate;
-	uint8_t tx_fifo;
-	uint8_t window;
-	uint16_t ssn;
-	uint16_t reserved;
+    uint8_t token;
+    uint8_t sta_id;
+    uint8_t tid;
+    uint8_t scd_queue;
+    uint8_t enable;
+    uint8_t aggregate;
+    uint8_t tx_fifo;
+    uint8_t window;
+    uint16_t ssn;
+    uint16_t reserved;
 } __packed; /* SCD_QUEUE_CFG_CMD_API_S_VER_1 */
 
 /**
@@ -4698,10 +4693,10 @@ struct iwm_scd_txq_cfg_cmd {
  * @scd_queue: scd_queue from the command
  */
 struct iwm_scd_txq_cfg_rsp {
-	uint8_t token;
-	uint8_t sta_id;
-	uint8_t tid;
-	uint8_t scd_queue;
+    uint8_t token;
+    uint8_t sta_id;
+    uint8_t tid;
+    uint8_t scd_queue;
 } __packed; /* SCD_QUEUE_CFG_RSP_API_S_VER_1 */
 
 
@@ -4723,9 +4718,9 @@ struct iwm_scd_txq_cfg_rsp {
  * SSID IEs get transmitted in reverse order of entry.
  */
 struct iwm_ssid_ie {
-	uint8_t id;
-	uint8_t len;
-	//TODO: uint8_t ssid[IEEE80211_NWID_LEN];
+    uint8_t id;
+    uint8_t len;
+    //TODO: uint8_t ssid[IEEE80211_NWID_LEN];
 } __packed; /* IWM_SCAN_DIRECT_SSID_IE_API_S_VER_1 */
 
 /* scan offload */
@@ -4751,9 +4746,9 @@ struct iwm_ssid_ie {
  * @full_scan_mul:	number of partial scans before each full scan
  */
 struct iwm_scan_schedule_lmac {
-	uint16_t delay;
-	uint8_t iterations;
-	uint8_t full_scan_mul;
+    uint16_t delay;
+    uint8_t iterations;
+    uint8_t full_scan_mul;
 } __packed; /* SCAN_SCHEDULE_API_S */
 
 /**
@@ -4765,15 +4760,15 @@ struct iwm_scan_schedule_lmac {
  * @reserved: for alignment and future use
  */
 struct iwm_scan_req_tx_cmd {
-	uint32_t tx_flags;
-	uint32_t rate_n_flags;
-	uint8_t sta_id;
-	uint8_t reserved[3];
+    uint32_t tx_flags;
+    uint32_t rate_n_flags;
+    uint8_t sta_id;
+    uint8_t reserved[3];
 } __packed;
 
 enum iwm_scan_channel_flags_lmac {
-	IWM_UNIFIED_SCAN_CHANNEL_FULL		= (1 << 27),
-	IWM_UNIFIED_SCAN_CHANNEL_PARTIAL	= (1 << 28),
+    IWM_UNIFIED_SCAN_CHANNEL_FULL		= (1 << 27),
+    IWM_UNIFIED_SCAN_CHANNEL_PARTIAL	= (1 << 28),
 };
 
 /**
@@ -4785,10 +4780,10 @@ enum iwm_scan_channel_flags_lmac {
  * @iter_interval:	interval in seconds between iterations on one channel
  */
 struct iwm_scan_channel_cfg_lmac {
-	uint32_t flags;
-	uint16_t channel_num;
-	uint16_t iter_count;
-	uint32_t iter_interval;
+    uint32_t flags;
+    uint16_t channel_num;
+    uint16_t iter_count;
+    uint32_t iter_interval;
 } __packed;
 
 /*
@@ -4797,8 +4792,8 @@ struct iwm_scan_channel_cfg_lmac {
  * @len: length of the segment
  */
 struct iwm_scan_probe_segment {
-	uint16_t offset;
-	uint16_t len;
+    uint16_t offset;
+    uint16_t len;
 } __packed;
 
 /* iwm_scan_probe_req - PROBE_REQUEST_FRAME_API_S_VER_2
@@ -4808,16 +4803,16 @@ struct iwm_scan_probe_segment {
  * @buf: raw data block
  */
 struct iwm_scan_probe_req {
-	struct iwm_scan_probe_segment mac_header;
-	struct iwm_scan_probe_segment band_data[2];
-	struct iwm_scan_probe_segment common_data;
-	uint8_t buf[IWM_SCAN_OFFLOAD_PROBE_REQ_SIZE];
+    struct iwm_scan_probe_segment mac_header;
+    struct iwm_scan_probe_segment band_data[2];
+    struct iwm_scan_probe_segment common_data;
+    uint8_t buf[IWM_SCAN_OFFLOAD_PROBE_REQ_SIZE];
 } __packed;
 
 enum iwm_scan_channel_flags {
-	IWM_SCAN_CHANNEL_FLAG_EBS		= (1 << 0),
-	IWM_SCAN_CHANNEL_FLAG_EBS_ACCURATE	= (1 << 1),
-	IWM_SCAN_CHANNEL_FLAG_CACHE_ADD		= (1 << 2),
+    IWM_SCAN_CHANNEL_FLAG_EBS		= (1 << 0),
+    IWM_SCAN_CHANNEL_FLAG_EBS_ACCURATE	= (1 << 1),
+    IWM_SCAN_CHANNEL_FLAG_CACHE_ADD		= (1 << 2),
 };
 
 /* iwm_scan_channel_opt - CHANNEL_OPTIMIZATION_API_S
@@ -4828,8 +4823,8 @@ enum iwm_scan_channel_flags {
  *	2 - every second scan will be full scan(and so on).
  */
 struct iwm_scan_channel_opt {
-	uint16_t flags;
-	uint16_t non_ebs_ratio;
+    uint16_t flags;
+    uint16_t non_ebs_ratio;
 } __packed;
 
 /**
@@ -4848,21 +4843,21 @@ struct iwm_scan_channel_opt {
  * @IWM_MVM_LMAC_SCAN_FLAG_MATCH: Send match found notification on matches
  */
 enum iwm_mvm_lmac_scan_flags {
-	IWM_MVM_LMAC_SCAN_FLAG_PASS_ALL		= (1 << 0),
-	IWM_MVM_LMAC_SCAN_FLAG_PASSIVE		= (1 << 1),
-	IWM_MVM_LMAC_SCAN_FLAG_PRE_CONNECTION	= (1 << 2),
-	IWM_MVM_LMAC_SCAN_FLAG_ITER_COMPLETE	= (1 << 3),
-	IWM_MVM_LMAC_SCAN_FLAG_MULTIPLE_SSIDS	= (1 << 4),
-	IWM_MVM_LMAC_SCAN_FLAG_FRAGMENTED	= (1 << 5),
-	IWM_MVM_LMAC_SCAN_FLAGS_RRM_ENABLED	= (1 << 6),
-	IWM_MVM_LMAC_SCAN_FLAG_EXTENDED_DWELL	= (1 << 7),
-	IWM_MVM_LMAC_SCAN_FLAG_MATCH		= (1 << 9),
+    IWM_MVM_LMAC_SCAN_FLAG_PASS_ALL		= (1 << 0),
+    IWM_MVM_LMAC_SCAN_FLAG_PASSIVE		= (1 << 1),
+    IWM_MVM_LMAC_SCAN_FLAG_PRE_CONNECTION	= (1 << 2),
+    IWM_MVM_LMAC_SCAN_FLAG_ITER_COMPLETE	= (1 << 3),
+    IWM_MVM_LMAC_SCAN_FLAG_MULTIPLE_SSIDS	= (1 << 4),
+    IWM_MVM_LMAC_SCAN_FLAG_FRAGMENTED	= (1 << 5),
+    IWM_MVM_LMAC_SCAN_FLAGS_RRM_ENABLED	= (1 << 6),
+    IWM_MVM_LMAC_SCAN_FLAG_EXTENDED_DWELL	= (1 << 7),
+    IWM_MVM_LMAC_SCAN_FLAG_MATCH		= (1 << 9),
 };
 
 enum iwm_scan_priority {
-	IWM_SCAN_PRIORITY_LOW,
-	IWM_SCAN_PRIORITY_MEDIUM,
-	IWM_SCAN_PRIORITY_HIGH,
+    IWM_SCAN_PRIORITY_LOW,
+    IWM_SCAN_PRIORITY_MEDIUM,
+    IWM_SCAN_PRIORITY_HIGH,
 };
 
 /**
@@ -4891,30 +4886,30 @@ enum iwm_scan_priority {
  * @data: channel configuration and probe request packet.
  */
 struct iwm_scan_req_lmac {
-	/* SCAN_REQUEST_FIXED_PART_API_S_VER_7 */
-	uint32_t reserved1;
-	uint8_t n_channels;
-	uint8_t active_dwell;
-	uint8_t passive_dwell;
-	uint8_t fragmented_dwell;
-	uint8_t extended_dwell;
-	uint8_t reserved2;
-	uint16_t rx_chain_select;
-	uint32_t scan_flags;
-	uint32_t max_out_time;
-	uint32_t suspend_time;
-	/* RX_ON_FLAGS_API_S_VER_1 */
-	uint32_t flags;
-	uint32_t filter_flags;
-	struct iwm_scan_req_tx_cmd tx_cmd[2];
-	struct iwm_ssid_ie direct_scan[IWM_PROBE_OPTION_MAX];
-	uint32_t scan_prio;
-	/* SCAN_REQ_PERIODIC_PARAMS_API_S */
-	uint32_t iter_num;
-	uint32_t delay;
-	struct iwm_scan_schedule_lmac schedule[IWM_MAX_SCHED_SCAN_PLANS];
-	struct iwm_scan_channel_opt channel_opt[2];
-	uint8_t data[];
+    /* SCAN_REQUEST_FIXED_PART_API_S_VER_7 */
+    uint32_t reserved1;
+    uint8_t n_channels;
+    uint8_t active_dwell;
+    uint8_t passive_dwell;
+    uint8_t fragmented_dwell;
+    uint8_t extended_dwell;
+    uint8_t reserved2;
+    uint16_t rx_chain_select;
+    uint32_t scan_flags;
+    uint32_t max_out_time;
+    uint32_t suspend_time;
+    /* RX_ON_FLAGS_API_S_VER_1 */
+    uint32_t flags;
+    uint32_t filter_flags;
+    struct iwm_scan_req_tx_cmd tx_cmd[2];
+    struct iwm_ssid_ie direct_scan[IWM_PROBE_OPTION_MAX];
+    uint32_t scan_prio;
+    /* SCAN_REQ_PERIODIC_PARAMS_API_S */
+    uint32_t iter_num;
+    uint32_t delay;
+    struct iwm_scan_schedule_lmac schedule[IWM_MAX_SCHED_SCAN_PLANS];
+    struct iwm_scan_channel_opt channel_opt[2];
+    uint8_t data[];
 } __packed;
 
 /**
@@ -4926,12 +4921,12 @@ struct iwm_scan_req_lmac {
  * @time_after_last_iter; time in seconds elapsed after last iteration
  */
 struct iwm_periodic_scan_complete {
-	uint8_t last_schedule_line;
-	uint8_t last_schedule_iteration;
-	uint8_t status;
-	uint8_t ebs_status;
-	uint32_t time_after_last_iter;
-	uint32_t reserved;
+    uint8_t last_schedule_line;
+    uint8_t last_schedule_iteration;
+    uint8_t status;
+    uint8_t ebs_status;
+    uint32_t time_after_last_iter;
+    uint32_t reserved;
 } __packed;
 
 /* How many statistics are gathered for each channel */
@@ -4955,18 +4950,18 @@ struct iwm_periodic_scan_complete {
  * @IWM_SCAN_COMP_STATUS_ERR_ALLOC_TE: scan could not allocate time events
 */
 enum iwm_scan_complete_status {
-	IWM_SCAN_COMP_STATUS_OK = 0x1,
-	IWM_SCAN_COMP_STATUS_ABORT = 0x2,
-	IWM_SCAN_COMP_STATUS_ERR_SLEEP = 0x3,
-	IWM_SCAN_COMP_STATUS_ERR_CHAN_TIMEOUT = 0x4,
-	IWM_SCAN_COMP_STATUS_ERR_PROBE = 0x5,
-	IWM_SCAN_COMP_STATUS_ERR_WAKEUP = 0x6,
-	IWM_SCAN_COMP_STATUS_ERR_ANTENNAS = 0x7,
-	IWM_SCAN_COMP_STATUS_ERR_INTERNAL = 0x8,
-	IWM_SCAN_COMP_STATUS_ERR_COEX = 0x9,
-	IWM_SCAN_COMP_STATUS_P2P_ACTION_OK = 0xA,
-	IWM_SCAN_COMP_STATUS_ITERATION_END = 0x0B,
-	IWM_SCAN_COMP_STATUS_ERR_ALLOC_TE = 0x0C,
+    IWM_SCAN_COMP_STATUS_OK = 0x1,
+    IWM_SCAN_COMP_STATUS_ABORT = 0x2,
+    IWM_SCAN_COMP_STATUS_ERR_SLEEP = 0x3,
+    IWM_SCAN_COMP_STATUS_ERR_CHAN_TIMEOUT = 0x4,
+    IWM_SCAN_COMP_STATUS_ERR_PROBE = 0x5,
+    IWM_SCAN_COMP_STATUS_ERR_WAKEUP = 0x6,
+    IWM_SCAN_COMP_STATUS_ERR_ANTENNAS = 0x7,
+    IWM_SCAN_COMP_STATUS_ERR_INTERNAL = 0x8,
+    IWM_SCAN_COMP_STATUS_ERR_COEX = 0x9,
+    IWM_SCAN_COMP_STATUS_P2P_ACTION_OK = 0xA,
+    IWM_SCAN_COMP_STATUS_ITERATION_END = 0x0B,
+    IWM_SCAN_COMP_STATUS_ERR_ALLOC_TE = 0x0C,
 };
 
 /**
@@ -4980,18 +4975,18 @@ enum iwm_scan_complete_status {
  * @statistics: statistics gathered for this channel
  */
 struct iwm_scan_results_notif {
-	uint8_t channel;
-	uint8_t band;
-	uint8_t probe_status;
-	uint8_t num_probe_not_sent;
-	uint32_t duration;
-	uint32_t statistics[IWM_SCAN_RESULTS_STATISTICS];
+    uint8_t channel;
+    uint8_t band;
+    uint8_t probe_status;
+    uint8_t num_probe_not_sent;
+    uint32_t duration;
+    uint32_t statistics[IWM_SCAN_RESULTS_STATISTICS];
 } __packed; /* IWM_SCAN_RESULT_NTF_API_S_VER_2 */
 
 enum iwm_scan_framework_client {
-	IWM_SCAN_CLIENT_SCHED_SCAN	= (1 << 0),
-	IWM_SCAN_CLIENT_NETDETECT	= (1 << 1),
-	IWM_SCAN_CLIENT_ASSET_TRACKING	= (1 << 2),
+    IWM_SCAN_CLIENT_SCHED_SCAN	= (1 << 0),
+    IWM_SCAN_CLIENT_NETDETECT	= (1 << 1),
+    IWM_SCAN_CLIENT_ASSET_TRACKING	= (1 << 2),
 };
 
 /**
@@ -5001,21 +4996,21 @@ enum iwm_scan_framework_client {
  * @client_bitmap: clients ignore this entry  - enum scan_framework_client
  */
 struct iwm_scan_offload_blacklist {
-	//TODO: uint8_t ssid[IEEE80211_ADDR_LEN];
-	uint8_t reported_rssi;
-	uint8_t client_bitmap;
+    //TODO: uint8_t ssid[IEEE80211_ADDR_LEN];
+    uint8_t reported_rssi;
+    uint8_t client_bitmap;
 } __packed;
 
 enum iwm_scan_offload_network_type {
-	IWM_NETWORK_TYPE_BSS	= 1,
-	IWM_NETWORK_TYPE_IBSS	= 2,
-	IWM_NETWORK_TYPE_ANY	= 3,
+    IWM_NETWORK_TYPE_BSS	= 1,
+    IWM_NETWORK_TYPE_IBSS	= 2,
+    IWM_NETWORK_TYPE_ANY	= 3,
 };
 
 enum iwm_scan_offload_band_selection {
-	IWM_SCAN_OFFLOAD_SELECT_2_4	= 0x4,
-	IWM_SCAN_OFFLOAD_SELECT_5_2	= 0x8,
-	IWM_SCAN_OFFLOAD_SELECT_ANY	= 0xc,
+    IWM_SCAN_OFFLOAD_SELECT_2_4	= 0x4,
+    IWM_SCAN_OFFLOAD_SELECT_5_2	= 0x8,
+    IWM_SCAN_OFFLOAD_SELECT_ANY	= 0xc,
 };
 
 /**
@@ -5028,13 +5023,13 @@ enum iwm_scan_offload_band_selection {
  * @client_bitmap:	clients waiting for match - enum scan_framework_client
  */
 struct iwm_scan_offload_profile {
-	uint8_t ssid_index;
-	uint8_t unicast_cipher;
-	uint8_t auth_alg;
-	uint8_t network_type;
-	uint8_t band_selection;
-	uint8_t client_bitmap;
-	uint8_t reserved[2];
+    uint8_t ssid_index;
+    uint8_t unicast_cipher;
+    uint8_t auth_alg;
+    uint8_t network_type;
+    uint8_t band_selection;
+    uint8_t client_bitmap;
+    uint8_t reserved[2];
 } __packed;
 
 /**
@@ -5049,26 +5044,26 @@ struct iwm_scan_offload_profile {
  * @any_beacon_notify:	clients waiting for match notification without match
  */
 struct iwm_scan_offload_profile_cfg {
-	struct iwm_scan_offload_profile profiles[IWM_SCAN_MAX_PROFILES];
-	uint8_t blacklist_len;
-	uint8_t num_profiles;
-	uint8_t match_notify;
-	uint8_t pass_match;
-	uint8_t active_clients;
-	uint8_t any_beacon_notify;
-	uint8_t reserved[2];
+    struct iwm_scan_offload_profile profiles[IWM_SCAN_MAX_PROFILES];
+    uint8_t blacklist_len;
+    uint8_t num_profiles;
+    uint8_t match_notify;
+    uint8_t pass_match;
+    uint8_t active_clients;
+    uint8_t any_beacon_notify;
+    uint8_t reserved[2];
 } __packed;
 
 enum iwm_scan_offload_complete_status {
-	IWM_SCAN_OFFLOAD_COMPLETED	= 1,
-	IWM_SCAN_OFFLOAD_ABORTED	= 2,
+    IWM_SCAN_OFFLOAD_COMPLETED	= 1,
+    IWM_SCAN_OFFLOAD_ABORTED	= 2,
 };
 
 enum iwm_scan_ebs_status {
-	IWM_SCAN_EBS_SUCCESS,
-	IWM_SCAN_EBS_FAILED,
-	IWM_SCAN_EBS_CHAN_NOT_FOUND,
-	IWM_SCAN_EBS_INACTIVE,
+    IWM_SCAN_EBS_SUCCESS,
+    IWM_SCAN_EBS_FAILED,
+    IWM_SCAN_EBS_CHAN_NOT_FOUND,
+    IWM_SCAN_EBS_INACTIVE,
 };
 
 /**
@@ -5083,13 +5078,13 @@ enum iwm_scan_ebs_status {
  * @results: an array of scan results, only "scanned_channels" of them are valid
  */
 struct iwm_lmac_scan_complete_notif {
-	uint8_t scanned_channels;
-	uint8_t status;
-	uint8_t bt_status;
-	uint8_t last_channel;
-	uint32_t tsf_low;
-	uint32_t tsf_high;
-	struct iwm_scan_results_notif results[];
+    uint8_t scanned_channels;
+    uint8_t status;
+    uint8_t bt_status;
+    uint8_t last_channel;
+    uint32_t tsf_low;
+    uint32_t tsf_high;
+    struct iwm_scan_results_notif results[];
 } __packed;
 
 
@@ -5110,54 +5105,54 @@ struct iwm_lmac_scan_complete_notif {
 #define IWM_MVM_MAX_LMAC_SCANS 1
 
 enum iwm_scan_config_flags {
-	IWM_SCAN_CONFIG_FLAG_ACTIVATE			= (1 << 0),
-	IWM_SCAN_CONFIG_FLAG_DEACTIVATE			= (1 << 1),
-	IWM_SCAN_CONFIG_FLAG_FORBID_CHUB_REQS		= (1 << 2),
-	IWM_SCAN_CONFIG_FLAG_ALLOW_CHUB_REQS		= (1 << 3),
-	IWM_SCAN_CONFIG_FLAG_SET_TX_CHAINS		= (1 << 8),
-	IWM_SCAN_CONFIG_FLAG_SET_RX_CHAINS		= (1 << 9),
-	IWM_SCAN_CONFIG_FLAG_SET_AUX_STA_ID		= (1 << 10),
-	IWM_SCAN_CONFIG_FLAG_SET_ALL_TIMES		= (1 << 11),
-	IWM_SCAN_CONFIG_FLAG_SET_EFFECTIVE_TIMES	= (1 << 12),
-	IWM_SCAN_CONFIG_FLAG_SET_CHANNEL_FLAGS		= (1 << 13),
-	IWM_SCAN_CONFIG_FLAG_SET_LEGACY_RATES		= (1 << 14),
-	IWM_SCAN_CONFIG_FLAG_SET_MAC_ADDR		= (1 << 15),
-	IWM_SCAN_CONFIG_FLAG_SET_FRAGMENTED		= (1 << 16),
-	IWM_SCAN_CONFIG_FLAG_CLEAR_FRAGMENTED		= (1 << 17),
-	IWM_SCAN_CONFIG_FLAG_SET_CAM_MODE		= (1 << 18),
-	IWM_SCAN_CONFIG_FLAG_CLEAR_CAM_MODE		= (1 << 19),
-	IWM_SCAN_CONFIG_FLAG_SET_PROMISC_MODE		= (1 << 20),
-	IWM_SCAN_CONFIG_FLAG_CLEAR_PROMISC_MODE		= (1 << 21),
+    IWM_SCAN_CONFIG_FLAG_ACTIVATE			= (1 << 0),
+    IWM_SCAN_CONFIG_FLAG_DEACTIVATE			= (1 << 1),
+    IWM_SCAN_CONFIG_FLAG_FORBID_CHUB_REQS		= (1 << 2),
+    IWM_SCAN_CONFIG_FLAG_ALLOW_CHUB_REQS		= (1 << 3),
+    IWM_SCAN_CONFIG_FLAG_SET_TX_CHAINS		= (1 << 8),
+    IWM_SCAN_CONFIG_FLAG_SET_RX_CHAINS		= (1 << 9),
+    IWM_SCAN_CONFIG_FLAG_SET_AUX_STA_ID		= (1 << 10),
+    IWM_SCAN_CONFIG_FLAG_SET_ALL_TIMES		= (1 << 11),
+    IWM_SCAN_CONFIG_FLAG_SET_EFFECTIVE_TIMES	= (1 << 12),
+    IWM_SCAN_CONFIG_FLAG_SET_CHANNEL_FLAGS		= (1 << 13),
+    IWM_SCAN_CONFIG_FLAG_SET_LEGACY_RATES		= (1 << 14),
+    IWM_SCAN_CONFIG_FLAG_SET_MAC_ADDR		= (1 << 15),
+    IWM_SCAN_CONFIG_FLAG_SET_FRAGMENTED		= (1 << 16),
+    IWM_SCAN_CONFIG_FLAG_CLEAR_FRAGMENTED		= (1 << 17),
+    IWM_SCAN_CONFIG_FLAG_SET_CAM_MODE		= (1 << 18),
+    IWM_SCAN_CONFIG_FLAG_CLEAR_CAM_MODE		= (1 << 19),
+    IWM_SCAN_CONFIG_FLAG_SET_PROMISC_MODE		= (1 << 20),
+    IWM_SCAN_CONFIG_FLAG_CLEAR_PROMISC_MODE		= (1 << 21),
 
-	/* Bits 26-31 are for num of channels in channel_array */
+    /* Bits 26-31 are for num of channels in channel_array */
 #define IWM_SCAN_CONFIG_N_CHANNELS(n) ((n) << 26)
 };
 
 enum iwm_scan_config_rates {
-	/* OFDM basic rates */
-	IWM_SCAN_CONFIG_RATE_6M		= (1 << 0),
-	IWM_SCAN_CONFIG_RATE_9M		= (1 << 1),
-	IWM_SCAN_CONFIG_RATE_12M	= (1 << 2),
-	IWM_SCAN_CONFIG_RATE_18M	= (1 << 3),
-	IWM_SCAN_CONFIG_RATE_24M	= (1 << 4),
-	IWM_SCAN_CONFIG_RATE_36M	= (1 << 5),
-	IWM_SCAN_CONFIG_RATE_48M	= (1 << 6),
-	IWM_SCAN_CONFIG_RATE_54M	= (1 << 7),
-	/* CCK basic rates */
-	IWM_SCAN_CONFIG_RATE_1M		= (1 << 8),
-	IWM_SCAN_CONFIG_RATE_2M		= (1 << 9),
-	IWM_SCAN_CONFIG_RATE_5M		= (1 << 10),
-	IWM_SCAN_CONFIG_RATE_11M	= (1 << 11),
+    /* OFDM basic rates */
+    IWM_SCAN_CONFIG_RATE_6M		= (1 << 0),
+    IWM_SCAN_CONFIG_RATE_9M		= (1 << 1),
+    IWM_SCAN_CONFIG_RATE_12M	= (1 << 2),
+    IWM_SCAN_CONFIG_RATE_18M	= (1 << 3),
+    IWM_SCAN_CONFIG_RATE_24M	= (1 << 4),
+    IWM_SCAN_CONFIG_RATE_36M	= (1 << 5),
+    IWM_SCAN_CONFIG_RATE_48M	= (1 << 6),
+    IWM_SCAN_CONFIG_RATE_54M	= (1 << 7),
+    /* CCK basic rates */
+    IWM_SCAN_CONFIG_RATE_1M		= (1 << 8),
+    IWM_SCAN_CONFIG_RATE_2M		= (1 << 9),
+    IWM_SCAN_CONFIG_RATE_5M		= (1 << 10),
+    IWM_SCAN_CONFIG_RATE_11M	= (1 << 11),
 
-	/* Bits 16-27 are for supported rates */
+    /* Bits 16-27 are for supported rates */
 #define IWM_SCAN_CONFIG_SUPPORTED_RATE(rate)	((rate) << 16)
 };
 
 enum iwm_channel_flags {
-	IWM_CHANNEL_FLAG_EBS				= (1 << 0),
-	IWM_CHANNEL_FLAG_ACCURATE_EBS			= (1 << 1),
-	IWM_CHANNEL_FLAG_EBS_ADD			= (1 << 2),
-	IWM_CHANNEL_FLAG_PRE_SCAN_PASSIVE2ACTIVE	= (1 << 3),
+    IWM_CHANNEL_FLAG_EBS				= (1 << 0),
+    IWM_CHANNEL_FLAG_ACCURATE_EBS			= (1 << 1),
+    IWM_CHANNEL_FLAG_EBS_ADD			= (1 << 2),
+    IWM_CHANNEL_FLAG_PRE_SCAN_PASSIVE2ACTIVE	= (1 << 3),
 };
 
 /**
@@ -5179,20 +5174,20 @@ enum iwm_channel_flags {
  * @channel_array:		default supported channels
  */
 struct iwm_scan_config {
-	uint32_t flags;
-	uint32_t tx_chains;
-	uint32_t rx_chains;
-	uint32_t legacy_rates;
-	uint32_t out_of_channel_time;
-	uint32_t suspend_time;
-	uint8_t dwell_active;
-	uint8_t dwell_passive;
-	uint8_t dwell_fragmented;
-	uint8_t dwell_extended;
-	//TODO: uint8_t mac_addr[IEEE80211_ADDR_LEN];
-	uint8_t bcast_sta_id;
-	uint8_t channel_flags;
-	uint8_t channel_array[];
+    uint32_t flags;
+    uint32_t tx_chains;
+    uint32_t rx_chains;
+    uint32_t legacy_rates;
+    uint32_t out_of_channel_time;
+    uint32_t suspend_time;
+    uint8_t dwell_active;
+    uint8_t dwell_passive;
+    uint8_t dwell_fragmented;
+    uint8_t dwell_extended;
+    //TODO: uint8_t mac_addr[IEEE80211_ADDR_LEN];
+    uint8_t bcast_sta_id;
+    uint8_t channel_flags;
+    uint8_t channel_array[];
 } __packed; /* SCAN_CONFIG_DB_CMD_API_S */
 
 /**
@@ -5205,27 +5200,27 @@ struct iwm_scan_config {
  *	when scan starts.
  */
 enum iwm_umac_scan_flags {
-	IWM_UMAC_SCAN_FLAG_PREEMPTIVE		= (1 << 0),
-	IWM_UMAC_SCAN_FLAG_START_NOTIF		= (1 << 1),
+    IWM_UMAC_SCAN_FLAG_PREEMPTIVE		= (1 << 0),
+    IWM_UMAC_SCAN_FLAG_START_NOTIF		= (1 << 1),
 };
 
 enum iwm_umac_scan_uid_offsets {
-	IWM_UMAC_SCAN_UID_TYPE_OFFSET		= 0,
-	IWM_UMAC_SCAN_UID_SEQ_OFFSET		= 8,
+    IWM_UMAC_SCAN_UID_TYPE_OFFSET		= 0,
+    IWM_UMAC_SCAN_UID_SEQ_OFFSET		= 8,
 };
 
 enum iwm_umac_scan_general_flags {
-	IWM_UMAC_SCAN_GEN_FLAGS_PERIODIC	= (1 << 0),
-	IWM_UMAC_SCAN_GEN_FLAGS_OVER_BT		= (1 << 1),
-	IWM_UMAC_SCAN_GEN_FLAGS_PASS_ALL	= (1 << 2),
-	IWM_UMAC_SCAN_GEN_FLAGS_PASSIVE		= (1 << 3),
-	IWM_UMAC_SCAN_GEN_FLAGS_PRE_CONNECT	= (1 << 4),
-	IWM_UMAC_SCAN_GEN_FLAGS_ITER_COMPLETE	= (1 << 5),
-	IWM_UMAC_SCAN_GEN_FLAGS_MULTIPLE_SSID	= (1 << 6),
-	IWM_UMAC_SCAN_GEN_FLAGS_FRAGMENTED	= (1 << 7),
-	IWM_UMAC_SCAN_GEN_FLAGS_RRM_ENABLED	= (1 << 8),
-	IWM_UMAC_SCAN_GEN_FLAGS_MATCH		= (1 << 9),
-	IWM_UMAC_SCAN_GEN_FLAGS_EXTENDED_DWELL	= (1 << 10),
+    IWM_UMAC_SCAN_GEN_FLAGS_PERIODIC	= (1 << 0),
+    IWM_UMAC_SCAN_GEN_FLAGS_OVER_BT		= (1 << 1),
+    IWM_UMAC_SCAN_GEN_FLAGS_PASS_ALL	= (1 << 2),
+    IWM_UMAC_SCAN_GEN_FLAGS_PASSIVE		= (1 << 3),
+    IWM_UMAC_SCAN_GEN_FLAGS_PRE_CONNECT	= (1 << 4),
+    IWM_UMAC_SCAN_GEN_FLAGS_ITER_COMPLETE	= (1 << 5),
+    IWM_UMAC_SCAN_GEN_FLAGS_MULTIPLE_SSID	= (1 << 6),
+    IWM_UMAC_SCAN_GEN_FLAGS_FRAGMENTED	= (1 << 7),
+    IWM_UMAC_SCAN_GEN_FLAGS_RRM_ENABLED	= (1 << 8),
+    IWM_UMAC_SCAN_GEN_FLAGS_MATCH		= (1 << 9),
+    IWM_UMAC_SCAN_GEN_FLAGS_EXTENDED_DWELL	= (1 << 10),
 };
 
 /**
@@ -5236,12 +5231,12 @@ enum iwm_umac_scan_general_flags {
  * @iter_interval:	interval between two scan iterations on one channel.
  */
 struct iwm_scan_channel_cfg_umac {
-	uint32_t flags;
+    uint32_t flags;
 #define IWM_SCAN_CHANNEL_UMAC_NSSIDS(x)		((1 << (x)) - 1)
 
-	uint8_t channel_num;
-	uint8_t iter_count;
-	uint16_t iter_interval;
+    uint8_t channel_num;
+    uint8_t iter_count;
+    uint16_t iter_interval;
 } __packed; /* SCAN_CHANNEL_CFG_S_VER2 */
 
 /**
@@ -5251,9 +5246,9 @@ struct iwm_scan_channel_cfg_umac {
  * @reserved: for alignment and future use
  */
 struct iwm_scan_umac_schedule {
-	uint16_t interval;
-	uint8_t iter_count;
-	uint8_t reserved;
+    uint16_t interval;
+    uint8_t iter_count;
+    uint8_t reserved;
 } __packed; /* SCAN_SCHED_PARAM_API_S_VER_1 */
 
 /**
@@ -5266,13 +5261,13 @@ struct iwm_scan_umac_schedule {
  * @direct_scan: list of SSIDs for directed active scan
  */
 struct iwm_scan_req_umac_tail {
-	/* SCAN_PERIODIC_PARAMS_API_S_VER_1 */
-	struct iwm_scan_umac_schedule schedule[IWM_MAX_SCHED_SCAN_PLANS];
-	uint16_t delay;
-	uint16_t reserved;
-	/* SCAN_PROBE_PARAMS_API_S_VER_1 */
-	struct iwm_scan_probe_req preq;
-	struct iwm_ssid_ie direct_scan[IWM_PROBE_OPTION_MAX];
+    /* SCAN_PERIODIC_PARAMS_API_S_VER_1 */
+    struct iwm_scan_umac_schedule schedule[IWM_MAX_SCHED_SCAN_PLANS];
+    uint16_t delay;
+    uint16_t reserved;
+    /* SCAN_PROBE_PARAMS_API_S_VER_1 */
+    struct iwm_scan_probe_req preq;
+    struct iwm_ssid_ie direct_scan[IWM_PROBE_OPTION_MAX];
 } __packed;
 
 /**
@@ -5295,23 +5290,23 @@ struct iwm_scan_req_umac_tail {
  *	&struct iwm_scan_req_umac_tail
  */
 struct iwm_scan_req_umac {
-	uint32_t flags;
-	uint32_t uid;
-	uint32_t ooc_priority;
-	/* SCAN_GENERAL_PARAMS_API_S_VER_1 */
-	uint32_t general_flags;
-	uint8_t extended_dwell;
-	uint8_t active_dwell;
-	uint8_t passive_dwell;
-	uint8_t fragmented_dwell;
-	uint32_t max_out_time;
-	uint32_t suspend_time;
-	uint32_t scan_priority;
-	/* SCAN_CHANNEL_PARAMS_API_S_VER_1 */
-	uint8_t channel_flags;
-	uint8_t n_channels;
-	uint16_t reserved;
-	uint8_t data[];
+    uint32_t flags;
+    uint32_t uid;
+    uint32_t ooc_priority;
+    /* SCAN_GENERAL_PARAMS_API_S_VER_1 */
+    uint32_t general_flags;
+    uint8_t extended_dwell;
+    uint8_t active_dwell;
+    uint8_t passive_dwell;
+    uint8_t fragmented_dwell;
+    uint32_t max_out_time;
+    uint32_t suspend_time;
+    uint32_t scan_priority;
+    /* SCAN_CHANNEL_PARAMS_API_S_VER_1 */
+    uint8_t channel_flags;
+    uint8_t n_channels;
+    uint16_t reserved;
+    uint8_t data[];
 } __packed; /* SCAN_REQUEST_CMD_UMAC_API_S_VER_1 */
 
 /**
@@ -5320,8 +5315,8 @@ struct iwm_scan_req_umac {
  * @flags: reserved
  */
 struct iwm_umac_scan_abort {
-	uint32_t uid;
-	uint32_t flags;
+    uint32_t uid;
+    uint32_t flags;
 } __packed; /* SCAN_ABORT_CMD_UMAC_API_S_VER_1 */
 
 /**
@@ -5335,13 +5330,13 @@ struct iwm_umac_scan_abort {
  * @reserved: for future use
  */
 struct iwm_umac_scan_complete {
-	uint32_t uid;
-	uint8_t last_schedule;
-	uint8_t last_iter;
-	uint8_t status;
-	uint8_t ebs_status;
-	uint32_t time_from_last_iter;
-	uint32_t reserved;
+    uint32_t uid;
+    uint8_t last_schedule;
+    uint8_t last_iter;
+    uint8_t status;
+    uint8_t ebs_status;
+    uint32_t time_from_last_iter;
+    uint32_t reserved;
 } __packed; /* SCAN_COMPLETE_NTF_UMAC_API_S_VER_1 */
 
 #define IWM_SCAN_OFFLOAD_MATCHING_CHANNELS_LEN 5
@@ -5355,12 +5350,12 @@ struct iwm_umac_scan_complete {
  *	the channels passed in tue scan offload request
  */
 struct iwm_scan_offload_profile_match {
-	//TODO: uint8_t bssid[IEEE80211_ADDR_LEN];
-	uint16_t reserved;
-	uint8_t channel;
-	uint8_t energy;
-	uint8_t matching_feature;
-	uint8_t matching_channels[IWM_SCAN_OFFLOAD_MATCHING_CHANNELS_LEN];
+    //TODO: uint8_t bssid[IEEE80211_ADDR_LEN];
+    uint16_t reserved;
+    uint8_t channel;
+    uint8_t energy;
+    uint8_t matching_feature;
+    uint8_t matching_channels[IWM_SCAN_OFFLOAD_MATCHING_CHANNELS_LEN];
 } __packed; /* SCAN_OFFLOAD_PROFILE_MATCH_RESULTS_S_VER_1 */
 
 /**
@@ -5377,15 +5372,15 @@ struct iwm_scan_offload_profile_match {
  * @matches: array of match information, one for each match
  */
 struct iwm_scan_offload_profiles_query {
-	uint32_t matched_profiles;
-	uint32_t last_scan_age;
-	uint32_t n_scans_done;
-	uint32_t gp2_d0u;
-	uint32_t gp2_invoked;
-	uint8_t resume_while_scanning;
-	uint8_t self_recovery;
-	uint16_t reserved;
-	struct iwm_scan_offload_profile_match matches[IWM_SCAN_MAX_PROFILES];
+    uint32_t matched_profiles;
+    uint32_t last_scan_age;
+    uint32_t n_scans_done;
+    uint32_t gp2_d0u;
+    uint32_t gp2_invoked;
+    uint8_t resume_while_scanning;
+    uint8_t self_recovery;
+    uint16_t reserved;
+    struct iwm_scan_offload_profile_match matches[IWM_SCAN_MAX_PROFILES];
 } __packed; /* SCAN_OFFLOAD_PROFILES_QUERY_RSP_S_VER_2 */
 
 /**
@@ -5401,29 +5396,29 @@ struct iwm_scan_offload_profiles_query {
  * @results: array of scan results, only "scanned_channels" of them are valid
  */
 struct iwm_umac_scan_iter_complete_notif {
-	uint32_t uid;
-	uint8_t scanned_channels;
-	uint8_t status;
-	uint8_t bt_status;
-	uint8_t last_channel;
-	uint32_t tsf_low;
-	uint32_t tsf_high;
-	struct iwm_scan_results_notif results[];
+    uint32_t uid;
+    uint8_t scanned_channels;
+    uint8_t status;
+    uint8_t bt_status;
+    uint8_t last_channel;
+    uint32_t tsf_low;
+    uint32_t tsf_high;
+    struct iwm_scan_results_notif results[];
 } __packed; /* SCAN_ITER_COMPLETE_NTF_UMAC_API_S_VER_1 */
 
 /* Please keep this enum *SORTED* by hex value.
  * Needed for binary search, otherwise a warning will be triggered.
  */
 enum iwm_scan_subcmd_ids {
-	IWM_GSCAN_START_CMD = 0x0,
-	IWM_GSCAN_STOP_CMD = 0x1,
-	IWM_GSCAN_SET_HOTLIST_CMD = 0x2,
-	IWM_GSCAN_RESET_HOTLIST_CMD = 0x3,
-	IWM_GSCAN_SET_SIGNIFICANT_CHANGE_CMD = 0x4,
-	IWM_GSCAN_RESET_SIGNIFICANT_CHANGE_CMD = 0x5,
-	IWM_GSCAN_SIGNIFICANT_CHANGE_EVENT = 0xFD,
-	IWM_GSCAN_HOTLIST_CHANGE_EVENT = 0xFE,
-	IWM_GSCAN_RESULTS_AVAILABLE_EVENT = 0xFF,
+    IWM_GSCAN_START_CMD = 0x0,
+    IWM_GSCAN_STOP_CMD = 0x1,
+    IWM_GSCAN_SET_HOTLIST_CMD = 0x2,
+    IWM_GSCAN_RESET_HOTLIST_CMD = 0x3,
+    IWM_GSCAN_SET_SIGNIFICANT_CHANGE_CMD = 0x4,
+    IWM_GSCAN_RESET_SIGNIFICANT_CHANGE_CMD = 0x5,
+    IWM_GSCAN_SIGNIFICANT_CHANGE_EVENT = 0xFD,
+    IWM_GSCAN_HOTLIST_CHANGE_EVENT = 0xFE,
+    IWM_GSCAN_RESULTS_AVAILABLE_EVENT = 0xFF,
 };
 
 /* STA API */
@@ -5453,46 +5448,46 @@ enum iwm_scan_subcmd_ids {
  * @IWM_STA_FLG_MFP_EN: Management Frame Protection
  */
 enum iwm_sta_flags {
-	IWM_STA_FLG_REDUCED_TX_PWR_CTRL	= (1 << 3),
-	IWM_STA_FLG_REDUCED_TX_PWR_DATA	= (1 << 6),
+    IWM_STA_FLG_REDUCED_TX_PWR_CTRL	= (1 << 3),
+    IWM_STA_FLG_REDUCED_TX_PWR_DATA	= (1 << 6),
 
-	IWM_STA_FLG_DISABLE_TX		= (1 << 4),
+    IWM_STA_FLG_DISABLE_TX		= (1 << 4),
 
-	IWM_STA_FLG_PS			= (1 << 8),
-	IWM_STA_FLG_DRAIN_FLOW		= (1 << 12),
-	IWM_STA_FLG_PAN			= (1 << 13),
-	IWM_STA_FLG_CLASS_AUTH		= (1 << 14),
-	IWM_STA_FLG_CLASS_ASSOC		= (1 << 15),
-	IWM_STA_FLG_RTS_MIMO_PROT	= (1 << 17),
+    IWM_STA_FLG_PS			= (1 << 8),
+    IWM_STA_FLG_DRAIN_FLOW		= (1 << 12),
+    IWM_STA_FLG_PAN			= (1 << 13),
+    IWM_STA_FLG_CLASS_AUTH		= (1 << 14),
+    IWM_STA_FLG_CLASS_ASSOC		= (1 << 15),
+    IWM_STA_FLG_RTS_MIMO_PROT	= (1 << 17),
 
-	IWM_STA_FLG_MAX_AGG_SIZE_SHIFT	= 19,
-	IWM_STA_FLG_MAX_AGG_SIZE_8K	= (0 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
-	IWM_STA_FLG_MAX_AGG_SIZE_16K	= (1 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
-	IWM_STA_FLG_MAX_AGG_SIZE_32K	= (2 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
-	IWM_STA_FLG_MAX_AGG_SIZE_64K	= (3 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
-	IWM_STA_FLG_MAX_AGG_SIZE_128K	= (4 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
-	IWM_STA_FLG_MAX_AGG_SIZE_256K	= (5 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
-	IWM_STA_FLG_MAX_AGG_SIZE_512K	= (6 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
-	IWM_STA_FLG_MAX_AGG_SIZE_1024K	= (7 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
-	IWM_STA_FLG_MAX_AGG_SIZE_MSK	= (7 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
+    IWM_STA_FLG_MAX_AGG_SIZE_SHIFT	= 19,
+    IWM_STA_FLG_MAX_AGG_SIZE_8K	= (0 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
+    IWM_STA_FLG_MAX_AGG_SIZE_16K	= (1 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
+    IWM_STA_FLG_MAX_AGG_SIZE_32K	= (2 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
+    IWM_STA_FLG_MAX_AGG_SIZE_64K	= (3 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
+    IWM_STA_FLG_MAX_AGG_SIZE_128K	= (4 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
+    IWM_STA_FLG_MAX_AGG_SIZE_256K	= (5 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
+    IWM_STA_FLG_MAX_AGG_SIZE_512K	= (6 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
+    IWM_STA_FLG_MAX_AGG_SIZE_1024K	= (7 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
+    IWM_STA_FLG_MAX_AGG_SIZE_MSK	= (7 << IWM_STA_FLG_MAX_AGG_SIZE_SHIFT),
 
-	IWM_STA_FLG_AGG_MPDU_DENS_SHIFT	= 23,
-	IWM_STA_FLG_AGG_MPDU_DENS_2US	= (4 << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT),
-	IWM_STA_FLG_AGG_MPDU_DENS_4US	= (5 << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT),
-	IWM_STA_FLG_AGG_MPDU_DENS_8US	= (6 << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT),
-	IWM_STA_FLG_AGG_MPDU_DENS_16US	= (7 << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT),
-	IWM_STA_FLG_AGG_MPDU_DENS_MSK	= (7 << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT),
+    IWM_STA_FLG_AGG_MPDU_DENS_SHIFT	= 23,
+    IWM_STA_FLG_AGG_MPDU_DENS_2US	= (4 << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT),
+    IWM_STA_FLG_AGG_MPDU_DENS_4US	= (5 << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT),
+    IWM_STA_FLG_AGG_MPDU_DENS_8US	= (6 << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT),
+    IWM_STA_FLG_AGG_MPDU_DENS_16US	= (7 << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT),
+    IWM_STA_FLG_AGG_MPDU_DENS_MSK	= (7 << IWM_STA_FLG_AGG_MPDU_DENS_SHIFT),
 
-	IWM_STA_FLG_FAT_EN_20MHZ	= (0 << 26),
-	IWM_STA_FLG_FAT_EN_40MHZ	= (1 << 26),
-	IWM_STA_FLG_FAT_EN_80MHZ	= (2 << 26),
-	IWM_STA_FLG_FAT_EN_160MHZ	= (3 << 26),
-	IWM_STA_FLG_FAT_EN_MSK		= (3 << 26),
+    IWM_STA_FLG_FAT_EN_20MHZ	= (0 << 26),
+    IWM_STA_FLG_FAT_EN_40MHZ	= (1 << 26),
+    IWM_STA_FLG_FAT_EN_80MHZ	= (2 << 26),
+    IWM_STA_FLG_FAT_EN_160MHZ	= (3 << 26),
+    IWM_STA_FLG_FAT_EN_MSK		= (3 << 26),
 
-	IWM_STA_FLG_MIMO_EN_SISO	= (0 << 28),
-	IWM_STA_FLG_MIMO_EN_MIMO2	= (1 << 28),
-	IWM_STA_FLG_MIMO_EN_MIMO3	= (2 << 28),
-	IWM_STA_FLG_MIMO_EN_MSK		= (3 << 28),
+    IWM_STA_FLG_MIMO_EN_SISO	= (0 << 28),
+    IWM_STA_FLG_MIMO_EN_MIMO2	= (1 << 28),
+    IWM_STA_FLG_MIMO_EN_MIMO3	= (2 << 28),
+    IWM_STA_FLG_MIMO_EN_MSK		= (3 << 28),
 };
 
 /**
@@ -5514,22 +5509,22 @@ enum iwm_sta_flags {
  * @IWM_STA_KEY_MFP: key is used for Management Frame Protection
  */
 enum iwm_sta_key_flag {
-	IWM_STA_KEY_FLG_NO_ENC		= (0 << 0),
-	IWM_STA_KEY_FLG_WEP		= (1 << 0),
-	IWM_STA_KEY_FLG_CCM		= (2 << 0),
-	IWM_STA_KEY_FLG_TKIP		= (3 << 0),
-	IWM_STA_KEY_FLG_EXT		= (4 << 0),
-	IWM_STA_KEY_FLG_CMAC		= (6 << 0),
-	IWM_STA_KEY_FLG_ENC_UNKNOWN	= (7 << 0),
-	IWM_STA_KEY_FLG_EN_MSK		= (7 << 0),
+    IWM_STA_KEY_FLG_NO_ENC		= (0 << 0),
+    IWM_STA_KEY_FLG_WEP		= (1 << 0),
+    IWM_STA_KEY_FLG_CCM		= (2 << 0),
+    IWM_STA_KEY_FLG_TKIP		= (3 << 0),
+    IWM_STA_KEY_FLG_EXT		= (4 << 0),
+    IWM_STA_KEY_FLG_CMAC		= (6 << 0),
+    IWM_STA_KEY_FLG_ENC_UNKNOWN	= (7 << 0),
+    IWM_STA_KEY_FLG_EN_MSK		= (7 << 0),
 
-	IWM_STA_KEY_FLG_WEP_KEY_MAP	= (1 << 3),
-	IWM_STA_KEY_FLG_KEYID_POS	= 8,
-	IWM_STA_KEY_FLG_KEYID_MSK	= (3 << IWM_STA_KEY_FLG_KEYID_POS),
-	IWM_STA_KEY_NOT_VALID		= (1 << 11),
-	IWM_STA_KEY_FLG_WEP_13BYTES	= (1 << 12),
-	IWM_STA_KEY_MULTICAST		= (1 << 14),
-	IWM_STA_KEY_MFP			= (1 << 15),
+    IWM_STA_KEY_FLG_WEP_KEY_MAP	= (1 << 3),
+    IWM_STA_KEY_FLG_KEYID_POS	= 8,
+    IWM_STA_KEY_FLG_KEYID_MSK	= (3 << IWM_STA_KEY_FLG_KEYID_POS),
+    IWM_STA_KEY_NOT_VALID		= (1 << 11),
+    IWM_STA_KEY_FLG_WEP_13BYTES	= (1 << 12),
+    IWM_STA_KEY_MULTICAST		= (1 << 14),
+    IWM_STA_KEY_MFP			= (1 << 15),
 };
 
 /**
@@ -5544,14 +5539,14 @@ enum iwm_sta_key_flag {
  * @IWM_STA_MODIFY_QUEUES: modify the queues used by this station
  */
 enum iwm_sta_modify_flag {
-	IWM_STA_MODIFY_QUEUE_REMOVAL		= (1 << 0),
-	IWM_STA_MODIFY_TID_DISABLE_TX		= (1 << 1),
-	IWM_STA_MODIFY_TX_RATE			= (1 << 2),
-	IWM_STA_MODIFY_ADD_BA_TID		= (1 << 3),
-	IWM_STA_MODIFY_REMOVE_BA_TID		= (1 << 4),
-	IWM_STA_MODIFY_SLEEPING_STA_TX_COUNT	= (1 << 5),
-	IWM_STA_MODIFY_PROT_TH			= (1 << 6),
-	IWM_STA_MODIFY_QUEUES			= (1 << 7),
+    IWM_STA_MODIFY_QUEUE_REMOVAL		= (1 << 0),
+    IWM_STA_MODIFY_TID_DISABLE_TX		= (1 << 1),
+    IWM_STA_MODIFY_TX_RATE			= (1 << 2),
+    IWM_STA_MODIFY_ADD_BA_TID		= (1 << 3),
+    IWM_STA_MODIFY_REMOVE_BA_TID		= (1 << 4),
+    IWM_STA_MODIFY_SLEEPING_STA_TX_COUNT	= (1 << 5),
+    IWM_STA_MODIFY_PROT_TH			= (1 << 6),
+    IWM_STA_MODIFY_QUEUES			= (1 << 7),
 };
 
 #define IWM_STA_MODE_MODIFY	1
@@ -5565,10 +5560,10 @@ enum iwm_sta_modify_flag {
  *	(last) released frame
  */
 enum iwm_sta_sleep_flag {
-	IWM_STA_SLEEP_STATE_AWAKE	= 0,
-	IWM_STA_SLEEP_STATE_PS_POLL	= (1 << 0),
-	IWM_STA_SLEEP_STATE_UAPSD	= (1 << 1),
-	IWM_STA_SLEEP_STATE_MOREDATA	= (1 << 2),
+    IWM_STA_SLEEP_STATE_AWAKE	= 0,
+    IWM_STA_SLEEP_STATE_PS_POLL	= (1 << 0),
+    IWM_STA_SLEEP_STATE_UAPSD	= (1 << 1),
+    IWM_STA_SLEEP_STATE_MOREDATA	= (1 << 2),
 };
 
 /* STA ID and color bits definitions */
@@ -5604,16 +5599,16 @@ enum iwm_sta_sleep_flag {
  * @hw_tkip_mic_tx_key: byte: MIC Tx Key - used for TKIP only
  */
 struct iwm_mvm_keyinfo {
-	uint16_t key_flags;
-	uint8_t tkip_rx_tsc_byte2;
-	uint8_t reserved1;
-	uint16_t tkip_rx_ttak[5];
-	uint8_t key_offset;
-	uint8_t reserved2;
-	uint8_t key[16];
-	uint64_t tx_secur_seq_cnt;
-	uint64_t hw_tkip_mic_rx_key;
-	uint64_t hw_tkip_mic_tx_key;
+    uint16_t key_flags;
+    uint8_t tkip_rx_tsc_byte2;
+    uint8_t reserved1;
+    uint16_t tkip_rx_ttak[5];
+    uint8_t key_offset;
+    uint8_t reserved2;
+    uint8_t key[16];
+    uint64_t tx_secur_seq_cnt;
+    uint64_t hw_tkip_mic_rx_key;
+    uint64_t hw_tkip_mic_tx_key;
 } __packed;
 
 #define IWM_ADD_STA_STATUS_MASK		0xFF
@@ -5659,25 +5654,25 @@ struct iwm_mvm_keyinfo {
  * entry, or modifying a pre-existing one.
  */
 struct iwm_mvm_add_sta_cmd {
-	uint8_t add_modify;
-	uint8_t awake_acs;
-	uint16_t tid_disable_tx;
-	uint32_t mac_id_n_color;
-	//TODO: uint8_t addr[IEEE80211_ADDR_LEN]; /* _STA_ID_MODIFY_INFO_API_S_VER_1 */
-	uint16_t reserved2;
-	uint8_t sta_id;
-	uint8_t modify_mask;
-	uint16_t reserved3;
-	uint32_t station_flags;
-	uint32_t station_flags_msk;
-	uint8_t add_immediate_ba_tid;
-	uint8_t remove_immediate_ba_tid;
-	uint16_t add_immediate_ba_ssn;
-	uint16_t sleep_tx_count;
-	uint16_t sleep_state_flags;
-	uint16_t assoc_id;
-	uint16_t beamform_flags;
-	uint32_t tfd_queue_msk;
+    uint8_t add_modify;
+    uint8_t awake_acs;
+    uint16_t tid_disable_tx;
+    uint32_t mac_id_n_color;
+    //TODO: uint8_t addr[IEEE80211_ADDR_LEN]; /* _STA_ID_MODIFY_INFO_API_S_VER_1 */
+    uint16_t reserved2;
+    uint8_t sta_id;
+    uint8_t modify_mask;
+    uint16_t reserved3;
+    uint32_t station_flags;
+    uint32_t station_flags_msk;
+    uint8_t add_immediate_ba_tid;
+    uint8_t remove_immediate_ba_tid;
+    uint16_t add_immediate_ba_ssn;
+    uint16_t sleep_tx_count;
+    uint16_t sleep_state_flags;
+    uint16_t assoc_id;
+    uint16_t beamform_flags;
+    uint32_t tfd_queue_msk;
 } __packed; /* ADD_STA_CMD_API_S_VER_7 */
 
 /**
@@ -5693,15 +5688,15 @@ struct iwm_mvm_add_sta_cmd {
  * @tkip_rx_ttak: 10-byte unicast TKIP TTAK for Rx
  */
 struct iwm_mvm_add_sta_key_cmd {
-	uint8_t sta_id;
-	uint8_t key_offset;
-	uint16_t key_flags;
-	uint8_t key[16];
-	uint8_t key2[16];
-	uint8_t rx_secur_seq_cnt[16];
-	uint8_t tkip_rx_tsc_byte2;
-	uint8_t reserved;
-	uint16_t tkip_rx_ttak[5];
+    uint8_t sta_id;
+    uint8_t key_offset;
+    uint16_t key_flags;
+    uint8_t key[16];
+    uint8_t key2[16];
+    uint8_t rx_secur_seq_cnt[16];
+    uint8_t tkip_rx_tsc_byte2;
+    uint8_t reserved;
+    uint16_t tkip_rx_ttak[5];
 } __packed; /* IWM_ADD_MODIFY_STA_KEY_API_S_VER_1 */
 
 /**
@@ -5713,10 +5708,10 @@ struct iwm_mvm_add_sta_key_cmd {
  *	that doesn't exist.
  */
 enum iwm_mvm_add_sta_rsp_status {
-	IWM_ADD_STA_SUCCESS			= 0x1,
-	IWM_ADD_STA_STATIONS_OVERLOAD		= 0x2,
-	IWM_ADD_STA_IMMEDIATE_BA_FAILURE	= 0x4,
-	IWM_ADD_STA_MODIFY_NON_EXISTING_STA	= 0x8,
+    IWM_ADD_STA_SUCCESS			= 0x1,
+    IWM_ADD_STA_STATIONS_OVERLOAD		= 0x2,
+    IWM_ADD_STA_IMMEDIATE_BA_FAILURE	= 0x4,
+    IWM_ADD_STA_MODIFY_NON_EXISTING_STA	= 0x8,
 };
 
 /**
@@ -5725,8 +5720,8 @@ enum iwm_mvm_add_sta_rsp_status {
  * @sta_id: the station id of the station to be removed
  */
 struct iwm_mvm_rm_sta_cmd {
-	uint8_t sta_id;
-	uint8_t reserved[3];
+    uint8_t sta_id;
+    uint8_t reserved[3];
 } __packed; /* IWM_REMOVE_STA_CMD_API_S_VER_2 */
 
 /**
@@ -5741,31 +5736,31 @@ struct iwm_mvm_rm_sta_cmd {
  * @receive_seq_cnt: initial RSC/PN needed for replay check
  */
 struct iwm_mvm_mgmt_mcast_key_cmd {
-	uint32_t ctrl_flags;
-	uint8_t IGTK[16];
-	uint8_t K1[16];
-	uint8_t K2[16];
-	uint32_t key_id;
-	uint32_t sta_id;
-	uint64_t receive_seq_cnt;
+    uint32_t ctrl_flags;
+    uint8_t IGTK[16];
+    uint8_t K1[16];
+    uint8_t K2[16];
+    uint32_t key_id;
+    uint32_t sta_id;
+    uint64_t receive_seq_cnt;
 } __packed; /* SEC_MGMT_MULTICAST_KEY_CMD_API_S_VER_1 */
 
 struct iwm_mvm_wep_key {
-	uint8_t key_index;
-	uint8_t key_offset;
-	uint16_t reserved1;
-	uint8_t key_size;
-	uint8_t reserved2[3];
-	uint8_t key[16];
+    uint8_t key_index;
+    uint8_t key_offset;
+    uint16_t reserved1;
+    uint8_t key_size;
+    uint8_t reserved2[3];
+    uint8_t key[16];
 } __packed;
 
 struct iwm_mvm_wep_key_cmd {
-	uint32_t mac_id_n_color;
-	uint8_t num_keys;
-	uint8_t decryption_type;
-	uint8_t flags;
-	uint8_t reserved;
-	struct iwm_mvm_wep_key wep_key[0];
+    uint32_t mac_id_n_color;
+    uint8_t num_keys;
+    uint8_t decryption_type;
+    uint8_t flags;
+    uint8_t reserved;
+    struct iwm_mvm_wep_key wep_key[0];
 } __packed; /* SEC_CURR_WEP_KEY_CMD_API_S_VER_2 */
 
 /*
@@ -5777,18 +5772,18 @@ struct iwm_mvm_wep_key_cmd {
  */
 
 enum iwm_bt_coex_mode {
-	IWM_BT_COEX_DISABLE		= 0x0,
-	IWM_BT_COEX_NW			= 0x1,
-	IWM_BT_COEX_BT			= 0x2,
-	IWM_BT_COEX_WIFI		= 0x3,
+    IWM_BT_COEX_DISABLE		= 0x0,
+    IWM_BT_COEX_NW			= 0x1,
+    IWM_BT_COEX_BT			= 0x2,
+    IWM_BT_COEX_WIFI		= 0x3,
 }; /* BT_COEX_MODES_E */
 
 enum iwm_bt_coex_enabled_modules {
-	IWM_BT_COEX_MPLUT_ENABLED	= (1 << 0),
-	IWM_BT_COEX_MPLUT_BOOST_ENABLED	= (1 << 1),
-	IWM_BT_COEX_SYNC2SCO_ENABLED	= (1 << 2),
-	IWM_BT_COEX_CORUN_ENABLED	= (1 << 3),
-	IWM_BT_COEX_HIGH_BAND_RET	= (1 << 4),
+    IWM_BT_COEX_MPLUT_ENABLED	= (1 << 0),
+    IWM_BT_COEX_MPLUT_BOOST_ENABLED	= (1 << 1),
+    IWM_BT_COEX_SYNC2SCO_ENABLED	= (1 << 2),
+    IWM_BT_COEX_CORUN_ENABLED	= (1 << 3),
+    IWM_BT_COEX_HIGH_BAND_RET	= (1 << 4),
 }; /* BT_COEX_MODULES_ENABLE_E_VER_1 */
 
 /**
@@ -5799,8 +5794,8 @@ enum iwm_bt_coex_enabled_modules {
  * The structure is used for the BT_COEX command.
  */
 struct iwm_bt_coex_cmd {
-	uint32_t mode;
-	uint32_t enabled_modules;
+    uint32_t mode;
+    uint32_t enabled_modules;
 } __packed; /* BT_COEX_CMD_API_S_VER_6 */
 
 
@@ -5819,9 +5814,9 @@ struct iwm_bt_coex_cmd {
  * @reserved: reserved for alignment
  */
 struct iwm_mcc_update_cmd_v1 {
-	uint16_t mcc;
-	uint8_t source_id;
-	uint8_t reserved;
+    uint16_t mcc;
+    uint8_t source_id;
+    uint8_t reserved;
 } __packed; /* LAR_UPDATE_MCC_CMD_API_S_VER_1 */
 
 /**
@@ -5837,11 +5832,11 @@ struct iwm_mcc_update_cmd_v1 {
  * @reserved2: reserved
  */
 struct iwm_mcc_update_cmd {
-	uint16_t mcc;
-	uint8_t source_id;
-	uint8_t reserved;
-	uint32_t key;
-	uint32_t reserved2[5];
+    uint16_t mcc;
+    uint8_t source_id;
+    uint8_t reserved;
+    uint32_t key;
+    uint32_t reserved2[5];
 } __packed; /* LAR_UPDATE_MCC_CMD_API_S_VER_2 */
 
 /**
@@ -5859,12 +5854,12 @@ struct iwm_mcc_update_cmd {
  *	16bits are used.
  */
 struct iwm_mcc_update_resp_v1  {
-	uint32_t status;
-	uint16_t mcc;
-	uint8_t cap;
-	uint8_t source_id;
-	uint32_t n_channels;
-	uint32_t channels[0];
+    uint32_t status;
+    uint16_t mcc;
+    uint8_t cap;
+    uint8_t source_id;
+    uint32_t n_channels;
+    uint32_t channels[0];
 } __packed; /* LAR_UPDATE_MCC_CMD_RESP_S_VER_1 */
 
 /**
@@ -5884,14 +5879,14 @@ struct iwm_mcc_update_resp_v1  {
  *	16bits are used.
  */
 struct iwm_mcc_update_resp {
-	uint32_t status;
-	uint16_t mcc;
-	uint8_t cap;
-	uint8_t source_id;
-	uint16_t time;
-	uint16_t reserved;
-	uint32_t n_channels;
-	uint32_t channels[0];
+    uint32_t status;
+    uint16_t mcc;
+    uint8_t cap;
+    uint8_t source_id;
+    uint16_t time;
+    uint16_t reserved;
+    uint32_t n_channels;
+    uint32_t channels[0];
 } __packed; /* LAR_UPDATE_MCC_CMD_RESP_S_VER_2 */
 
 /**
@@ -5910,36 +5905,36 @@ struct iwm_mcc_update_resp {
  * @reserved1: reserved for alignment
  */
 struct iwm_mcc_chub_notif {
-	uint16_t mcc;
-	uint8_t source_id;
-	uint8_t reserved1;
+    uint16_t mcc;
+    uint8_t source_id;
+    uint8_t reserved1;
 } __packed; /* LAR_MCC_NOTIFY_S */
 
 enum iwm_mcc_update_status {
-	IWM_MCC_RESP_NEW_CHAN_PROFILE,
-	IWM_MCC_RESP_SAME_CHAN_PROFILE,
-	IWM_MCC_RESP_INVALID,
-	IWM_MCC_RESP_NVM_DISABLED,
-	IWM_MCC_RESP_ILLEGAL,
-	IWM_MCC_RESP_LOW_PRIORITY,
-	IWM_MCC_RESP_TEST_MODE_ACTIVE,
-	IWM_MCC_RESP_TEST_MODE_NOT_ACTIVE,
-	IWM_MCC_RESP_TEST_MODE_DENIAL_OF_SERVICE,
+    IWM_MCC_RESP_NEW_CHAN_PROFILE,
+    IWM_MCC_RESP_SAME_CHAN_PROFILE,
+    IWM_MCC_RESP_INVALID,
+    IWM_MCC_RESP_NVM_DISABLED,
+    IWM_MCC_RESP_ILLEGAL,
+    IWM_MCC_RESP_LOW_PRIORITY,
+    IWM_MCC_RESP_TEST_MODE_ACTIVE,
+    IWM_MCC_RESP_TEST_MODE_NOT_ACTIVE,
+    IWM_MCC_RESP_TEST_MODE_DENIAL_OF_SERVICE,
 };
 
 enum iwm_mcc_source {
-	IWM_MCC_SOURCE_OLD_FW = 0,
-	IWM_MCC_SOURCE_ME = 1,
-	IWM_MCC_SOURCE_BIOS = 2,
-	IWM_MCC_SOURCE_3G_LTE_HOST = 3,
-	IWM_MCC_SOURCE_3G_LTE_DEVICE = 4,
-	IWM_MCC_SOURCE_WIFI = 5,
-	IWM_MCC_SOURCE_RESERVED = 6,
-	IWM_MCC_SOURCE_DEFAULT = 7,
-	IWM_MCC_SOURCE_UNINITIALIZED = 8,
-	IWM_MCC_SOURCE_MCC_API = 9,
-	IWM_MCC_SOURCE_GET_CURRENT = 0x10,
-	IWM_MCC_SOURCE_GETTING_MCC_TEST_MODE = 0x11,
+    IWM_MCC_SOURCE_OLD_FW = 0,
+    IWM_MCC_SOURCE_ME = 1,
+    IWM_MCC_SOURCE_BIOS = 2,
+    IWM_MCC_SOURCE_3G_LTE_HOST = 3,
+    IWM_MCC_SOURCE_3G_LTE_DEVICE = 4,
+    IWM_MCC_SOURCE_WIFI = 5,
+    IWM_MCC_SOURCE_RESERVED = 6,
+    IWM_MCC_SOURCE_DEFAULT = 7,
+    IWM_MCC_SOURCE_UNINITIALIZED = 8,
+    IWM_MCC_SOURCE_MCC_API = 9,
+    IWM_MCC_SOURCE_GET_CURRENT = 0x10,
+    IWM_MCC_SOURCE_GETTING_MCC_TEST_MODE = 0x11,
 };
 
 /**
@@ -5949,8 +5944,8 @@ enum iwm_mcc_source {
  * @voltage: the measured voltage
  */
 struct iwm_dts_measurement_notif_v1 {
-	int32_t temp;
-	int32_t voltage;
+    int32_t temp;
+    int32_t voltage;
 } __packed; /* TEMPERATURE_MEASUREMENT_TRIGGER_NTFY_S_VER_1*/
 
 /**
@@ -5961,9 +5956,9 @@ struct iwm_dts_measurement_notif_v1 {
  * @threshold_idx: the trip index that was crossed
  */
 struct iwm_dts_measurement_notif_v2 {
-	int32_t temp;
-	int32_t voltage;
-	int32_t threshold_idx;
+    int32_t temp;
+    int32_t voltage;
+    int32_t threshold_idx;
 } __packed; /* TEMPERATURE_MEASUREMENT_TRIGGER_NTFY_S_VER_2 */
 
 /*
@@ -5979,20 +5974,20 @@ struct iwm_dts_measurement_notif_v2 {
 #define IWM_ALWAYS_LONG_GROUP	1
 
 struct iwm_cmd_header {
-	uint8_t code;
-	uint8_t flags;
-	uint8_t idx;
-	uint8_t qid;
+    uint8_t code;
+    uint8_t flags;
+    uint8_t idx;
+    uint8_t qid;
 } __packed;
 
 struct iwm_cmd_header_wide {
-	uint8_t opcode;
-	uint8_t group_id;
-	uint8_t idx;
-	uint8_t qid;
-	uint16_t length;
-	uint8_t reserved;
-	uint8_t version;
+    uint8_t opcode;
+    uint8_t group_id;
+    uint8_t idx;
+    uint8_t qid;
+    uint16_t length;
+    uint8_t reserved;
+    uint8_t version;
 } __packed;
 
 /**
@@ -6002,9 +5997,9 @@ struct iwm_cmd_header_wide {
  * @IWM_POWER_LEVEL_LP  - Low Power
  */
 enum iwm_power_scheme {
-	IWM_POWER_SCHEME_CAM = 1,
-	IWM_POWER_SCHEME_BPS,
-	IWM_POWER_SCHEME_LP
+    IWM_POWER_SCHEME_CAM = 1,
+    IWM_POWER_SCHEME_BPS,
+    IWM_POWER_SCHEME_LP
 };
 
 #define IWM_DEF_CMD_PAYLOAD_SIZE 320
@@ -6019,34 +6014,34 @@ enum iwm_power_scheme {
  * aren't fully copied and use other TFD space.
  */
 struct iwm_device_cmd {
-	union {
-		struct {
-			struct iwm_cmd_header hdr;
-			uint8_t data[IWM_DEF_CMD_PAYLOAD_SIZE];
-		};
-		struct {
-			struct iwm_cmd_header_wide hdr_wide;
-			uint8_t data_wide[IWM_DEF_CMD_PAYLOAD_SIZE -
-					sizeof(struct iwm_cmd_header_wide) +
-					sizeof(struct iwm_cmd_header)];
-		};
-	};
+    union {
+        struct {
+            struct iwm_cmd_header hdr;
+            uint8_t data[IWM_DEF_CMD_PAYLOAD_SIZE];
+        };
+        struct {
+            struct iwm_cmd_header_wide hdr_wide;
+            uint8_t data_wide[IWM_DEF_CMD_PAYLOAD_SIZE -
+                                                       sizeof(struct iwm_cmd_header_wide) +
+                                                       sizeof(struct iwm_cmd_header)];
+        };
+    };
 } __packed;
 
 struct iwm_rx_packet {
-	/*
-	 * The first 4 bytes of the RX frame header contain both the RX frame
-	 * size and some flags.
-	 * Bit fields:
-	 * 31:    flag flush RB request
-	 * 30:    flag ignore TC (terminal counter) request
-	 * 29:    flag fast IRQ request
-	 * 28-14: Reserved
-	 * 13-00: RX frame size
-	 */
-	uint32_t len_n_flags;
-	struct iwm_cmd_header hdr;
-	uint8_t data[];
+    /*
+     * The first 4 bytes of the RX frame header contain both the RX frame
+     * size and some flags.
+     * Bit fields:
+     * 31:    flag flush RB request
+     * 30:    flag ignore TC (terminal counter) request
+     * 29:    flag fast IRQ request
+     * 28-14: Reserved
+     * 13-00: RX frame size
+     */
+    uint32_t len_n_flags;
+    struct iwm_cmd_header hdr;
+    uint8_t data[];
 } __packed;
 
 #define	IWM_FH_RSCSR_FRAME_SIZE_MSK	0x00003fff

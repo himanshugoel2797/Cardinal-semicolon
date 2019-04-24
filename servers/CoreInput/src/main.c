@@ -11,7 +11,7 @@
 #include "CoreInput/input.h"
 #include "input.h"
 
-typedef struct{
+typedef struct {
     int event_write_pos;
     input_event_t event_ring[INPUT_EVENT_BUFFER_CNT];
 } input_event_buffer_t;
