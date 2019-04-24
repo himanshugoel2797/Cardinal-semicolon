@@ -55,7 +55,7 @@ int registry_getdirectory(const char *path, dir_t *dir);
 
 int registry_next(dir_t *dir);
 
-int registry_readlocal_key(dir_t dir, const char *keyname);
+int registry_readlocal_key(dir_t dir, char *keyname);
 
 int registry_readlocal_uint(dir_t dir, uint64_t *val);
 
@@ -63,7 +63,7 @@ int registry_readlocal_ptr(dir_t dir, void **val);
 
 int registry_readlocal_int(dir_t dir, int64_t *val);
 
-int registry_readlocal_str(dir_t dir, const char *val);
+int registry_readlocal_str(dir_t dir, char **val);
 
 int registry_readlocal_bool(dir_t dir, bool *val);
 

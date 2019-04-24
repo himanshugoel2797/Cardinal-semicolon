@@ -59,7 +59,7 @@ int kvs_find(kvs_t *r, const char *key, kvs_t **res);
 
 int kvs_next(kvs_t **r);
 
-int kvs_get_localkey(kvs_t *r, const char *key);
+int kvs_get_localkey(kvs_t *r, char *key);
 int kvs_get_localptr(kvs_t *r, uintptr_t *key);
 int kvs_get_localuint(kvs_t *r, uint64_t *key);
 int kvs_get_localbool(kvs_t *r, bool *key);

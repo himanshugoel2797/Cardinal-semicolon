@@ -27,9 +27,14 @@ typedef enum {
     task_state_exited,
 } task_state_t;
 
+typedef enum {
+    obj_entrytype_capability,
+    obj_entrytype_indirect,
+} obj_entrytype_t;
+
 typedef struct {
-    cs_id proc_id;
     int func_cnt;
+    cs_id proc_id;
     cs_func_t funcs[0];
 } obj_desc_t;
 
@@ -38,32 +43,21 @@ typedef struct process_desc {
     vmem_t *mem;
     cs_id id;
     int lock;
-    int thd_cnt;
+    
+    task_state_t state;
+    task_permissions_t permissions;
+    
+    uint8_t *fpu_state;
+    uint8_t *reg_state;
+    uint8_t *kernel_stack;
 
     struct process_desc *next;
     struct process_desc *prev;
 } process_desc_t;
 
-typedef struct task_desc {
-    char name[TASK_NAME_LEN];
-    task_state_t state;
-    task_permissions_t permissions;
-    int lock;
-
-    cs_id pid;
-    cs_id id;
-    uint8_t *fpu_state;
-    uint8_t *reg_state;
-    uint8_t *kernel_stack;
-    uint64_t sleep_starttime;
-
-    struct task_desc *next;
-    struct task_desc *prev;
-} task_desc_t;
-
 typedef struct {
     uint8_t *interrupt_stack;
-    task_desc_t *cur_task;
+    process_desc_t *cur_task;
 } core_desc_t;
 
 #endif

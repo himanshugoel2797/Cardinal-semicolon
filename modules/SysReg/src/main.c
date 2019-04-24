@@ -156,7 +156,7 @@ int registry_addkey_ptr(const char *path, const char *keyname, uintptr_t val) {
         return err;
 
     local_spinlock_lock(&kern_lock);
-    err = kvs_add_ptr(parent_kvs, keyname, val);
+    err = kvs_add_ptr(parent_kvs, keyname, (void*)val);
     local_spinlock_unlock(&kern_lock);
     if (err != kvs_ok)
         return registry_err_failure;
@@ -486,7 +486,7 @@ int registry_next(dir_t *dir){
     return registry_err_ok;
 }
 
-int registry_readlocal_key(dir_t dir, const char *keyname){
+int registry_readlocal_key(dir_t dir, char *keyname){
     int err = kvs_get_localkey((kvs_t*)dir, keyname);
     if(err != registry_err_ok)
         return registry_err_dne;
@@ -501,7 +501,7 @@ int registry_readlocal_uint(dir_t dir, uint64_t *val) {
 }
 
 int registry_readlocal_ptr(dir_t dir, void **val) {
-    int err = kvs_get_localptr((kvs_t*)dir, val);
+    int err = kvs_get_localptr((kvs_t*)dir, (uintptr_t*)val);
     if(err != registry_err_ok)
         return registry_err_dne;
     return registry_err_ok;
@@ -514,7 +514,7 @@ int registry_readlocal_int(dir_t dir, int64_t *val) {
     return registry_err_ok;
 }
 
-int registry_readlocal_str(dir_t dir, const char *val) {
+int registry_readlocal_str(dir_t dir, char **val) {
     int err = kvs_get_localstr((kvs_t*)dir, val);
     if(err != registry_err_ok)
         return registry_err_dne;
@@ -529,7 +529,7 @@ int registry_readlocal_bool(dir_t dir, bool *val) {
 }
 
 int registry_readlocal_dir(dir_t dir, dir_t *val) {
-    int err = kvs_get_localchild((kvs_t*)dir, val);
+    int err = kvs_get_localchild((kvs_t*)dir, (kvs_t**)val);
     if(err != registry_err_ok)
         return registry_err_dne;
     return registry_err_ok;
