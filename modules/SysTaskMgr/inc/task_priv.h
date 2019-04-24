@@ -12,6 +12,7 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysTaskMgr/task.h"
 #include "thread.h"
+#include "ipc.h"
 
 #define TASK_NAME_LEN 256
 #define KERNEL_STACK_LEN KiB(32)
@@ -26,37 +27,11 @@ typedef enum {
     task_state_exited,
 } task_state_t;
 
-typedef enum {
-    pipe_flags_none = 0,
-    pipe_flags_read = 1 << 1,
-    pipe_flags_write = 1 << 2,
-    pipe_flags_nocap = 1 << 3,
-} pipe_flags_t;
-
-typedef uint64_t pipe_t;
-
 typedef struct {
-    char name[TASK_NAME_LEN];
-    list_t shared_processes;
-} owned_cap_t;
-
-typedef struct {
-    pipe_t id;
-    cs_id owner_process_id;
-    cs_id user_process_id;
-    pipe_flags_t flags;
-    uint32_t sz;
-    uintptr_t* pages;
-    char name[TASK_NAME_LEN];
-    char cap_name[TASK_NAME_LEN];
-} pipe_info_t;
-
-typedef struct {
-    char proc_name[TASK_NAME_LEN];
-    char pipe_name[TASK_NAME_LEN];
-    uint64_t descriptor;
-    intptr_t addr;
-} pipe_descriptor_t;
+    cs_id proc_id;
+    int func_cnt;
+    cs_func_t funcs[0];
+} obj_desc_t;
 
 typedef struct process_desc {
     char name[TASK_NAME_LEN];
@@ -64,14 +39,6 @@ typedef struct process_desc {
     cs_id id;
     int lock;
     int thd_cnt;
-
-    //List of owned capabilities
-    list_t owned_caps;
-
-    //List of owned pipes
-    list_t pipes;
-    uint64_t desc_id;
-    intptr_t pipe_base_vmem;
 
     struct process_desc *next;
     struct process_desc *prev;

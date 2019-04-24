@@ -64,16 +64,6 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         proc_info->desc_id = 0;
         proc_info->pipe_base_vmem = (intptr_t)PIPE_BASE_ADDR;
 
-        if(list_init(&proc_info->owned_caps) != 0) {
-            free(proc_info);
-            return CS_OUTOFMEM;
-        }
-        if(list_init(&proc_info->pipes) != 0) {
-            list_fini(&proc_info->owned_caps);
-            free(proc_info);
-            return CS_OUTOFMEM;
-        }
-
         if(vmem_create(&proc_info->mem) != 0) {
             list_fini(&proc_info->owned_caps);
             list_fini(&proc_info->pipes);
@@ -82,9 +72,14 @@ cs_error create_task_kernel(cs_task_type tasktype, char *name, task_permissions_
         }
 
         char name_buf[TASK_NAME_LEN + 1];
+        char dirpath_buf[TASK_NAME_LEN + TASK_NAME_LEN + 2] = "procs/";
         memset(name_buf, 0, TASK_NAME_LEN + 1);
         strncpy(name_buf, name, TASK_NAME_LEN);
-        registry_createdirectory("PROCS", proc_info->name);
+        strncat(dirpath_buf, name_buf, TASK_NAME_LEN);
+        registry_createdirectory("procs", name_buf);
+        registry_createdirectory(dirpath_buf, "pipes");
+        registry_createdirectory(dirpath_buf, "capabilities");
+        registry_addkey_uint(dirpath_buf, "id", proc_info->id);
 
         *id = alloc_id;
 
@@ -280,7 +275,7 @@ static void task_switch_handler(int irq) {
 }
 
 cs_error create_pipe_syscall(const char *name, const char *capability_name, uint32_t sz, pipe_flags_t flags){
-    char path[TASK_NAME_LEN + 1 + 6] = "PROCS/";
+    char path[TASK_NAME_LEN + 1 + 6] = "procs/";
     
     char name_buf[TASK_NAME_LEN + 1];
     strncpy(name_buf, name, TASK_NAME_LEN);
@@ -292,7 +287,7 @@ cs_error create_pipe_syscall(const char *name, const char *capability_name, uint
         iterator = iterator->next;
     while(iterator->id != core_descs->cur_task->pid);
 
-    //Ensure that the process owns the capabilities it claims to require
+    //Ensure that the process has the capabilities it claims to require
     if(capability_name != NULL){
         bool capability_matched = false;
         for(uint64_t i = 0; i < list_len(&iterator->owned_caps); i++){
@@ -472,7 +467,7 @@ cs_error close_pipe_syscall(pipe_t pipe_id){
         pipe_descriptor_t* desc = (pipe_descriptor_t*)list_at(&iterator->pipes, i);
         if(desc->descriptor == pipe_id){
             //Get the pipe info
-            char path[TASK_NAME_LEN + 7] = "PROCS/";
+            char path[TASK_NAME_LEN + 7] = "procs/";
             strncat(path, desc->proc_name, TASK_NAME_LEN);
 
             char pipe_name[TASK_NAME_LEN + 1] = "";
@@ -642,7 +637,7 @@ int module_init() {
     if(core_descs == NULL)
         core_descs = (TLS core_desc_t*)mp_tls_get(mp_tls_alloc(sizeof(core_desc_t)));
 
-    registry_createdirectory("", "PROCS");
+    registry_createdirectory("", "procs");
     module_mp_init();
 
     //Enable server load tasks

@@ -10,19 +10,59 @@
 #include "error.h"
 #include "thread.h"
 
+#define FUNCNAME_LEN (256)
+typedef uint64_t obj_t;
+
 typedef enum {
-    cs_pipe_flags_none = 0,
-    cs_pipe_flags_read = 1 << 1,
-    cs_pipe_flags_write = 1 << 2,
-} cs_pipe_flags_t;
+    cs_type_int,
+    cs_type_uint,
+    cs_type_float,
+    cs_type_str,
+    cs_type_obj,
+} cs_type_t;
 
-typedef uint64_t pipe_t;
+typedef enum {
+    cs_functype_code,
+    cs_functype_inherited,
+} cs_functype_t;
 
-cs_error cs_createpipe(const char *name, const char *capability_name, uint32_t sz, cs_pipe_flags_t flags);
-cs_error cs_openpipe(const char *name, intptr_t *mem, pipe_t* pipe_id);
-cs_error cs_closepipe(pipe_t pipe_id);
+typedef struct {
+    int len;
+    char str[0];
+} cs_str_t;
 
-cs_error cs_createcapability(const char *capability_name);
-cs_error cs_sharecapability(cs_id dst, const char *capability_name);
+typedef struct {
+    union{
+        int64_t i;
+        uint64_t ui;
+        float f;
+        obj_t o;
+        cs_str_t s;
+    };
+} cs_arg_t;
+
+typedef struct {
+    cs_functype_t type;
+    char name[FUNCNAME_LEN];
+    union{
+        struct {
+            uint16_t param_cnt;
+            uint16_t ret_cnt;
+            void *func;
+            cs_type_t* param;
+            cs_type_t* ret;
+        } code;
+
+        struct {
+            obj_t obj;
+        } inherited;
+    };
+} cs_func_t;
+
+cs_error cs_createobj(cs_func_t *func, int func_cnt, obj_t *obj);
+cs_error cs_invoke(obj_t obj, char name[256], cs_arg_t *args, cs_arg_t *ret);
+cs_error cs_release(obj_t obj);
+cs_error cs_periodicinvoke(obj_t obj, char name[256], cs_arg_t *args, uint64_t period_us);
+cs_error cs_watchdogtick(void);
 
 #endif

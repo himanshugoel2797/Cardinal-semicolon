@@ -142,6 +142,28 @@ int registry_addkey_uint(const char *path, const char *keyname, uint64_t val) {
     return registry_err_ok;
 }
 
+int registry_addkey_ptr(const char *path, const char *keyname, uintptr_t val) {
+    kvs_t *parent_kvs = NULL;
+
+    if (path == NULL)
+        return registry_err_invalidargs;
+
+    if (keyname == NULL)
+        return registry_err_invalidargs;
+
+    int err = registry_getkvs(path, &parent_kvs);
+    if (err != registry_err_ok)
+        return err;
+
+    local_spinlock_lock(&kern_lock);
+    err = kvs_add_ptr(parent_kvs, keyname, val);
+    local_spinlock_unlock(&kern_lock);
+    if (err != kvs_ok)
+        return registry_err_failure;
+
+    return registry_err_ok;
+}
+
 int registry_addkey_int(const char *path, const char *keyname, int64_t val) {
     kvs_t *parent_kvs = NULL;
 
@@ -246,6 +268,46 @@ int registry_readkey_uint(const char *path, const char *keyname,
     }
 
     if (valtype != kvs_val_uint){
+        local_spinlock_unlock(&kern_lock);
+        return registry_err_typematchfailure;
+    }
+
+    if (val != NULL && kvs_get_uint(parent_kvs, key_kvs, val) != kvs_ok){
+        local_spinlock_unlock(&kern_lock);
+        return registry_err_failure;
+    }
+    local_spinlock_unlock(&kern_lock);
+    return registry_err_ok;
+}
+
+int registry_readkey_ptr(const char *path, const char *keyname,
+                          uintptr_t *val) {
+    kvs_t *parent_kvs = NULL;
+    kvs_t *key_kvs = NULL;
+    kvs_val_type valtype = kvs_val_uninit;
+
+    if (path == NULL)
+        return registry_err_invalidargs;
+
+    if (keyname == NULL)
+        return registry_err_invalidargs;
+
+    int err = registry_getkvs(path, &parent_kvs);
+    if (err != registry_err_ok)
+        return err;
+    
+    local_spinlock_lock(&kern_lock);
+    if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok){
+        local_spinlock_unlock(&kern_lock);
+        return registry_err_dne;
+    }
+
+    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok){
+        local_spinlock_unlock(&kern_lock);
+        return registry_err_failure;
+    }
+
+    if (valtype != kvs_val_ptr){
         local_spinlock_unlock(&kern_lock);
         return registry_err_typematchfailure;
     }
@@ -411,6 +473,66 @@ int registry_removekey(const char *path, const char *keyname) {
 
 int registry_removedirectory(const char *path, const char *dirname) {
     return registry_removekey(path, dirname);
+}
+
+int registry_getdirectory(const char *path, dir_t *dir){
+    return registry_getkvs(path, (kvs_t**)dir);
+}
+
+int registry_next(dir_t *dir){
+    int err = kvs_next((kvs_t**)dir);
+    if(err != registry_err_ok)
+        return registry_err_dne;
+    return registry_err_ok;
+}
+
+int registry_readlocal_key(dir_t dir, const char *keyname){
+    int err = kvs_get_localkey((kvs_t*)dir, keyname);
+    if(err != registry_err_ok)
+        return registry_err_dne;
+    return registry_err_ok;
+}
+
+int registry_readlocal_uint(dir_t dir, uint64_t *val) {
+    int err = kvs_get_localuint((kvs_t*)dir, val);
+    if(err != registry_err_ok)
+        return registry_err_dne;
+    return registry_err_ok;
+}
+
+int registry_readlocal_ptr(dir_t dir, void **val) {
+    int err = kvs_get_localptr((kvs_t*)dir, val);
+    if(err != registry_err_ok)
+        return registry_err_dne;
+    return registry_err_ok;
+}
+
+int registry_readlocal_int(dir_t dir, int64_t *val) {
+    int err = kvs_get_localint((kvs_t*)dir, val);
+    if(err != registry_err_ok)
+        return registry_err_dne;
+    return registry_err_ok;
+}
+
+int registry_readlocal_str(dir_t dir, const char *val) {
+    int err = kvs_get_localstr((kvs_t*)dir, val);
+    if(err != registry_err_ok)
+        return registry_err_dne;
+    return registry_err_ok;
+}
+
+int registry_readlocal_bool(dir_t dir, bool *val) {
+    int err = kvs_get_localbool((kvs_t*)dir, val);
+    if(err != registry_err_ok)
+        return registry_err_dne;
+    return registry_err_ok;
+}
+
+int registry_readlocal_dir(dir_t dir, dir_t *val) {
+    int err = kvs_get_localchild((kvs_t*)dir, val);
+    if(err != registry_err_ok)
+        return registry_err_dne;
+    return registry_err_ok;
 }
 
 #define REG_INIT_FAIL_STR "Failed to initialize registry."

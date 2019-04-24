@@ -57,6 +57,16 @@ int kvs_add_child(kvs_t *r, const char *key, kvs_t *childval);
 
 int kvs_find(kvs_t *r, const char *key, kvs_t **res);
 
+int kvs_next(kvs_t **r);
+
+int kvs_get_localkey(kvs_t *r, const char *key);
+int kvs_get_localptr(kvs_t *r, uintptr_t *key);
+int kvs_get_localuint(kvs_t *r, uint64_t *key);
+int kvs_get_localbool(kvs_t *r, bool *key);
+int kvs_get_localint(kvs_t *r, int64_t *key);
+int kvs_get_localstr(kvs_t *r, char **key);
+int kvs_get_localchild(kvs_t *r, kvs_t **key);
+
 int kvs_get_type(kvs_t *r, kvs_t *idx, kvs_val_type *val_type);
 
 int kvs_get_sint(kvs_t *r, kvs_t *idx, int64_t *sval);

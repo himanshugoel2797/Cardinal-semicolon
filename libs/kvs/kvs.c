@@ -87,6 +87,64 @@ int kvs_add_child(kvs_t *r NULLABLE, const char *key,
     return kvs_add_internal(r, key, (void *)childval, kvs_val_child);
 }
 
+
+int kvs_next(kvs_t **r NULLABLE){
+    if(r != NULL && *r != NULL && (*r)->next != NULL){
+        *r = (*r)->next;
+        return kvs_ok;
+    }
+    return kvs_error_notfound;
+}
+
+static int kvs_get_localinternal(kvs_t *r NULLABLE, uint64_t *key, kvs_val_type valType){
+    if (r == NULL)
+        return kvs_error_invalidargs;
+
+    if (key == NULL)
+        return kvs_error_invalidargs;
+
+    if (r->val_type != valType)
+        return kvs_error_invalidargs;
+
+    *key = r->u_val;
+    return kvs_ok;
+}
+
+int kvs_get_localkey(kvs_t *r NULLABLE, const char *key NULLABLE){
+    if (r == NULL)
+        return kvs_error_invalidargs;
+
+    if (key == NULL)
+        return kvs_error_invalidargs;
+
+    strncpy(key, r->key, key_len);
+    return kvs_ok;
+}
+
+int kvs_get_localptr(kvs_t *r NULLABLE, uintptr_t *key NULLABLE){
+    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_ptr);
+}
+
+int kvs_get_localuint(kvs_t *r NULLABLE, uint64_t *key NULLABLE){
+    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_uint);
+}
+
+int kvs_get_localbool(kvs_t *r NULLABLE, bool *key NULLABLE){
+    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_bool);
+}
+
+int kvs_get_localint(kvs_t *r NULLABLE, int64_t *key NULLABLE){
+    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_int);
+}
+
+int kvs_get_localstr(kvs_t *r NULLABLE, char **key NULLABLE){
+    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_str);
+}
+
+int kvs_get_localchild(kvs_t *r NULLABLE, kvs_t **key NULLABLE){
+    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_child);
+}
+
 int kvs_find(kvs_t *r NULLABLE, const char *key, kvs_t **res) {
     if (r == NULL)
         return kvs_error_invalidargs;
