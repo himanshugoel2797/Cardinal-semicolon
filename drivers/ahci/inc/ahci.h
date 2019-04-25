@@ -115,7 +115,7 @@ typedef struct {
 } ahci_dma_addr_t;
 
 typedef struct ahci_instance {
-    union{
+    union {
         uint8_t *cfg8;
         uintptr_t cfg;
     };
