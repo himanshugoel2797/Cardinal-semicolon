@@ -18,5 +18,6 @@ CALL:sysdebug_install_lfb
 CALL:mem_init
 CALL:kernel_free_avl_bootstrap
 CALL:fp_mp_init
+LOAD:./SysObj.celf
 LOAD:./SysUser.celf
 LOAD:./SysTaskMgr.celf

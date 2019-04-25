@@ -107,6 +107,10 @@ SysModMgr:
     - Module manager meant to replace kernel bootstrap
     - Copies over symbols in kernel table
 
+SysObj:
+    - Responsible for managing all the objects of the system
+    - Handles communication with the storage drivers
+
 Load order:
     Kernel                  DONE
     SysLibc                 OBSOLETE
@@ -119,7 +123,8 @@ Load order:
     SysMP                   PLANNING
     SysTimer                DEVELOPMENT
     SysTaskMgr              PLANNING
-    SysUser                 
+    SysUser                 DEVELOPMENT
+    SysObj                  PLANNING
     SysModMgr               
 
 
@@ -136,6 +141,7 @@ Call order:
     SysTimer                module_init     -configure local timers
     SysMP                   mp_init         -boot APs and setup TLS
     SysMemory               mem_init        -initialize slab allocator, kernel malloc
+    SysObj                  module_init     -setup object management
     SysTaskMgr              module_init     -setup process management
     SysModMgr               module_init     -replace bootstrap kernel
     SysMP                   mp_waitready    -wait for APs to finish booting
