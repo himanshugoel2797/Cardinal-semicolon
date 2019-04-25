@@ -6,6 +6,7 @@
 #ifndef CARDINAL_DRIVERS_AHCI_H
 #define CARDINAL_DRIVERS_AHCI_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum {
@@ -107,5 +108,38 @@ typedef struct {
     uint8_t rsv[48];
     ahci_prdt_t prdt[128];
 } ahci_cmdtable_t;
+
+typedef struct {
+    uint64_t phys_addr;
+    uintptr_t virt_addr;
+} ahci_dma_addr_t;
+
+typedef struct ahci_instance {
+    union{
+        uint8_t *cfg8;
+        uintptr_t cfg;
+    };
+    int interrupt_vec;
+    uint32_t activeDevices;
+
+    ahci_dma_addr_t port_dma;
+
+    struct ahci_instance *next;
+} ahci_instance_t;
+
+PRIVATE void ahci_write8(ahci_instance_t *inst, uint32_t off, uint8_t val);
+PRIVATE void ahci_write16(ahci_instance_t *inst, uint32_t off, uint16_t val);
+PRIVATE void ahci_write32(ahci_instance_t *inst, uint32_t off, uint32_t val);
+
+PRIVATE uint8_t ahci_read8(ahci_instance_t *inst, uint32_t off);
+PRIVATE uint16_t ahci_read16(ahci_instance_t *inst, uint32_t off);
+PRIVATE uint32_t ahci_read32(ahci_instance_t *inst, uint32_t off);
+
+PRIVATE void ahci_resethba(ahci_instance_t *inst);
+PRIVATE void ahci_obtainownership(ahci_instance_t *inst);
+PRIVATE void ahci_reportawareness(ahci_instance_t *inst);
+PRIVATE void ahci_initializeport(ahci_instance_t *inst, int index);
+PRIVATE int ahci_getcmdslot(ahci_instance_t *inst, int index);
+PRIVATE int ahci_readdev(ahci_instance_t *inst, int index, uint64_t loc, void *addr, uint32_t len);
 
 #endif
