@@ -27,7 +27,7 @@ COMMAND tar -cvf "ISO/isodir/boot/initrd" -C "ISO/isodir/boot" .
 COMMAND cp "kernel/kernel.bin" "ISO/isodir/boot/kernel.bin"
 COMMAND mkdir -p "ISO/isodir/boot/grub"
 COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
-COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os.iso" "ISO/isodir"
+COMMAND grub-mkrescue -d /usr/lib/grub/x86_64-efi -o "ISO/os.iso" "ISO/isodir"
 DEPENDS kernel.bin)
 
 add_custom_target(disk.img

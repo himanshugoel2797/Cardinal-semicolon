@@ -47,6 +47,8 @@ Initrd_GetFile(const char *file,
     *loc = NULL;
     *size = 0;
 
+    //TODO: Poll serial port for updated initrd, if available, download into ram and update boot information
+
     TARHeader *file_entry = (TARHeader*)bootInfo->InitrdStartAddress;
     uint32_t file_param_len = strnlen(file, 100);
 

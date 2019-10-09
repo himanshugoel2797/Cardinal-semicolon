@@ -1,0 +1,1 @@
+Use a custom kernel with a single serial downloader module that burns the image onto the inserted SD card
