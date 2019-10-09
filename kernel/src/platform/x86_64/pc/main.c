@@ -33,6 +33,13 @@ int WEAK print_str(const char *s) {
     if (print_str_handler != NULL)
         return print_str_handler(s);
 
+    outb(0x3f9, 0); //disable interrupts
+    outb(0x3f8 + 3, 0x80);  //DLAB
+    outb(0x3f8, 1); //divisor = 1
+    outb(0x3f9, 0); //hi byte
+    outb(0x3f8 + 3, 0x03);  //8 bits, no parity, one stop bit
+
+
     while (*s != 0) {
         outb(0x3f8, *(s++));
     }

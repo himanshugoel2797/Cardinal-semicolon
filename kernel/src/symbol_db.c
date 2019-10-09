@@ -23,6 +23,8 @@ void symboldb_init() {
 
     char buf[10];
     DEBUG_PRINT("Symboldb_e_offsets ");
+    while(1)
+        ;
     DEBUG_PRINT(itoa((int)symbol_e_offsets, buf, 16));
     DEBUG_PRINT("\r\n");
     DEBUG_PRINT("Symboldb_hdr_offsets ");
@@ -31,6 +33,7 @@ void symboldb_init() {
     DEBUG_PRINT("Symboldb_strhdr_offsets ");
     DEBUG_PRINT(itoa((int)symbol_strhdr_offsets, buf, 16));
     DEBUG_PRINT("\r\n");
+
 
     memset(symbol_e_offsets, 0, MAX_SYMBOL_CNT * sizeof(uint64_t));
     memset(symbol_hdr_offsets, 0, MAX_SYMBOL_CNT * sizeof(uint64_t));
