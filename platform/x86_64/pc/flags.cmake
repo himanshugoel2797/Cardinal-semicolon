@@ -36,6 +36,7 @@ COMMAND mkdir -p "ISO/isodir/EFI"
 COMMAND mkdir -p "ISO/isodir/EFI/BOOT"
 COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
 COMMAND grub-mkstandalone -O x86_64-efi -o "ISO/isodir/EFI/BOOT/BOOTX64.EFI" "boot/grub/grub.cfg=${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub_efi.cfg" "boot/initrd=ISO/isodir/boot/initrd" "boot/kernel.bin=kernel/kernel.bin"
+COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os.iso" "ISO/isodir"
 DEPENDS kernel.bin)
 
 add_custom_target(disk.img

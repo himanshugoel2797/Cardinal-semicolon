@@ -9,25 +9,26 @@
 #include <stdlib.h>
 #include <types.h>
 
-int module_load(char *name) {
-    print_str("LOAD MODULE:");
+int module_load(char *name)
+{
+    print_str("[Kernel] Load module:");
     print_str(name);
     print_str("\r\n");
 
     void *mod_loc = NULL;
     size_t len = 0;
     if (!Initrd_GetFile(name, &mod_loc, &len))
-        PANIC("FAILED TO FIND MODULE!");
+        PANIC("[Kernel] Failed to find module!");
 
     // decompress celf's elf section
     ModuleHeader *hdr = (ModuleHeader *)mod_loc;
 
     int (*entry_pt)() = NULL;
     if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
-        PANIC("ELF LOAD FAILED");
+        PANIC("[Kernel] Elf load failed.");
 
     char tmp_entry_addr[20];
-    print_str("LOADED at ");
+    print_str("[Kernel] Loaded at ");
     print_str(ltoa((uint64_t)entry_pt, tmp_entry_addr, 16));
     print_str("\r\n");
 
@@ -35,12 +36,14 @@ int module_load(char *name) {
     return err;
 }
 
-int script_execute(char *load_script, size_t load_len) {
+int script_execute(char *load_script, size_t load_len)
+{
     char name[1024];
     bool isCRLF = false;
 
     uintptr_t load_script_end = (uintptr_t)(load_script + load_len);
-    while ((uintptr_t)load_script < load_script_end) {
+    while ((uintptr_t)load_script < load_script_end)
+    {
 
         int mode = -1;
 
@@ -54,82 +57,92 @@ int script_execute(char *load_script, size_t load_len) {
         memset(name, 0, 1024);
 
         //handle both line endings to avoid annoying issues during development
-        if(*(end_of_line - 1) == '\r') {
+        if (*(end_of_line - 1) == '\r')
+        {
             isCRLF = true;
             end_of_line--;
         }
 
         strncpy(name, load_script, (size_t)(end_of_line - load_script));
         load_script += end_of_line - load_script + 1;
-        if(isCRLF)
+        if (isCRLF)
             load_script++;
 
-        if (mode == 0) {
-
+        if (mode == 0)
+        {
 
             int err = module_load(name);
-            if(err != 0) {
+            if (err != 0)
+            {
                 char idx_str[10];
-                print_str("RETURN VALUE:");
+                print_str("[Kernel] Return value:");
                 print_str(itoa(err, idx_str, 16));
                 print_str("\r\n");
-                PANIC("module_init FAILED");
+                PANIC("[Kernel] module_init failed");
             }
-        } else if (mode == 1) {
-            print_str("CALL FUNCTION:");
+        }
+        else if (mode == 1)
+        {
+            print_str("[Kernel] Call function:");
             print_str(name);
             print_str("\r\n");
 
             int (*entry_pt)() = (int (*)())elf_resolvefunction(name);
-            if(entry_pt == NULL)
-                PANIC("FAILED TO RESOLVE FUNCTION!");
+            if (entry_pt == NULL)
+                PANIC("[Kernel] Failed to resolve function!");
 
             int err = entry_pt();
-            if(err != 0) {
+            if (err != 0)
+            {
                 char idx_str[10];
-                print_str("RETURN VALUE:");
+                print_str("[Kernel] Return value:");
                 print_str(itoa(err, idx_str, 16));
                 print_str("\r\n");
-                PANIC("CALL FAILED");
+                PANIC("[Kernel] Call failed");
             }
-        } else if (mode == -1) {
-            print_str("NAME:");
+        }
+        else if (mode == -1)
+        {
+            print_str("[Kernel] Name:");
             print_str(name);
 
-            print_str("\r\nLOAD_SCRIPT:");
+            print_str("\r\n[Kernel] Load script:");
             print_str(load_script);
-            PANIC("UNKNOWN COMMAND");
+            PANIC("[Kernel] Unknown Command");
         }
     }
     return 0;
 }
 
-int loadscript_execute() {
+int loadscript_execute()
+{
 
     char *load_script = NULL;
     size_t load_len = 0;
     if (!Initrd_GetFile("./loadscript.txt", (void **)&load_script, &load_len))
-        PANIC("FAILED TO FIND LOADSCRIPT");
+        PANIC("[Kernel] Failed to find loadscript.");
 
     return script_execute(load_script, load_len);
 }
 
-int servicescript_execute() {
+int servicescript_execute()
+{
 
     char *load_script = NULL;
     size_t load_len = 0;
     if (!Initrd_GetFile("./servicescript.txt", (void **)&load_script, &load_len))
-        PANIC("FAILED TO FIND SERVICESCRIPT");
+        PANIC("[Kernel] Failed to find servicescript.");
 
     return script_execute(load_script, load_len);
 }
 
-int apscript_execute() {
+int apscript_execute()
+{
 
     char *load_script = NULL;
     size_t load_len = 0;
     if (!Initrd_GetFile("./apscript.txt", (void **)&load_script, &load_len))
-        PANIC("FAILED TO FIND APSCRIPT");
+        PANIC("[Kernel] Failed to find apscript.");
 
     return script_execute(load_script, load_len);
 }
