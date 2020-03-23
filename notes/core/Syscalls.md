@@ -85,3 +85,9 @@ first time startup process:
       - exit assigned to 'startup' capability
 
 processes can only obtain capabilities by being given them through another shared capability
+
+initial programs can be read from initrd
+    - no built-in persistence from the kernel - processes would request that from appropriate services
+    - kernel simply maintains a capability list
+        - how to load programs?
+            - process create capability?
