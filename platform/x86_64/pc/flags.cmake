@@ -34,6 +34,6 @@ add_custom_target(disk.img
     COMMAND qemu-img create -f raw disk.img 128M)
 
 add_custom_target(run 
-    COMMAND qemu-system-x86_64 --enable-kvm -m 1G -machine q35, -cpu host -smp 3 -d int,cpu_reset,guest_errors -drive id=disk,file=disk.img,if=none -device ahci,id=ahci -device ide-drive,drive=disk,bus=ahci.0 -net nic,model=virtio -device ich9-intel-hda -device hda-output -device ich9-usb-uhci3 -cdrom "ISO/os.iso" -boot d -device virtio-vga,virgl=on -display gtk,gl=on
+    COMMAND sudo qemu-virgil --enable-kvm -m 1G -machine q35, -cpu host -smp 3 -d int,cpu_reset,guest_errors -drive id=disk,file=disk.img,if=none -device ahci,id=ahci -device ide-drive,drive=disk,bus=ahci.0 -net nic,model=virtio -device ich9-intel-hda -device hda-output -device ich9-usb-uhci3 -cdrom "ISO/os.iso" -boot d -device virtio-vga,virgl=on -display gtk,gl=on
     DEPENDS image
     DEPENDS disk.img)

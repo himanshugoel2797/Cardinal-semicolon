@@ -23,20 +23,24 @@ static _Atomic int virtio_signalled = 0;
 static _Atomic int virtio_inited = 0;
 static int virtio_queue_avl = 0;
 
-static void intrpt_handler(int idx) {
+static void intrpt_handler(int idx)
+{
     idx = 0;
     virtio_signalled = true;
     //local_spinlock_unlock(&virtio_signalled);
 }
 
-static void virtio_task_handler(void *arg) {
+static void virtio_task_handler(void *arg)
+{
     arg = NULL;
 
-    while(!virtio_inited)
+    while (!virtio_inited)
         ;
 
-    while(true) {
-        while(virtio_signalled) {
+    while (true)
+    {
+        while (virtio_signalled)
+        {
             local_spinlock_lock(&virtio_queue_avl);
             virtio_signalled = false;
 
@@ -53,13 +57,14 @@ static void virtio_task_handler(void *arg) {
     }
 }
 
-static void virtio_net_resphandler(virtio_virtq_cmd_state_t *cmd) {
+static void virtio_net_resphandler(virtio_virtq_cmd_state_t *cmd)
+{
     //submit this response
     int state = cli();
     DEBUG_PRINT("Package Received!\r\n");
 
     virtio_net_cmd_hdr_t *resp = (virtio_net_cmd_hdr_t *)cmd->resp.virt;
-    uint8_t *resp_u8 = (uint8_t*)cmd->resp.virt;
+    uint8_t *resp_u8 = (uint8_t *)cmd->resp.virt;
     network_rx_packet(device.handle, resp_u8 + sizeof(virtio_net_cmd_hdr_t), 1514);
 
     memset(resp_u8, 0, KiB(2));
@@ -69,16 +74,17 @@ static void virtio_net_resphandler(virtio_virtq_cmd_state_t *cmd) {
     sti(state);
 }
 
-int virtio_net_sendpacket(void *state, void *packet, int len, network_device_tx_flags_t gso) {
+int virtio_net_sendpacket(void *state, void *packet, int len, network_device_tx_flags_t gso)
+{
     gso = 0;
 
-    virtio_net_driver_state_t *device = (virtio_net_driver_state_t*)state;
+    virtio_net_driver_state_t *device = (virtio_net_driver_state_t *)state;
 
     int ent_idx = device->avail_idx[VIRTIO_NET_Q_TX];
     uint8_t *data_buf = device->tx_buf_virt + ent_idx * KiB(2);
 
     memcpy(data_buf + sizeof(virtio_net_cmd_hdr_t), packet, len);
-    virtio_net_cmd_hdr_t *hdr = (virtio_net_cmd_hdr_t*)data_buf;
+    virtio_net_cmd_hdr_t *hdr = (virtio_net_cmd_hdr_t *)data_buf;
 
     hdr->flags = 0;
     hdr->gso_type = VIRTIO_NET_GSO_NONE;
@@ -92,14 +98,15 @@ int virtio_net_sendpacket(void *state, void *packet, int len, network_device_tx_
     return 0;
 }
 
-int virtio_net_linkstatus(void *state) {
-    virtio_net_driver_state_t *device = (virtio_net_driver_state_t*)state;
+int virtio_net_linkstatus(void *state)
+{
+    virtio_net_driver_state_t *device = (virtio_net_driver_state_t *)state;
     return device->cfg->status == VIRTIO_NET_S_LINK_UP;
 }
 
 static network_device_desc_t device_desc = {
     .name = "Virtio Net",
-    .state = (void*)&device,
+    .state = (void *)&device,
     .features = 0,
     .type = network_device_type_ethernet,
     .handlers.ether = {
@@ -110,60 +117,64 @@ static network_device_desc_t device_desc = {
     .lock = 0,
 };
 
-int module_init(void *ecam) {
+int module_init(void *ecam)
+{
 
     memset(&device, 0, sizeof(device));
 
     cs_id ss_id = 0;
-    cs_error ss_err = create_task_kernel(cs_task_type_process, "virtio_net_0", task_permissions_kernel, &ss_id);
-    if(ss_err != CS_OK)
+    cs_error ss_err = create_task_kernel("virtio_net_0", task_permissions_kernel, &ss_id);
+    if (ss_err != CS_OK)
         PANIC("VIRTIO_NET_ERR0");
-    ss_err = start_task_kernel(ss_id, virtio_task_handler);
-    if(ss_err != CS_OK)
+    ss_err = start_task_kernel(ss_id, virtio_task_handler, NULL);
+    if (ss_err != CS_OK)
         PANIC("VIRTIO_NET_ERR1");
 
-    for(int i = 0; i < VIRTIO_NET_QUEUE_CNT; i++) {
+    for (int i = 0; i < VIRTIO_NET_QUEUE_CNT; i++)
+    {
         device.qstate[i] = malloc(sizeof(virtio_virtq_cmd_state_t) * VIRTIO_NET_QUEUE_LEN);
         device.avail_idx[i] = 0;
         device.used_idx[i] = 0;
     }
     device.common_state = virtio_initialize(ecam, intrpt_handler, device.qstate, device.avail_idx, device.used_idx);
-    device.cfg = (virtio_net_cfg_t*)device.common_state->dev_cfg;
+    device.cfg = (virtio_net_cfg_t *)device.common_state->dev_cfg;
 
     uint32_t features = virtio_getfeatures(device.common_state, 0);
 
-    if(features & VIRTIO_NET_F_CSUM) {
+    if (features & VIRTIO_NET_F_CSUM)
+    {
         device.checksum_offload = true;
         device_desc.features |= network_device_features_checksum_offload;
     }
 
     virtio_setfeatures(device.common_state, 0, VIRTIO_NET_F_STATUS | VIRTIO_NET_F_MAC | (device.checksum_offload ? VIRTIO_NET_F_CSUM : 0));
 
-    if(!virtio_features_ok(device.common_state))
+    if (!virtio_features_ok(device.common_state))
         return -1;
 
     //setup virtqueues
-    for(int i = 0; i < VIRTIO_NET_QUEUE_CNT; i++)
+    for (int i = 0; i < VIRTIO_NET_QUEUE_CNT; i++)
         virtio_setupqueue(device.common_state, i, VIRTIO_NET_QUEUE_LEN);
 
     virtio_driver_ok(device.common_state);
 
     //Fill the receive virtq with buffers
     uintptr_t rcv_buf = pagealloc_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
-    uint8_t *rcv_buf_virt = (uint8_t*)vmem_phystovirt((intptr_t)rcv_buf, VIRTIO_NET_QUEUE_LEN * KiB(2), vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+    uint8_t *rcv_buf_virt = (uint8_t *)vmem_phystovirt((intptr_t)rcv_buf, VIRTIO_NET_QUEUE_LEN * KiB(2), vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
     device.rx_buf_phys = rcv_buf;
 
-    for(int i = 0; i < VIRTIO_NET_QUEUE_LEN; i++) {
-        virtio_net_cmd_hdr_t *cmd_tmp = (virtio_net_cmd_hdr_t*)(rcv_buf_virt + i * KiB(2));
+    for (int i = 0; i < VIRTIO_NET_QUEUE_LEN; i++)
+    {
+        virtio_net_cmd_hdr_t *cmd_tmp = (virtio_net_cmd_hdr_t *)(rcv_buf_virt + i * KiB(2));
         virtio_addresponse(device.common_state, VIRTIO_NET_Q_RX, cmd_tmp, KiB(2), virtio_net_resphandler);
     }
 
     //Allocate tx buffer
     device.tx_buf_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
-    device.tx_buf_virt = (uint8_t*)vmem_phystovirt((intptr_t)device.tx_buf_phys, VIRTIO_NET_QUEUE_LEN * KiB(2), vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
+    device.tx_buf_virt = (uint8_t *)vmem_phystovirt((intptr_t)device.tx_buf_phys, VIRTIO_NET_QUEUE_LEN * KiB(2), vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
 
     //register as a network device
-    for(int i = 0; i < 6; i++)
+    for (int i = 0; i < 6; i++)
         device_desc.mac[i] = device.cfg->mac[i];
 
     network_register(&device_desc, &device.handle);

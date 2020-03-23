@@ -11,7 +11,8 @@
 #include <string.h>
 #include <types.h>
 
-typedef enum {
+typedef enum
+{
     CPUID_FEAT_ECX_SSE3 = 1 << 0,
     CPUID_FEAT_ECX_PCLMUL = 1 << 1,
     CPUID_FEAT_ECX_DTES64 = 1 << 2,
@@ -70,15 +71,26 @@ typedef enum {
     CPUID_FEAT_EDX_PBE = 1 << 31
 } CPUID_FEAT;
 
-typedef enum { CPUID_EAX = 0, CPUID_EBX, CPUID_ECX, CPUID_EDX } CPUID_REG;
+typedef enum
+{
+    CPUID_EAX = 0,
+    CPUID_EBX,
+    CPUID_ECX,
+    CPUID_EDX
+} CPUID_REG;
 
-typedef enum { CPUID_ECX_IGNORE = 0, CPUID_EAX_FIRST_PAGE = 1 } CPUID_REQUESTS;
+typedef enum
+{
+    CPUID_ECX_IGNORE = 0,
+    CPUID_EAX_FIRST_PAGE = 1
+} CPUID_REQUESTS;
 
 static uint32_t eax, ebx, ecx, edx;
 static uint32_t cache_line_size = 0;
 
 static void CPUID_RequestInfo(uint32_t page, uint32_t idx, uint32_t *eax,
-                              uint32_t *ebx, uint32_t *ecx, uint32_t *edx) {
+                              uint32_t *ebx, uint32_t *ecx, uint32_t *edx)
+{
 
     uint32_t ax = page, bx = *ebx, cx = idx, dx = *edx;
 
@@ -92,7 +104,8 @@ static void CPUID_RequestInfo(uint32_t page, uint32_t idx, uint32_t *eax,
     *edx = dx;
 }
 
-int add_cpuid() {
+int add_cpuid()
+{
     uint32_t eax, ebx, ecx, edx;
 
 #define MANUFACT_AMD 1
@@ -109,14 +122,18 @@ int add_cpuid() {
         memcpy(proc_str + 4, &edx, sizeof(edx));
         memcpy(proc_str + 8, &ecx, sizeof(ecx));
 
-        if(strcmp(proc_str, "GenuineIntel") == 0)
+        if (strcmp(proc_str, "GenuineIntel") == 0)
             cpu_manufacturer = MANUFACT_INTEL;
-        else if(strcmp(proc_str, "AuthenticAMD") == 0)
+        else if (strcmp(proc_str, "AuthenticAMD") == 0)
             cpu_manufacturer = MANUFACT_AMD;
 
         if (registry_addkey_str("HW/PROC", "IDENT_STR", proc_str) !=
-                registry_err_ok)
+            registry_err_ok)
             return -1;
+
+        DEBUG_PRINT("[SysReg] Identification String: ");
+        DEBUG_PRINT(proc_str);
+        DEBUG_PRINT("\r\n");
     }
 
     // Processor model identification
@@ -127,13 +144,14 @@ int add_cpuid() {
         uint32_t family = (eax & 0xF00) >> 8;
         uint32_t processor_type = (eax & 0xF000) >> 12;
 
-        if (family == 15) {
+        if (family == 15)
+        {
             family += (eax & 0xFF00000) >> 20;
             model = model | ((eax & 0xF0000) >> 12);
         }
 
         if (registry_addkey_uint("HW/PROC", "STEPPING", stepping) !=
-                registry_err_ok)
+            registry_err_ok)
             return -1;
 
         if (registry_addkey_uint("HW/PROC", "MODEL", model) != registry_err_ok)
@@ -143,16 +161,16 @@ int add_cpuid() {
             return -1;
 
         if (registry_addkey_uint("HW/PROC", "TYPE", processor_type) !=
-                registry_err_ok)
+            registry_err_ok)
             return -1;
 
         bool tsc_avail = (edx & (1 << 4));
         bool tsc_deadline = (ecx & (1 << 24));
 
-        if(registry_addkey_bool("HW/PROC", "TSC_AVAIL", tsc_avail) != registry_err_ok)
+        if (registry_addkey_bool("HW/PROC", "TSC_AVAIL", tsc_avail) != registry_err_ok)
             return -1;
 
-        if(registry_addkey_bool("HW/PROC", "TSC_DEADLINE", tsc_deadline) != registry_err_ok)
+        if (registry_addkey_bool("HW/PROC", "TSC_DEADLINE", tsc_deadline) != registry_err_ok)
             return -1;
 
         {
@@ -166,32 +184,38 @@ int add_cpuid() {
             uint32_t ratio_numer = ebx;
             uint32_t clock_freq = ecx;
             uint32_t tsc_rate = 0;
-            if(ratio_denom != 0) tsc_rate = (clock_freq * ratio_numer) / ratio_denom;
+            if (ratio_denom != 0)
+                tsc_rate = (clock_freq * ratio_numer) / ratio_denom;
 
             //Use the processor identification to configure special information, like APIC clock rates
-            switch(cpu_manufacturer) {
-            case MANUFACT_AMD: {
+            switch (cpu_manufacturer)
+            {
+                //TODO: Detect QEMU and handle separately
+            case MANUFACT_AMD:
+            {
                 //This method works for Zen only
-                if(tsc_rate == 0)
-                    tsc_rate = (rdmsr(0xc0010064) & 0xff) * 25 * (1000 * 1000);
+                //if (tsc_rate == 0)
+                //    tsc_rate = (rdmsr(0xc0010064) & 0xff) * 25 * (1000 * 1000);
 
-                if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
                     return -1;
 
                 //Default to 100MHz
-                if(apic_rate == 0)
+                if (apic_rate == 0)
                     apic_rate = 100;
 
-                if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
                     return -1;
             }
             break;
-            case MANUFACT_INTEL: {
-                if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+            case MANUFACT_INTEL:
+            {
+                if (registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
                     return -1;
 
-                if(apic_rate == 0)
-                    switch(model) {
+                if (apic_rate == 0)
+                    switch (model)
+                    {
                     //Nehalem
                     case 0x1a:
                     case 0x1e:
@@ -201,7 +225,7 @@ int add_cpuid() {
                     //Westmere
                     case 0x25:
                     case 0x2c:
-                    case 0x2f:  //CPUID holds, else must callibrate
+                    case 0x2f: //CPUID holds, else must callibrate
                         break;
 
                     case 0x2a: //Sandy Bridge
@@ -229,19 +253,18 @@ int add_cpuid() {
                         apic_rate = 24;
                         break;
                     }
-                if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
                     return -1;
             }
             break;
             default:
-                if(registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
                     return -1;
-                if(registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate) != registry_err_ok)
                     return -1;
                 break;
             }
         }
-
     }
 
     // Memory information
@@ -251,11 +274,11 @@ int add_cpuid() {
         uint32_t virt_bits = (eax >> 8) & 0xFF;
 
         if (registry_addkey_uint("HW/PHYS_MEM", "BITS", phys_bits) !=
-                registry_err_ok)
+            registry_err_ok)
             return -1;
 
         if (registry_addkey_uint("HW/VIRT_MEM", "BITS", virt_bits) !=
-                registry_err_ok)
+            registry_err_ok)
             return -1;
     }
 
@@ -264,7 +287,8 @@ int add_cpuid() {
         uint32_t cache_idx = 0, cache_type, cache_level, apic_id_cnt, thread_cnt,
                  line_size, associativity, partition_cnt, set_cnt;
         bool fully_associative;
-        do {
+        do
+        {
             char idx_str[10];
             char dir_str[256] = "HW/CACHE/";
             CPUID_RequestInfo(4, cache_idx, &eax, &ebx, &ecx, &edx);
@@ -289,15 +313,15 @@ int add_cpuid() {
                 return -1;
 
             if (registry_addkey_uint(dir_str, "ASSOCIATIVITY", associativity) !=
-                    registry_err_ok)
+                registry_err_ok)
                 return -1;
 
             if (registry_addkey_uint(dir_str, "PARITITIONS", partition_cnt) !=
-                    registry_err_ok)
+                registry_err_ok)
                 return -1;
 
             if (registry_addkey_uint(dir_str, "LINE_SZ", line_size) !=
-                    registry_err_ok)
+                registry_err_ok)
                 return -1;
 
             if (registry_addkey_uint(dir_str, "SET_CNT", set_cnt) != registry_err_ok)
@@ -311,7 +335,6 @@ int add_cpuid() {
         //Get descriptors
         CPUID_RequestInfo(2, 0, &eax, &ebx, &ecx, &edx);
         //__asm__("hlt" :: "a"(eax), "b"(ebx), "c"(ecx), "d"(edx));
-
     }
 
     {
@@ -320,13 +343,13 @@ int add_cpuid() {
         //SMEP
         bool smep = (ebx >> 7) & 1;
         if (registry_addkey_bool("HW/PROC", "SMEP", smep) !=
-                registry_err_ok)
+            registry_err_ok)
             return -1;
 
         //SMAP
         bool smap = (ebx >> 20) & 1;
         if (registry_addkey_bool("HW/PROC", "SMAP", smap) !=
-                registry_err_ok)
+            registry_err_ok)
             return -1;
     }
 
@@ -336,7 +359,7 @@ int add_cpuid() {
         //1GB pages
         bool gibibyte_pages = (edx >> 26) & 1;
         if (registry_addkey_bool("HW/PROC", "HUGEPAGE", gibibyte_pages) !=
-                registry_err_ok)
+            registry_err_ok)
             return -1;
     }
 
@@ -354,25 +377,24 @@ int add_cpuid() {
         //x2APIC
         bool x2apic = (ecx >> 21) & 1;
         if (registry_addkey_bool("HW/PROC", "X2APIC", x2apic) !=
-                registry_err_ok)
+            registry_err_ok)
             return -1;
 
         //xsave
         bool xsave = (ecx >> 26) & 1;
         if (registry_addkey_bool("HW/PROC", "XSAVE", xsave) !=
-                registry_err_ok)
+            registry_err_ok)
             return -1;
     }
 
     {
         CPUID_RequestInfo(0x0d, 0, &eax, &ebx, &ecx, &edx);
 
-        if(registry_addkey_uint("HW/PROC", "XSAVE_SZ", ecx) != registry_err_ok)
+        if (registry_addkey_uint("HW/PROC", "XSAVE_SZ", ecx) != registry_err_ok)
             return -1;
 
-        if(registry_addkey_uint("HW/PROC", "XSAVE_BITS", (uint64_t)edx << 32 | eax) != registry_err_ok)
+        if (registry_addkey_uint("HW/PROC", "XSAVE_BITS", (uint64_t)edx << 32 | eax) != registry_err_ok)
             return -1;
-
     }
 
     return 0;
