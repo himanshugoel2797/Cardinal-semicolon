@@ -92,24 +92,14 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
     //add this to the process queue
     int cli_state = cli();
     local_spinlock_lock(&process_lock);
-
     if (processes == NULL)
     {
-        proc_info->prev = proc_info;
-        proc_info->next = proc_info;
+        proc_info->next = NULL;
         processes = proc_info;
     }
     else
     {
-        local_spinlock_lock(&processes->lock);
-
-        proc_info->next = processes->next;
-        proc_info->prev = processes;
-        processes->next->prev = proc_info;
-        processes->next = proc_info;
-
-        local_spinlock_unlock(&processes->lock);
-
+        proc_info->next = processes;
         processes = proc_info;
     }
     local_spinlock_unlock(&process_lock);
@@ -142,6 +132,10 @@ cs_error start_task_kernel(cs_id id, void (*handler)(void *arg), void *arg)
             {
                 //Lock is already held from the break in the previous loop
                 //Entry found
+                DEBUG_PRINT("[SysTaskMgr] Process Started: ");
+                DEBUG_PRINT(iter->name);
+                DEBUG_PRINT("\r\n");
+
                 mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)handler, arg); //Rebuild stack state
                 iter->state = task_state_pending;                                                       //Set task to initialized
 
@@ -555,20 +549,45 @@ static void task_cleanup(void *arg)
         int cli_state = cli();
         local_spinlock_lock(&process_lock);
         process_desc_t *iter = processes;
+        process_desc_t *prev_iter = NULL;
 
         while (iter != NULL)
         {
             process_desc_t *cur_iter = iter;
-            local_spinlock_lock(&cur_iter->lock);
+            if (!local_spinlock_trylock(&cur_iter->lock))
+                break;
             if (iter->state == task_state_exited)
             {
                 //Delete task
-                free_descriptors(iter, iter->descriptors, 0); //Unmap/free all descriptors regions
-                vmem_destroy(iter->mem);
-                free(iter->fpu_state);
-                free(iter->reg_state);
-                free(iter->kernel_stack);
+                if (iter->mem != NULL)
+                {
+                    free_descriptors(iter, iter->descriptors, 0); //Unmap/free all descriptors regions
+                    vmem_destroy(iter->mem);
+                    free(iter->fpu_state);
+                    free(iter->reg_state);
+                    free(iter->kernel_stack);
+                    iter->mem = NULL;
+                }
+
+                if (prev_iter != NULL)
+                {
+                    processes = iter->next;
+                    free(iter);
+                    process_count--;
+                }
+                else if (local_spinlock_trylock(&prev_iter->lock))
+                {
+                    prev_iter->next = iter->next;
+                    local_spinlock_unlock(&prev_iter->lock);
+
+                    free(iter);
+                    process_count--; //NOTE: This will probably leak if the prev_iter is also task_state_exited
+                }
+                else
+                    local_spinlock_unlock(&cur_iter->lock);
+                break; //Exit inner loop every free to allow pre-emption
             }
+            prev_iter = iter;
             iter = iter->next;
             local_spinlock_unlock(&cur_iter->lock);
         }
@@ -647,6 +666,8 @@ int module_init()
     //Make sure that execution on the boot path doesn't continue past here.
     while (true)
         halt();
+
+    task_cleanup(NULL);
 
     return 0;
 }

@@ -74,7 +74,6 @@ typedef struct process_desc
     uint8_t *kernel_stack;
 
     struct process_desc *next;
-    struct process_desc *prev;
 } process_desc_t;
 
 typedef struct
