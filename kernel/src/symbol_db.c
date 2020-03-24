@@ -23,13 +23,13 @@ void symboldb_init()
     symbol_strhdr_offsets = malloc(MAX_SYMBOL_CNT * sizeof(uint64_t));
 
     char buf[10];
-    DEBUG_PRINT("Symboldb_e_offsets ");
+    DEBUG_PRINT("[Kernel] Symboldb_e_offsets: ");
     DEBUG_PRINT(itoa((int)symbol_e_offsets, buf, 16));
     DEBUG_PRINT("\r\n");
-    DEBUG_PRINT("Symboldb_hdr_offsets ");
+    DEBUG_PRINT("[Kernel] Symboldb_hdr_offsets: ");
     DEBUG_PRINT(itoa((int)symbol_hdr_offsets, buf, 16));
     DEBUG_PRINT("\r\n");
-    DEBUG_PRINT("Symboldb_strhdr_offsets ");
+    DEBUG_PRINT("[Kernel] Symboldb_strhdr_offsets: ");
     DEBUG_PRINT(itoa((int)symbol_strhdr_offsets, buf, 16));
     DEBUG_PRINT("\r\n");
 
@@ -201,7 +201,7 @@ int symboldb_add(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *symbol)
     // If failure, report failure and error out
 
     if (symbol_cnt == MAX_SYMBOL_CNT)
-        PANIC("CRITICAL ERROR: Out of symbol cache space!");
+        PANIC("[Kernel] CRITICAL ERROR: Out of symbol cache space!");
 
     // Get the symbol name
     char *sym_str = (char *)strhdr->sh_addr + symbol->st_name;
@@ -228,7 +228,7 @@ int symboldb_add(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *symbol)
     }
 
     DEBUG_PRINT(sym_str);
-    PANIC("CRITICAL ERROR: Could not store symbol.");
+    PANIC("[Kernel] CRITICAL ERROR: Could not store symbol.");
     return 0;
 }
 
@@ -309,14 +309,14 @@ int symboldb_findmatch(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *sym,
         return 0;
 
     DEBUG_PRINT(sym_str);
-    PANIC("CRITICAL ERROR: Could not find symbol.");
+    PANIC("[Kernel] CRITICAL ERROR: Could not find symbol.");
     return -1;
 }
 
 void symboldb_showcnt()
 {
     char tmp[10];
-    DEBUG_PRINT("Symbol Count : ");
+    DEBUG_PRINT("[Kernel] Symbol Count : ");
     DEBUG_PRINT(itoa(symbol_cnt, tmp, 10));
     DEBUG_PRINT("\r\n");
 }

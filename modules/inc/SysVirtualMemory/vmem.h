@@ -19,7 +19,8 @@
 
 typedef struct vmem vmem_t;
 
-typedef enum {
+typedef enum
+{
     vmem_flags_read = 0,
     vmem_flags_write = (1 << 0),
     vmem_flags_exec = (1 << 1),
@@ -34,7 +35,8 @@ typedef enum {
     vmem_flags_rw = (vmem_flags_read | vmem_flags_write),
 } vmem_flags;
 
-typedef enum {
+typedef enum
+{
     vmem_err_none = 0,
     vmem_err_alreadymapped = -1,
     vmem_err_continue = -2,
@@ -48,6 +50,8 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
 int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size);
 
 int vmem_create(vmem_t **vm);
+
+void vmem_destroy(vmem_t *vm);
 
 int vmem_setactive(vmem_t *vm);
 
