@@ -341,7 +341,7 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd)
             if (device.scanouts[i].resource_id != 0)
             {
 
-                DEBUG_PRINT("Deleting previous framebuffer.\r\n");
+                DEBUG_PRINT("[VirtioGpu] Deleting previous framebuffer.\r\n");
 
                 virtio_gpu_detachbacking(device.scanouts[i].resource_id);
                 virtio_gpu_unref(device.scanouts[i].resource_id);
@@ -451,7 +451,7 @@ int module_init(void *ecam)
 
     cs_id ss_id = 0;
     cs_error ss_err = create_task_kernel("virtio_gpu_0", task_permissions_kernel, &ss_id);
-    DEBUG_PRINT("VirtioGpu initializing...\r\n");
+    DEBUG_PRINT("[VirtioGpu] initializing...\r\n");
     if (ss_err != CS_OK)
         PANIC("VIRTIO_ERR0");
     ss_err = start_task_kernel(ss_id, virtio_task_handler, NULL);
@@ -469,7 +469,7 @@ int module_init(void *ecam)
     device.virgl_mode = false;
     if (features & VIRTIO_GPU_F_VIRGL)
     {
-        DEBUG_PRINT("VirGL Support Enabled.\r\n");
+        DEBUG_PRINT("[VirtioGpu] VirGL Support Enabled.\r\n");
         device.virgl_mode = true;
         virtio_setfeatures(device.common_state, 0, VIRTIO_GPU_F_VIRGL);
     }

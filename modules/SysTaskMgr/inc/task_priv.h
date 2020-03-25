@@ -25,7 +25,6 @@ typedef enum
     task_state_running,
     task_state_suspended,
     task_state_blocked,
-    task_state_exiting,
     task_state_exited,
 } task_state_t;
 

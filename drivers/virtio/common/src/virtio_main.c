@@ -15,8 +15,9 @@
 #include "pci/pci.h"
 #include "virtio.h"
 
-PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds, int *avail_idx, int *used_idx) {
-    pci_config_t *device = (pci_config_t*)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+PRIVATE virtio_state_t *virtio_initialize(void *ecam_addr, void (*int_handler)(int), virtio_virtq_cmd_state_t **cmds, int *avail_idx, int *used_idx)
+{
+    pci_config_t *device = (pci_config_t *)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     //enable pci bus master
     device->command.busmaster = 1;
@@ -32,40 +33,48 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
     int msi_vector = 0;
 
     //traverse capabilities
-    if(device->capabilitiesPtr != 0) {
+    if (device->capabilitiesPtr != 0)
+    {
         uint8_t ptr = device->capabilitiesPtr;
-        uint8_t *pci_base = (uint8_t*)device;
+        uint8_t *pci_base = (uint8_t *)device;
 
-        do {
-            pci_cap_header_t *capEntry = (pci_cap_header_t*)(pci_base + ptr);
+        do
+        {
+            pci_cap_header_t *capEntry = (pci_cap_header_t *)(pci_base + ptr);
 
-            if(capEntry->capID == pci_cap_vendor) {
+            if (capEntry->capID == pci_cap_vendor)
+            {
                 intptr_t bar_addr = 0;
 
-                virtio_pci_cap_t *vendorCap = (virtio_pci_cap_t*)capEntry;
-                if(device->bar[vendorCap->bar] & 4)
+                virtio_pci_cap_t *vendorCap = (virtio_pci_cap_t *)capEntry;
+                if (device->bar[vendorCap->bar] & 4)
                     bar_addr = ((intptr_t)device->bar[vendorCap->bar + 1] << 32) + device->bar[vendorCap->bar] & 0xFFFF0000;
                 else
                     bar_addr = device->bar[vendorCap->bar] & 0xFFFF0000;
 
                 bar_addr = vmem_phystovirt(bar_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
-                switch(vendorCap->cfg_type) {
-                case virtio_pci_cap_cfg_common: {
-                    n_state->common_cfg = (virtio_pci_common_cfg_t*)(bar_addr + vendorCap->offset);
+                switch (vendorCap->cfg_type)
+                {
+                case virtio_pci_cap_cfg_common:
+                {
+                    n_state->common_cfg = (virtio_pci_common_cfg_t *)(bar_addr + vendorCap->offset);
                 }
                 break;
-                case virtio_pci_cap_cfg_notify: {
-                    n_state->notif_cfg = (virtio_pci_notif_cfg_t*)vendorCap;
+                case virtio_pci_cap_cfg_notify:
+                {
+                    n_state->notif_cfg = (virtio_pci_notif_cfg_t *)vendorCap;
                     n_state->notif_bar = bar_addr;
                 }
                 break;
-                case virtio_pci_cap_cfg_isr: {
-                    n_state->isr_cfg = (volatile uint32_t*)(bar_addr + vendorCap->offset);
+                case virtio_pci_cap_cfg_isr:
+                {
+                    n_state->isr_cfg = (volatile uint32_t *)(bar_addr + vendorCap->offset);
                 }
                 break;
-                case virtio_pci_cap_cfg_device: {
-                    n_state->dev_cfg = (void*)(bar_addr + vendorCap->offset);
+                case virtio_pci_cap_cfg_device:
+                {
+                    n_state->dev_cfg = (void *)(bar_addr + vendorCap->offset);
                 }
                 break;
                 case virtio_pci_cap_cfg_pci:
@@ -74,7 +83,7 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
                 }
             }
             ptr = capEntry->nextPtr;
-        } while(ptr != 0);
+        } while (ptr != 0);
     }
 
     //Reset the device
@@ -100,28 +109,34 @@ PRIVATE virtio_state_t* virtio_initialize(void *ecam_addr, void (*int_handler)(i
     n_state->common_cfg->msix_config = 0;
 
     n_state->common_cfg->device_feature_select = 1;
-    if(n_state->common_cfg->device_feature & 1) {
+    if (n_state->common_cfg->device_feature & 1)
+    {
         n_state->common_cfg->driver_feature_select = 1;
         n_state->common_cfg->driver_feature = 1;
-    } else {
-        DEBUG_PRINT("Legacy Virtio device!\r\n");
+    }
+    else
+    {
+        DEBUG_PRINT("[VirtioGpu] Legacy Virtio device!\r\n");
     }
 
     return n_state;
 }
 
 //Read device features, write supported features
-PRIVATE uint32_t virtio_getfeatures(virtio_state_t *state, int idx) {
+PRIVATE uint32_t virtio_getfeatures(virtio_state_t *state, int idx)
+{
     state->common_cfg->device_feature_select = idx;
     return state->common_cfg->device_feature;
 }
 
-PRIVATE void virtio_setfeatures(virtio_state_t *state, int idx, uint32_t val) {
+PRIVATE void virtio_setfeatures(virtio_state_t *state, int idx, uint32_t val)
+{
     state->common_cfg->driver_feature_select = idx;
     state->common_cfg->driver_feature = val;
 }
 
-PRIVATE bool virtio_features_ok(virtio_state_t *state) {
+PRIVATE bool virtio_features_ok(virtio_state_t *state)
+{
     //set FEATURES_OK
     //re-read FEATURES_OK bit to confirm it was accepted
     state->common_cfg->device_status |= (FEATURES_OK);
@@ -129,11 +144,13 @@ PRIVATE bool virtio_features_ok(virtio_state_t *state) {
     return state->common_cfg->device_status & (FEATURES_OK);
 }
 
-PRIVATE void virtio_driver_ok(virtio_state_t *state) {
+PRIVATE void virtio_driver_ok(virtio_state_t *state)
+{
     state->common_cfg->device_status |= (DRIVER_OK);
 }
 
-PRIVATE void* virtio_setupqueue(virtio_state_t *state, int idx, int entcnt) {
+PRIVATE void *virtio_setupqueue(virtio_state_t *state, int idx, int entcnt)
+{
 
     state->common_cfg->queue_select = (uint16_t)idx;
     state->common_cfg->queue_size = entcnt;
@@ -143,7 +160,7 @@ PRIVATE void* virtio_setupqueue(virtio_state_t *state, int idx, int entcnt) {
     uintptr_t virtqueue_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, ts);
     intptr_t virtqueue_virt = vmem_phystovirt((intptr_t)virtqueue_phys, ts, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
-    memset((void*)virtqueue_virt, 0, ts);
+    memset((void *)virtqueue_virt, 0, ts);
 
     state->common_cfg->queue_desc = virtqueue_phys;
     state->common_cfg->queue_avail = virtqueue_phys + 16 * entcnt;
@@ -151,28 +168,30 @@ PRIVATE void* virtio_setupqueue(virtio_state_t *state, int idx, int entcnt) {
     state->common_cfg->queue_msix_vector = 0;
     state->common_cfg->queue_enable = 1;
 
-    return (void*)virtqueue_virt;
+    return (void *)virtqueue_virt;
 }
 
-PRIVATE void virtio_notify(virtio_state_t *state, int idx) {
+PRIVATE void virtio_notify(virtio_state_t *state, int idx)
+{
     state->common_cfg->queue_select = (uint16_t)idx;
 
-    *(uint16_t*)(state->notif_bar + state->notif_cfg->cap.offset + state->common_cfg->queue_notify_off * state->notif_cfg->notify_multiplier)
-        = (uint16_t)idx;
+    *(uint16_t *)(state->notif_bar + state->notif_cfg->cap.offset + state->common_cfg->queue_notify_off * state->notif_cfg->notify_multiplier) = (uint16_t)idx;
 }
 
-PRIVATE void virtio_addresponse(virtio_state_t *state, int idx, void *buf, int len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
+PRIVATE void virtio_addresponse(virtio_state_t *state, int idx, void *buf, int len, void (*resp_handler)(virtio_virtq_cmd_state_t *))
+{
     state->common_cfg->queue_select = (uint16_t)idx;
     int q_len = state->common_cfg->queue_size;
 
-    virtq_desc_t *descs = (virtq_desc_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_desc, q_len * 16, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-    virtq_avail_t *avails = (virtq_avail_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_avail, q_len * 2 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    virtq_desc_t *descs = (virtq_desc_t *)vmem_phystovirt((intptr_t)state->common_cfg->queue_desc, q_len * 16, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    virtq_avail_t *avails = (virtq_avail_t *)vmem_phystovirt((intptr_t)state->common_cfg->queue_avail, q_len * 2 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     //avails->flags = 1;
 
     int cur_desc_idx = state->avail_idx[idx];
     state->avail_idx[idx] = (state->avail_idx[idx] + 1) % q_len;
 
-    while(state->cmds[idx][cur_desc_idx].waiting && !state->cmds[idx][cur_desc_idx].finished) {
+    while (state->cmds[idx][cur_desc_idx].waiting && !state->cmds[idx][cur_desc_idx].finished)
+    {
         virtio_notify(state, idx);
     }
 
@@ -199,23 +218,25 @@ PRIVATE void virtio_addresponse(virtio_state_t *state, int idx, void *buf, int l
     descs[cur_desc_idx].next = 0;
 
     avails->ring[avails->idx % q_len] = cur_desc_idx;
-    avails->idx ++;
+    avails->idx++;
 }
 
-PRIVATE void virtio_postcmd_noresp(virtio_state_t *state, int idx, void *cmd, int len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
+PRIVATE void virtio_postcmd_noresp(virtio_state_t *state, int idx, void *cmd, int len, void (*resp_handler)(virtio_virtq_cmd_state_t *))
+{
 
     state->common_cfg->queue_select = (uint16_t)idx;
     int q_len = state->common_cfg->queue_size;
 
-    virtq_desc_t *descs = (virtq_desc_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_desc, q_len * 16, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-    virtq_avail_t *avails = (virtq_avail_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_avail, q_len * 2 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-    virtq_used_t *used = (virtq_used_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_used, q_len * 8 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    virtq_desc_t *descs = (virtq_desc_t *)vmem_phystovirt((intptr_t)state->common_cfg->queue_desc, q_len * 16, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    virtq_avail_t *avails = (virtq_avail_t *)vmem_phystovirt((intptr_t)state->common_cfg->queue_avail, q_len * 2 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    virtq_used_t *used = (virtq_used_t *)vmem_phystovirt((intptr_t)state->common_cfg->queue_used, q_len * 8 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     //avails->flags = 1;
 
     int cur_desc_idx = state->avail_idx[idx];
     state->avail_idx[idx] = (state->avail_idx[idx] + 1) % q_len;
 
-    while(state->cmds[idx][cur_desc_idx].waiting && !state->cmds[idx][cur_desc_idx].finished) {
+    while (state->cmds[idx][cur_desc_idx].waiting && !state->cmds[idx][cur_desc_idx].finished)
+    {
         virtio_notify(state, idx);
     }
 
@@ -242,23 +263,24 @@ PRIVATE void virtio_postcmd_noresp(virtio_state_t *state, int idx, void *cmd, in
     descs[cur_desc_idx].addr = cmd_phys;
 
     avails->ring[avails->idx % q_len] = cur_desc_idx;
-    avails->idx ++;
-
+    avails->idx++;
 }
 
-PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t*)) {
+PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t *))
+{
 
     state->common_cfg->queue_select = (uint16_t)idx;
     int q_len = state->common_cfg->queue_size;
 
-    virtq_desc_t *descs = (virtq_desc_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_desc, q_len * 16, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-    virtq_avail_t *avails = (virtq_avail_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_avail, q_len * 2 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    virtq_desc_t *descs = (virtq_desc_t *)vmem_phystovirt((intptr_t)state->common_cfg->queue_desc, q_len * 16, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    virtq_avail_t *avails = (virtq_avail_t *)vmem_phystovirt((intptr_t)state->common_cfg->queue_avail, q_len * 2 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     //avails->flags = 1;
 
     int cur_desc_idx = state->avail_idx[idx];
     state->avail_idx[idx] = (state->avail_idx[idx] + 2) % q_len;
 
-    while(state->cmds[idx][cur_desc_idx].waiting && !state->cmds[idx][cur_desc_idx].finished) {
+    while (state->cmds[idx][cur_desc_idx].waiting && !state->cmds[idx][cur_desc_idx].finished)
+    {
         virtio_notify(state, idx);
     }
 
@@ -273,13 +295,13 @@ PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, 
     intptr_t cmd_phys = 0;
     intptr_t resp_phys = 0;
     vmem_virttophys((intptr_t)cmd, &cmd_phys);
-    if(response_len > 0)vmem_virttophys((intptr_t)resp, &resp_phys);
+    if (response_len > 0)
+        vmem_virttophys((intptr_t)resp, &resp_phys);
 
     {
         state->cmds[idx][cur_desc_idx].cmd.virt = cmd;
         state->cmds[idx][cur_desc_idx].cmd.phys = cmd_phys;
         state->cmds[idx][cur_desc_idx].cmd.len = len;
-
 
         state->cmds[idx][cur_desc_idx].resp.virt = resp;
         state->cmds[idx][cur_desc_idx].resp.phys = resp_phys;
@@ -290,12 +312,14 @@ PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, 
     descs[cur_desc_idx].flags = 0;
     descs[cur_desc_idx].next = 0;
 
-    if(len == 0) {
+    if (len == 0)
+    {
         DEBUG_PRINT("SZ0\r\n");
-        __asm__("cli\n\thlt" :: "a"(len));
+        __asm__("cli\n\thlt" ::"a"(len));
     }
 
-    if(response_len > 0) {
+    if (response_len > 0)
+    {
         descs[cur_desc_idx].flags = VIRTQ_DESC_F_NEXT;
         descs[cur_desc_idx].next = cur_desc_idx + 1;
 
@@ -307,18 +331,21 @@ PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, 
     descs[cur_desc_idx].addr = cmd_phys;
 
     avails->ring[avails->idx % q_len] = cur_desc_idx;
-    avails->idx ++;
+    avails->idx++;
 }
 
-PRIVATE void virtio_accept_used(virtio_state_t *state, int idx) {
+PRIVATE void virtio_accept_used(virtio_state_t *state, int idx)
+{
     state->common_cfg->queue_select = (uint16_t)idx;
     int q_len = state->common_cfg->queue_size;
 
-    virtq_used_t *descs = (virtq_used_t*) vmem_phystovirt((intptr_t)state->common_cfg->queue_used, q_len * 8 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    virtq_used_t *descs = (virtq_used_t *)vmem_phystovirt((intptr_t)state->common_cfg->queue_used, q_len * 8 + 6, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     int d_idx = descs->idx;
-    do {
-        for(int i = state->used_idx[idx]; i != d_idx; i++) {
+    do
+    {
+        for (int i = state->used_idx[idx]; i != d_idx; i++)
+        {
             int r_id = descs->ring[i % q_len].id;
 
             /*{
@@ -333,17 +360,20 @@ PRIVATE void virtio_accept_used(virtio_state_t *state, int idx) {
             }*/
 
             state->cmds[idx][r_id].waiting = false;
-            if(state->cmds[idx][r_id].handler != NULL)
+            if (state->cmds[idx][r_id].handler != NULL)
                 state->cmds[idx][r_id].handler(&state->cmds[idx][r_id]);
             state->cmds[idx][r_id].finished = true;
             state->cmds[idx][r_id].handler = NULL;
         }
-        if(d_idx == descs->idx) {
+        if (d_idx == descs->idx)
+        {
             *state->isr_cfg;
             return;
-        } else {
+        }
+        else
+        {
             state->used_idx[idx] = d_idx;
             d_idx = descs->idx;
         }
-    } while(true);
+    } while (true);
 }
