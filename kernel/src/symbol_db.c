@@ -24,13 +24,13 @@ void symboldb_init()
 
     char buf[10];
     DEBUG_PRINT("[Kernel] Symboldb_e_offsets: ");
-    DEBUG_PRINT(itoa((int)symbol_e_offsets, buf, 16));
+    DEBUG_PRINT(itoa((int)(int64_t)symbol_e_offsets, buf, 16));
     DEBUG_PRINT("\r\n");
     DEBUG_PRINT("[Kernel] Symboldb_hdr_offsets: ");
-    DEBUG_PRINT(itoa((int)symbol_hdr_offsets, buf, 16));
+    DEBUG_PRINT(itoa((int)(int64_t)symbol_hdr_offsets, buf, 16));
     DEBUG_PRINT("\r\n");
     DEBUG_PRINT("[Kernel] Symboldb_strhdr_offsets: ");
-    DEBUG_PRINT(itoa((int)symbol_strhdr_offsets, buf, 16));
+    DEBUG_PRINT(itoa((int)(int64_t)symbol_strhdr_offsets, buf, 16));
     DEBUG_PRINT("\r\n");
 
     memset(symbol_e_offsets, 0, MAX_SYMBOL_CNT * sizeof(uint64_t));

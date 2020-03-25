@@ -2,7 +2,8 @@
 #define CARDINAL_TYPES_H
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
 #define S(x) #x
@@ -15,21 +16,21 @@ extern "C" {
 #include S_(ISA_TYPES_H)
 #include S_(PLATFORM_TYPES_H)
 
-#define MAX(a, b)                                                              \
-  ({                                                                           \
-    __typeof__(a) _a = (a);                                                    \
-    __typeof__(b) _b = (b);                                                    \
-    _a > _b ? _a : _b;                                                         \
+#define MAX(a, b)           \
+  ({                        \
+    __typeof__(a) _a = (a); \
+    __typeof__(b) _b = (b); \
+    _a > _b ? _a : _b;      \
   })
 
-#define MIN(a, b)                                                              \
-  ({                                                                           \
-    __typeof__(a) _a = (a);                                                    \
-    __typeof__(b) _b = (b);                                                    \
-    _a < _b ? _a : _b;                                                         \
+#define MIN(a, b)           \
+  ({                        \
+    __typeof__(a) _a = (a); \
+    __typeof__(b) _b = (b); \
+    _a < _b ? _a : _b;      \
   })
 
-int debug_handle_trap();
+  int debug_handle_trap();
 
 #define KiB(x) (x * 1024ull)
 #define MiB(x) (KiB(1) * 1024ull * x)
@@ -38,13 +39,13 @@ int debug_handle_trap();
 
 #define ALIGNED(x) __attribute__((aligned(x)))
 #define UNUSED __attribute__((__unused__))
-#define NONNULL __attribute__((nonnull))
+#define NONNULL
 #define PUBLIC __attribute__((visibility("default")))
 #define PRIVATE __attribute__((visibility("hidden")))
 #define PURE __attribute__((pure))
 #define CONST __attribute__((const))
-#define IS_NULL(x)                                                             \
-  if (!x)                                                                      \
+#define IS_NULL(x) \
+  if (!x)          \
   debug_handle_trap()
 
 #define SECTION(x) __attribute__((section(x)))
@@ -57,15 +58,14 @@ int debug_handle_trap();
 
 #define NO_UBSAN __attribute__((no_sanitize("undefined")))
 
-#define SWAP_ENDIAN_16(x)                                                      \
+#define SWAP_ENDIAN_16(x) \
   (((x & 0xff00) >> 8) | ((x & 0x00ff) << 8))
 
-#define SWAP_ENDIAN_32(x)                                                      \
-  (((x & 0x000000ff) << 24) | ((x & 0x0000ff00) << 8) |                        \
+#define SWAP_ENDIAN_32(x)                               \
+  (((x & 0x000000ff) << 24) | ((x & 0x0000ff00) << 8) | \
    ((x & 0x00ff0000) >> 8) | ((x & 0xff000000) >> 24))
-#define SWAP_ENDIAN_64(x)                                                      \
+#define SWAP_ENDIAN_64(x) \
   ((SWAP_ENDIAN_32((x >> 32)) << 32) | (SWAP_ENDIAN_32(x & 0xFFFFFFFF)))
-
 
 #define TO_LE_FRM_BE_64(x) SWAP_ENDIAN_64(x)
 #define TO_LE_FRM_BE_32(x) SWAP_ENDIAN_32(x)
@@ -93,21 +93,21 @@ int debug_handle_trap();
 #define TO_LE_16(x) SWAP_ENDIAN_16(x)
 #endif
 
-int print_str(const char *s);
+  int print_str(const char *s);
 #define DEBUG_ECHO(msg) print_str(__FILE__ "," S__LINE__ ":" msg "\r\n")
 #define DEBUG_PRINT(msg) print_str(msg)
 
 #if !defined(NDEBUG)
-// First set the trap message, then raise the trap
-void set_trap_str(const char *str);
+  // First set the trap message, then raise the trap
+  void set_trap_str(const char *str);
 
 #define WARN(msg) print_str(__FILE__ "," S__LINE__ ":" msg "\r\n")
 
-#define PANIC(msg)                                                             \
+#define PANIC(msg) \
   set_trap_str(__FILE__ "," S__LINE__ ":" msg "\r\n"), debug_handle_trap()
 
-#define ASSERT(x, msg)                                                         \
-  if (!(x))                                                                    \
+#define ASSERT(x, msg) \
+  if (!(x))            \
   PANIC(msg)
 
 #else

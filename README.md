@@ -4,7 +4,7 @@ An extremely modular, security oriented microkernel operating system based on a 
 ## Building
 CMake configuration command, for out-of-source builds:
 ```bash
-CC=clang cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_SYSTEM_NAME="Generic" -D_CMAKE_TOOLCHAIN_PREFIX=llvm- ..
+CC=x86_64-elf-cardinalsemi-gcc cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_SYSTEM_NAME="Generic" ..
 ```
 
 To generate a custom kmod signing key, use:

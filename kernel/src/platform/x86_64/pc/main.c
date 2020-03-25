@@ -117,7 +117,7 @@ void alloc_ap_stack(void)
     tramp_stack = stack + 4096 * 4;
 }
 
-SECTION(".tramp_handler")
+SECTION(".tramp_handler_code")
 void smp_bootstrap(void)
 {
     apscript_execute();

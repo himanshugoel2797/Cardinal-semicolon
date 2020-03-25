@@ -13,7 +13,8 @@
 #include <string.h>
 #include <stdbool.h>
 
-typedef struct TARHeader {
+typedef struct TARHeader
+{
     char filename[100];
     char mode[8];
     char uid[8];
@@ -24,7 +25,8 @@ typedef struct TARHeader {
     char typeflag[1];
 } TARHeader;
 
-unsigned int getsize(const char *in) {
+unsigned int getsize(const char *in)
+{
 
     unsigned int size = 0;
     unsigned int j;
@@ -36,38 +38,43 @@ unsigned int getsize(const char *in) {
     return size;
 }
 
-bool
-Initrd_GetFile(const char *file,
-               void **loc,
-               size_t *size) {
+bool Initrd_GetFile(const char *file,
+                    void **loc,
+                    size_t *size)
+{
 
-    CardinalBootInfo* bootInfo = GetBootInfo();
-    if(bootInfo->InitrdStartAddress == 0 | bootInfo->InitrdLength == 0)return false;
+    CardinalBootInfo *bootInfo = GetBootInfo();
+    if ((bootInfo->InitrdStartAddress == 0) | (bootInfo->InitrdLength == 0))
+        return false;
 
     *loc = NULL;
     *size = 0;
 
     //TODO: Poll serial port for updated initrd, if available, download into ram and update boot information
 
-    TARHeader *file_entry = (TARHeader*)bootInfo->InitrdStartAddress;
+    TARHeader *file_entry = (TARHeader *)bootInfo->InitrdStartAddress;
     uint32_t file_param_len = strnlen(file, 100);
 
-    while(file_entry->filename[0] != 0) {
+    while (file_entry->filename[0] != 0)
+    {
         uint32_t len = strnlen(file_entry->filename, 100);
 
-        if(strcmp(file_entry->filename, file) == 0) {
-            *loc = (void*)((uint64_t)file_entry + 512);
+        if (strcmp(file_entry->filename, file) == 0)
+        {
+            *loc = (void *)((uint64_t)file_entry + 512);
             *size = getsize(file_entry->size);
             break;
         }
 
-        file_entry = (TARHeader*)((uint64_t)file_entry + 512 + getsize(file_entry->size));
+        file_entry = (TARHeader *)((uint64_t)file_entry + 512 + getsize(file_entry->size));
 
-        if((uint64_t)file_entry % 512) {
-            file_entry = (TARHeader*)((uint64_t)file_entry + (512 - (uint64_t)file_entry % 512));
+        if ((uint64_t)file_entry % 512)
+        {
+            file_entry = (TARHeader *)((uint64_t)file_entry + (512 - (uint64_t)file_entry % 512));
         }
     }
 
-    if(*loc == NULL)return false;
+    if (*loc == NULL)
+        return false;
     return true;
 }

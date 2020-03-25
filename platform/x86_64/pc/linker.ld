@@ -45,6 +45,7 @@ SECTIONS
 	{
 		*(.entry_point)
 		*(.tramp_handler)
+		*(.tramp_handler_code)
 		*(.text)
 	}
 

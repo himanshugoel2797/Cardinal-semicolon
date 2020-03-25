@@ -7,4 +7,5 @@
         "types.h": "c",
         "vmem.h": "c"
     },
+    "cmake.configureOnOpen": false,
 }

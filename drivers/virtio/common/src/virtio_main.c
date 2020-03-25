@@ -48,7 +48,7 @@ PRIVATE virtio_state_t *virtio_initialize(void *ecam_addr, void (*int_handler)(i
 
                 virtio_pci_cap_t *vendorCap = (virtio_pci_cap_t *)capEntry;
                 if (device->bar[vendorCap->bar] & 4)
-                    bar_addr = ((intptr_t)device->bar[vendorCap->bar + 1] << 32) + device->bar[vendorCap->bar] & 0xFFFF0000;
+                    bar_addr = ((intptr_t)device->bar[vendorCap->bar + 1] << 32) + (device->bar[vendorCap->bar] & 0xFFFF0000);
                 else
                     bar_addr = device->bar[vendorCap->bar] & 0xFFFF0000;
 
