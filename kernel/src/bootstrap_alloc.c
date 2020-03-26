@@ -19,17 +19,20 @@ static ALIGNED(KiB(4)) uint8_t bootstrap_alloc_area[BOOTSTRAP_ALLOC_AREA_SIZE];
 static uint64_t bootstrap_alloc_pos = 0;
 static int bootstrap_alloc_lock = 0;
 
-void *bootstrap_malloc(size_t s) {
+void *bootstrap_malloc(size_t s)
+{
 
     void *mem = NULL;
 
-    if (s > 0) {
+    if (s > 0)
+    {
 
         if (s % 16 != 0) // Require all allocations to be 16-byte aligned
             s = ((s >> 4) + 1) << 4;
 
         local_spinlock_lock(&bootstrap_alloc_lock);
-        if (bootstrap_alloc_pos + s < BOOTSTRAP_ALLOC_AREA_SIZE) {
+        if (bootstrap_alloc_pos + s < BOOTSTRAP_ALLOC_AREA_SIZE)
+        {
             mem = &bootstrap_alloc_area[bootstrap_alloc_pos];
             bootstrap_alloc_pos += s;
         }
@@ -38,7 +41,8 @@ void *bootstrap_malloc(size_t s) {
     return mem;
 }
 
-void bootstrap_free(void *mem, size_t s) {
+void bootstrap_free(void *mem, size_t s)
+{
     // If another allocation has not been made yet, we can free the memory
     if (mem == NULL)
         return;
@@ -51,7 +55,7 @@ void bootstrap_free(void *mem, size_t s) {
 
     local_spinlock_lock(&bootstrap_alloc_lock);
     if (bootstrap_alloc_pos > s &&
-            &bootstrap_alloc_area[bootstrap_alloc_pos - s] == (uint8_t *)mem)
+        &bootstrap_alloc_area[bootstrap_alloc_pos - s] == (uint8_t *)mem)
         bootstrap_alloc_pos -= s;
 
     local_spinlock_unlock(&bootstrap_alloc_lock);
@@ -59,12 +63,13 @@ void bootstrap_free(void *mem, size_t s) {
 void *(*malloc_hndl)(size_t) = NULL;
 void (*free_hndl)(void *) = NULL;
 
-void *WEAK malloc(size_t size) {
+void *WEAK malloc(size_t size)
+{
 
     if (malloc_hndl != NULL)
         return malloc_hndl(size);
 
-    if(size == 0)
+    if (size == 0)
         return NULL;
 
     uint8_t *res = bootstrap_malloc(size + 16);
@@ -76,8 +81,10 @@ void *WEAK malloc(size_t size) {
     return res + 16;
 }
 
-void WEAK free(void *ptr) {
-    if (free_hndl != NULL) {
+void WEAK free(void *ptr)
+{
+    if (free_hndl != NULL)
+    {
         free_hndl(ptr);
         return;
     }
@@ -91,7 +98,8 @@ void WEAK free(void *ptr) {
     bootstrap_free(ptr, sz + 16);
 }
 
-void *WEAK realloc(void *ptr, size_t size) {
+void *WEAK realloc(void *ptr, size_t size)
+{
     ptr = NULL;
     size = 0;
 
@@ -99,27 +107,28 @@ void *WEAK realloc(void *ptr, size_t size) {
     return NULL;
 }
 
-int kernel_free_avl_bootstrap() {
-    void (*pagealloc_free_hndl) (uintptr_t, uint64_t) = (void (*)(uintptr_t, uint64_t))elf_resolvefunction("pagealloc_free");
-    int (*vmem_virttophys_hndl)(intptr_t, intptr_t *) = (int (*)(intptr_t, intptr_t*))elf_resolvefunction("vmem_virttophys");
+int kernel_free_avl_bootstrap()
+{
+    void (*pagealloc_free_hndl)(uintptr_t, uint64_t) = (void (*)(uintptr_t, uint64_t))elf_resolvefunction("pagealloc_free");
+    int (*vmem_virttophys_hndl)(void *, intptr_t, intptr_t *) = (int (*)(void *, intptr_t, intptr_t *))elf_resolvefunction("vmem_virttophys");
 
     local_spinlock_lock(&bootstrap_alloc_lock);
 
     uintptr_t cur_ptr = (uintptr_t)bootstrap_alloc_pos;
-    if(cur_ptr % KiB(4))
+    if (cur_ptr % KiB(4))
         cur_ptr += KiB(4) - (cur_ptr % KiB(4));
-
 
     uint64_t rem_sz = BOOTSTRAP_ALLOC_AREA_SIZE - cur_ptr;
 
     intptr_t phys_addr = 0;
-    vmem_virttophys_hndl((intptr_t)&bootstrap_alloc_area[cur_ptr], &phys_addr);
+    vmem_virttophys_hndl(NULL, (intptr_t)&bootstrap_alloc_area[cur_ptr], &phys_addr);
 
     pagealloc_free_hndl((uintptr_t)phys_addr, rem_sz);
     return 0;
 }
 
-int kernel_updatememhandlers() {
+int kernel_updatememhandlers()
+{
     malloc_hndl = (void *(*)(size_t))elf_resolvefunction("malloc");
     if (malloc_hndl == malloc)
         malloc_hndl = NULL;

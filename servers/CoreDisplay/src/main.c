@@ -29,7 +29,7 @@ int display_register(display_desc_t *desc)
         return -2;
     }
 
-    DEBUG_PRINT("[CoreDisplay] Registered Device: ");
+    DEBUG_PRINT("[CoreDisplay] Registered Device:");
     DEBUG_PRINT(desc->display_name);
     DEBUG_PRINT("\r\n");
 
@@ -73,6 +73,7 @@ int coredisplay_postinit()
         //Load the lfb driver
         if (module_load("./lfb.celf") != 0)
             PANIC("[CoreDisplay] No framebuffer available!\r\n");
+        DEBUG_PRINT("[CoreDisplay] Loaded lfb.\r\n");
     }
 
     return 0;

@@ -16,11 +16,13 @@ int ioapic_init();
 int apic_init();
 int pic_fini();
 
-static void spurious_irq_handler(int int_num) {
+static void spurious_irq_handler(int int_num)
+{
     int_num = 0;
 }
 
-static void pagefault_handler(int int_num) {
+static void pagefault_handler(int int_num)
+{
     int_num = 0;
 
     interrupt_register_state_t reg_state;
@@ -33,17 +35,18 @@ static void pagefault_handler(int int_num) {
     PANIC("");
 }
 
-int intr_init() {
+int intr_init()
+{
     int err = 0;
 
     pic_fini();
 
     err = gdt_init();
-    if(err != 0)
+    if (err != 0)
         return err;
 
     err = idt_init();
-    if(err != 0)
+    if (err != 0)
         return err;
 
     int irq0 = 0x27;
@@ -58,11 +61,11 @@ int intr_init() {
     interrupt_registerhandler(pf_intr, pagefault_handler);
 
     err = ioapic_init();
-    if(err != 0)
+    if (err != 0)
         return err;
 
     err = apic_init();
-    if(err != 0)
+    if (err != 0)
         return err;
 
     //__asm__("hlt");
@@ -71,19 +74,20 @@ int intr_init() {
     return 0;
 }
 
-int intr_mp_init() {
+int intr_mp_init()
+{
     int err = 0;
 
     err = gdt_init();
-    if(err != 0)
+    if (err != 0)
         return err;
 
     err = idt_init();
-    if(err != 0)
+    if (err != 0)
         return err;
 
     err = apic_init();
-    if(err != 0)
+    if (err != 0)
         return err;
 
     //__asm__("hlt");
@@ -92,10 +96,12 @@ int intr_mp_init() {
     return 0;
 }
 
-uint32_t msi_register_addr(int cpu_idx) {
-    return 0xFEE00000 | (cpu_idx & 0xff) << 12 | (1 << 3) | (0 << 2);   //fixed destination mode
+uint32_t msi_register_addr(int cpu_idx)
+{
+    return 0xFEE00000 | (cpu_idx & 0xff) << 12 | (1 << 3) | (0 << 2); //fixed destination mode
 }
 
-uint64_t msi_register_data(int vec) {
+uint64_t msi_register_data(int vec)
+{
     return (vec & 0xff);
 }

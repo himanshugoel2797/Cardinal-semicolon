@@ -204,7 +204,7 @@ PRIVATE void virtio_addresponse(virtio_state_t *state, int idx, void *buf, int l
     //Fill a descriptor with the cmd and update the available ring
     //Fill a descriptor with the response and update the available ring
     intptr_t resp_phys = 0;
-    vmem_virttophys((intptr_t)buf, &resp_phys);
+    vmem_virttophys(NULL, (intptr_t)buf, &resp_phys);
 
     {
         state->cmds[idx][cur_desc_idx].resp.virt = buf;
@@ -249,7 +249,7 @@ PRIVATE void virtio_postcmd_noresp(virtio_state_t *state, int idx, void *cmd, in
     //Fill a descriptor with the cmd and update the available ring
     //Fill a descriptor with the response and update the available ring
     intptr_t cmd_phys = 0;
-    vmem_virttophys((intptr_t)cmd, &cmd_phys);
+    vmem_virttophys(NULL, (intptr_t)cmd, &cmd_phys);
 
     {
         state->cmds[idx][cur_desc_idx].cmd.virt = cmd;
@@ -294,9 +294,9 @@ PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, 
     //Fill a descriptor with the response and update the available ring
     intptr_t cmd_phys = 0;
     intptr_t resp_phys = 0;
-    vmem_virttophys((intptr_t)cmd, &cmd_phys);
+    vmem_virttophys(NULL, (intptr_t)cmd, &cmd_phys);
     if (response_len > 0)
-        vmem_virttophys((intptr_t)resp, &resp_phys);
+        vmem_virttophys(NULL, (intptr_t)resp, &resp_phys);
 
     {
         state->cmds[idx][cur_desc_idx].cmd.virt = cmd;

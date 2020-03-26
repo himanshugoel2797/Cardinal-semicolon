@@ -19,7 +19,8 @@
 #define IDT_ENTRY_HANDLER_SIZE (64)
 #define IDT_TYPE_INTR (0xE)
 
-typedef struct {
+typedef struct
+{
     uint32_t offset0 : 16;
     uint32_t seg_select : 16;
     uint32_t ist : 3;
@@ -33,12 +34,14 @@ typedef struct {
     uint32_t zr2 : 32;
 } idt_t;
 
-typedef struct PACKED {
+typedef struct PACKED
+{
     uint16_t limit;
     idt_t *base;
 } idtr_t;
 
-typedef struct {
+typedef struct
+{
     uint64_t rsp;
     uint64_t r15;
     uint64_t r14;
@@ -64,7 +67,8 @@ typedef struct {
     uint64_t ss;
 } regs_t;
 
-typedef struct {
+typedef struct
+{
     idt_t *idt;
     regs_t *reg_state;
     regs_t *reg_ref;
@@ -77,11 +81,13 @@ static bool interrupt_blocked[IDT_ENTRY_COUNT];
 static int interrupt_alloc_lock = 0;
 static bool int_arr_inited = false;
 
-void interrupt_registerhandler(int irq, InterruptHandler handler) {
+void interrupt_registerhandler(int irq, InterruptHandler handler)
+{
     int state = cli();
     local_spinlock_lock(&interrupt_alloc_lock);
-    for(int i = 0; i < IDT_HANDLER_CNT; i++)
-        if(interrupt_funcs[irq][i] == NULL) {
+    for (int i = 0; i < IDT_HANDLER_CNT; i++)
+        if (interrupt_funcs[irq][i] == NULL)
+        {
             interrupt_funcs[irq][i] = handler;
             local_spinlock_unlock(&interrupt_alloc_lock);
             sti(state);
@@ -93,11 +99,13 @@ void interrupt_registerhandler(int irq, InterruptHandler handler) {
     PANIC("Interrupt oversubscribed!");
 }
 
-void interrupt_unregisterhandler(int irq, InterruptHandler handler) {
+void interrupt_unregisterhandler(int irq, InterruptHandler handler)
+{
     int state = cli();
     local_spinlock_lock(&interrupt_alloc_lock);
-    for(int i = 0; i < IDT_HANDLER_CNT; i++)
-        if(interrupt_funcs[irq][i] == handler) {
+    for (int i = 0; i < IDT_HANDLER_CNT; i++)
+        if (interrupt_funcs[irq][i] == handler)
+        {
             interrupt_funcs[irq][i] = NULL;
         }
 
@@ -105,32 +113,38 @@ void interrupt_unregisterhandler(int irq, InterruptHandler handler) {
     sti(state);
 }
 
-int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
-    if(flags & interrupt_flags_fixed) {
+int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base)
+{
+    if (flags & interrupt_flags_fixed)
+    {
         int state = cli();
         local_spinlock_lock(&interrupt_alloc_lock);
 
-        for(int c = 0; c < cnt; c++) {
-            if(interrupt_blocked[*base + c]) {
+        for (int c = 0; c < cnt; c++)
+        {
+            if (interrupt_blocked[*base + c])
+            {
                 local_spinlock_unlock(&interrupt_alloc_lock);
                 sti(state);
                 return -1;
             }
         }
 
-
-        if(flags & interrupt_flags_exclusive)
-            for(int c = 0; c < cnt; c++)
+        if (flags & interrupt_flags_exclusive)
+            for (int c = 0; c < cnt; c++)
                 interrupt_blocked[*base + c] = true;
 
         local_spinlock_unlock(&interrupt_alloc_lock);
         sti(state);
         return 0;
-    } else {
+    }
+    else
+    {
         //if fixed allocation works, use it
-        if(*base != 0) {
+        if (*base != 0)
+        {
             int err = interrupt_allocate(cnt, flags | interrupt_flags_fixed, base);
-            if(err == 0)
+            if (err == 0)
                 return 0;
         }
 
@@ -138,12 +152,14 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
         int state = cli();
         local_spinlock_lock(&interrupt_alloc_lock);
 
-        int run_off = 32;   //IRQs start at 32 for x86
+        int run_off = 32; //IRQs start at 32 for x86
         int run_len = 0;
-        for(int i = 32; i < IDT_ENTRY_COUNT; i++) {
-            if(run_len >= cnt) {
-                if(flags & interrupt_flags_exclusive)
-                    for(int c = 0; c < cnt; c++)
+        for (int i = 32; i < IDT_ENTRY_COUNT; i++)
+        {
+            if (run_len >= cnt)
+            {
+                if (flags & interrupt_flags_exclusive)
+                    for (int c = 0; c < cnt; c++)
                         interrupt_blocked[run_off + c] = true;
 
                 *base = run_off;
@@ -152,10 +168,12 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
                 return 0;
             }
 
-            if(interrupt_blocked[i]) {
+            if (interrupt_blocked[i])
+            {
                 run_len = 0;
                 run_off = i + 1;
-            } else
+            }
+            else
                 run_len++;
         }
 
@@ -163,10 +181,14 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base) {
         sti(state);
         return -1;
     }
-
 }
 
-void idt_mainhandler(regs_t *regs) {
+void idt_mainhandler(regs_t *regs)
+{
+    if ((regs->cs & 3) != 0)
+    {
+        __asm__ volatile("swapgs");
+    }
     //Store the registers in the processor interrupt state
     regs->int_no = (uint8_t)regs->int_no;
 
@@ -178,8 +200,10 @@ void idt_mainhandler(regs_t *regs) {
     int state = cli();
 
     local_spinlock_lock(&interrupt_alloc_lock);
-    for(int i = 0; i < IDT_HANDLER_CNT; i++) {
-        if(interrupt_funcs[regs->int_no][i] != NULL) {
+    for (int i = 0; i < IDT_HANDLER_CNT; i++)
+    {
+        if (interrupt_funcs[regs->int_no][i] != NULL)
+        {
             interrupt_funcs[regs->int_no][i](regs->int_no);
             handled = true;
         }
@@ -187,23 +211,35 @@ void idt_mainhandler(regs_t *regs) {
     local_spinlock_unlock(&interrupt_alloc_lock);
     sti(state);
 
-    if(!handled) {
-        char msg[256] = "Unhandled Interrupt: ";
-        char int_num[10];
-        char *msg_ptr = strncat(msg, itoa(regs->int_no, int_num, 16), 255);
+    if (!handled)
+    {
+        char int_num[20] = "";
+        DEBUG_PRINT("Unhandled Interrupt: ");
+        char *msg_ptr = itoa(regs->int_no, int_num, 16);
         DEBUG_PRINT(msg_ptr);
+        DEBUG_PRINT(" at 0x");
+        msg_ptr = ltoa(regs->rip, int_num, 16);
+        DEBUG_PRINT(msg_ptr);
+        DEBUG_PRINT("\r\n");
         PANIC("Failure!");
     }
 
     idt->reg_ref = NULL;
 
-    if(regs->int_no >= 32)
+    if (regs->int_no >= 32)
         interrupt_sendeoi(regs->int_no);
+
+    if ((regs->cs & 3) != 0)
+    {
+        regs->ss |= 3;
+        __asm__ volatile("swapgs");
+    }
 }
 
-
-void interrupt_setregisterstate(interrupt_register_state_t *state) {
-    if(state != NULL) {
+void interrupt_setregisterstate(interrupt_register_state_t *state)
+{
+    if (state != NULL)
+    {
 
         idt->reg_ref->r15 = state->r15;
         idt->reg_ref->r14 = state->r14;
@@ -231,8 +267,10 @@ void interrupt_setregisterstate(interrupt_register_state_t *state) {
     }
 }
 
-void interrupt_getregisterstate(interrupt_register_state_t *state) {
-    if(state != NULL) {
+void interrupt_getregisterstate(interrupt_register_state_t *state)
+{
+    if (state != NULL)
+    {
 
         state->r15 = idt->reg_ref->r15;
         state->r14 = idt->reg_ref->r14;
@@ -260,8 +298,8 @@ void interrupt_getregisterstate(interrupt_register_state_t *state) {
     }
 }
 
-NAKED NORETURN
-static void idt_defaulthandler() {
+NAKED NORETURN static void idt_defaulthandler()
+{
     __asm__ volatile(
         "pushq %rbx\n\t"
         "pushq %rcx\n\t"
@@ -298,25 +336,26 @@ static void idt_defaulthandler() {
         "popq %rbx\n\t"
         "popq %rax\n\t"
         "add $16, %rsp\n\t"
-        "iretq\n\t"
-    );
+        "iretq\n\t");
 }
 
-static void idt_fillswinterrupthandler(char *idt_handler, uint8_t intNum, uint8_t pushToStack) {
+static void idt_fillswinterrupthandler(char *idt_handler, uint8_t intNum, uint8_t pushToStack)
+{
     int index = 0;
 
     //Push dummy error code if the interrupt doesn't do so
-    if(pushToStack) {
+    if (pushToStack)
+    {
         idt_handler[index++] = 0x6a; //Push
         idt_handler[index++] = pushToStack;
     }
 
-    idt_handler[index++] = 0x6a; //Push
+    idt_handler[index++] = 0x6a;   //Push
     idt_handler[index++] = intNum; //Push the interrupt number to stack
 
     //push jump address and ret
-    idt_handler[index++] = 0x50;	//push %%rax
-    idt_handler[index++] = 0x48;	//movq idt_defaulthandler, %%rax
+    idt_handler[index++] = 0x50; //push %%rax
+    idt_handler[index++] = 0x48; //movq idt_defaulthandler, %%rax
     idt_handler[index++] = 0xb8;
     idt_handler[index++] = ((uint64_t)(idt_defaulthandler)) & 0xff;
     idt_handler[index++] = ((uint64_t)(idt_defaulthandler) >> (8)) & 0xff;
@@ -328,16 +367,18 @@ static void idt_fillswinterrupthandler(char *idt_handler, uint8_t intNum, uint8_
     idt_handler[index++] = ((uint64_t)(idt_defaulthandler) >> (32 + 24)) & 0xff;
     //*(uint32_t*)&idt_handler[index] = 0x11223344;
     //index += 3;
-    idt_handler[index++] = 0x50;	//push %%rax
-    idt_handler[index++] = 0xC3;	//retq
+    idt_handler[index++] = 0x50; //push %%rax
+    idt_handler[index++] = 0xC3; //retq
 }
 
-int idt_init() {
-    if(idt == NULL) {
+int idt_init()
+{
+    if (idt == NULL)
+    {
         int (*mp_tls_alloc)(int) = elf_resolvefunction("mp_tls_alloc");
-        TLS void* (*mp_tls_get)(int) = elf_resolvefunction("mp_tls_get");
+        TLS void *(*mp_tls_get)(int) = elf_resolvefunction("mp_tls_get");
 
-        idt = (TLS tls_idt_t*)mp_tls_get(mp_tls_alloc(sizeof(tls_idt_t)));
+        idt = (TLS tls_idt_t *)mp_tls_get(mp_tls_alloc(sizeof(tls_idt_t)));
     }
     idt->idt = malloc(IDT_ENTRY_COUNT * sizeof(idt_t));
     idt->reg_state = malloc(sizeof(regs_t));
@@ -346,24 +387,27 @@ int idt_init() {
     idt_t *idt_lcl = idt->idt;
 
     int pushesToStack = 1;
-    if(!int_arr_inited) {
+    if (!int_arr_inited)
+    {
 
-        for(int i = 0; i < IDT_ENTRY_COUNT; i++) {
-            if(i == 8 || (i >= 10 && i <= 14)) pushesToStack = 0;
-            idt_fillswinterrupthandler(idt_handlers[i], i, pushesToStack);  //If pushesToStack is non-zero, the value will be pushed to stack
+        for (int i = 0; i < IDT_ENTRY_COUNT; i++)
+        {
+            if (i == 8 || (i >= 10 && i <= 14))
+                pushesToStack = 0;
+            idt_fillswinterrupthandler(idt_handlers[i], i, pushesToStack); //If pushesToStack is non-zero, the value will be pushed to stack
 
             interrupt_blocked[i] = false;
-            for(int j = 0; j < IDT_HANDLER_CNT; j++)
+            for (int j = 0; j < IDT_HANDLER_CNT; j++)
                 interrupt_funcs[i][j] = NULL;
 
             pushesToStack = 1;
         }
 
-
         int_arr_inited = true;
     }
 
-    for(int i = 0; i < IDT_ENTRY_COUNT; i++) {
+    for (int i = 0; i < IDT_ENTRY_COUNT; i++)
+    {
         //Setup interrupts
         idt_lcl[i].offset0 = (uint64_t)idt_handlers[i] & 0xFFFF;
         idt_lcl[i].offset1 = ((uint64_t)idt_handlers[i] >> 16) & 0xFFFF;
@@ -382,7 +426,7 @@ int idt_init() {
     idtr.limit = sizeof(idt_t) * IDT_ENTRY_COUNT - 1;
     idtr.base = idt->idt;
 
-    __asm__ volatile("lidt (%0)" :: "r"(&idtr));
+    __asm__ volatile("lidt (%0)" ::"r"(&idtr));
 
     return 0;
 }

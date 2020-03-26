@@ -29,11 +29,28 @@ int module_load(char *name)
 
     char tmp_entry_addr[20];
     print_str("[Kernel] Loaded at ");
-    print_str(ltoa((uint64_t)entry_pt, tmp_entry_addr, 16));
+    print_str(ltoa((uint64_t)hdr->data, tmp_entry_addr, 16));
     print_str("\r\n");
 
     int err = entry_pt();
     return err;
+}
+
+void module_user_load(char *name)
+{
+    print_str("[Kernel] Load user module:");
+    print_str(name);
+    print_str("\r\n");
+
+    void *mod_loc = NULL;
+    size_t len = 0;
+    if (!Initrd_GetFile(name, &mod_loc, &len))
+        PANIC("[Kernel] Failed to find module!");
+
+    // decompress celf's elf section
+    ModuleHeader *hdr = (ModuleHeader *)mod_loc;
+    void (*task_startnew_user)(void *, size_t) = (void (*)(void *, size_t))elf_resolvefunction("task_startnew_user");
+    task_startnew_user(hdr->data, hdr->uncompressed_len);
 }
 
 int script_execute(char *load_script, size_t load_len)
@@ -51,6 +68,8 @@ int script_execute(char *load_script, size_t load_len)
             mode = 0;
         else if (strncmp(load_script, "CALL:", 5) == 0)
             mode = 1;
+        else if (strncmp(load_script, "USER:", 5) == 0)
+            mode = 2;
 
         load_script += 5;
         const char *end_of_line = strstr(load_script, "\n");
@@ -100,6 +119,10 @@ int script_execute(char *load_script, size_t load_len)
                 print_str("\r\n");
                 PANIC("[Kernel] Call failed");
             }
+        }
+        else if (mode == 2)
+        {
+            module_user_load(name);
         }
         else if (mode == -1)
         {

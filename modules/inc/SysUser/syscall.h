@@ -8,13 +8,12 @@
 
 #include <types.h>
 
-int syscall_sethandler(int idx, void* func);
-PURE int syscall_parameterreg_count(void);
-void syscall_setstate(uint64_t rsp, uint64_t rip, uint64_t rflags);
-void syscall_touser(uint64_t *regs);
+int syscall_sethandler(int idx, void *func);
+void syscall_touser(void *arg);
 
-void syscall_getfullstate(void* dst);
-void syscall_setfullstate(void* state);
+void syscall_getfullstate(void *dst);
+void syscall_setfullstate(void *state);
+void syscall_getdefaultstate(void *state, void *kernel_stack, void *user_stack, void *rip);
 PURE int syscall_getfullstate_size(void);
 
 #endif

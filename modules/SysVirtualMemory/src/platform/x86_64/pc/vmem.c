@@ -129,7 +129,10 @@ int vmem_init()
     memset(ktable, 0, KiB(4));
 
     if (lcl == NULL)
+    {
+        //mp_tls_alloc(8);
         lcl = (TLS struct lcl_data *)mp_tls_get(mp_tls_alloc(sizeof(struct lcl_data)));
+    }
     lcl->ktable = ktable_phys;
     {
         kmem.flags = vmem_flags_kernel;
@@ -229,7 +232,7 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
         if (perms & vmem_flags_write)
             c_flags |= WRITE;
 
-        if (~perms & vmem_flags_exec)
+        if ((perms & vmem_flags_exec) == 0)
             c_flags |= NOEXEC;
 
         if (perms & vmem_flags_cachewritethrough)
@@ -538,10 +541,21 @@ static int vmem_virttophys_st(uint64_t *pg, uint64_t virt, intptr_t *phys, int l
         return -1;
 }
 
-int vmem_virttophys(intptr_t virt, intptr_t *phys)
+int vmem_virttophys(vmem_t *vm, intptr_t virt, intptr_t *phys)
 {
-    uint64_t *n_lv_d = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
-    return vmem_virttophys_st(n_lv_d, (uint64_t)virt, phys, 0);
+    if (virt < 0)
+    {
+        //kernel address
+        uint64_t *n_lv_d = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
+        return vmem_virttophys_st(n_lv_d, (uint64_t)virt, phys, 0);
+    }
+    else if (vm != NULL)
+    {
+        //user address
+        uint64_t *n_lv_d = vm->ptable;
+        return vmem_virttophys_st(n_lv_d, (uint64_t)virt, phys, 0);
+    }
+    return -2;
 }
 
 intptr_t vmem_phystovirt(intptr_t phys, size_t sz, int flags)

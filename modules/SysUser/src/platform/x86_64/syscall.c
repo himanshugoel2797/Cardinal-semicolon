@@ -18,6 +18,7 @@ typedef struct
     uint64_t rsp;
     uint64_t rbp;
     uint64_t rbx;
+    uint64_t r12;
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
@@ -38,7 +39,7 @@ PRIVATE NAKED NORETURN void syscall_handler(void)
     //Save the register state to tls space
     __asm__ volatile(
 
-        "swapgs\r\n"
+        //"swapgs\r\n"
         "cmp $" S_(SYSCALL_COUNT) ", %r12\r\n"
                                   "jge exit_syscall_handler\r\n"
 
@@ -49,9 +50,10 @@ PRIVATE NAKED NORETURN void syscall_handler(void)
                                   "movq %rax, %gs:0x18(%rsp)\r\n" //RSP
                                   "movq %rbp, %gs:0x20(%rsp)\r\n" //RBP
                                   "movq %rbx, %gs:0x28(%rsp)\r\n" //RBX
-                                  "movq %r13, %gs:0x30(%rsp)\r\n" //R13
-                                  "movq %r14, %gs:0x38(%rsp)\r\n" //R14
-                                  "movq %r15, %gs:0x40(%rsp)\r\n" //R15
+                                  "movq %r12, %gs:0x30(%rsp)\r\n" //R12
+                                  "movq %r13, %gs:0x38(%rsp)\r\n" //R13
+                                  "movq %r14, %gs:0x40(%rsp)\r\n" //R14
+                                  "movq %r15, %gs:0x48(%rsp)\r\n" //R15
                                   "movq %gs:(%rsp), %rsp\r\n"     //Load the kernel stack pointer
 
                                   //Call the syscall function
@@ -61,9 +63,10 @@ PRIVATE NAKED NORETURN void syscall_handler(void)
 
                                   //Restore the stored state
                                   "movq (syscall_state), %rsp\r\n"
-                                  "movq %gs:0x40(%rsp), %r15\r\n" //R15
-                                  "movq %gs:0x38(%rsp), %r14\r\n" //R14
-                                  "movq %gs:0x30(%rsp), %r13\r\n" //R13
+                                  "movq %gs:0x48(%rsp), %r15\r\n" //R15
+                                  "movq %gs:0x40(%rsp), %r14\r\n" //R14
+                                  "movq %gs:0x38(%rsp), %r13\r\n" //R13
+                                  "movq %gs:0x30(%rsp), %r12\r\n" //R12
                                   "movq %gs:0x28(%rsp), %rbx\r\n" //RBX
                                   "movq %gs:0x20(%rsp), %rbp\r\n" //RBP
                                   "movq %gs:0x10(%rsp), %r11\r\n" //RFLAGS
@@ -71,16 +74,16 @@ PRIVATE NAKED NORETURN void syscall_handler(void)
                                   "movq %gs:0x18(%rsp), %rsp\r\n" //RSP
 
                                   "exit_syscall_handler:\r\n"
-                                  "swapgs\r\n"
+                                  //"swapgs\r\n"
                                   "sysretq\r\n");
 }
 
 //Processes are started and functions called via syscall exit
-PRIVATE NAKED NORETURN void user_transition(uint64_t UNUSED(a), uint64_t UNUSED(b), uint64_t UNUSED(c), uint64_t UNUSED(d), uint64_t UNUSED(e), uint64_t UNUSED(f), uint64_t UNUSED(rax))
+PRIVATE NAKED NORETURN void user_transition(void UNUSED(*stack_base))
 {
     __asm__ volatile(
         //Restore the stored state
-        "popq %rax\r\n" //RAX
+        "cli\r\n"
         "movq (syscall_state), %rsp\r\n"
         "movq %gs:0x48(%rsp), %r15\r\n" //R15
         "movq %gs:0x40(%rsp), %r14\r\n" //R14
@@ -91,6 +94,7 @@ PRIVATE NAKED NORETURN void user_transition(uint64_t UNUSED(a), uint64_t UNUSED(
         "movq %gs:0x10(%rsp), %r11\r\n" //RFLAGS
         "movq %gs:0x8(%rsp), %rcx\r\n"  //RIP
         "movq %gs:0x18(%rsp), %rsp\r\n" //RSP
+        //"hlt\r\n"
         "swapgs\r\n"
         "sysretq\r\n");
 }
@@ -120,32 +124,33 @@ void syscall_setfullstate(void *state)
     syscall_state->registers = st->registers;
 }
 
+void syscall_getdefaultstate(void *state, void *kernel_stack, void *user_stack, void *rip)
+{
+    syscall_state_t *st = (syscall_state_t *)state;
+    st->kernel_stack = kernel_stack;
+    st->registers.rsp = (uint64_t)user_stack;
+    st->registers.rflags = 0x3200;
+    st->registers.rip = (uint64_t)rip;
+    st->registers.rbp = (uint64_t)user_stack;
+    st->registers.rbx = 0;
+    st->registers.r12 = 0;
+    st->registers.r13 = 0;
+    st->registers.r14 = 0;
+    st->registers.r15 = 0;
+}
+
 PURE int syscall_getfullstate_size(void)
 {
     return sizeof(syscall_state_t);
 }
 
-PURE int syscall_parameterreg_count(void)
+void syscall_touser(void *arg)
 {
-    return 7;
-}
-
-void syscall_setstate(uint64_t rsp, uint64_t rip, uint64_t rflags)
-{
-    //memset(&syscall_state->registers, 0, sizeof(syscall_state_t));
-    syscall_state->registers.rflags = rflags;
-    syscall_state->registers.rip = rip;
-    syscall_state->registers.rsp = rsp;
-}
-
-void syscall_touser(uint64_t *regs)
-{
-    user_transition(regs[0], regs[1], regs[2], regs[3], regs[4], regs[5], regs[6]);
+    user_transition(arg);
 }
 
 PRIVATE int syscall_plat_init()
 {
-
     if (syscall_state == NULL)
         syscall_state = (TLS syscall_state_t *)mp_tls_get(mp_tls_alloc(sizeof(syscall_state_t)));
 

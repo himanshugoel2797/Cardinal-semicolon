@@ -1,7 +1,7 @@
 #include <stdio.h>
 
-int main()
+void __attribute__((naked)) _start()
 {
-    printf("Hello World!");
-    return 0;
+    while (1)
+        ;
 }

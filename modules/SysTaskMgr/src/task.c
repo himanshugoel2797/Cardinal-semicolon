@@ -21,6 +21,7 @@
 #include "SysInterrupts/interrupts.h"
 #include "SysReg/registry.h"
 
+#include "elf.h"
 #include "task_priv.h"
 #include "error.h"
 #include "thread.h"
@@ -73,6 +74,15 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
     if (proc_info->kernel_stack == NULL)
         PANIC("[SysTaskMgr] Unexpected memory allocaiton failure.");
     proc_info->kernel_stack += KERNEL_STACK_LEN;
+
+    proc_info->user_stack = NULL;
+    proc_info->syscall_data = NULL;
+
+    if (perms == task_permissions_none)
+    {
+        proc_info->syscall_data = malloc(syscall_getfullstate_size());
+        syscall_getdefaultstate(proc_info->syscall_data, proc_info->kernel_stack, proc_info->user_stack, NULL);
+    }
 
     proc_info->fpu_state = malloc(fp_platform_getstatesize() + fp_platform_getalign());
     if (proc_info->fpu_state == NULL)
@@ -136,8 +146,24 @@ cs_error start_task_kernel(cs_id id, void (*handler)(void *arg), void *arg)
                 DEBUG_PRINT(iter->name);
                 DEBUG_PRINT("\r\n");
 
-                mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)handler, arg); //Rebuild stack state
-                iter->state = task_state_pending;                                                       //Set task to initialized
+                if (iter->permissions == task_permissions_none)
+                {
+                    iter->user_stack = (uint8_t *)0x100000000;
+                    iter->user_stack += USER_STACK_LEN;
+
+                    uintptr_t pmem = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, USER_STACK_LEN);
+                    iter->user_stack_phys = pmem;
+                    vmem_map(iter->mem, (intptr_t)0x100000000, (intptr_t)pmem, USER_STACK_LEN, vmem_flags_cachewriteback | vmem_flags_rw | vmem_flags_user, 0);
+
+                    //setup userspace transition
+                    syscall_getdefaultstate(iter->syscall_data, iter->kernel_stack, iter->user_stack, (void *)handler);
+                    mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)syscall_touser, arg); //Rebuild stack state
+                }
+                else
+                {
+                    mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)handler, arg); //Rebuild stack state
+                }
+                iter->state = task_state_pending; //Set task to initialized
 
                 local_spinlock_unlock(&iter->lock);
             }
@@ -161,7 +187,7 @@ cs_error start_task_syscall(cs_id id, void (*handler)(void *arg), void *arg)
     return start_task_kernel(id, handler, arg);
 }
 
-static cs_id alloc_descriptor(process_desc_t *pinfo)
+static cs_id alloc_descriptor(process_desc_t *pinfo, descriptor_type_t ntype)
 {
     cs_id id = 0;
 
@@ -187,6 +213,7 @@ static cs_id alloc_descriptor(process_desc_t *pinfo)
         if (d[i].type == descriptor_type_unused_entry)
         {
             //Valid entry found
+            d[i].type = ntype;
             return id + i;
         }
     }
@@ -271,6 +298,8 @@ static void task_switch_handler(int irq)
             core_descs->cur_task->state = task_state_pending;  //Set the cur_task to pending again
         fp_platform_getstate(core_descs->cur_task->fpu_state); //Save the current tasks's fpu state
         mp_platform_getstate(core_descs->cur_task->reg_state); //Save the current task's register state
+        if (core_descs->cur_task->syscall_data != NULL)
+            syscall_getfullstate(core_descs->cur_task->syscall_data);
 
         //find the next pending task
         ntask = core_descs->cur_task->next;
@@ -321,10 +350,51 @@ static void task_switch_handler(int irq)
     vmem_setactive(ntask->mem);             //Set virtual memory
     fp_platform_setstate(ntask->fpu_state); //Set fpu state
     mp_platform_setstate(ntask->reg_state); //Set registers
+    if (ntask->syscall_data != NULL)
+        syscall_setfullstate(ntask->syscall_data);
+
     local_spinlock_unlock(&ntask->lock);
 
     local_spinlock_unlock(&process_lock);
     sti(cli_state);
+}
+
+cs_error task_virttophys(cs_id id, intptr_t vaddr, intptr_t *phys)
+{
+    if (phys == NULL)
+        return CS_UNKN;
+
+    int cli_state = cli();
+    local_spinlock_lock(&process_lock);
+    if (processes != NULL)
+    {
+        cs_error res_cs = CS_UNKN;
+        process_desc_t *iter = processes;
+        while (iter != NULL)
+        {
+            process_desc_t *cur_iter = iter;
+            local_spinlock_lock(&cur_iter->lock);
+            if (iter->id == id)
+                break;
+            iter = iter->next;
+            local_spinlock_unlock(&cur_iter->lock);
+        }
+        if (iter != NULL)
+        {
+            int res = vmem_virttophys(iter->mem, vaddr, phys);
+            if (res == 0)
+                res_cs = CS_OK;
+
+            //Lock is already held from the break in the previous loop
+            local_spinlock_unlock(&iter->lock);
+        }
+        local_spinlock_unlock(&process_lock);
+        sti(cli_state);
+        return res_cs;
+    }
+    local_spinlock_unlock(&process_lock);
+    sti(cli_state);
+    return CS_UNKN;
 }
 
 cs_error task_map(cs_id id, const char *name, intptr_t vaddr, size_t sz, task_map_flags_t flags, task_map_perms_t owner_perms, task_map_perms_t child_perms, int child_count, cs_id *shmem_id)
@@ -362,7 +432,7 @@ cs_error task_map(cs_id id, const char *name, intptr_t vaddr, size_t sz, task_ma
         if (iter != NULL)
         {
             //Lock is already held from the break in the previous loop
-            cs_id shmem_k_id = alloc_descriptor(iter);
+            cs_id shmem_k_id = alloc_descriptor(iter, descriptor_type_map_entry);
             descriptor_entry_t *d = read_descriptor(iter, shmem_k_id);
             //Map memory region
             d->type = descriptor_type_map_entry;
@@ -562,10 +632,18 @@ static void task_cleanup(void *arg)
                 if (iter->mem != NULL)
                 {
                     free_descriptors(iter, iter->descriptors, 0); //Unmap/free all descriptors regions
+                    if (iter->syscall_data != NULL)
+                        free(iter->syscall_data);
+                    if (iter->user_stack != NULL)
+                    {
+                        vmem_unmap(iter->mem, 0x100000000, USER_STACK_LEN);
+                        pagealloc_free(iter->user_stack_phys, USER_STACK_LEN);
+                    }
                     vmem_destroy(iter->mem);
                     free(iter->fpu_state);
                     free(iter->reg_state);
-                    free(iter->kernel_stack);
+                    free(iter->kernel_stack - KERNEL_STACK_LEN);
+
                     iter->mem = NULL;
                 }
 
@@ -595,6 +673,12 @@ static void task_cleanup(void *arg)
         local_spinlock_unlock(&process_lock);
         sti(cli_state);
     }
+}
+
+void servicescript_kill()
+{
+    while (1)
+        asm("hlt");
 }
 
 int servicescript_execute();
@@ -639,6 +723,18 @@ int module_mp_init()
     if (timer_request(timer_features_periodic | timer_features_local, 50000, task_switch_handler))
         PANIC("[SysTaskMgr] Failed to allocate periodic timer!");
     return 0;
+}
+
+void task_startnew_user(void *elf, size_t elf_len)
+{
+    cs_id elf_id = 0;
+    cs_error elf_err = create_task_kernel("elf_test", task_permissions_none, &elf_id);
+    if (elf_err != CS_OK)
+        PANIC("[SysTaskMgr] Failed to create elf_test task.");
+
+    void (*entry_pt)(void *) = NULL;
+    user_elf_load(elf_id, elf, elf_len, &entry_pt);
+    elf_err = start_task_kernel(elf_id, entry_pt, NULL);
 }
 
 int module_init()

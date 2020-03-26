@@ -17,6 +17,7 @@
 #define TASK_NAME_LEN 256
 #define MAX_DESCRIPTOR_COUNT 256
 #define KERNEL_STACK_LEN KiB(32)
+#define USER_STACK_LEN KiB(32)
 
 typedef enum
 {
@@ -71,6 +72,9 @@ typedef struct process_desc
     uint8_t *fpu_state;
     uint8_t *reg_state;
     uint8_t *kernel_stack;
+    uint8_t *user_stack;
+    intptr_t user_stack_phys;
+    uint8_t *syscall_data;
 
     struct process_desc *next;
 } process_desc_t;
