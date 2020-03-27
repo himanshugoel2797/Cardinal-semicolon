@@ -12,6 +12,8 @@
 #include "ps2_keyboard.h"
 #include "priv_ps2.h"
 
+static int scancodeset_idx = 2;
+
 uint8_t PS2Keyboard_Initialize()
 {
     //Reset the keyboard
@@ -46,7 +48,46 @@ uint8_t PS2Keyboard_Initialize()
     WAIT_DATA_AVL;
 
     if (inb(DATA_PORT) != 3)
-        DEBUG_PRINT("[PS/2] Scancode set 3 could not be configured.\r\n");
+    {
+        DEBUG_PRINT("[PS/2] Scancode set 3 could not be configured, trying Scancode set 2.\r\n");
+
+        //Set scancode set 2
+        outb(DATA_PORT, 0xF0);
+        WAIT_CMD_SENT;
+        WAIT_DATA_AVL;
+        inb(DATA_PORT);
+        outb(DATA_PORT, 0x02);
+        WAIT_CMD_SENT;
+        WAIT_DATA_AVL;
+        inb(DATA_PORT);
+
+        //Confirm that scancode set 2 was set
+        outb(DATA_PORT, 0xF0);
+        WAIT_CMD_SENT;
+        WAIT_DATA_AVL;
+        inb(DATA_PORT);
+        outb(DATA_PORT, 0x00);
+        WAIT_CMD_SENT;
+        WAIT_DATA_AVL;
+        inb(DATA_PORT);
+        WAIT_DATA_AVL;
+
+        if (inb(DATA_PORT) != 2)
+        {
+            DEBUG_PRINT("[PS/2] Scancode set 2 could not be configured, falling back to Scancode set 1.\r\n");
+            scancodeset_idx = 1;
+        }
+        else
+        {
+            DEBUG_PRINT("[PS/2] Scancode set 2 selected.\r\n");
+            scancodeset_idx = 2;
+        }
+    }
+    else
+    {
+        DEBUG_PRINT("[PS/2] Scancode set 3 selected.\r\n");
+        scancodeset_idx = 3;
+    }
 
     //Configure repeat rate
     outb(DATA_PORT, 0xF3);
@@ -86,4 +127,9 @@ void PS2Keyboard_SetLEDStatus(uint8_t led, uint8_t status)
     WAIT_DATA_AVL;
     inb(DATA_PORT);
     return;
+}
+
+int PS2Keyboard_ActiveScancodeSet()
+{
+    return scancodeset_idx;
 }

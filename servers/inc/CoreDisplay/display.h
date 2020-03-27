@@ -9,20 +9,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-typedef struct display_res_info {
+typedef struct display_res_info
+{
     uint16_t w_res;
     uint16_t h_res;
     uint16_t stride;
     uint16_t refresh_rate;
 } display_res_info_t;
 
-typedef enum display_connection {
+typedef enum display_connection
+{
     display_connection_unkn,
     display_connection_hdmi,
     display_connection_DP,
 } display_connection_t;
 
-typedef struct display_info {
+typedef struct display_info
+{
     uint16_t h_sz;
     uint16_t w_sz;
     uint8_t bit_dpth;
@@ -31,17 +34,19 @@ typedef struct display_info {
     display_res_info_t *resolutions;
 } display_info_t;
 
-typedef enum {
+typedef enum
+{
     display_status_disconnected = 0,
     display_status_connected = 1,
 } display_status_t;
 
-typedef struct display_handlers {
+typedef struct display_handlers
+{
     //set resolution
-    int (*set_resolution) (void *state, display_res_info_t *info);
+    int (*set_resolution)(void *state, display_res_info_t *info);
 
     //set brightness
-    int (*set_brightness) (void *state, uint8_t brightness);
+    int (*set_brightness)(void *state, uint8_t brightness);
 
     //turn on/off
     int (*set_state)(void *state, bool on);
@@ -60,13 +65,15 @@ typedef struct display_handlers {
 
 } display_handlers_t;
 
-typedef enum {
+typedef enum
+{
     display_features_autoresize = (1 << 0),
     display_features_requireflip = (1 << 1),
     display_features_hardware3d = (1 << 2),
 } display_features_t;
 
-typedef struct display_desc {
+typedef struct display_desc
+{
     char display_name[256];
     display_connection_t connection;
     display_handlers_t handlers;

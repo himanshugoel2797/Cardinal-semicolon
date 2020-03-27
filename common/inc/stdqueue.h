@@ -9,7 +9,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-typedef struct {
+typedef struct
+{
     uint64_t *queue;
     int32_t size;
     _Atomic int32_t ent_cnt;
@@ -30,5 +31,9 @@ bool queue_tryenqueue(queue_t *q, uint64_t val);
 bool queue_tryenqueue_front(queue_t *q, uint64_t val);
 
 bool queue_trydequeue(queue_t *q, uint64_t *val);
+
+bool queue_peek(queue_t *q, uint64_t *val);
+
+bool queue_full(queue_t *q);
 
 #endif

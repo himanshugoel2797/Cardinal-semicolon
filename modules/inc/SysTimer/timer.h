@@ -8,7 +8,8 @@
 
 #include <stdint.h>
 
-typedef enum {
+typedef enum
+{
     timer_features_none = 0,
     timer_features_oneshot = (1 << 0),
     timer_features_periodic = (1 << 1),
@@ -26,5 +27,7 @@ typedef enum {
 void timer_wait(uint64_t ns);
 
 int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int));
+
+uint64_t timer_timestamp();
 
 #endif

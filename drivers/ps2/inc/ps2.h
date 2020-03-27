@@ -11,6 +11,9 @@
 #include "ps2_keyboard.h"
 #include "ps2_mouse.h"
 
+#define BUF_LEN 8192
+#define ENT_SIZE 4
+
 uint8_t PS2_Initialize();
 uint8_t PS2_ReadStatus();
 uint8_t PS2_ReadConfig();
