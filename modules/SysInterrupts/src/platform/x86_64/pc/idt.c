@@ -186,9 +186,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base)
 void idt_mainhandler(regs_t *regs)
 {
     if ((regs->cs & 3) != 0)
-    {
         __asm__ volatile("swapgs");
-    }
     //Store the registers in the processor interrupt state
     regs->int_no = (uint8_t)regs->int_no;
 

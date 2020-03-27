@@ -37,6 +37,8 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id);
 
 cs_error start_task_kernel(cs_id id, void (*handler)(void *arg), void *argval);
 
+cs_error end_task_kernel(cs_id id);
+
 cs_error task_map(cs_id id, const char *name, intptr_t vaddr, size_t sz, task_map_flags_t flags, task_map_perms_t owner_perms, task_map_perms_t child_perms, int child_count, cs_id *shmem_id);
 
 cs_error task_virttophys(cs_id id, intptr_t vaddr, intptr_t *phys);

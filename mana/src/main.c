@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-void __attribute__((naked)) _start()
+void main()
 {
     while (1)
         ;

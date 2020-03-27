@@ -149,15 +149,25 @@ cs_error start_task_kernel(cs_id id, void (*handler)(void *arg), void *arg)
                 if (iter->permissions == task_permissions_none)
                 {
                     iter->user_stack = (uint8_t *)0x100000000;
-                    iter->user_stack += USER_STACK_LEN;
+                    iter->user_stack += USER_STACK_LEN - sizeof(struct cardinal_program_setup_params);
 
                     uintptr_t pmem = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, USER_STACK_LEN);
                     iter->user_stack_phys = pmem;
                     vmem_map(iter->mem, (intptr_t)0x100000000, (intptr_t)pmem, USER_STACK_LEN, vmem_flags_cachewriteback | vmem_flags_rw | vmem_flags_user, 0);
 
+                    iter->usersetup_params = (struct cardinal_program_setup_params *)vmem_phystovirt(iter->user_stack_phys + USER_STACK_LEN - sizeof(struct cardinal_program_setup_params), sizeof(struct cardinal_program_setup_params), vmem_flags_cachewriteback | vmem_flags_rw);
+                    iter->usersetup_params->ver = 1;
+                    iter->usersetup_params->page_size = KiB(4);
+                    iter->usersetup_params->argc = 0;
+                    iter->usersetup_params->pid = iter->id;
+                    iter->usersetup_params->rng_seed = 0;
+                    iter->usersetup_params->entry_point = (uintptr_t)handler;
+                    iter->usersetup_params->envp = NULL;
+                    iter->usersetup_params->argv = NULL;
+
                     //setup userspace transition
                     syscall_getdefaultstate(iter->syscall_data, iter->kernel_stack, iter->user_stack, (void *)handler);
-                    mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)syscall_touser, arg); //Rebuild stack state
+                    mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)syscall_touser, iter->user_stack); //Rebuild stack state
                 }
                 else
                 {
@@ -177,6 +187,43 @@ cs_error start_task_kernel(cs_id id, void (*handler)(void *arg), void *arg)
     return CS_UNKN;
 }
 
+cs_error end_task_kernel(cs_id id)
+{
+    int cli_state = cli();
+    local_spinlock_lock(&process_lock);
+    if (processes != NULL)
+    {
+        process_desc_t *iter = processes;
+        while (iter != NULL)
+        {
+            process_desc_t *cur_iter = iter;
+            local_spinlock_lock(&cur_iter->lock);
+            if (iter->id == id)
+                break;
+            iter = iter->next;
+            local_spinlock_unlock(&cur_iter->lock);
+        }
+        if (iter != NULL)
+        {
+            //Lock is already held from the break in the previous loop
+            //Entry found
+            DEBUG_PRINT("[SysTaskMgr] Process Exited: ");
+            DEBUG_PRINT(iter->name);
+            DEBUG_PRINT("\r\n");
+
+            iter->state = task_state_exited; //Set task to exited
+
+            local_spinlock_unlock(&iter->lock);
+        }
+        local_spinlock_unlock(&process_lock);
+        sti(cli_state);
+        return CS_OK;
+    }
+    local_spinlock_unlock(&process_lock);
+    sti(cli_state);
+    return CS_UNKN;
+}
+
 cs_error create_task_syscall(char *name, cs_id *id)
 {
     return create_task_kernel(name, task_permissions_none, id);
@@ -185,6 +232,23 @@ cs_error create_task_syscall(char *name, cs_id *id)
 cs_error start_task_syscall(cs_id id, void (*handler)(void *arg), void *arg)
 {
     return start_task_kernel(id, handler, arg);
+}
+
+cs_error end_task_syscall()
+{
+    int cli_state = cli();
+    local_spinlock_lock(&process_lock);
+    local_spinlock_lock(&core_descs->cur_task->lock);
+    cs_id id = core_descs->cur_task->id;
+    local_spinlock_unlock(&core_descs->cur_task->lock);
+    local_spinlock_unlock(&process_lock);
+    cs_error retVal = end_task_kernel(id);
+    sti(cli_state);
+
+    if (retVal == CS_OK)
+        while (1)
+            asm("hlt");
+    return retVal;
 }
 
 static cs_id alloc_descriptor(process_desc_t *pinfo, descriptor_type_t ntype)
@@ -647,7 +711,7 @@ static void task_cleanup(void *arg)
                     iter->mem = NULL;
                 }
 
-                if (prev_iter != NULL)
+                if (prev_iter == NULL)
                 {
                     processes = iter->next;
                     free(iter);
@@ -675,21 +739,11 @@ static void task_cleanup(void *arg)
     }
 }
 
-void servicescript_kill()
-{
-    while (1)
-        asm("hlt");
-}
-
 int servicescript_execute();
 void servicescript_handler(void *arg)
 {
     arg = NULL;
-
     servicescript_execute();
-
-    while (true)
-        halt(); //TODO: Implement process termination
 }
 
 int module_mp_init()
@@ -756,6 +810,7 @@ int module_init()
 
     syscall_sethandler(5, (void *)create_task_syscall);
     syscall_sethandler(6, (void *)start_task_syscall);
+    syscall_sethandler(7, (void *)end_task_syscall);
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers
 

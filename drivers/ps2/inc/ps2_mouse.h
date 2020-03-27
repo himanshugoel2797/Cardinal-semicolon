@@ -11,10 +11,8 @@
 uint8_t
 PS2Mouse_Initialize(void);
 
-bool
-PS2Mouse_IsFiveButton(void);
+bool PS2Mouse_IsFiveButton(void);
 
-bool
-PS2Mouse_HasScollWheel(void);
+bool PS2Mouse_HasScrollWheel(void);
 
 #endif

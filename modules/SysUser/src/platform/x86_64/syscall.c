@@ -39,9 +39,9 @@ PRIVATE NAKED NORETURN void syscall_handler(void)
     //Save the register state to tls space
     __asm__ volatile(
 
-        //"swapgs\r\n"
+        "swapgs\r\n"
         "cmp $" S_(SYSCALL_COUNT) ", %r12\r\n"
-                                  "jge exit_syscall_handler\r\n"
+                                  "jge outofrange_syscall_handler\r\n"
 
                                   "movq %rsp, %rax\r\n"
                                   "movq (syscall_state), %rsp\r\n"
@@ -74,8 +74,11 @@ PRIVATE NAKED NORETURN void syscall_handler(void)
                                   "movq %gs:0x18(%rsp), %rsp\r\n" //RSP
 
                                   "exit_syscall_handler:\r\n"
-                                  //"swapgs\r\n"
-                                  "sysretq\r\n");
+                                  "swapgs\r\n"
+                                  "sysretq\r\n"
+
+                                  "outofrange_syscall_handler:\r\n");
+    PANIC("[SysUser] Out of range syscall!");
 }
 
 //Processes are started and functions called via syscall exit
@@ -94,7 +97,6 @@ PRIVATE NAKED NORETURN void user_transition(void UNUSED(*stack_base))
         "movq %gs:0x10(%rsp), %r11\r\n" //RFLAGS
         "movq %gs:0x8(%rsp), %rcx\r\n"  //RIP
         "movq %gs:0x18(%rsp), %rsp\r\n" //RSP
-        //"hlt\r\n"
         "swapgs\r\n"
         "sysretq\r\n");
 }

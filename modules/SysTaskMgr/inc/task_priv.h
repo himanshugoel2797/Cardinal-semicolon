@@ -57,6 +57,18 @@ typedef struct descriptor_entry
     descriptor_type_t type;
 } descriptor_entry_t;
 
+struct cardinal_program_setup_params
+{
+    uint16_t ver;
+    uint16_t page_size;
+    uint32_t argc;
+    uint64_t pid;
+    uint64_t rng_seed;
+    uintptr_t entry_point;
+    char **envp;
+    char **argv;
+};
+
 typedef struct process_desc
 {
     char name[TASK_NAME_LEN];
@@ -75,6 +87,8 @@ typedef struct process_desc
     uint8_t *user_stack;
     intptr_t user_stack_phys;
     uint8_t *syscall_data;
+
+        struct cardinal_program_setup_params *usersetup_params;
 
     struct process_desc *next;
 } process_desc_t;

@@ -9,4 +9,4 @@ LOAD:./CoreNetwork.celf
 LOAD:./CoreDriver.celf
 CALL:coredisplay_postinit
 USER:./mana.celf
-CALL:servicescript_kill
+CALL:end_task_syscall

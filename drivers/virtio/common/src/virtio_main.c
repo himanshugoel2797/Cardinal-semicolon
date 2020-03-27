@@ -95,6 +95,12 @@ PRIVATE virtio_state_t *virtio_initialize(void *ecam_addr, void (*int_handler)(i
     int msi_val = pci_getmsiinfo(device, &int_cnt);
 
     interrupt_allocate(1, interrupt_flags_exclusive, &msi_vector);
+
+    char vector_str[10];
+    DEBUG_PRINT("[VirtioCommon] Allocated Interrupt Vector: ");
+    DEBUG_PRINT(itoa(msi_vector, vector_str, 10));
+    DEBUG_PRINT("\r\n");
+
     interrupt_registerhandler(msi_vector, int_handler);
 
     uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
