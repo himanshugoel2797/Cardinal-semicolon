@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"licenser.projectName": "Cardinal;",
+		"files.associations": {
+			"priv_timers.h": "c",
+			"phys_mem.h": "c",
+			"stdlist.h": "c",
+			"types.h": "c",
+			"vmem.h": "c"
+		}
+	}
+}

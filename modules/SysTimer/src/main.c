@@ -30,75 +30,105 @@ PRIVATE int timer_register(timer_features_t features, timer_handlers_t *handlers
 {
     memcpy(&timer_defs[timer_idx].handlers, handlers, sizeof(timer_handlers_t));
     timer_defs[timer_idx].features = features;
-    DEBUG_PRINT("Register Timer: ");
+    DEBUG_PRINT("[SysTimer] Register Timer: ");
     DEBUG_PRINT(handlers->name);
     DEBUG_PRINT("\r\n");
     return timer_idx++;
 }
 
 //TODO Figure out how to handle smp timer usage
-static _Atomic int timer_wait_pending = 0;
-static _Atomic int timer_wait_count = 0;
-static _Atomic int timer_wait_target = 0;
+static _Atomic uint64_t timer_wait_pending = 0;
+static _Atomic uint64_t timer_wait_count = 0;
+static _Atomic uint64_t timer_wait_target = 0;
 static timer_defs_t *timer_wait_d = NULL;
 PRIVATE void timer_wait_handler(int irq)
 {
     irq = 0;
     if (++timer_wait_count >= timer_wait_target && timer_wait_pending != 0)
     {
-        DEBUG_PRINT("Timer Wait Done\r\n");
+        DEBUG_PRINT("[SysTimer] Timer Wait Done\r\n");
         timer_wait_pending = 0;
     }
 }
 
 void timer_wait(uint64_t ns)
 {
-
+#define TIMER_WAIT_PERIODIC_INTR 1
+#define TIMER_WAIT_COUNTER 2
     //Allocate a timer for oneshot mode with a rate that can match the desired time
     int idx = 0;
+    int waitType = 0;
     for (; idx < timer_idx; idx++)
-        if (!timer_defs[idx].in_use && timer_defs[idx].features & timer_features_periodic)
+        if (!timer_defs[idx].in_use) // && (timer_defs[idx].features & timer_features_periodic))
         {
-
-            if (timer_defs[idx].handlers.set_mode != NULL &&
-                timer_defs[idx].handlers.set_handler != NULL &&
-                timer_defs[idx].handlers.set_enable != NULL)
-                break;
+            if (timer_defs[idx].features & timer_features_periodic)
+            {
+                if (timer_defs[idx].handlers.set_handler != NULL &&
+                    timer_defs[idx].handlers.set_enable != NULL)
+                {
+                    waitType = TIMER_WAIT_PERIODIC_INTR;
+                    break;
+                }
+            }
+            else if (timer_defs[idx].features & (timer_features_counter | timer_features_read))
+            {
+                if (timer_defs[idx].handlers.read != NULL)
+                {
+                    waitType = TIMER_WAIT_COUNTER;
+                    break;
+                }
+            }
         }
     if (idx == timer_idx)
-        PANIC("Failed to select timer.");
+        PANIC("[SysTimer] Failed to select timer.");
 
-    timer_wait_count = 0;
-    timer_wait_pending = 1;
-    DEBUG_PRINT("Timer wait start! ");
+    if (waitType == TIMER_WAIT_PERIODIC_INTR)
+    {
+        timer_wait_count = 0;
+        timer_wait_pending = 1;
+        DEBUG_PRINT("[SysTimer] Timer wait start!\r\n");
 
-    //Configure it for oneshot wait handler
-    timer_defs_t *t = &timer_defs[idx];
-    timer_wait_d = t;
+        //Configure it for oneshot wait handler
+        timer_defs_t *t = &timer_defs[idx];
+        timer_wait_d = t;
 
-    timer_wait_target = ns / (1000000000 / t->handlers.rate);
+        timer_wait_target = (ns * t->handlers.rate) / (1000 * 1000 * 1000);
 
-    if (timer_wait_target == 0)
-        timer_wait_target = 1;
+        if (timer_wait_target == 0)
+            timer_wait_target = 1;
 
-    print_str("Allocated one-shot timer: ");
-    print_str(t->handlers.name);
+        DEBUG_PRINT("[SysTimer] Allocated one-shot timer: ");
+        DEBUG_PRINT(t->handlers.name);
+        DEBUG_PRINT("\r\n");
 
-    t->in_use = true;
-    //t->handlers.set_mode(&t->handlers, timer_features_oneshot);
-    t->handlers.set_handler(&t->handlers, timer_wait_handler);
-    t->handlers.set_enable(&t->handlers, true);
+        t->in_use = true;
+        //t->handlers.set_mode(&t->handlers, timer_features_oneshot);
+        t->handlers.set_handler(&t->handlers, timer_wait_handler);
+        t->handlers.set_enable(&t->handlers, true);
 
-    //Halt the cpu
-    while (timer_wait_pending)
-        halt();
+        //Halt the cpu
+        while (timer_wait_pending)
+            halt();
 
-    t->handlers.set_enable(&t->handlers, false);
+        t->handlers.set_enable(&t->handlers, false);
 
-    DEBUG_PRINT("Timer Finish\r\n");
+        DEBUG_PRINT("[SysTimer] Timer Finish\r\n");
 
-    timer_wait_d = NULL;
-    t->in_use = false;
+        timer_wait_d = NULL;
+        t->in_use = false;
+    }
+    else if (waitType == TIMER_WAIT_COUNTER)
+    {
+        DEBUG_PRINT("[SysTimer] Using counter poll for sleep.\r\n");
+
+        timer_defs_t *t = &timer_defs[idx];
+        uint64_t target_val = (ns * t->handlers.rate) / (1000 * 1000 * 1000);
+        target_val += t->handlers.read(&t->handlers);
+        while (target_val > t->handlers.read(&t->handlers))
+            ;
+
+        DEBUG_PRINT("[SysTimer] Timer Finish\r\n");
+    }
 }
 
 int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int))
@@ -134,7 +164,7 @@ int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int))
     t->handlers.set_handler(&t->handlers, handler);
     t->handlers.set_enable(&t->handlers, true);
 
-    print_str("Allocated timer: ");
+    print_str("[SysTimer] Allocated timer: ");
     print_str(t->handlers.name);
     print_str("\r\n");
 

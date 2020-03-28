@@ -77,6 +77,10 @@ int module_init()
             {
 
                 char *tmp = (char *)strchr(cursor, '|');
+                if (tmp == NULL)
+                {
+                    return 0;
+                }
                 *tmp = 0;
 
                 //load this driver

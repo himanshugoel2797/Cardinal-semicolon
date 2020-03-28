@@ -7,42 +7,12 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <cardinal/local_spinlock.h>
 
 #include "SysVirtualMemory/vmem.h"
 #include "SysTimer/timer.h"
 
 #include "ahci.h"
-
-//Register offsets
-#define HBA_GHC 0x4
-#define HBA_PI 0xC
-#define HBA_BOHC 0x28
-#define HBA_PxCMD(x) (0x118 + 0x80 * x)
-#define HBA_PxSERR(x) (0x130 + 0x80 * x)
-#define HBA_PxTFD(x) (0x120 + 0x80 * x)
-#define HBA_PxSSTS(x) (0x128 + 0x80 * x)
-#define HBA_PxCLB(x) (0x100 + 0x80 * x)
-#define HBA_PxCLBU(x) (0x104 + 0x80 * x)
-#define HBA_PxFB(x) (0x108 + 0x80 * x)
-#define HBA_PxFBU(x) (0x10C + 0x80 * x)
-#define HBA_PxIS(x) (0x110 + 0x80 * x)
-#define HBA_PxSACT(x) (0x134 + 0x80 * x)
-#define HBA_PxCI(x) (0x138 + 0x80 * x)
-
-//Register bits and masks
-#define HBA_PxCMD_ST (1 << 0)
-#define HBA_PxCMD_CR (1 << 15)
-#define HBA_PxCMD_FR (1 << 14)
-#define HBA_PxCMD_FRE (1 << 4)
-
-#define HBA_PxTFD_BSY (1 << 7)
-#define HBA_PxTFD_DRQ (1 << 3)
-
-#define HBA_PxSSTS_DET_MASK 0xF
-
-//DMA buffer sizes
-#define FIS_SIZE 256
-#define CMD_BUF_SIZE 1024
 
 PRIVATE void ahci_write8(ahci_instance_t *inst, uint32_t off, uint8_t val)
 {
@@ -84,9 +54,17 @@ PRIVATE void ahci_resethba(ahci_instance_t *inst)
         ;
 }
 
+PRIVATE uint32_t ahci_readports(ahci_instance_t *inst)
+{
+    return ahci_read32(inst, HBA_PI);
+}
+
 PRIVATE void ahci_obtainownership(ahci_instance_t *inst)
 {
     ahci_write32(inst, HBA_BOHC, (1 << 1)); //Obtain ownership of the HBA
+    timer_wait(25 * 1000 * 1000);           //Sleep 25ms
+    if (ahci_read32(inst, HBA_BOHC) & (1 << 4))
+        timer_wait(2000 * 1000 * 1000); //wait 2 seconds for the BIOs to finish up
 }
 
 PRIVATE void ahci_reportawareness(ahci_instance_t *inst)
@@ -94,7 +72,7 @@ PRIVATE void ahci_reportawareness(ahci_instance_t *inst)
     ahci_write32(inst, HBA_GHC, (1 << 31));
 }
 
-PRIVATE void ahci_initializeport(ahci_instance_t *inst, int index)
+PRIVATE int ahci_initializeport(ahci_instance_t *inst, int index)
 {
     uint32_t cmd = ahci_read32(inst, HBA_PxCMD(index));
 
@@ -115,7 +93,7 @@ PRIVATE void ahci_initializeport(ahci_instance_t *inst, int index)
         }
         //Failed to bring the device into an idle state, can't continue with init
         if ((ahci_read32(inst, HBA_PxCMD(index)) & (HBA_PxCMD_FR | HBA_PxCMD_CR)) != 0)
-            return;
+            return -1;
     }
 
     if (ahci_read32(inst, HBA_PxSACT(index)) != 0)
@@ -151,27 +129,37 @@ PRIVATE void ahci_initializeport(ahci_instance_t *inst, int index)
     //and enabling the HBA
 
     if ((tfd & (HBA_PxTFD_BSY | HBA_PxTFD_DRQ)) != 0)
-        return; //The device is not in functioning order, TODO we might want to report this
+        return -2; //The device is not in functioning order, TODO we might want to report this
 
     uint32_t ssts = ahci_read32(inst, HBA_PxSSTS(index));
 
     if ((ssts & HBA_PxSSTS_DET_MASK) != 3)
-        return; //TODO report this, by writing to a virtual log file or something
+        return -3; //TODO report this, by writing to a virtual log file or something
 
     //The device is functional, mark it as so and start it up
+    local_spinlock_lock(&inst->lock);
     inst->activeDevices |= (1 << index);
+    inst->activeCmdBits[index] = 0;
+    inst->finishedCmdBits[index] = 0;
+    local_spinlock_unlock(&inst->lock);
 
     ahci_write32(inst, HBA_PxCMD(index), ahci_read32(inst, HBA_PxCMD(index)) | HBA_PxCMD_ST);
+    return 0;
 }
 
 PRIVATE int ahci_getcmdslot(ahci_instance_t *inst, int index)
 {
-    uint32_t cmd_slots = ahci_read32(inst, HBA_PxSACT(index));
+    local_spinlock_lock(&inst->lock);
+    uint32_t cmd_slots = inst->activeCmdBits[index];
 
     for (int i = 0; i < 32; i++)
         if (~cmd_slots & (1 << i))
+        {
+            local_spinlock_unlock(&inst->lock);
             return i;
+        }
 
+    local_spinlock_unlock(&inst->lock);
     return -1;
 }
 
@@ -240,7 +228,11 @@ PRIVATE int ahci_readdev(ahci_instance_t *inst, int index, uint64_t loc, void *a
     ahci_write32(inst, HBA_PxSACT(index), 1 << slot);
     ahci_write32(inst, HBA_PxCI(index), 1 << slot);
 
+    local_spinlock_lock(&inst->lock);
+    inst->activeCmdBits[index] |= (1 << slot);
+    local_spinlock_unlock(&inst->lock);
+
     while (ahci_read32(inst, HBA_PxCI(index)) & (1 << slot))
-        ;
+        DEBUG_PRINT("[AHCI] Read Pending\r\n");
     return 0;
 }
