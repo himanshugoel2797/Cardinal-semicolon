@@ -73,24 +73,20 @@ int hdaudio_setupbuffersz(hdaudio_instance_t *instance, bool corb)
 
 static void tmp_handler(int int_num)
 {
-    DEBUG_PRINT("INTERRUPT\r\n");
-
     hdaudio_instance_t *instance = instances;
     while (instance->interrupt_vec != int_num)
     {
         instance = instance->next;
 
         if (instance == NULL)
-            PANIC("HD Audio instance list corrupted!");
+            PANIC("[HDAudio] instance list corrupted!");
     }
 
     //TODO: signal the handler thread for this device
-    if (instance->cfg_regs->intsts.cis)
+    if (instance->cfg_regs->intsts & 0xc0000000)
     {
-
         if (instance->cfg_regs->rirb.sts.rintfl)
         {
-
             instance->rirb_rp++;
 
             int idx = instance->cfg_regs->rirb.wp % instance->rirb.entcnt;
@@ -104,12 +100,6 @@ static void tmp_handler(int int_num)
             else if (instance->cmds[cmd_idx].handler != NULL)
             {
                 //Solicited response
-
-                //char tmp[10];
-                //DEBUG_PRINT("HANDLED: ");
-                //DEBUG_PRINT(itoa(cmd_idx, tmp, 16));
-                //DEBUG_PRINT("\r\n");
-
                 instance->cmds[cmd_idx].waiting = false;
                 instance->cmds[cmd_idx].handler(instance, &instance->cmds[cmd_idx], instance->rirb.buffer[idx * 2]);
                 instance->cmds[cmd_idx].handled = true;
@@ -136,8 +126,8 @@ int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node,
     //Allocate the cmd entry for this verb
     int idx = (instance->cfg_regs->corb.wp + 1) % instance->corb.entcnt;
     while (instance->cmds[idx].waiting && !instance->cmds[idx].handled)
-        DEBUG_PRINT("WAITING\r\n");
-    ;
+        //DEBUG_PRINT("WAITING\r\n");
+        ;
 
     instance->cmds[idx].waiting = true;
     instance->cmds[idx].handled = false;
@@ -151,10 +141,10 @@ int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node,
     instance->cfg_regs->corb.wp = idx & 0xFF;
     instance->cfg_regs->rirb.sts.rintfl = 1;
 
-    char tmp[10];
-    DEBUG_PRINT("USED: ");
-    DEBUG_PRINT(itoa(instance->cfg_regs->corb.rp, tmp, 16));
-    DEBUG_PRINT("\r\n");
+    //char tmp[10];
+    //DEBUG_PRINT("USED: ");
+    //DEBUG_PRINT(itoa(instance->cfg_regs->corb.rp, tmp, 16));
+    //DEBUG_PRINT("\r\n");
 
     while (instance->cfg_regs->corb.rp < instance->cfg_regs->corb.wp)
         ;
@@ -193,7 +183,7 @@ static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_
         }
 
         char tmp[10];
-        DEBUG_PRINT("Parent Node: ");
+        DEBUG_PRINT("[HDAudio] Parent Node: ");
         DEBUG_PRINT(itoa(node, tmp, 16));
 
         DEBUG_PRINT("\tChild Node Base: ");
@@ -275,7 +265,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance)
     //instance->cfg_regs->gctl.crst |= (1 << 8);
 
     //Enable state change interrupts
-    //instance->cfg_regs->wakeen = 0xFFFF;
+    instance->cfg_regs->wakeen = 0xFFFF;
 
     DEBUG_PRINT("[HDAudio] Codecs Enumerated!\r\n");
     instance->codecs = instance->cfg_regs->statests;
@@ -311,8 +301,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance)
 
     //Set the number of messages after which to interrupt
     instance->cfg_regs->rirb.intcnt = 1;
-    instance->cfg_regs->intctl.gie = 1;
-    instance->cfg_regs->intctl.cie = 1;
+    instance->cfg_regs->intctl = 0xc0000000;
     instance->cfg_regs->rirb.ctl.rintctl = 1;
 
     //Start the rirb again
@@ -327,7 +316,7 @@ int hdaudio_initialize(hdaudio_instance_t *instance)
 
     //Build the device graph
     DEBUG_PRINT("[HDAudio] Controller Initialized, Enumerating nodes\r\n");
-    max_node_id = 2;
+    max_node_id = 1;
     for (int i = 0; i < 16; i++)
     {
         if (instance->codecs & (1u << i))
@@ -439,6 +428,12 @@ int module_init(void *ecam_addr)
     int int_val = 0;
     interrupt_allocate(1, interrupt_flags_none, &int_val);
     interrupt_registerhandler(int_val, tmp_handler);
+    {
+        DEBUG_PRINT("[HDAudio] Allocated Interrupt Vector: ");
+        char tmpbuf[10];
+        DEBUG_PRINT(itoa(int_val, tmpbuf, 10));
+        DEBUG_PRINT("\r\n");
+    }
 
     uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
     uint32_t msi_msg = msi_register_data(int_val);

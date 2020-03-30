@@ -117,8 +117,8 @@ typedef struct PACKED
     uint16_t outstrmpay;
     uint16_t instrmpay;
     uint8_t rsv1[4];
-    hdaudio_intctl_t intctl;
-    hdaudio_intsts_t intsts;
+    uint32_t intctl;
+    uint32_t intsts;
     uint8_t rsv2[8];
     uint32_t wallclock;
     uint8_t rsv3[4];
