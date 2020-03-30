@@ -6,7 +6,8 @@
 #ifndef CARDINAL_DRIVERS_HDAUDIO_CMDS_H
 #define CARDINAL_DRIVERS_HDAUDIO_CMDS_H
 
-typedef enum {
+typedef enum
+{
     hdaudio_param_vendor_device_id = 0x0,
     hdaudio_param_revision_id = 0x2,
     hdaudio_param_node_cnt = 0x4,
@@ -25,7 +26,8 @@ typedef enum {
     hdaudio_param_volume_caps = 0x13,
 } hdaudio_param_type_t;
 
-typedef enum {
+typedef enum
+{
     hdaudio_widget_audio_output,
     hdaudio_widget_audio_input,
     hdaudio_widget_audio_mixer,

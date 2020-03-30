@@ -22,27 +22,32 @@
 static int device_init_lock = 0;
 static hdaudio_instance_t *instances = NULL;
 
-
-int hdaudio_setupbuffersz(hdaudio_instance_t *instance, bool corb) {
+int hdaudio_setupbuffersz(hdaudio_instance_t *instance, bool corb)
+{
     uint32_t entcnt_cap = instance->cfg_regs->rirb.sz.szcap;
-    if(corb) {
+    if (corb)
+    {
         entcnt_cap = instance->cfg_regs->corb.sz.szcap;
     }
 
-    if(entcnt_cap & (1 << 2))
+    if (entcnt_cap & (1 << 2))
         entcnt_cap = 256;
-    else if(entcnt_cap & (1 << 1))
+    else if (entcnt_cap & (1 << 1))
         entcnt_cap = 16;
-    else if(entcnt_cap & (1 << 0))
+    else if (entcnt_cap & (1 << 0))
         entcnt_cap = 2;
 
-    if(corb) {
+    if (corb)
+    {
         instance->corb.entcnt = entcnt_cap;
-    } else {
+    }
+    else
+    {
         instance->rirb.entcnt = entcnt_cap;
     }
 
-    switch(entcnt_cap) {
+    switch (entcnt_cap)
+    {
     case 2:
         entcnt_cap = 0;
         break;
@@ -54,40 +59,50 @@ int hdaudio_setupbuffersz(hdaudio_instance_t *instance, bool corb) {
         break;
     }
 
-    if(corb) {
+    if (corb)
+    {
         instance->cfg_regs->corb.sz.sz = entcnt_cap;
-    } else {
+    }
+    else
+    {
         instance->cfg_regs->rirb.sz.sz = entcnt_cap;
     }
 
     return 0;
 }
 
-static void tmp_handler(int int_num) {
+static void tmp_handler(int int_num)
+{
+    DEBUG_PRINT("INTERRUPT\r\n");
+
     hdaudio_instance_t *instance = instances;
-    while (instance->interrupt_vec != int_num) {
+    while (instance->interrupt_vec != int_num)
+    {
         instance = instance->next;
 
-        if(instance == NULL)
+        if (instance == NULL)
             PANIC("HD Audio instance list corrupted!");
     }
 
     //TODO: signal the handler thread for this device
-    if(instance->cfg_regs->intsts.cis) {
+    if (instance->cfg_regs->intsts.cis)
+    {
 
-        if(instance->cfg_regs->rirb.sts.rintfl) {
+        if (instance->cfg_regs->rirb.sts.rintfl)
+        {
 
             instance->rirb_rp++;
 
             int idx = instance->cfg_regs->rirb.wp % instance->rirb.entcnt;
             int cmd_idx = instance->rirb_rp % instance->corb.entcnt;
 
-
-            if(instance->rirb.buffer[(idx * 2) + 1] & (1 << 4)) {
+            if (instance->rirb.buffer[(idx * 2) + 1] & (1 << 4))
+            {
                 //Unsolicited response
                 instance->rirb_rp--;
-
-            } else if(instance->cmds[cmd_idx].handler != NULL) {
+            }
+            else if (instance->cmds[cmd_idx].handler != NULL)
+            {
                 //Solicited response
 
                 //char tmp[10];
@@ -103,24 +118,26 @@ static void tmp_handler(int int_num) {
             instance->cfg_regs->rirb.sts.rintfl = 1;
         }
 
-        if(instance->cfg_regs->sdiwake) {
-            instance->codecs |= instance->cfg_regs->sdiwake;
-            instance->cfg_regs->sdiwake = 0xFFFF;
+        if (instance->cfg_regs->statests)
+        {
+            instance->codecs |= instance->cfg_regs->statests;
+            instance->cfg_regs->statests = 0xFFFF;
         }
     }
 
     //DEBUG_PRINT("HD Audio Interrupt\r\n");
 }
 
-int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node, uint32_t payload, void (*handler)(hdaudio_instance_t*, hdaudio_cmd_entry_t*, uint64_t)) {
+int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node, uint32_t payload, void (*handler)(hdaudio_instance_t *, hdaudio_cmd_entry_t *, uint64_t))
+{
 
-    uint32_t verb_val = (addr << 28 | (node & 0xFF) << 20 | (payload & 0xFFFFF));
+    uint32_t verb_val = (addr << 28 | (node & 0x7F) << 20 | (payload & 0xFFFFF));
 
     //Allocate the cmd entry for this verb
     int idx = (instance->cfg_regs->corb.wp + 1) % instance->corb.entcnt;
-    while(instance->cmds[idx].waiting && !instance->cmds[idx].handled)
-        //DEBUG_PRINT("WAITING\r\n");
-        ;
+    while (instance->cmds[idx].waiting && !instance->cmds[idx].handled)
+        DEBUG_PRINT("WAITING\r\n");
+    ;
 
     instance->cmds[idx].waiting = true;
     instance->cmds[idx].handled = false;
@@ -129,44 +146,49 @@ int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node,
     instance->cmds[idx].payload = payload;
     instance->cmds[idx].handler = handler;
 
-    //char tmp[10];
-    //DEBUG_PRINT("USED: ");
-    //DEBUG_PRINT(itoa(idx, tmp, 16));
-    //DEBUG_PRINT("\r\n");
-
     //Write the verb and queue it
     instance->corb.buffer[idx] = verb_val;
-    instance->cfg_regs->corb.wp = (instance->cfg_regs->corb.wp + 1) & 0xFF;
+    instance->cfg_regs->corb.wp = idx & 0xFF;
+    instance->cfg_regs->rirb.sts.rintfl = 1;
 
-    while(instance->cfg_regs->corb.rp < instance->cfg_regs->corb.wp)
+    char tmp[10];
+    DEBUG_PRINT("USED: ");
+    DEBUG_PRINT(itoa(instance->cfg_regs->corb.rp, tmp, 16));
+    DEBUG_PRINT("\r\n");
+
+    while (instance->cfg_regs->corb.rp < instance->cfg_regs->corb.wp)
         ;
-    //    DEBUG_PRINT("HOLDING\r\n");
+    //DEBUG_PRINT("HOLDING\r\n");
 
     return 0;
 }
 
 static volatile _Atomic int max_node_id = 1;
-static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_t *cmd, uint64_t resp) {
+static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_t *cmd, uint64_t resp)
+{
     hdaudio_param_type_t param_type = GET_PARAMTYPE_FRM_PAYLOAD(cmd->payload);
     uint8_t node = cmd->node;
     uint8_t addr = cmd->addr;
 
-    if(cmd->payload == GET_CFG_DEFAULT) {
+    if (cmd->payload == GET_CFG_DEFAULT)
+    {
         instance->nodes[addr][node].configuration_default = resp;
         return;
     }
 
-    switch(param_type) {
+    switch (param_type)
+    {
     case hdaudio_param_vendor_device_id:
         instance->nodes[addr][node].vendor_dev_id = (uint32_t)(resp);
         break;
     case hdaudio_param_node_cnt:
         instance->nodes[addr][node].starting_sub_node = (resp >> (16)) & 0xFF;
-        instance->nodes[addr][node].sub_node_cnt = (resp) & 0xFF;
+        instance->nodes[addr][node].sub_node_cnt = (resp)&0xFF;
 
-        if(instance->nodes[addr][node].sub_node_cnt != 0) {
+        if (instance->nodes[addr][node].sub_node_cnt != 0)
+        {
             int max_node_id_l = instance->nodes[addr][node].starting_sub_node + instance->nodes[addr][node].sub_node_cnt;
-            if(max_node_id_l > max_node_id)
+            if (max_node_id_l > max_node_id)
                 max_node_id = max_node_id_l;
         }
 
@@ -228,74 +250,57 @@ static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_
     }
 }
 
-static void hdaudio_connlisthandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_t *cmd, uint64_t resp) {
+static void hdaudio_connlisthandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_t *cmd, uint64_t resp)
+{
     uint8_t node = cmd->node;
     uint8_t addr = cmd->addr;
     uint8_t offset = GET_CONN_LIST_OFF(cmd->payload);
     uint8_t conn_list_len = instance->nodes[addr][node].conn_list_len & 0x7F;
 
-    if(conn_list_len > offset) instance->nodes[addr][node].conn_list[offset] = resp & 0xFF;
-    if(conn_list_len > offset + 1) instance->nodes[addr][node].conn_list[offset + 1] = (resp >> 8) & 0xFF;
-    if(conn_list_len > offset + 2) instance->nodes[addr][node].conn_list[offset + 2] = (resp >> 16) & 0xFF;
-    if(conn_list_len > offset + 3) instance->nodes[addr][node].conn_list[offset + 3] = (resp >> 24) & 0xFF;
+    if (conn_list_len > offset)
+        instance->nodes[addr][node].conn_list[offset] = resp & 0xFF;
+    if (conn_list_len > offset + 1)
+        instance->nodes[addr][node].conn_list[offset + 1] = (resp >> 8) & 0xFF;
+    if (conn_list_len > offset + 2)
+        instance->nodes[addr][node].conn_list[offset + 2] = (resp >> 16) & 0xFF;
+    if (conn_list_len > offset + 3)
+        instance->nodes[addr][node].conn_list[offset + 3] = (resp >> 24) & 0xFF;
 }
 
-int hdaudio_initialize(hdaudio_instance_t *instance) {
-
-    //bring the device out of reset
-    instance->cfg_regs->sdiwake = 0xFFFF;
-
-    instance->cfg_regs->gctl.crst = 0;
-    while(instance->cfg_regs->gctl.crst != 0)
-        ;
-    instance->cfg_regs->gctl.crst = 1;
-    while(instance->cfg_regs->gctl.crst != 1)
-        ;
-
+int hdaudio_initialize(hdaudio_instance_t *instance)
+{
     //Wait for the codecs to request state changes
-    while(instance->cfg_regs->sdiwake == 0)
-        ;
+    //while (instance->cfg_regs->statests == 0)
+    //    ;
     //instance->cfg_regs->gctl.crst |= (1 << 8);
 
     //Enable state change interrupts
-    instance->cfg_regs->sdiwen = 0xFFFF;
-    instance->cfg_regs->intctl.cie = 1;
-    instance->cfg_regs->intctl.gie = 1;
+    //instance->cfg_regs->wakeen = 0xFFFF;
 
+    DEBUG_PRINT("[HDAudio] Codecs Enumerated!\r\n");
+    instance->codecs = instance->cfg_regs->statests;
 
     //Configure CORB
     instance->cfg_regs->corb.ctl.corbrun = 0;
-    while(instance->cfg_regs->corb.ctl.corbrun)
+    while (instance->cfg_regs->corb.ctl.corbrun)
         ;
 
     instance->cfg_regs->corb.lower_base = (uint32_t)instance->corb.buffer_phys;
     instance->cfg_regs->corb.upper_base = (uint32_t)(instance->corb.buffer_phys >> 32);
 
-    DEBUG_PRINT("Codecs Enumerated!\r\n");
-    {
-        char tmp[10];
-        DEBUG_PRINT(itoa((int)instance->codecs, tmp, 16));
-    }
-
-    {
-        //Reset the CORB read pointer
-        instance->cfg_regs->corb.rp = (1 << 15);
-        while(!(instance->cfg_regs->corb.rp & (1 << 15)))
-            ;
-        instance->cfg_regs->corb.rp = 0;
-        while(instance->cfg_regs->corb.rp & (1 << 15))
-            ;
-    }
     instance->cfg_regs->corb.wp = 0;
 
-    //Start the corb again
-    instance->cfg_regs->corb.ctl.corbrun = 1;
-    while(!instance->cfg_regs->corb.ctl.corbrun)
+    //Reset the CORB read pointer
+    instance->cfg_regs->corb.rp = (1 << 15);
+    while (!(instance->cfg_regs->corb.rp & (1 << 15)))
+        ;
+    instance->cfg_regs->corb.rp = 0;
+    while (instance->cfg_regs->corb.rp & (1 << 15))
         ;
 
     //Configure RIRB
     instance->cfg_regs->rirb.ctl.dmaen = 0;
-    while(instance->cfg_regs->rirb.ctl.dmaen)
+    while (instance->cfg_regs->rirb.ctl.dmaen)
         ;
 
     instance->cfg_regs->rirb.lower_base = (uint32_t)instance->rirb.buffer_phys;
@@ -306,21 +311,31 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
 
     //Set the number of messages after which to interrupt
     instance->cfg_regs->rirb.intcnt = 1;
+    instance->cfg_regs->intctl.gie = 1;
+    instance->cfg_regs->intctl.cie = 1;
+    instance->cfg_regs->rirb.ctl.rintctl = 1;
 
     //Start the rirb again
     instance->cfg_regs->rirb.ctl.dmaen = 1;
-    while(!instance->cfg_regs->rirb.ctl.dmaen)
+    while (!instance->cfg_regs->rirb.ctl.dmaen)
         ;
-    instance->cfg_regs->rirb.ctl.rintctl = 1;
+
+    //Start the corb again
+    instance->cfg_regs->corb.ctl.corbrun = 1;
+    while (!instance->cfg_regs->corb.ctl.corbrun)
+        ;
 
     //Build the device graph
-    DEBUG_PRINT("HD Audio initialized, Enumerating nodes\r\n");
-    max_node_id = 1;
-    for(int i = 0; i < 16; i++) {
-        if(instance->codecs & (1u << i)) {
+    DEBUG_PRINT("[HDAudio] Controller Initialized, Enumerating nodes\r\n");
+    max_node_id = 2;
+    for (int i = 0; i < 16; i++)
+    {
+        if (instance->codecs & (1u << i))
+        {
             instance->nodes[i] = malloc(sizeof(hdaudio_node_t) * 256);
 
-            for(int j = 0; j < max_node_id; j++) {
+            for (int j = 0; j < max_node_id; j++)
+            {
                 instance->nodes[i][j].isValid = true;
 
                 hdaudio_sendverb(instance, i, j, GET_PARAM(hdaudio_param_vendor_device_id), hdaudio_scanhandler);
@@ -342,28 +357,32 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
             }
 
             //Now read in connection lists
-            for(int j = 0; j < max_node_id; j++) {
+            for (int j = 0; j < max_node_id; j++)
+            {
                 int list_len = instance->nodes[i][j].conn_list_len & 0x7F;
-                if(instance->nodes[i][j].conn_list_len & 0x80)
-                    PANIC("Long connection lists currently unsupported!");
+                if (instance->nodes[i][j].conn_list_len & 0x80)
+                    PANIC("[HDAudio] Long connection lists currently unsupported!");
 
-                for(int k = 0; k < list_len; k += 4)
+                for (int k = 0; k < list_len; k += 4)
                     hdaudio_sendverb(instance, i, j, GET_CONN_LIST(k), hdaudio_connlisthandler);
             }
 
             //Sort everything into groups based on widget type
             uint8_t *node_grps[7];
             uint8_t node_grps_cnt[7];
-            memset(node_grps, 0, sizeof(uint8_t*) * 7);
+            memset(node_grps, 0, sizeof(uint8_t *) * 7);
 
-            for(int j = 1; j < max_node_id; j++) {
-                if(instance->nodes[i][j].caps == 0)
+            for (int j = 1; j < max_node_id; j++)
+            {
+                if (instance->nodes[i][j].caps == 0)
                     continue;
 
                 int node_type = (instance->nodes[i][j].caps >> 20) & 0xF;
 
-                if(node_type < 0x7) {
-                    if(node_grps[node_type] == NULL) {
+                if (node_type < 0x7)
+                {
+                    if (node_grps[node_type] == NULL)
+                    {
                         node_grps[node_type] = malloc(sizeof(uint8_t) * max_node_id);
                         memset(node_grps[node_type], 0, max_node_id * sizeof(uint8_t));
 
@@ -399,14 +418,13 @@ int hdaudio_initialize(hdaudio_instance_t *instance) {
         }
     }
 
-
-
     return 0;
 }
 
-int module_init(void *ecam_addr) {
+int module_init(void *ecam_addr)
+{
 
-    pci_config_t *device = (pci_config_t*)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    pci_config_t *device = (pci_config_t *)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     //enable pci bus master
     device->command.busmaster = 1;
@@ -415,8 +433,8 @@ int module_init(void *ecam_addr) {
     int int_cnt = 0;
     int msi_val = pci_getmsiinfo(device, &int_cnt);
 
-    if(msi_val < 0)
-        DEBUG_PRINT("NO MSI\r\n");
+    if (msi_val < 0)
+        DEBUG_PRINT("[HDAudio] NO MSI\r\n");
 
     int int_val = 0;
     interrupt_allocate(1, interrupt_flags_none, &int_val);
@@ -428,34 +446,47 @@ int module_init(void *ecam_addr) {
 
     //figure out which bar to use
     uint64_t bar = 0;
-    for(int i = 0; i < 6; i++) {
-        if((device->bar[i] & 0x6) == 0x4) //Is 64-bit
+    for (int i = 0; i < 6; i++)
+    {
+        if ((device->bar[i] & 0x6) == 0x4) //Is 64-bit
             bar = (device->bar[i] & 0xFFFFFFF0) + ((uint64_t)device->bar[i + 1] << 32);
-        else if((device->bar[i] & 0x6) == 0x0) //Is 32-bit
+        else if ((device->bar[i] & 0x6) == 0x0) //Is 32-bit
             bar = (device->bar[i] & 0xFFFFFFF0);
-        if(bar) break;
+        if (bar)
+            break;
     }
 
     //create the device entry
-    hdaudio_instance_t *instance = (hdaudio_instance_t*)malloc(sizeof(hdaudio_instance_t));
-    instance->cfg_regs = (hdaudio_regs_t*)vmem_phystovirt(bar, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    hdaudio_instance_t *instance = (hdaudio_instance_t *)malloc(sizeof(hdaudio_instance_t));
+    instance->cfg_regs = (hdaudio_regs_t *)vmem_phystovirt(bar, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     instance->interrupt_vec = int_val;
     instance->next = NULL;
 
-    instance->nodes = malloc(sizeof(hdaudio_node_t*) * 32);
-    memset(instance->nodes, 0, sizeof(hdaudio_node_t*) * 32);
+    instance->nodes = malloc(sizeof(hdaudio_node_t *) * 32);
+    memset(instance->nodes, 0, sizeof(hdaudio_node_t *) * 32);
 
     //Synchronize device registration
     int state = cli();
     local_spinlock_lock(&device_init_lock);
-    if(instances == NULL)
+    if (instances == NULL)
         instances = instance;
-    else {
+    else
+    {
         instance->next = instances;
         instances = instance;
     }
     local_spinlock_unlock(&device_init_lock);
     sti(state);
+
+    //bring the device out of reset
+    //instance->cfg_regs->statests = 0xFFFF;
+
+    instance->cfg_regs->gctl.crst = 0;
+    while (instance->cfg_regs->gctl.crst != 0)
+        ;
+    instance->cfg_regs->gctl.crst = 1;
+    while (instance->cfg_regs->gctl.crst != 1)
+        ;
 
     //Figure out corb and rirb size and allocate memory
     hdaudio_setupbuffersz(instance, false);
@@ -464,9 +495,9 @@ int module_init(void *ecam_addr) {
     instance->cmds = malloc(instance->corb.entcnt * sizeof(hdaudio_cmd_entry_t));
     memset(instance->cmds, 0, sizeof(hdaudio_cmd_entry_t) * instance->corb.entcnt);
 
-    uintptr_t corb_rirb_buffer_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, (instance->corb.entcnt + 2 * instance->rirb.entcnt) * sizeof(uint32_t));
+    uintptr_t corb_rirb_buffer_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, (instance->corb.entcnt + 2 * instance->rirb.entcnt) * sizeof(uint32_t));
 
-    uint32_t *corb_rirb_buffer = (uint32_t*)vmem_phystovirt(corb_rirb_buffer_phys, (instance->corb.entcnt + 2 * instance->rirb.entcnt) * sizeof(uint32_t), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    uint32_t *corb_rirb_buffer = (uint32_t *)vmem_phystovirt(corb_rirb_buffer_phys, (instance->corb.entcnt + 2 * instance->rirb.entcnt) * sizeof(uint32_t), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     instance->corb.buffer = corb_rirb_buffer;
     instance->rirb.buffer = corb_rirb_buffer + instance->corb.entcnt;
 

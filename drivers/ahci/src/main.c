@@ -69,6 +69,7 @@ static void tmp_handler(int int_num)
 
 int module_init(void *ecam_addr)
 {
+    int cli_state = cli();
     local_spinlock_lock(&device_init_lock);
     pci_config_t *device = (pci_config_t *)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
@@ -108,12 +109,14 @@ int module_init(void *ecam_addr)
             break;
     }
 
+    //automatically handle
+    ahci_instance_t *prev_inst = instance;
     instance = (ahci_instance_t *)malloc(sizeof(ahci_instance_t));
     instance->lock = 0;
     local_spinlock_lock(&instance->lock);
     instance->cfg = (uintptr_t)vmem_phystovirt(bar, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     instance->interrupt_vec = int_val;
-    instance->next = NULL;
+    instance->next = prev_inst;
     device_count++;
     local_spinlock_unlock(&instance->lock);
 
@@ -131,9 +134,7 @@ int module_init(void *ecam_addr)
     //32 * (CMD_BUF_SIZE + FIS_SIZE + sizeof(ahci_cmdtable_t))
     size_t dma_sz = port_cnt * (CMD_BUF_SIZE + FIS_SIZE + sizeof(ahci_cmdtable_t));
     instance->port_dma.phys_addr = (uint64_t)pagealloc_alloc(0, 0, physmem_alloc_flags_zero | physmem_alloc_flags_data, dma_sz);
-    instance->port_dma.virt_addr = (uint64_t)vmem_vmalloc(dma_sz);
-
-    vmem_map(NULL, (intptr_t)instance->port_dma.virt_addr, (intptr_t)instance->port_dma.phys_addr, dma_sz, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw, 0);
+    instance->port_dma.virt_addr = (uint64_t)vmem_phystovirt(instance->port_dma.phys_addr, dma_sz, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     //initialize ports
     //register each active port to IO interface
@@ -154,18 +155,18 @@ int module_init(void *ecam_addr)
             }
     //Exit init state
     local_spinlock_unlock(&device_init_lock);
+    sti(cli_state);
 
     //Enable interrupts
     interrupt_registerhandler(int_val, tmp_handler);
     ahci_write32(instance, HBA_GHC, ahci_read32(instance, HBA_GHC) | (1 << 1));
 
     {
-        uint64_t paddr = (uint64_t)pagealloc_alloc(0, 0, physmem_alloc_flags_zero | physmem_alloc_flags_data, KiB(32));
-        uint64_t vaddr = (uint64_t)vmem_vmalloc(KiB(32));
+        //uint64_t paddr = (uint64_t)pagealloc_alloc(0, 0, physmem_alloc_flags_zero | physmem_alloc_flags_data, KiB(32));
+        //uint64_t vaddr = (uint64_t)vmem_phystovirt(paddr, KiB(32), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
-        vmem_map(NULL, (intptr_t)vaddr, (intptr_t)paddr, KiB(32), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw, 0);
-        ahci_readdev(instance, 0, 0, (void *)vaddr, KiB(32));
-        __asm__("cli\n\thlt" ::"a"(vaddr));
+        //vmem_map(NULL, (intptr_t)vaddr, (intptr_t)paddr, KiB(32), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw, 0);
+        //ahci_readdev(instance, 0, 0, (void *)vaddr, KiB(32));
     }
 
     return 0;
