@@ -7,8 +7,10 @@
 #define CARDINAL_DRIVERS_HDAUDIO_HDAUDIO_H
 
 #include "regs.h"
+#include "cmds.h"
 
-typedef struct {
+typedef struct
+{
     uint32_t vendor_dev_id;
     uint8_t starting_sub_node;
     uint8_t sub_node_cnt;
@@ -18,6 +20,7 @@ typedef struct {
     uint8_t output_delay;
 
     uint8_t isValid;
+    uint8_t current_index;
     uint32_t caps;
 
     uint32_t pcm_rates;
@@ -32,11 +35,13 @@ typedef struct {
     uint32_t volume_caps;
 
     uint32_t configuration_default;
+    hdaudio_widget_type_t widgetType;
 
     uint8_t *conn_list;
 } hdaudio_node_t;
 
-typedef struct {
+typedef struct
+{
     uint8_t nodes[10];
     uint32_t input_delay;
     uint32_t output_delay;
@@ -44,7 +49,8 @@ typedef struct {
     bool isOutput;
 } hdaudio_path_t;
 
-typedef struct {
+typedef struct
+{
     uint32_t *buffer;
     uintptr_t buffer_phys;
     int entcnt;
@@ -52,7 +58,8 @@ typedef struct {
 
 typedef struct hdaudio_cmd_entry hdaudio_cmd_entry_t;
 
-typedef struct hdaudio_instance {
+typedef struct hdaudio_instance
+{
     hdaudio_regs_t *cfg_regs;
     hdaudio_buffer_def_t corb;
     hdaudio_buffer_def_t rirb;
@@ -67,7 +74,8 @@ typedef struct hdaudio_instance {
     struct hdaudio_instance *next;
 } hdaudio_instance_t;
 
-struct hdaudio_cmd_entry {
+struct hdaudio_cmd_entry
+{
     bool waiting;
     bool handled;
 

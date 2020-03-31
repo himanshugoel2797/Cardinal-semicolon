@@ -126,8 +126,8 @@ int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node,
     //Allocate the cmd entry for this verb
     int idx = (instance->cfg_regs->corb.wp + 1) % instance->corb.entcnt;
     while (instance->cmds[idx].waiting && !instance->cmds[idx].handled)
-        //DEBUG_PRINT("WAITING\r\n");
-        ;
+        halt() //DEBUG_PRINT("WAITING\r\n");
+            ;
 
     instance->cmds[idx].waiting = true;
     instance->cmds[idx].handled = false;
@@ -146,11 +146,17 @@ int hdaudio_sendverb(hdaudio_instance_t *instance, uint32_t addr, uint32_t node,
     //DEBUG_PRINT(itoa(instance->cfg_regs->corb.rp, tmp, 16));
     //DEBUG_PRINT("\r\n");
 
-    while (instance->cfg_regs->corb.rp < instance->cfg_regs->corb.wp)
-        ;
+    //while (instance->cfg_regs->corb.rp < instance->cfg_regs->corb.wp)
+    //    halt();
     //DEBUG_PRINT("HOLDING\r\n");
 
-    return 0;
+    return idx;
+}
+
+void hdaudio_waitcmd(hdaudio_instance_t *instance, int idx)
+{
+    while (!instance->cmds[idx].handled)
+        halt();
 }
 
 static volatile _Atomic int max_node_id = 1;
@@ -166,12 +172,24 @@ static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_
         return;
     }
 
+    if (cmd->payload == GET_CONN_SEL)
+    {
+        instance->nodes[addr][node].current_index = resp & 0x7F;
+
+        char tmp[10];
+        DEBUG_PRINT("[HDAudio] Connection Idx: ");
+        DEBUG_PRINT(itoa(resp & 0x7F, tmp, 16));
+        DEBUG_PRINT("\r\n");
+        return;
+    }
+
     switch (param_type)
     {
     case hdaudio_param_vendor_device_id:
         instance->nodes[addr][node].vendor_dev_id = (uint32_t)(resp);
         break;
     case hdaudio_param_node_cnt:
+    {
         instance->nodes[addr][node].starting_sub_node = (resp >> (16)) & 0xFF;
         instance->nodes[addr][node].sub_node_cnt = (resp)&0xFF;
 
@@ -193,7 +211,8 @@ static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_
         DEBUG_PRINT(itoa(resp & 0xFF, tmp, 16));
 
         DEBUG_PRINT("\r\n");
-        break;
+    }
+    break;
     case hdaudio_param_func_grp_type:
         instance->nodes[addr][node].grp_type = (resp);
         break;
@@ -202,8 +221,16 @@ static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_
         instance->nodes[addr][node].output_delay = resp & 0x0F;
         break;
     case hdaudio_param_audio_widget_caps:
+    {
         instance->nodes[addr][node].caps = (resp);
-        break;
+        instance->nodes[addr][node].widgetType = (resp >> 20) & 0xF;
+
+        char tmp[10];
+        DEBUG_PRINT("[HDAudio] Widget Type: ");
+        DEBUG_PRINT(itoa((resp >> 20) & 0xF, tmp, 16));
+        DEBUG_PRINT("\r\n");
+    }
+    break;
     case hdaudio_param_pcm_rate_caps:
         instance->nodes[addr][node].pcm_rates = (resp);
         break;
@@ -220,9 +247,16 @@ static void hdaudio_scanhandler(hdaudio_instance_t *instance, hdaudio_cmd_entry_
         instance->nodes[addr][node].output_amp_cap = (resp);
         break;
     case hdaudio_param_conn_list_len:
+    {
         instance->nodes[addr][node].conn_list_len = (resp);
         instance->nodes[addr][node].conn_list = malloc((resp & 0x7F) * sizeof(uint8_t));
-        break;
+
+        char tmp[10];
+        DEBUG_PRINT("[HDAudio] Connection Count: ");
+        DEBUG_PRINT(itoa(resp & 0x7F, tmp, 16));
+        DEBUG_PRINT("\r\n");
+    }
+    break;
     case hdaudio_param_pwr_caps:
         instance->nodes[addr][node].pwr_states = (resp);
         break;
@@ -342,7 +376,9 @@ int hdaudio_initialize(hdaudio_instance_t *instance)
                 hdaudio_sendverb(instance, i, j, GET_PARAM(hdaudio_param_processing_caps), hdaudio_scanhandler);
                 hdaudio_sendverb(instance, i, j, GET_PARAM(hdaudio_param_gpio_cnt), hdaudio_scanhandler);
                 hdaudio_sendverb(instance, i, j, GET_PARAM(hdaudio_param_volume_caps), hdaudio_scanhandler);
-                hdaudio_sendverb(instance, i, j, GET_CFG_DEFAULT, hdaudio_scanhandler);
+                hdaudio_sendverb(instance, i, j, GET_CONN_SEL, hdaudio_scanhandler);
+                int fcmd = hdaudio_sendverb(instance, i, j, GET_CFG_DEFAULT, hdaudio_scanhandler);
+                hdaudio_waitcmd(instance, fcmd);
             }
 
             //Now read in connection lists
@@ -352,8 +388,11 @@ int hdaudio_initialize(hdaudio_instance_t *instance)
                 if (instance->nodes[i][j].conn_list_len & 0x80)
                     PANIC("[HDAudio] Long connection lists currently unsupported!");
 
+                int fcmd = -1;
                 for (int k = 0; k < list_len; k += 4)
-                    hdaudio_sendverb(instance, i, j, GET_CONN_LIST(k), hdaudio_connlisthandler);
+                    fcmd = hdaudio_sendverb(instance, i, j, GET_CONN_LIST(k), hdaudio_connlisthandler);
+                if (fcmd >= 0)
+                    hdaudio_waitcmd(instance, fcmd);
             }
 
             //Sort everything into groups based on widget type
@@ -380,6 +419,12 @@ int hdaudio_initialize(hdaudio_instance_t *instance)
 
                     node_grps[node_type][node_grps_cnt[node_type]++] = j;
                 }
+            }
+
+            //Use the default connections for now
+            //Sort pins by input and output
+            for (uint8_t j = 0; j < node_grps_cnt[hdaudio_widget_pin_complex]; j++)
+            {
             }
 
             //For each pin, build a shortest path from pin to stream
