@@ -82,13 +82,14 @@ typedef struct process_desc
     descriptor_entry_t descriptors[MAX_DESCRIPTOR_COUNT];
 
     uint8_t *fpu_state;
+    uint8_t *fpu_state_unaligned;
     uint8_t *reg_state;
     uint8_t *kernel_stack;
     uint8_t *user_stack;
     intptr_t user_stack_phys;
     uint8_t *syscall_data;
 
-        struct cardinal_program_setup_params *usersetup_params;
+    struct cardinal_program_setup_params *usersetup_params;
 
     struct process_desc *next;
 } process_desc_t;

@@ -8,9 +8,15 @@
 #include <string.h>
 #include <types.h>
 
+#include "SysReg/registry.h"
+
 #include "ps2.h"
 
-int module_init(void) {
-    PS2_Initialize();
+int module_init(void)
+{
+    bool ps2_pres = false;
+    registry_readkey_bool("HW/FADT", "8042", &ps2_pres);
+    if (ps2_pres)
+        PS2_Initialize();
     return 0;
 }

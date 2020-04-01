@@ -85,6 +85,7 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
     }
 
     proc_info->fpu_state = malloc(fp_platform_getstatesize() + fp_platform_getalign());
+    proc_info->fpu_state_unaligned = proc_info->fpu_state;
     if (proc_info->fpu_state == NULL)
         PANIC("[SysTaskMgr] Unexpected memory allocation failure.");
 
@@ -704,7 +705,7 @@ static void task_cleanup(void *arg)
                         pagealloc_free(iter->user_stack_phys, USER_STACK_LEN);
                     }
                     vmem_destroy(iter->mem);
-                    free(iter->fpu_state);
+                    free(iter->fpu_state_unaligned);
                     free(iter->reg_state);
                     free(iter->kernel_stack - KERNEL_STACK_LEN);
 
@@ -721,7 +722,6 @@ static void task_cleanup(void *arg)
                 {
                     prev_iter->next = iter->next;
                     local_spinlock_unlock(&prev_iter->lock);
-
                     free(iter);
                     process_count--; //NOTE: This will probably leak if the prev_iter is also task_state_exited
                 }

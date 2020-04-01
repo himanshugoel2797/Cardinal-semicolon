@@ -111,6 +111,7 @@ void *WEAK malloc(size_t sz)
 
     cur_best_fit->isFree = false;
     void *retAddr = cur_best_fit->data;
+
     sti(cli_state);
 
     return retAddr;
@@ -125,10 +126,9 @@ static void mem_compact()
 static void *doublefree_addr = NULL;
 void print_free_addr()
 {
-    char tmp[10];
+    char tmp[20];
     DEBUG_PRINT("At ");
-    DEBUG_PRINT(itoa((uint64_t)doublefree_addr >> 32, tmp, 16));
-    DEBUG_PRINT(itoa((uint64_t)doublefree_addr, tmp, 16));
+    DEBUG_PRINT(ltoa((uint64_t)doublefree_addr, tmp, 16));
     DEBUG_PRINT("\r\n");
 }
 
@@ -148,7 +148,7 @@ void WEAK free(void *sz)
     //Mark the remaining space as available
     if (desc->isFree)
     {
-        doublefree_addr = sz;
+        doublefree_addr = __builtin_return_address(0);
         PANIC("Double free detected.");
     }
 

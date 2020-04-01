@@ -15,6 +15,11 @@
 #include "SysInterrupts/interrupts.h"
 #include "pci/pci.h"
 
+#include "uhci.h"
+
+static uhci_ctrl_state_t *instances = NULL;
+static int instance_lock = 0;
+
 int module_init(void *ecam_addr)
 {
 
@@ -23,7 +28,17 @@ int module_init(void *ecam_addr)
     //enable pci bus master
     device->command.busmaster = 1;
 
-    //interrupts are not supported, so use a polling task
+    //TODO: interrupts are not supported, so use a polling task
+    uhci_ctrl_state_t *instance = malloc(sizeof(uhci_ctrl_state_t));
+
+    int cli_state = cli();
+    local_spinlock_lock(&instance_lock);
+    instance->next = instances;
+    instances = instance;
+    local_spinlock_unlock(&instance_lock);
+    sti(cli_state);
+
+    uint64_t bar = (device->bar[4] & 0xFFFFFFF0); //I/O space BAR
 
     return 0;
 }
