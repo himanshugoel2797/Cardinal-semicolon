@@ -125,6 +125,17 @@ int module_init()
                     PANIC("[CoreDriver] module_init FAILED");
                 }
             }
+            else
+            {
+                char tmp_entry_addr[20];
+                print_str("[CoreDriver] Vendor ID: ");
+                print_str(itoa(dev_vendorID, tmp_entry_addr, 16));
+                print_str("\r\n");
+
+                print_str("[CoreDriver] Device ID: ");
+                print_str(itoa(dev_devID, tmp_entry_addr, 16));
+                print_str("\r\n");
+            }
         }
 
         cursor = newline + 1;

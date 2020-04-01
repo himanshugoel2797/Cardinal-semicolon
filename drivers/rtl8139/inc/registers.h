@@ -9,11 +9,15 @@
 #define MAC_REG(x) (x)
 #define MAR_REG(x) (x + 0x08)
 #define RBSTART_REG (0x30)
+#define TX_STS_REG(x) (0x10 + (x * 4))
+#define TX_ADDR_REG(x) (0x20 + (x * 4))
+#define TX_CFG_REG (0x40)
 #define CMD_REG (0x37)
 #define IMR_REG (0x3C)
 #define ISR_REG (0x3E)
 #define RCR_REG (0x44)
 #define CONFIG_1_REG (0x52)
+#define MEDIA_STATUS_REG (0x58)
 
 #define CMD_RST_VAL (1 << 4)
 #define CMD_RX_EN (1 << 3)
@@ -27,6 +31,9 @@
 #define RCR_RCV_PHYSMATCH (1 << 1)
 #define RCR_RCV_MULTICAST (1 << 2)
 #define RCR_RCV_BROADCAST (1 << 3)
+
+#define TX_STS_OWN (1 << 13)
+#define TX_STS_TOK (1 << 15)
 
 #define RCR_WRAP (1 << 7)
 #define RCR_RX_BUFLEN_64K (3 << 11)

@@ -13,10 +13,7 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysInterrupts/interrupts.h"
-#include "SysTaskMgr/task.h"
 #include "pci/pci.h"
-
-#include "state.h"
 
 int module_init(void *ecam_addr)
 {
@@ -26,19 +23,7 @@ int module_init(void *ecam_addr)
     //enable pci bus master
     device->command.busmaster = 1;
 
-    //The memory space bar for the registers
-    uint64_t bar = (device->bar[1] & 0xFFFFFFF0);
-
-    rtl8139_state_t *n_state = malloc(sizeof(rtl8139_state_t));
-    memset(n_state, 0, sizeof(rtl8139_state_t));
-
-    n_state->memar = (uint8_t *)vmem_phystovirt((intptr_t)bar, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-
-    rtl8139_init(n_state);
-
-    cs_id rtl_task = 0;
-    create_task_kernel("rtl8139_int_poll", task_permissions_kernel, &rtl_task);
-    start_task_kernel(rtl_task, (void (*)(void *))rtl8139_intr_handler, n_state);
+    //interrupts are not supported, so use a polling task
 
     return 0;
 }

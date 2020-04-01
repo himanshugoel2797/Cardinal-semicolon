@@ -17,4 +17,6 @@
 ./intel_gfx.celf|8086|0a16|FFFF|FFFF|FFFF
 ./hdaudio.celf|8086|293e|FFFF|FFFF|FFFF
 ./hdaudio.celf|8086|2668|FFFF|FFFF|FFFF
+./uhci.celf|8086|2936|FFFF|FFFF|FFFF
 ./ahci.celf|8086|2922|FFFF|FFFF|FFFF
+
