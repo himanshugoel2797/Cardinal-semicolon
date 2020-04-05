@@ -15,8 +15,8 @@
 ./intel_wifi.celf|8086|24f4|FFFF|FFFF|FFFF
 ./intel_wifi.celf|8086|24fd|FFFF|FFFF|FFFF
 ./intel_gfx.celf|8086|0a16|FFFF|FFFF|FFFF
+./intel_gfx.celf|8086|22b0|FFFF|FFFF|FFFF
 ./hdaudio.celf|8086|293e|FFFF|FFFF|FFFF
 ./hdaudio.celf|8086|2668|FFFF|FFFF|FFFF
 ./uhci.celf|FFFF|FFFF|000C|0003|0000
 ./ahci.celf|8086|2922|FFFF|FFFF|FFFF
-

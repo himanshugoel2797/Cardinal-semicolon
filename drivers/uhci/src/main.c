@@ -55,8 +55,8 @@ static void uhci_reset(uhci_ctrl_state_t *state)
 {
     write16(state, USBCMD_REG, 1 << 2);
     timer_wait(10 * 1000 * 1000);
-    write32(instance, FRBASEADDR_REG, instance->framelist_pmem);
-    write16(state, 1);
+    write32(state, FRBASEADDR_REG, state->framelist_pmem);
+    write16(state, USBCMD_REG, 1);
 }
 
 static void uhci_enableport(uhci_ctrl_state_t *state, int idx)

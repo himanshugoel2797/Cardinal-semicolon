@@ -94,12 +94,14 @@ extern "C"
 #endif
 
   int print_str(const char *s);
+  void print_hexdump(void *buf, int sz);
 #define DEBUG_ECHO(msg) print_str(__FILE__ "," S__LINE__ ":" msg "\r\n")
 #define DEBUG_PRINT(msg) print_str(msg)
 
 #if !defined(NDEBUG)
   // First set the trap message, then raise the trap
-  void set_trap_str(const char *str);
+  void
+  set_trap_str(const char *str);
 
 #define WARN(msg) print_str(__FILE__ "," S__LINE__ ":" msg "\r\n")
 
