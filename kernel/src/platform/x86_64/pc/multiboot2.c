@@ -33,7 +33,7 @@ static uint64_t kernel_start_phys, kernel_end_phys;
 
 void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
 
-    if (magic != MULTIBOOT_MAGIC)
+    if (magic != MULTIBOOT2_BOOTLOADER_MAGIC)
         PANIC("Multiboot2 magic number check failed.");
 
     kernel_start_phys = (uint64_t)(&_region_kernel_start_);
@@ -47,9 +47,13 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
     uint32_t s = 0;
 
     for (uint32_t i = 8; i < total_size;) {
+        //DEBUG_PRINT("Hello World00\r\n");
         uint32_t val = *(uint32_t *)&hdr_8[i];
+        //print_uint64(val);
+        //DEBUG_PRINT("Hello World0\r\n");
         switch (val) {
         case MULTIBOOT_TAG_TYPE_MMAP: {
+            DEBUG_PRINT("MMap Found!\r\n");
             multiboot_tag_mmap *mmap = (multiboot_tag_mmap *)&hdr_8[i];
             int entryCount = (mmap->size - 16) / mmap->entry_size;
             CardinalMemMap *map =
@@ -62,7 +66,6 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
 
                 if(mmap_e->type == MULTIBOOT_MEMORY_AVAILABLE)
                     bootInfo.MemorySize += mmap_e->len;
-
 
                 //Check the address range and insert a split if necessary
                 //Reserve everything below 2M
@@ -100,26 +103,28 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
         }
         break;
         case MULTIBOOT_TAG_TYPE_FRAMEBUFFER: {
+            DEBUG_PRINT("Framebuffer Found!\r\n");
             multiboot_tag_framebuffer *framebuffer =
                 (multiboot_tag_framebuffer *)&hdr_8[i];
-            bootInfo.FramebufferAddress = framebuffer->common.FramebufferAddress;
-            bootInfo.FramebufferPitch = framebuffer->common.FramebufferPitch;
-            bootInfo.FramebufferWidth = framebuffer->common.FramebufferWidth;
-            bootInfo.FramebufferHeight = framebuffer->common.FramebufferHeight;
-            bootInfo.FramebufferBPP = framebuffer->common.FramebufferBPP;
+            bootInfo.FramebufferAddress = framebuffer->common.framebuffer_addr;
+            bootInfo.FramebufferPitch = framebuffer->common.framebuffer_pitch;
+            bootInfo.FramebufferWidth = framebuffer->common.framebuffer_width;
+            bootInfo.FramebufferHeight = framebuffer->common.framebuffer_height;
+            bootInfo.FramebufferBPP = framebuffer->common.framebuffer_bpp;
 
             bootInfo.FramebufferRedFieldPosition =
-                framebuffer->FramebufferRedFieldPosition;
-            bootInfo.FramebufferRedMaskSize = framebuffer->FramebufferRedMaskSize;
+                framebuffer->framebuffer_red_field_position;
+            bootInfo.FramebufferRedMaskSize = framebuffer->framebuffer_red_mask_size;
             bootInfo.FramebufferGreenFieldPosition =
-                framebuffer->FramebufferGreenFieldPosition;
-            bootInfo.FramebufferGreenMaskSize = framebuffer->FramebufferGreenMaskSize;
+                framebuffer->framebuffer_green_field_position;
+            bootInfo.FramebufferGreenMaskSize = framebuffer->framebuffer_green_mask_size;
             bootInfo.FramebufferBlueFieldPosition =
-                framebuffer->FramebufferBlueFieldPosition;
-            bootInfo.FramebufferBlueMaskSize = framebuffer->FramebufferBlueMaskSize;
+                framebuffer->framebuffer_blue_field_position;
+            bootInfo.FramebufferBlueMaskSize = framebuffer->framebuffer_blue_mask_size;
         }
         break;
         case MULTIBOOT_TAG_TYPE_ELF_SECTIONS: {
+            DEBUG_PRINT("Elf Info Found!\r\n");
             multiboot_tag_elf_sections *elf = (multiboot_tag_elf_sections *)&hdr_8[i];
             bootInfo.elf_shdr_type = elf->type;
             bootInfo.elf_shdr_size = elf->size;
@@ -127,24 +132,44 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
             bootInfo.elf_shdr_entsize = elf->entsize;
             bootInfo.elf_shdr_shndx = elf->shndx;
             bootInfo.elf_shdr_addr = (uint64_t)elf->sections;
-
         }
         break;
         case MULTIBOOT_TAG_TYPE_ACPI_OLD:
         case MULTIBOOT_TAG_TYPE_ACPI_NEW: {
+            DEBUG_PRINT("RSDP Found!\r\n");
             multiboot_tag_new_acpi *acpi = (multiboot_tag_new_acpi *)&hdr_8[i];
             bootInfo.RSDPAddress = (uint64_t)acpi->rsdp;
         }
         break;
         case MULTIBOOT_TAG_TYPE_MODULE: {
+            DEBUG_PRINT("Module Found!\r\n");
             multiboot_tag_module *module = (multiboot_tag_module *)&hdr_8[i];
             bootInfo.InitrdStartAddress = (uint64_t)module->mod_start;
             bootInfo.InitrdPhysStartAddress = (uint64_t)module->mod_start;
             bootInfo.InitrdLength = (uint64_t)(module->mod_end - module->mod_start);
         }
         break;
+        case MULTIBOOT_TAG_TYPE_CMDLINE:
+            DEBUG_PRINT("CMDLINE Found!\r\n");
+            break;
+        case MULTIBOOT_TAG_TYPE_BOOT_LOADER_NAME:
+            DEBUG_PRINT("Boot Loader Name Found!\r\n");
+            break;
         case MULTIBOOT_TAG_TYPE_END:
-            // i += 8;   //We're done, exit the loop
+            DEBUG_PRINT("End Found!\r\n");
+            i += total_size;   //We're done, exit the loop
+            break;
+        default:{
+            char c_[5];
+            c_[0] = "0123456789ABCDEF"[(val >> 12) & 0xf];
+            c_[1] = "0123456789ABCDEF"[(val >> 8) & 0xf];
+            c_[2] = "0123456789ABCDEF"[(val >> 4) & 0xf];
+            c_[3] = "0123456789ABCDEF"[(val & 0xf)];
+            c_[4] = 0;
+            DEBUG_PRINT("Unknown Found! 0x");
+            DEBUG_PRINT(c_);
+            DEBUG_PRINT("\r\n");
+        }
             break;
         }
         s = *(uint32_t *)(&hdr_8[i + 4]);

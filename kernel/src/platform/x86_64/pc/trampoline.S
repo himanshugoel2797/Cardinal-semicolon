@@ -28,8 +28,7 @@
 .section .trampoline_code, "ax", @progbits
 .code16
 _trampoline:
-cli
-mov $0x1000, %eax
+mov $0x10000, %eax
 mov %eax, %cr3
 
 mov %cr4, %eax
@@ -61,3 +60,8 @@ push %rax
 retq
 cli
 hlt
+
+                               .section .trampoline_stack, "ax"
+                               tramp_stack_bottom:
+                               .space 28672 # 16 KiB	(16 KiB is enough for initialization until threading is setup)
+                               tramp_stack_top:

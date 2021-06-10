@@ -38,10 +38,12 @@ multiboot_start:
 
 .word 1 	#type
 .word 0 	#flags
-.long 28 	#size
+.long 36 	#size
 .long 6 	#mmap
 .long 8 	#framebuffer
 .long 9 	#elf map
+.long 11    #efi32
+.long 12    #efi64
 .long 14    #acpi_old
 .long 15 	#acpi_new
 
@@ -109,13 +111,23 @@ multiboot_end:
                                .global _start
                                .type _start, @function
                                _start:
-                               mov $0x1000, %edi
+                               mov $0x10000, %edi
                                mov %edi, %cr3
 
                                mov %eax, (temp_stor_magic)
                                mov %ebx, (temp_stor_info)	#Backup EBX
 
-
+                               #Backup boot info
+                               mov $storage, %edx
+                               mov %edx, (temp_stor_info)
+                               mov (%ebx), %ecx #Read total size
+                               
+                               cpyinfo:
+                               mov (%ebx), %ax
+                               mov %ax, (%edx)
+                               add $1, %edx
+                               add $1, %ebx
+                               loop cpyinfo
 
                                mov $0x80000001, %eax
                                cpuid
@@ -125,15 +137,15 @@ multiboot_end:
                                xor %eax, %eax
                                mov $4096, %ecx
                                rep stosl
-                               mov $4096, %ecx
-                               rep stosl
+                               #mov $4096, %ecx
+                               #rep stosl
                                mov %cr3, %edi
-                               movl $0x2003, (%edi)
-                               movl $0x5003, 0xFF8(%edi)
+                               movl $0x11003, (%edi)
+                               movl $0x14003, 0xFF8(%edi)
                                add $0x1000, %edi
-                               movl $0x3003, (%edi)
+                               movl $0x12003, (%edi)
                                add $0x1000, %edi
-                               movl $0x4003, (%edi)
+                               movl $0x13003, (%edi)
                                add $0x1000, %edi
 
 #This needs to be converted to use 4MB pages instead to support older systems
@@ -144,10 +156,10 @@ multiboot_end:
                                movl $0x0, 0x1FF8(%edi)
 
                                #Map the bottom of the memory space
-                               movl $0x16003, 0x1FF0(%edi)
-                               movl $0x17003, 0x1FF8(%edi)
+                               movl $0x15003, 0x1FF0(%edi)
+                               movl $0x16003, 0x1FF8(%edi)
 
-                               mov $0x16000, %edi
+                               mov $0x15000, %edi
                                mov $0x108B, %ebx
                                mov $2048, %ecx
 
@@ -158,7 +170,7 @@ multiboot_end:
                                add $8, %edi
                                loop .SetGBEntry
 
-                               mov $0x4000, %edi
+                               mov $0x13000, %edi
                                mov $0x3, %ebx
                                mov $512, %ecx
 
@@ -223,3 +235,5 @@ multiboot_end:
                                stack_bottom:
                                .skip 16384 # 16 KiB	(16 KiB is enough for initialization until threading is setup)
                                stack_top:
+                               storage:
+                               .skip 16384

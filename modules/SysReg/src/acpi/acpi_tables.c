@@ -54,6 +54,14 @@ void *ACPITables_FindTable(const char *table_name)
             if (xsdt->PointerToOtherSDT[i] == 0)
                 continue;
             ACPISDTHeader *h = (ACPISDTHeader *)vmem_phystovirt_ptr((intptr_t)xsdt->PointerToOtherSDT[i], MiB(2), vmem_flags_cachewriteback);
+            char tmp_table_name[5];
+            tmp_table_name[4] = 0;
+            tmp_table_name[0] = h->Signature[0];
+            tmp_table_name[1] = h->Signature[1];
+            tmp_table_name[2] = h->Signature[2];
+            tmp_table_name[3] = h->Signature[3];
+            DEBUG_PRINT(tmp_table_name);
+            DEBUG_PRINT("\r\n");
             if (!memcmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h))
             {
                 return (void *)h;
@@ -173,6 +181,7 @@ static int save_isaovr(uint32_t ioapic_cnt, MADT_EntryISAOVR *isaovr)
     return 0;
 }
 
+int WEAK print_uint64(uint64_t v, uint8_t base);
 int preinit_acpi()
 {
     intptr_t rsdp_addr = 0;
@@ -182,6 +191,16 @@ int preinit_acpi()
     //Copy the rsdp
     rsdp = malloc(sizeof(RSDPDescriptor20));
     memcpy(rsdp, l_rsdp, sizeof(RSDPDescriptor20));
+
+    DEBUG_PRINT("RSDP at: ");
+    print_uint64((uint64_t)l_rsdp, 16);
+
+    DEBUG_PRINT("XSDT at: ");
+    print_uint64((uint64_t)l_rsdp->XsdtAddress, 16);
+
+    print_hexdump((uint8_t*)l_rsdp, 128);
+    print_hexdump((uint8_t*)rsdp, 128);
+
     return 0;
 }
 

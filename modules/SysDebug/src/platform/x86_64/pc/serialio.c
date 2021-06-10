@@ -259,7 +259,7 @@ int init_serial_debug()
 #define BASE_HEX 16
 
 #define PRINT_BITCNT(bitcnt)                           \
-    if (base == BASE_HEX)                              \
+    if (base == BASE_HEX)                             \
         for (int i = (bitcnt - 4); i >= 0; i -= 4)     \
         {                                              \
             while (serial_outputisready() == 0)        \
@@ -267,18 +267,26 @@ int init_serial_debug()
             outb(SERIAL_A, hex_str[(num >> i) & 0xF]); \
         }
 
-void print_int8(int8_t num, uint8_t base)
+int WEAK print_int8(int8_t num, uint8_t base)
 {
     PRINT_BITCNT(8)
+    return 0;
 }
-void print_int16(int16_t num, uint8_t base) { PRINT_BITCNT(16) }
-void print_int32(int32_t num, uint8_t base) { PRINT_BITCNT(32) }
-void print_int64(int64_t num, uint8_t base) { PRINT_BITCNT(64) }
+int WEAK print_int16(int16_t num, uint8_t base) { PRINT_BITCNT(16) 
+    return 0;}
+int WEAK print_int32(int32_t num, uint8_t base) { PRINT_BITCNT(32) 
+    return 0;}
+int WEAK print_int64(int64_t num, uint8_t base) { PRINT_BITCNT(64) 
+    return 0;}
 
-void print_uint8(uint8_t num, uint8_t base) { PRINT_BITCNT(8) }
-void print_uint16(uint16_t num, uint8_t base) { PRINT_BITCNT(16) }
-void print_uint32(uint32_t num, uint8_t base) { PRINT_BITCNT(32) }
-void print_uint64(uint64_t num, uint8_t base) { PRINT_BITCNT(64) }
+int WEAK print_uint8(uint8_t num, uint8_t base) { PRINT_BITCNT(8) 
+    return 0;}
+int WEAK print_uint16(uint16_t num, uint8_t base) { PRINT_BITCNT(16) 
+    return 0;}
+int WEAK print_uint32(uint32_t num, uint8_t base) { PRINT_BITCNT(32) 
+    return 0;}
+int WEAK print_uint64(uint64_t num, uint8_t base) { PRINT_BITCNT(64) 
+    return 0;}
 
 void print_hexdump(void *datap, int len)
 {

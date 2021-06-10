@@ -38,12 +38,14 @@ int WEAK print_str(const char *s)
 
     outb(0x3f9, 0);        //disable interrupts
     outb(0x3f8 + 3, 0x80); //DLAB
-    outb(0x3f8, 1);        //divisor = 1
+    outb(0x3f8, 3);        //divisor = 1
     outb(0x3f9, 0);        //hi byte
-    outb(0x3f8 + 3, 0x03); //8 bits, no parity, one stop bit
+    outb(0x3f8 + 3, 0x0f); //8 bits, no parity, one stop bit
 
     while (*s != 0)
     {
+        while((inb(0x3f8 + 5) & 0x20) == 0)
+            ;
         outb(0x3f8, *(s++));
     }
 
@@ -77,11 +79,14 @@ int kernel_updatetraphandlers()
 SECTION(".entry_point")
 int32_t main(void *param, uint64_t magic)
 {
-
+    //__asm__ volatile("cli");
+    //PANIC("Booted!");
     if (param == NULL)
         PANIC("Didn't receive boot parameters!");
 
     ParseAndSaveBootInformation(param, magic);
+
+
 
     // Fix boot information addresses
     CardinalBootInfo *b_info = GetBootInfo();

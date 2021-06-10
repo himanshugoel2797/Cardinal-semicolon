@@ -205,7 +205,7 @@ int symboldb_add(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *symbol)
 
     // Get the symbol name
     char *sym_str = (char *)strhdr->sh_addr + symbol->st_name;
-
+    
     // hash and modulus table len
     uint32_t s_hash = hash(sym_str, strlen(sym_str));
     uint32_t idx = s_hash % MAX_SYMBOL_CNT;
@@ -227,7 +227,6 @@ int symboldb_add(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *symbol)
         return 0;
     }
 
-    DEBUG_PRINT(sym_str);
     PANIC("[Kernel] CRITICAL ERROR: Could not store symbol.");
     return 0;
 }

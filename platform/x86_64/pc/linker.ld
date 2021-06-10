@@ -13,7 +13,6 @@ SECTIONS
 	_bootstrap_region_start = .;
 	.multiboot ALIGN(4K) : AT(ADDR(.multiboot))
 	{
-		*(.multiboot)
     	*(.bootstrap_code)
 	}
 
@@ -29,6 +28,7 @@ SECTIONS
 	.trampoline_code ALIGN(4K) : AT(ADDR(.trampoline_code))
 	{
 		*(.trampoline_code)
+		*(.multiboot)
 	  	*(.trampoline_data)
 	}
 
