@@ -28,7 +28,6 @@ int ethernet_rx(interface_def_t *interface, void *packet, int len) {
         if(ether->dst_mac[i] != 0xff)
             broadcast = false;
     }
-    mac_match = true;
 
     if(mac_match | broadcast) {
         if(ether->type == ETHERNET_TYPE_ARP) {

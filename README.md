@@ -43,6 +43,9 @@ Driver implemented, acts as fallback display driver.
 ### PS/2
 Keyboard support working, Mouse support bugged. Does not register to CoreInput yet.
 
+### RTL8169
+WIP, Minimum required functionality for all RTL8169 based NICs.
+
 ### RTL8139
 Development dropped due to lack of MSI support.
 

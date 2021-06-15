@@ -18,5 +18,7 @@ int module_init(void)
     registry_readkey_bool("HW/FADT", "8042", &ps2_pres);
     if (ps2_pres)
         PS2_Initialize();
+    else
+        DEBUG_PRINT("[PS/2] Controller Missing, exiting.\r\n");
     return 0;
 }

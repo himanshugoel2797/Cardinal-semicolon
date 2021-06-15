@@ -60,8 +60,6 @@ void *ACPITables_FindTable(const char *table_name)
             tmp_table_name[1] = h->Signature[1];
             tmp_table_name[2] = h->Signature[2];
             tmp_table_name[3] = h->Signature[3];
-            DEBUG_PRINT(tmp_table_name);
-            DEBUG_PRINT("\r\n");
             if (!memcmp(h->Signature, table_name, 4) && ACPITables_ValidateChecksum(h))
             {
                 return (void *)h;
@@ -284,8 +282,13 @@ int acpi_init()
         if (registry_createdirectory("HW", "FADT") != registry_err_ok)
             return -7;
 
-        if (registry_addkey_bool("HW/FADT", "8042", (fadt->BootArchitectureFlags & 2) >> 1) != registry_err_ok)
-            return -8;
+        if (fadt->h.Revision > 1) {
+            if (registry_addkey_bool("HW/FADT", "8042", (fadt->BootArchitectureFlags & 2) >> 1) != registry_err_ok)
+                return -8;
+        } else {
+            if (registry_addkey_bool("HW/FADT", "8042", true) != registry_err_ok)
+                return -8;
+        }
     }
 
     {
