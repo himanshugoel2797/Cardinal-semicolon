@@ -28,15 +28,13 @@ int ethernet_rx(interface_def_t *interface, void *packet, int len) {
         if(ether->dst_mac[i] != 0xff)
             broadcast = false;
     }
-    mac_match = true;
 
-
-    {
+    /*{
         DEBUG_PRINT("[CoreNetwork] Ethernet Type: ");
         char tmpbuf[10];
         DEBUG_PRINT(itoa(ether->type, tmpbuf, 16));
         DEBUG_PRINT("\r\n");
-    }
+    }*/
 
     if(mac_match | broadcast) {
         if(ether->type == ETHERNET_TYPE_ARP) {

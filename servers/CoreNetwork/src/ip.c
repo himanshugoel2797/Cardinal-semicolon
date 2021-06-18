@@ -27,6 +27,13 @@ uint16_t ipv4_verify_csum(ipv4_t *packet) {
 int ipv4_rx(interface_def_t *interface, void *packet, int len) {
     ipv4_t *ip_pack = (ipv4_t*)packet;
 
+    /*{
+        DEBUG_PRINT("[CoreNetwork] IPv4 Type: ");
+        char tmpbuf[10];
+        DEBUG_PRINT(itoa(ip_pack->protocol, tmpbuf, 16));
+        DEBUG_PRINT("\r\n");
+    }*/
+
     if(ipv4_verify_csum(ip_pack) == 0) {
         if (ip_pack->protocol == IP_PROTOCOL_ICMP) {
             //TODO: Forward to ICMP layer

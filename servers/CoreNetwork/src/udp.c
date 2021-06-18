@@ -11,28 +11,40 @@
 
 static uint16_t udp_ipv4_verify_csum(ipv4_t *packet, udp_t *udp) {
 
+    uint16_t csum_bkp = udp->csum;
+    udp->csum = 0;
+
     uint32_t csum = 0;
     uint8_t *udp_u8 = (uint8_t*)udp;
     uint16_t *packet_ptr = (uint16_t*)udp;
 
-    uint16_t *pseudo_ip = (uint16_t*)packet->src_ip;
+    uint32_t src_ip = (packet->src_ip);
+    uint32_t dst_ip = (packet->dst_ip);
 
-    csum += packet->protocol;
-    for(uint32_t i = 0; i < 4; i++)
-        csum += TO_LE_FRM_BE_16(pseudo_ip[i]);
+    uint16_t *src_ip_a = (uint16_t *)&src_ip;
+    uint16_t *dst_ip_a = (uint16_t *)&dst_ip;
 
-    for(uint32_t i = 0; i < udp->len / 2; i++)
-        csum += TO_LE_FRM_BE_16(packet_ptr[i]);
+    csum += (src_ip >> 16) & 0xffff;
+    csum += (src_ip) & 0xffff;
+    csum += (dst_ip >> 16) & 0xffff;
+    csum += (dst_ip) & 0xffff;
+    csum += ((uint16_t)packet->protocol) << 8;
 
-    if(udp->len & 1)
-        csum += udp_u8[udp->len - 1];
+    csum += udp->len;
+    
+    uint32_t udp_len = TO_LE_FRM_BE_16(udp->len);
+    while (udp_len > 1){
+        csum += *packet_ptr++;
+        udp_len -= 2;
+    }
 
-    csum += TO_LE_FRM_BE_16(udp->len);
+    if(udp_len > 0)
+        csum += *packet_ptr & 0x00ff;
 
     while(csum > 0xffff)
         csum = (csum & 0xffff) + (csum >> 16);
 
-    return ~csum;
+    return !(((uint16_t)~csum) == csum_bkp);
 }
 
 int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int len) {

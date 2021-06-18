@@ -42,13 +42,6 @@ void rtl8169_intr_handler(rtl8169_state_t *state)
                 if (!avl)
                     continue;
 
-                {
-                    DEBUG_PRINT("[RTL8169] Packet Size: 0x");
-                    char tmpbuf[10];
-                    DEBUG_PRINT(itoa(state->rx_descs[i].status.frame_length, tmpbuf, 16));
-                    DEBUG_PRINT("\r\n");
-                }
-
                 //if (state->rx_descs[i].status.fs && state->rx_descs[i].status.ls)
                 network_rx_packet(state->net_handle, state->rx_buffer + RX_PACKET_SIZE * i, state->rx_descs[i].status.frame_length);
                 
@@ -58,7 +51,7 @@ void rtl8169_intr_handler(rtl8169_state_t *state)
                 state->rx_descs[i].cmd.rsvd1 = 0;
                 state->rx_descs[i].cmd.own = 1;
             }
-            DEBUG_PRINT("[RTL8169] Receive Interrupt\r\n");
+            //DEBUG_PRINT("[RTL8169] Receive Interrupt\r\n");
 
             *(uint16_t *)&state->memar[ISR_REG] = INTR_ROK;
         }
@@ -197,21 +190,6 @@ int rtl8169_init(rtl8169_state_t *state)
         *(uint32_t *)&state->memar[TX_ADDR_REG] = (uint32_t)state->tx_descs_phys;
         *(uint32_t *)&state->memar[TX_ADDR_REG + 4] = (uint32_t)(state->tx_descs_phys >> 32);
 
-/*
-                {
-                    DEBUG_PRINT("[RTL8169] Buffer Physical Location: 0x");
-                    char tmpbuf[20];
-                    DEBUG_PRINT(ltoa(*(uint16_t*)&state->memar[MAX_RX_PACKET_SIZE_REG], tmpbuf, 16));
-                    DEBUG_PRINT("\r\n");
-                }
-                
-        {
-            DEBUG_PRINT("[RTL8169] Buffer Virtual Location: 0x");
-            char tmpbuf[20];
-            DEBUG_PRINT(ltoa(*(uint64_t*)&state->memar[TX_ADDR_REG], tmpbuf, 16));
-            DEBUG_PRINT("\r\n");
-        }
-*/
         //Disable RXDV gate
         *(uint32_t *)&state->memar[MISC_REG] &= ~0x00080000;
 
