@@ -264,6 +264,8 @@ int kvs_remove(kvs_t *r NULLABLE, kvs_t *idx NULLABLE) {
     } while (iter->next != idx);
 
     iter->next = idx->next;
+    if(idx->val_type == kvs_val_child)
+        kvs_delete(idx->child);
     free(idx);
 
     return kvs_ok;
@@ -276,6 +278,8 @@ int kvs_delete(kvs_t *r NULLABLE) {
     kvs_t *iter = r;
     do {
         kvs_t *n = iter->next;
+        if(iter->val_type == kvs_val_child)
+            kvs_delete(iter->child);
         free(iter);
         iter = n;
     } while (iter != NULL);

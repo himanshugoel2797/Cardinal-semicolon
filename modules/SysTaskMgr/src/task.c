@@ -548,6 +548,7 @@ cs_error task_map(cs_id id, const char *name, intptr_t vaddr, size_t sz, task_ma
                 //Allocate physical memory and map it into the process
                 uintptr_t pmem = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_instr | physmem_alloc_flags_zero, sz);
                 d->map_entry->paddr = pmem;
+                d->map_entry->is_owner = true;
                 vmem_map(iter->mem, d->map_entry->vaddr, (intptr_t)pmem, sz, map_perms, 0);
             }
 

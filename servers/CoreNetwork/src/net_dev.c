@@ -19,16 +19,12 @@ static int dev_list_lock = 0;
 static list_t interface_list;
 static int interface_list_lock = 0;
 
-static list_t rx_packets;
-static int rx_packets_lock = 0;
-
 static int devIDs[network_device_type_count];
 
 PRIVATE int network_init(void)
 {
     list_init(&dev_list);
     list_init(&interface_list);
-    list_init(&rx_packets);
 
     for (int i = 0; i < network_device_type_count; i++)
         devIDs[i] = 0;
@@ -76,6 +72,7 @@ int network_register(network_device_desc_t *desc, void **network_handle)
     return 0;
 }
 
+//Can be called from any thread, make sure it's thread safe
 int network_rx_packet(void *interface_handle, void *packet, int len)
 {
     interface_def_t *def = (interface_def_t *)interface_handle;
@@ -95,6 +92,7 @@ int network_rx_packet(void *interface_handle, void *packet, int len)
     return 0;
 }
 
+//Switch to allocation pattern? Read up on network stack designs
 int network_tx_packet(interface_def_t *interface, void *packet, int len, uint16_t protocol_type)
 {
     //TODO: build a transmission frame around the packet based on the interface type and submit to the driver for transmission

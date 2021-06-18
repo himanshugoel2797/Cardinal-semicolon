@@ -143,7 +143,7 @@ int user_elf_load(cs_id task_id, void *elf, size_t elf_len, void (**entry_point)
             for (uint64_t j = 0; j < dst_sz; j += KiB(4))
             {
                 if (task_virttophys(task_id, (intptr_t)dst_addr + j, &phys_dst_addr) != CS_OK)
-                    task_map(task_id, NULL, (intptr_t)(dst_addr + j), KiB(4), task_map_none, task_map_perm_cachewriteback | task_map_perm_execute | /*(shdr->sh_flags & SHF_EXECINSTR ? task_map_perm_execute :*/ (task_map_perm_writeonly), 0, 0, &dst_shmem_id);
+                    task_map(task_id, NULL, (intptr_t)(dst_addr + j), KiB(4), task_map_none, task_map_perm_cachewriteback | (shdr->sh_flags & SHF_EXECINSTR ? task_map_perm_execute : task_map_perm_writeonly), 0, 0, &dst_shmem_id);
 
                 if (task_virttophys(task_id, (intptr_t)dst_addr + j, &phys_dst_addr) != CS_OK)
                     PANIC("[SysTaskMgr] Elf memory allocation failure.");

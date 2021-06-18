@@ -52,8 +52,12 @@ int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int len) {
 
     if((udp_ipv4_verify_csum(packet, udp) == 0) | (udp->csum == 0)) {
         DEBUG_PRINT("UDP!!\r\n");
-        //From here, the packet gets queued into the destination udp port, if present
-        //If not present, the packet is dropped
+        //TODO: Interface for services to subscribe to ports
+        //  From here, the packet gets queued into the destination udp port, if present
+        //  If not present, the packet is dropped
+        //TODO: Setup tx infrastructure:
+        //  CoreNetwork has a separate tx queue per device
+        //  Has a tx thread which handles pushing packets out to the driver
     }
 
     interface = NULL;
@@ -61,8 +65,6 @@ int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int len) {
 
     return 0;
 }
-
-
 
 static uint16_t udp_ipv6_verify_csum(ipv6_t *packet, udp_t *udp) {
 
