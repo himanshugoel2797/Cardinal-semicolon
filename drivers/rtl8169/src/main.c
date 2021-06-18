@@ -30,7 +30,7 @@ int module_init(void *ecam_addr)
     int msi_val = pci_getmsiinfo(device, &int_cnt);
 
     if (msi_val < 0)
-        DEBUG_PRINT("NO MSI\r\n");
+        DEBUG_PRINT("[RTL8169] NO MSI\r\n");
 
     int int_val = 0;
     interrupt_allocate(1, interrupt_flags_none, &int_val);

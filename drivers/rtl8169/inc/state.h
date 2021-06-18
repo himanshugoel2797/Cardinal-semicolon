@@ -44,7 +44,7 @@ typedef struct {
 } rtl8169_tx_desc_t;
 
 typedef struct {
-    uint32_t buf_size : 14;
+    uint32_t frame_length : 14;
     uint32_t rsvd0 : 16;
     uint32_t eor : 1;
     uint32_t own : 1;//1
@@ -104,8 +104,8 @@ typedef struct
     uintptr_t rx_buffer_phys;
     uintptr_t tx_buffer_phys;
 
-    volatile uint8_t *rx_buffer;
-    volatile uint8_t *tx_buffer;
+    uint8_t *rx_buffer;
+    uint8_t *tx_buffer;
 
     uintptr_t rx_descs_phys;
     uintptr_t tx_descs_phys;

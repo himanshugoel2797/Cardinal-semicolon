@@ -70,6 +70,8 @@ int script_execute(char *load_script, size_t load_len)
             mode = 1;
         else if (strncmp(load_script, "USER:", 5) == 0)
             mode = 2;
+        else if (strncmp(load_script, "#", 1) == 0)
+            mode = -2;
 
         load_script += 5;
         const char *end_of_line = strstr(load_script, "\n");
