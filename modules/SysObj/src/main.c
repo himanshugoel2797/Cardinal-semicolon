@@ -297,7 +297,7 @@ int obj_readkey_uint(const char *path, const char *keyname,
         return obj_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -342,7 +342,7 @@ int obj_readkey_ptr(const char *path, const char *keyname,
         return obj_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -386,7 +386,7 @@ int obj_readkey_int(const char *path, const char *keyname, int64_t *val)
         return obj_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -432,7 +432,7 @@ int obj_readkey_str(const char *path, const char *keyname, char *val,
         return obj_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -482,7 +482,7 @@ int obj_readkey_bool(const char *path, const char *keyname, bool *val)
         return obj_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -527,7 +527,7 @@ int obj_writekey_uint(const char *path, const char *keyname,
         return obj_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -572,7 +572,7 @@ int obj_writekey_ptr(const char *path, const char *keyname,
         return obj_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -616,7 +616,7 @@ int obj_writekey_int(const char *path, const char *keyname, int64_t val)
         return obj_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -663,7 +663,7 @@ int obj_writekey_str(const char *path, const char *keyname, char *val)
         return obj_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -707,7 +707,7 @@ int obj_writekey_bool(const char *path, const char *keyname, bool val)
         return obj_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;

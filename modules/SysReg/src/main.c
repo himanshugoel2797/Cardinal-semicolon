@@ -315,7 +315,7 @@ int registry_readkey_uint(const char *path, const char *keyname,
         return registry_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return registry_err_failure;
@@ -360,7 +360,7 @@ int registry_readkey_ptr(const char *path, const char *keyname,
         return registry_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return registry_err_failure;
@@ -404,7 +404,7 @@ int registry_readkey_int(const char *path, const char *keyname, int64_t *val)
         return registry_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return registry_err_failure;
@@ -450,7 +450,7 @@ int registry_readkey_str(const char *path, const char *keyname, char *val,
         return registry_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return registry_err_failure;
@@ -500,7 +500,7 @@ int registry_readkey_bool(const char *path, const char *keyname, bool *val)
         return registry_err_dne;
     }
 
-    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return registry_err_failure;

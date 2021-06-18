@@ -130,7 +130,17 @@ int kvs_get_uint(kvs_t *r NULLABLE, uint64_t *key NULLABLE) {
 }
 
 int kvs_get_bool(kvs_t *r NULLABLE, bool *key NULLABLE) {
-    return kvs_get_internal(r, (uint64_t*)key, kvs_val_bool);
+    if (r == NULL)
+        return kvs_error_invalidargs;
+
+    if (key == NULL)
+        return kvs_error_invalidargs;
+
+    if (r->val_type != kvs_val_bool)
+        return kvs_error_invalidargs;
+
+    *key = r->b_val;
+    return kvs_ok;
 }
 
 int kvs_get_sint(kvs_t *r NULLABLE, int64_t *key NULLABLE) {
@@ -213,7 +223,7 @@ int kvs_find(kvs_t *r NULLABLE, const char *key, kvs_t **res) {
     return kvs_error_notfound;
 }
 
-int kvs_get_type(kvs_t *r UNUSED, kvs_t *idx NULLABLE,
+int kvs_get_type(kvs_t *idx NULLABLE,
                  kvs_val_type *val_type NULLABLE) {
     if (idx == NULL)
         return kvs_error_invalidargs;

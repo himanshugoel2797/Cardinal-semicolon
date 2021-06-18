@@ -31,6 +31,7 @@ static void pagefault_handler(int int_num)
     char tmp[20];
     DEBUG_PRINT("Page fault at: ");
     DEBUG_PRINT(ltoa(reg_state.rip, tmp, 16));
+    DEBUG_PRINT("\r\n");
 
     PANIC("");
 }

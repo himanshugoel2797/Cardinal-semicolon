@@ -74,7 +74,7 @@ int kvs_set_bool(kvs_t *r, bool key);
 int kvs_set_sint(kvs_t *r, int64_t key);
 int kvs_set_str(kvs_t *r, char *key);
 
-int kvs_get_type(kvs_t *r, kvs_t *idx, kvs_val_type *val_type);
+int kvs_get_type(kvs_t *idx, kvs_val_type *val_type);
 
 int kvs_remove(kvs_t *r, kvs_t *idx);
 int kvs_delete(kvs_t *r);
