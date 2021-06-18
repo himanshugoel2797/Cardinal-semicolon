@@ -96,7 +96,7 @@ int kvs_next(kvs_t **r NULLABLE) {
     return kvs_error_notfound;
 }
 
-static int kvs_get_localinternal(kvs_t *r NULLABLE, uint64_t *key, kvs_val_type valType) {
+static int kvs_get_internal(kvs_t *r NULLABLE, uint64_t *key, kvs_val_type valType) {
     if (r == NULL)
         return kvs_error_invalidargs;
 
@@ -110,7 +110,7 @@ static int kvs_get_localinternal(kvs_t *r NULLABLE, uint64_t *key, kvs_val_type 
     return kvs_ok;
 }
 
-int kvs_get_localkey(kvs_t *r NULLABLE, char *key NULLABLE) {
+int kvs_get_key(kvs_t *r NULLABLE, char *key NULLABLE) {
     if (r == NULL)
         return kvs_error_invalidargs;
 
@@ -121,28 +121,71 @@ int kvs_get_localkey(kvs_t *r NULLABLE, char *key NULLABLE) {
     return kvs_ok;
 }
 
-int kvs_get_localptr(kvs_t *r NULLABLE, uintptr_t *key NULLABLE) {
-    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_ptr);
+int kvs_get_ptr(kvs_t *r NULLABLE, uintptr_t *key NULLABLE) {
+    return kvs_get_internal(r, (uint64_t*)key, kvs_val_ptr);
 }
 
-int kvs_get_localuint(kvs_t *r NULLABLE, uint64_t *key NULLABLE) {
-    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_uint);
+int kvs_get_uint(kvs_t *r NULLABLE, uint64_t *key NULLABLE) {
+    return kvs_get_internal(r, (uint64_t*)key, kvs_val_uint);
 }
 
-int kvs_get_localbool(kvs_t *r NULLABLE, bool *key NULLABLE) {
-    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_bool);
+int kvs_get_bool(kvs_t *r NULLABLE, bool *key NULLABLE) {
+    return kvs_get_internal(r, (uint64_t*)key, kvs_val_bool);
 }
 
-int kvs_get_localint(kvs_t *r NULLABLE, int64_t *key NULLABLE) {
-    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_sint);
+int kvs_get_sint(kvs_t *r NULLABLE, int64_t *key NULLABLE) {
+    return kvs_get_internal(r, (uint64_t*)key, kvs_val_sint);
 }
 
-int kvs_get_localstr(kvs_t *r NULLABLE, char **key NULLABLE) {
-    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_str);
+int kvs_get_str(kvs_t *r NULLABLE, char **key NULLABLE) {
+    return kvs_get_internal(r, (uint64_t*)key, kvs_val_str);
 }
 
-int kvs_get_localchild(kvs_t *r NULLABLE, kvs_t **key NULLABLE) {
-    return kvs_get_localinternal(r, (uint64_t*)key, kvs_val_child);
+int kvs_get_child(kvs_t *r NULLABLE, kvs_t **key NULLABLE) {
+    return kvs_get_internal(r, (uint64_t*)key, kvs_val_child);
+}
+
+
+static int kvs_set_internal(kvs_t *r NULLABLE, uint64_t key, kvs_val_type valType) {
+    if (r == NULL)
+        return kvs_error_invalidargs;
+
+    if (r->val_type != valType)
+        return kvs_error_invalidargs;
+
+    r->u_val = key;
+    return kvs_ok;
+}
+
+int kvs_set_key(kvs_t *r NULLABLE, char *key NULLABLE) {
+    if (r == NULL)
+        return kvs_error_invalidargs;
+
+    if (key == NULL)
+        return kvs_error_invalidargs;
+
+    strncpy(r->key, key, key_len);
+    return kvs_ok;
+}
+
+int kvs_set_ptr(kvs_t *r NULLABLE, uintptr_t key NULLABLE) {
+    return kvs_set_internal(r, (uint64_t)key, kvs_val_ptr);
+}
+
+int kvs_set_uint(kvs_t *r NULLABLE, uint64_t key NULLABLE) {
+    return kvs_set_internal(r, key, kvs_val_uint);
+}
+
+int kvs_set_bool(kvs_t *r NULLABLE, bool key NULLABLE) {
+    return kvs_set_internal(r, (uint64_t)key, kvs_val_bool);
+}
+
+int kvs_set_sint(kvs_t *r NULLABLE, int64_t key NULLABLE) {
+    return kvs_set_internal(r, (uint64_t)key, kvs_val_sint);
+}
+
+int kvs_set_str(kvs_t *r NULLABLE, char *key NULLABLE) {
+    return kvs_set_internal(r, (uint64_t)key, kvs_val_str);
 }
 
 int kvs_find(kvs_t *r NULLABLE, const char *key, kvs_t **res) {
@@ -179,73 +222,6 @@ int kvs_get_type(kvs_t *r UNUSED, kvs_t *idx NULLABLE,
         return kvs_error_invalidargs;
 
     *val_type = idx->val_type;
-    return kvs_ok;
-}
-
-int kvs_get_sint(kvs_t *r UNUSED, kvs_t *idx NULLABLE, int64_t *sval NULLABLE) {
-    if (idx == NULL)
-        return kvs_error_invalidargs;
-
-    if (sval == NULL)
-        return kvs_error_invalidargs;
-
-    *sval = idx->s_val;
-    return kvs_ok;
-}
-
-int kvs_get_bool(kvs_t *r UNUSED, kvs_t *idx NULLABLE, bool *sval NULLABLE) {
-    if (idx == NULL)
-        return kvs_error_invalidargs;
-
-    if (sval == NULL)
-        return kvs_error_invalidargs;
-
-    *sval = idx->b_val;
-    return kvs_ok;
-}
-
-int kvs_get_uint(kvs_t *r UNUSED, kvs_t *idx NULLABLE,
-                 uint64_t *sval NULLABLE) {
-    if (idx == NULL)
-        return kvs_error_invalidargs;
-
-    if (sval == NULL)
-        return kvs_error_invalidargs;
-
-    *sval = idx->u_val;
-    return kvs_ok;
-}
-
-int kvs_get_str(kvs_t *r UNUSED, kvs_t *idx NULLABLE, char **sval NULLABLE) {
-    if (idx == NULL)
-        return kvs_error_invalidargs;
-
-    if (sval == NULL)
-        return kvs_error_invalidargs;
-
-    *sval = idx->str;
-    return kvs_ok;
-}
-
-int kvs_get_ptr(kvs_t *r UNUSED, kvs_t *idx NULLABLE, void **sval NULLABLE) {
-    if (idx == NULL)
-        return kvs_error_invalidargs;
-
-    if (sval == NULL)
-        return kvs_error_invalidargs;
-
-    *sval = idx->ptr;
-    return kvs_ok;
-}
-
-int kvs_get_child(kvs_t *r UNUSED, kvs_t *idx NULLABLE, kvs_t **sval NULLABLE) {
-    if (idx == NULL)
-        return kvs_error_invalidargs;
-
-    if (sval == NULL)
-        return kvs_error_invalidargs;
-
-    *sval = idx->child;
     return kvs_ok;
 }
 

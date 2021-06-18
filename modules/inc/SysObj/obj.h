@@ -6,7 +6,9 @@
 #ifndef CARDINAL_SYSOBJ_H
 #define CARDINAL_SYSOBJ_H
 
-#include <types.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 #define MAX_OBJ_DEPTH (20)
 #define MAX_OBJ_KEYLEN (200)
@@ -45,6 +47,16 @@ int obj_readkey_str(const char *path, const char *keyname, char *val,
                          size_t *val_len);
 
 int obj_readkey_bool(const char *path, const char *keyname, bool *val);
+
+int obj_writekey_uint(const char *path, const char *keyname, uint64_t val);
+
+int obj_writekey_ptr(const char *path, const char *keyname, uintptr_t val);
+
+int obj_writekey_int(const char *path, const char *keyname, int64_t val);
+
+int obj_writekey_str(const char *path, const char *keyname, char *val);
+
+int obj_writekey_bool(const char *path, const char *keyname, bool val);
 
 int obj_removekey(const char *path, const char *keyname);
 

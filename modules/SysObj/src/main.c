@@ -7,6 +7,13 @@
 #include "kvs.h"
 #include "obj.h"
 
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <types.h>
+#include <cardinal/local_spinlock.h>
+
 static kvs_t *kern_registry;
 static int kern_lock = 0;
 
@@ -46,7 +53,7 @@ static int obj_getkvs(const char *path, kvs_t **k NONNULL)
             return obj_err_dne;
         }
 
-        if (kvs_get_child(cur_kvs, cur_kvs, &cur_kvs) != kvs_ok)
+        if (kvs_get_child(cur_kvs, &cur_kvs) != kvs_ok)
         {
             PANIC("Unexpected error!");
         }
@@ -302,7 +309,7 @@ int obj_readkey_uint(const char *path, const char *keyname,
         return obj_err_typematchfailure;
     }
 
-    if (val != NULL && kvs_get_uint(parent_kvs, key_kvs, val) != kvs_ok)
+    if (val != NULL && kvs_get_uint(key_kvs, val) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -347,7 +354,7 @@ int obj_readkey_ptr(const char *path, const char *keyname,
         return obj_err_typematchfailure;
     }
 
-    if (val != NULL && kvs_get_uint(parent_kvs, key_kvs, val) != kvs_ok)
+    if (val != NULL && kvs_get_ptr(key_kvs, val) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -391,7 +398,7 @@ int obj_readkey_int(const char *path, const char *keyname, int64_t *val)
         return obj_err_typematchfailure;
     }
 
-    if (val != NULL && kvs_get_sint(parent_kvs, key_kvs, val) != kvs_ok)
+    if (val != NULL && kvs_get_sint(key_kvs, val) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -437,7 +444,7 @@ int obj_readkey_str(const char *path, const char *keyname, char *val,
         return obj_err_typematchfailure;
     }
 
-    if (val != NULL && kvs_get_str(parent_kvs, key_kvs, &strval) != kvs_ok)
+    if (val != NULL && kvs_get_str(key_kvs, &strval) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -487,7 +494,232 @@ int obj_readkey_bool(const char *path, const char *keyname, bool *val)
         return obj_err_typematchfailure;
     }
 
-    if (val != NULL && kvs_get_bool(parent_kvs, key_kvs, val) != kvs_ok)
+    if (val != NULL && kvs_get_bool(key_kvs, val) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_failure;
+    }
+    local_spinlock_unlock(&kern_lock);
+    return obj_err_ok;
+}
+
+int obj_writekey_uint(const char *path, const char *keyname,
+                          uint64_t val)
+{
+    kvs_t *parent_kvs = NULL;
+    kvs_t *key_kvs = NULL;
+    kvs_val_type valtype = kvs_val_uninit;
+
+    if (path == NULL)
+        return obj_err_invalidargs;
+
+    if (keyname == NULL)
+        return obj_err_invalidargs;
+
+    int err = obj_getkvs(path, &parent_kvs);
+    if (err != obj_err_ok)
+        return err;
+
+    local_spinlock_lock(&kern_lock);
+    if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_dne;
+    }
+
+    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_failure;
+    }
+
+    if (valtype != kvs_val_uint)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_typematchfailure;
+    }
+
+    if (kvs_set_uint(key_kvs, val) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_failure;
+    }
+    local_spinlock_unlock(&kern_lock);
+    return obj_err_ok;
+}
+
+int obj_writekey_ptr(const char *path, const char *keyname,
+                         uintptr_t val)
+{
+    kvs_t *parent_kvs = NULL;
+    kvs_t *key_kvs = NULL;
+    kvs_val_type valtype = kvs_val_uninit;
+
+    if (path == NULL)
+        return obj_err_invalidargs;
+
+    if (keyname == NULL)
+        return obj_err_invalidargs;
+
+    int err = obj_getkvs(path, &parent_kvs);
+    if (err != obj_err_ok)
+        return err;
+
+    local_spinlock_lock(&kern_lock);
+    if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_dne;
+    }
+
+    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_failure;
+    }
+
+    if (valtype != kvs_val_ptr)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_typematchfailure;
+    }
+
+    if (kvs_set_ptr(key_kvs, val) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_failure;
+    }
+    local_spinlock_unlock(&kern_lock);
+    return obj_err_ok;
+}
+
+int obj_writekey_int(const char *path, const char *keyname, int64_t val)
+{
+    kvs_t *parent_kvs = NULL;
+    kvs_t *key_kvs = NULL;
+    kvs_val_type valtype = kvs_val_uninit;
+
+    if (path == NULL)
+        return obj_err_invalidargs;
+
+    if (keyname == NULL)
+        return obj_err_invalidargs;
+
+    int err = obj_getkvs(path, &parent_kvs);
+    if (err != obj_err_ok)
+        return err;
+
+    local_spinlock_lock(&kern_lock);
+    if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_dne;
+    }
+
+    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_failure;
+    }
+
+    if (valtype != kvs_val_sint)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_typematchfailure;
+    }
+
+    if (kvs_set_sint(key_kvs, val) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_failure;
+    }
+    local_spinlock_unlock(&kern_lock);
+    return obj_err_ok;
+}
+
+int obj_writekey_str(const char *path, const char *keyname, char *val)
+{
+    kvs_t *parent_kvs = NULL;
+    kvs_t *key_kvs = NULL;
+    kvs_val_type valtype = kvs_val_uninit;
+
+    if (path == NULL)
+        return obj_err_invalidargs;
+
+    if (keyname == NULL)
+        return obj_err_invalidargs;
+        
+    if (val == NULL)
+        return obj_err_invalidargs;
+
+    int err = obj_getkvs(path, &parent_kvs);
+    if (err != obj_err_ok)
+        return err;
+
+    local_spinlock_lock(&kern_lock);
+    if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_dne;
+    }
+
+    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_failure;
+    }
+
+    if (valtype != kvs_val_str)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_typematchfailure;
+    }
+
+    if (kvs_set_str(key_kvs, val) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_failure;
+    }
+    local_spinlock_unlock(&kern_lock);
+    return obj_err_ok;
+}
+
+int obj_writekey_bool(const char *path, const char *keyname, bool val)
+{
+    kvs_t *parent_kvs = NULL;
+    kvs_t *key_kvs = NULL;
+    kvs_val_type valtype = kvs_val_uninit;
+
+    if (path == NULL)
+        return obj_err_invalidargs;
+
+    if (keyname == NULL)
+        return obj_err_invalidargs;
+
+    int err = obj_getkvs(path, &parent_kvs);
+    if (err != obj_err_ok)
+        return err;
+
+    local_spinlock_lock(&kern_lock);
+    if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_dne;
+    }
+
+    if (kvs_get_type(parent_kvs, key_kvs, &valtype) != kvs_ok)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_failure;
+    }
+
+    if (valtype != kvs_val_bool)
+    {
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_typematchfailure;
+    }
+
+    if (kvs_set_bool(key_kvs, val) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return obj_err_failure;
@@ -526,31 +758,7 @@ int obj_removekey(const char *path, const char *keyname)
 
 int obj_removedirectory(const char *path, const char *dirname)
 {
-    kvs_t *parent_kvs = NULL;
-    kvs_t *key_kvs = NULL;
-
-    if (path == NULL)
-        return obj_err_invalidargs;
-
-    if (keyname == NULL)
-        return obj_err_invalidargs;
-
-    int err = obj_getkvs(path, &parent_kvs);
-    if (err != obj_err_ok)
-        return err;
-
-    local_spinlock_lock(&kern_lock);
-    if (kvs_find(parent_kvs, dirname, &key_kvs) != kvs_ok)
-    {
-        local_spinlock_unlock(&kern_lock);
-        return obj_err_dne;
-    }
-
-    kvs_delete(key_kvs);
-    kvs_remove(parent_kvs, key_kvs);
-    local_spinlock_unlock(&kern_lock);
-
-    return obj_err_ok;
+    return obj_removekey(path, dirname);
 }
 
 int obj_getdirectory(const char *path, dir_t *dir)
@@ -571,7 +779,7 @@ int obj_next(dir_t *dir)
 int obj_readlocal_key(dir_t dir, char *keyname)
 {
     local_spinlock_lock(&kern_lock);
-    int err = kvs_get_localkey((kvs_t *)dir, keyname);
+    int err = kvs_get_key((kvs_t *)dir, keyname);
     local_spinlock_unlock(&kern_lock);
     if (err != obj_err_ok)
         return obj_err_dne;
@@ -581,7 +789,7 @@ int obj_readlocal_key(dir_t dir, char *keyname)
 int obj_readlocal_uint(dir_t dir, uint64_t *val)
 {
     local_spinlock_lock(&kern_lock);
-    int err = kvs_get_localuint((kvs_t *)dir, val);
+    int err = kvs_get_uint((kvs_t *)dir, val);
     local_spinlock_unlock(&kern_lock);
     if (err != obj_err_ok)
         return obj_err_dne;
@@ -591,7 +799,7 @@ int obj_readlocal_uint(dir_t dir, uint64_t *val)
 int obj_readlocal_ptr(dir_t dir, void **val)
 {
     local_spinlock_lock(&kern_lock);
-    int err = kvs_get_localptr((kvs_t *)dir, (uintptr_t *)val);
+    int err = kvs_get_ptr((kvs_t *)dir, (uintptr_t *)val);
     local_spinlock_unlock(&kern_lock);
     if (err != obj_err_ok)
         return obj_err_dne;
@@ -601,7 +809,7 @@ int obj_readlocal_ptr(dir_t dir, void **val)
 int obj_readlocal_int(dir_t dir, int64_t *val)
 {
     local_spinlock_lock(&kern_lock);
-    int err = kvs_get_localint((kvs_t *)dir, val);
+    int err = kvs_get_sint((kvs_t *)dir, val);
     local_spinlock_unlock(&kern_lock);
     if (err != obj_err_ok)
         return obj_err_dne;
@@ -611,7 +819,7 @@ int obj_readlocal_int(dir_t dir, int64_t *val)
 int obj_readlocal_str(dir_t dir, char **val)
 {
     local_spinlock_lock(&kern_lock);
-    int err = kvs_get_localstr((kvs_t *)dir, val);
+    int err = kvs_get_str((kvs_t *)dir, val);
     local_spinlock_unlock(&kern_lock);
     if (err != obj_err_ok)
         return obj_err_dne;
@@ -621,7 +829,7 @@ int obj_readlocal_str(dir_t dir, char **val)
 int obj_readlocal_dir(dir_t dir, dir_t *val)
 {
     local_spinlock_lock(&kern_lock);
-    int err = kvs_get_localchild((kvs_t *)dir, (kvs_t **)val);
+    int err = kvs_get_child((kvs_t *)dir, (kvs_t **)val);
     local_spinlock_unlock(&kern_lock);
     if (err != obj_err_ok)
         return obj_err_dne;
