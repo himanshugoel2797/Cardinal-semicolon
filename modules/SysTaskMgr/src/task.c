@@ -24,7 +24,7 @@
 #include "elf.h"
 #include "task_priv.h"
 #include "error.h"
-#include "thread.h"
+#include "cs_syscall.h"
 
 // thread/process id allocator
 static _Atomic cs_id cur_id = 1;
@@ -252,10 +252,11 @@ cs_error end_task_syscall()
     return retVal;
 }
 
-cs_error openspecialset_syscall(uint32_t set_id)
+cs_error openspecialset_syscall(uint32_t set_id, uint32_t *call_idx)
 {
     int cli_state = cli();
     syscall_set_syscallset(set_id, NULL);   //TODO: Add a global table of syscall sets to enable/disable
+    *call_idx = set_id;                     //TODO: This can change based on syscall set allocation scheme
     sti(cli_state);
     return CS_OK;
 }

@@ -7,7 +7,7 @@
 #define CARDINAL_TASKMGR_TASK_H
 
 #include <stdint.h>
-#include "thread.h"
+#include "cs_syscall.h"
 
 typedef void (*DescriptorResourceFreeAction)(void *);
 

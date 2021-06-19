@@ -13,8 +13,7 @@
 #include "SysObj/obj.h"
 #include "SysVirtualMemory/vmem.h"
 #include "SysTaskMgr/task.h"
-#include "thread.h"
-#include "ipc.h"
+#include "cs_syscall.h"
 
 #define TASK_NAME_LEN 256
 #define MAX_DESCRIPTOR_COUNT 256

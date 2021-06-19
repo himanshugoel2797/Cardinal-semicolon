@@ -9,7 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "thread.h"
+#include "cs_syscall.h"
 
 typedef uint32_t Elf32_Addr;
 typedef uint32_t Elf32_Off;

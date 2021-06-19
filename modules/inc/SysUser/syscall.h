@@ -9,7 +9,7 @@
 #include <types.h>
 
 #define SYSCALL_COUNT 256
-#define SYSCALL_SET_COUNT 256
+#define SYSCALL_SET_COUNT 128
 
 int syscall_sethandler(int idx, void *func);
 int syscall_set_syscallset(int idx, void **set);
