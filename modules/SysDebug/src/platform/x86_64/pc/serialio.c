@@ -4,6 +4,7 @@
 #include "boot_information.h"
 
 #include "font.h"
+//#include "wallpaper.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -94,7 +95,21 @@ int sysdebug_install_lfb()
     char_pos_limit = b_info->FramebufferWidth / 8;
     line_limit = b_info->FramebufferHeight / 10;
 
-    return 0;
+    /*uint32_t *fbuf_ptr = fbuf;
+    char *img_data = header_data;
+    for (uint32_t y = 0; y < height; y++)
+    {
+        for (uint32_t x = 0; x < width; x++){
+            if (x < b_info->FramebufferWidth && y < b_info->FramebufferHeight){
+                uint8_t pixel[3];
+                HEADER_PIXEL(img_data, pixel)
+                fbuf_ptr[x] = ((uint32_t)pixel[0] << b_info->FramebufferRedFieldPosition) | ((uint32_t)pixel[1] << b_info->FramebufferGreenFieldPosition) | ((uint32_t)pixel[2] << b_info->FramebufferBlueFieldPosition);
+            }
+        }
+        fbuf_ptr += stride / sizeof(uint32_t);
+    }*/
+
+        return 0;
 }
 
 void print_stream(void (*output_stream)(char) NONNULL,
@@ -137,8 +152,9 @@ int WEAK print_str(const char *s)
 
             char_pos = 0;
 
-            if (line == 0)
+            if (line == 0){
                 memset(fbuf, 0, stride * line_limit * 10);
+            }
         }
 
         //for(int i = 0; i < 50000000; i++)

@@ -14,7 +14,7 @@ static __inline uint64_t cs_syscall0(uint64_t s, uint64_t n)
 	uint64_t ret;
     register uint64_t r12 __asm__("r12") = n;
     register uint64_t r13 __asm__("r13") = s;
-    __asm__ __volatile__ ("syscall" : "=a"(ret) : "r"(r12), "r"(r13) : "rcx", "r11", "memory");
+    __asm__ __volatile__ ("syscallq" : "=a"(ret) : "r"(r12), "r"(r13) : "rcx", "r11", "memory");
 	return ret;
 }
 
@@ -23,7 +23,7 @@ static __inline uint64_t cs_syscall1(uint64_t s, uint64_t n, uint64_t a1)
 	uint64_t ret;
     register uint64_t r12 __asm__("r12") = n;
     register uint64_t r13 __asm__("r13") = s;
-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1) : "rcx", "r11", "memory");
+	__asm__ __volatile__ ("syscallq" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1) : "rcx", "r11", "memory");
 	return ret;
 }
 
@@ -32,7 +32,7 @@ static __inline uint64_t cs_syscall2(uint64_t s, uint64_t n, uint64_t a1, uint64
 	uint64_t ret;
     register uint64_t r12 __asm__("r12") = n;
     register uint64_t r13 __asm__("r13") = s;
-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1), "S"(a2)
+	__asm__ __volatile__ ("syscallq" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1), "S"(a2)
 						  : "rcx", "r11", "memory");
 	return ret;
 }
@@ -42,7 +42,7 @@ static __inline uint64_t cs_syscall3(uint64_t s, uint64_t n, uint64_t a1, uint64
 	uint64_t ret;
     register uint64_t r12 __asm__("r12") = n;
     register uint64_t r13 __asm__("r13") = s;
-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1), "S"(a2),
+	__asm__ __volatile__ ("syscallq" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1), "S"(a2),
 						  "d"(a3) : "rcx", "r11", "memory");
 	return ret;
 }
@@ -53,7 +53,7 @@ static __inline uint64_t cs_syscall4(uint64_t s, uint64_t n, uint64_t a1, uint64
 	register uint64_t r10 __asm__("r10") = a4;
     register uint64_t r12 __asm__("r12") = n;
     register uint64_t r13 __asm__("r13") = s;
-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1), "S"(a2),
+	__asm__ __volatile__ ("syscallq" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1), "S"(a2),
 						  "d"(a3), "r"(r10): "rcx", "r11", "memory");
 	return ret;
 }
@@ -65,7 +65,7 @@ static __inline uint64_t cs_syscall5(uint64_t s, uint64_t n, uint64_t a1, uint64
 	register uint64_t r8 __asm__("r8") = a5;
     register uint64_t r12 __asm__("r12") = n;
     register uint64_t r13 __asm__("r13") = s;
-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1), "S"(a2),
+	__asm__ __volatile__ ("syscallq" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1), "S"(a2),
 						  "d"(a3), "r"(r10), "r"(r8) : "rcx", "r11", "memory");
 	return ret;
 }
@@ -78,7 +78,7 @@ static __inline uint64_t cs_syscall6(uint64_t s, uint64_t n, uint64_t a1, uint64
 	register uint64_t r9 __asm__("r9") = a6;
     register uint64_t r12 __asm__("r12") = n;
     register uint64_t r13 __asm__("r13") = s;
-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1), "S"(a2),
+	__asm__ __volatile__ ("syscallq" : "=a"(ret) : "r"(r12), "r"(r13), "D"(a1), "S"(a2),
 						  "d"(a3), "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
 	return ret;
 }

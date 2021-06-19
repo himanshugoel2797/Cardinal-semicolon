@@ -212,14 +212,16 @@ void idt_mainhandler(regs_t *regs)
     if (!handled)
     {
         char int_num[20] = "";
-        DEBUG_PRINT("Unhandled Interrupt: ");
+        DEBUG_PRINT("Unhandled Interrupt: 0x");
         char *msg_ptr = itoa(regs->int_no, int_num, 16);
         DEBUG_PRINT(msg_ptr);
         DEBUG_PRINT(" at 0x");
         msg_ptr = ltoa(regs->rip, int_num, 16);
         DEBUG_PRINT(msg_ptr);
         DEBUG_PRINT("\r\n");
-        PANIC("Failure!");
+
+        if (regs->int_no < 32)
+            PANIC("Failure!");
     }
 
     idt->reg_ref = NULL;
