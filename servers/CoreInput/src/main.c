@@ -116,7 +116,7 @@ int module_init()
     local_spinlock_unlock(&event_lock);
 
     cs_id pid = 0;
-    create_task_kernel("core_input_updaer", task_permissions_kernel, &pid);
+    create_task_kernel("core_input_updater", task_permissions_kernel, &pid);
     start_task_kernel(pid, read_devices, NULL);
 
     return 0;

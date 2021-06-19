@@ -6,6 +6,7 @@ LOAD:./CoreAudio.celf
 LOAD:./CoreInput.celf
 LOAD:./ps2.celf
 LOAD:./CoreNetwork.celf
+LOAD:./CoreUsb.celf
 LOAD:./CoreDriver.celf
 CALL:coredisplay_postinit
 #USER:./mana.celf
