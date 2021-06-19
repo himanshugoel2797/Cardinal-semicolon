@@ -7,6 +7,12 @@
 #define CARDINALSEMI_USB_PRIV_DRIV_H
 
 #include <stdint.h>
+#include "CoreUsb/usb.h"
 
+typedef struct {
+    usb_device_type_t type;
+    usb_hci_desc_t *device;
+    int idx;
+} usb_hci_def_t;
 
 #endif

@@ -438,6 +438,160 @@ static void task_switch_handler(int irq)
     sti(cli_state);
 }
 
+void task_yield_stage2(interrupt_register_state_t *mp_state){
+    //halt();
+    local_spinlock_lock(&process_lock);
+
+    process_desc_t *ntask = NULL; //find the first pending task
+    if (core_descs->cur_task != NULL)
+    {
+        local_spinlock_lock(&core_descs->cur_task->lock);
+
+        if (core_descs->cur_task->state == task_state_running)
+            core_descs->cur_task->state = task_state_pending;  //Set the cur_task to pending again
+        fp_platform_getstate(core_descs->cur_task->fpu_state); //Save the current tasks's fpu state
+        memcpy(core_descs->cur_task->reg_state, mp_state, sizeof(interrupt_register_state_t)); //Save the current task's register state
+        if (core_descs->cur_task->syscall_data != NULL)
+            syscall_getfullstate(core_descs->cur_task->syscall_data);
+
+        //find the next pending task
+        ntask = core_descs->cur_task->next;
+        local_spinlock_unlock(&core_descs->cur_task->lock);
+
+        while (ntask != NULL)
+        {
+            process_desc_t *cur_ntask = ntask;
+            local_spinlock_lock(&cur_ntask->lock);
+            if (ntask->state == task_state_pending)
+            {
+                local_spinlock_unlock(&cur_ntask->lock);
+                break;
+            }
+            ntask = ntask->next;
+            local_spinlock_unlock(&cur_ntask->lock);
+        }
+    }
+
+    //if an appropriate task could not be found, iterate over the entire list to find a task
+    if (ntask == NULL)
+    {
+        ntask = processes;
+        while (ntask != NULL)
+        {
+            process_desc_t *cur_ntask = ntask;
+            local_spinlock_lock(&cur_ntask->lock);
+            if (ntask->state == task_state_pending)
+            {
+                local_spinlock_unlock(&cur_ntask->lock);
+                break;
+            }
+            ntask = ntask->next;
+            local_spinlock_unlock(&cur_ntask->lock);
+        }
+    }
+
+    //if an appropriate task could still not be found, panic
+    if (ntask == NULL)
+    {
+        PANIC("[SysTaskMgr] Out of Processes!\r\n");
+    }
+
+    //switch to this task
+    core_descs->cur_task = ntask;
+
+    local_spinlock_lock(&ntask->lock);
+    vmem_setactive(ntask->mem);             //Set virtual memory
+    fp_platform_setstate(ntask->fpu_state); //Set fpu state
+    //mp_platform_setstate(ntask->reg_state); //Set registers
+    memcpy(mp_state, ntask->reg_state, sizeof(interrupt_register_state_t));
+    if (ntask->syscall_data != NULL)
+        syscall_setfullstate(ntask->syscall_data);
+
+    local_spinlock_unlock(&ntask->lock);
+
+    local_spinlock_unlock(&process_lock);
+}
+
+void task_yield(){
+    //turn off interrupts
+    interrupt_register_state_t state;
+    int cli_state = cli();
+    //save state
+    //register uint64_t rax __asm__("rax") = (uint64_t)&state;
+    __asm__ volatile(
+        "mov %%r15, (%%rax)\r\n"
+        "mov %%r14, 0x8(%%rax)\r\n"
+        "mov %%r13, 0x10(%%rax)\r\n"
+        "mov %%r12, 0x18(%%rax)\r\n"
+        "mov %%r11, 0x20(%%rax)\r\n"
+        "mov %%r10, 0x28(%%rax)\r\n"
+        "mov %%r9, 0x30(%%rax)\r\n"
+        "mov %%r8, 0x38(%%rax)\r\n"
+        "mov %%rdi, 0x40(%%rax)\r\n"
+        "mov %%rsi, 0x48(%%rax)\r\n"
+        "mov %%rdx, 0x50(%%rax)\r\n"
+        "mov %%rcx, 0x58(%%rax)\r\n"
+        "mov %%rbx, 0x60(%%rax)\r\n"
+        "movq %%rax, 0x68(%%rax)\r\n"
+        
+        //rflags
+        "pushfq\r\n"
+        "pop %%rbx\r\n"
+        "mov %%rbx, 0x70(%%rax)\r\n"
+
+        //rip
+        "movabsq $resume_from_yield, %%rbx\r\n"
+        "mov %%rbx, 0x78(%%rax)\r\n"
+
+        //cs
+        "mov %%cs, 0x80(%%rax)\r\n"
+
+        //ss
+        "mov %%ss, 0x88(%%rax)\r\n"
+
+        "mov %%rbp, 0x90(%%rax)\r\n"
+        "mov %%rsp, 0x98(%%rax)\r\n"
+        ::"a"(&state): "rbx"
+    );
+    //find new task
+    task_yield_stage2(&state);
+
+    //restore state
+    __asm__ volatile(
+        "mov (%%rax), %%r15\r\n"
+        "mov 0x8(%%rax), %%r14\r\n"
+        "mov 0x10(%%rax), %%r13\r\n"
+        "mov 0x18(%%rax), %%r12\r\n"
+        "mov 0x20(%%rax), %%r11\r\n"
+        "mov 0x28(%%rax), %%r10\r\n"
+        "mov 0x30(%%rax), %%r9\r\n"
+        "mov 0x38(%%rax), %%r8\r\n"
+        "mov 0x40(%%rax), %%rdi\r\n"
+        "mov 0x48(%%rax), %%rsi\r\n"
+        "mov 0x50(%%rax), %%rdx\r\n"
+        "mov 0x58(%%rax), %%rcx\r\n"
+        "mov 0x60(%%rax), %%rbx\r\n"
+        "mov 0x88(%%rax), %%rbp\r\n" //push ss, using rbp as a temp
+        "push %%rbp\r\n"
+        "mov 0x98(%%rax), %%rbp\r\n" //push rsp, using rbp as a temp
+        "push %%rbp\r\n"
+        "mov 0x70(%%rax), %%rbp\r\n" //push rflags, using rbp as a temp
+        "push %%rbp\r\n"
+        "mov 0x80(%%rax), %%rbp\r\n" //push cs, using rbp as a temp
+        "push %%rbp\r\n"
+        "mov 0x78(%%rax), %%rbp\r\n" //push rip, using rbp as a temp
+        "push %%rbp\r\n"
+        "mov 0x90(%%rax), %%rbp\r\n" //correct rbp
+        "mov 0x68(%%rax), %%rax\r\n" //correct rax
+        "iretq\r\n"
+    ::"a"(&state):);
+
+    __asm__ volatile("resume_from_yield:\r\n");
+    //turn on interrupts
+    sti(cli_state);
+    return;
+}
+
 cs_error task_virttophys(cs_id id, intptr_t vaddr, intptr_t *phys)
 {
     if (phys == NULL)

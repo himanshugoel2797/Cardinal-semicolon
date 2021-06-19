@@ -13,6 +13,7 @@
 
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
+#include "SysTaskMgr/task.h"
 #include "CoreNetwork/driver.h"
 
 #include "state.h"
@@ -30,8 +31,8 @@ void rtl8169_intr_handler(rtl8169_state_t *state)
     while (true)
     {
         while(!isr_pending)
-            halt(); //stop after each iteration to allow other tasks to work, swap for yield later
-            
+            task_yield();  //halt(); //stop after each iteration to allow other tasks to work, swap for yield later
+
         local_spinlock_lock(&state->lock);
         if (*(uint16_t *)&state->memar[ISR_REG] & INTR_ROK)
         {

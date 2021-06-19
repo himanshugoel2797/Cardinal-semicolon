@@ -12,6 +12,7 @@
 
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
+#include "SysTaskMgr/task.h"
 #include "CoreNetwork/driver.h"
 
 #include "state.h"
@@ -34,7 +35,8 @@ void rtl8139_intr_handler(rtl8139_state_t *state)
             DEBUG_PRINT("[RTL8139] Transmit Interrupt\r\n");
         }
         local_spinlock_unlock(&state->lock);
-        halt(); //stop after each iteration to allow other tasks to work, swap for yield later
+        //halt(); //stop after each iteration to allow other tasks to work, swap for yield later
+        task_yield();
     }
 }
 
