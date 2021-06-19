@@ -252,6 +252,14 @@ cs_error end_task_syscall()
     return retVal;
 }
 
+cs_error openspecialset_syscall(uint32_t set_id)
+{
+    int cli_state = cli();
+    syscall_set_syscallset(set_id, NULL);   //TODO: Add a global table of syscall sets to enable/disable
+    sti(cli_state);
+    return CS_OK;
+}
+
 static cs_id alloc_descriptor(process_desc_t *pinfo, descriptor_type_t ntype)
 {
     cs_id id = 0;
@@ -334,6 +342,7 @@ free_descriptors(process_desc_t *pinfo, descriptor_entry_t *desc_table, cs_id ba
         {
             task_freedescriptor(pinfo->id, base_id + i);
         }
+        break;
         case descriptor_type_descriptor_entry:
         {
             if (desc_table[i].desc_entry != NULL)
@@ -899,6 +908,8 @@ int module_init()
     syscall_sethandler(5, (void *)create_task_syscall);
     syscall_sethandler(6, (void *)start_task_syscall);
     syscall_sethandler(7, (void *)end_task_syscall);
+
+    syscall_sethandler(8, (void *)openspecialset_syscall); //Request a special set of syscalls to be enabled for this process
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers
 

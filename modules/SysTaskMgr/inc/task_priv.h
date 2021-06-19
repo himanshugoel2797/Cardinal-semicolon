@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdlist.h>
 
+#include "SysUser/syscall.h"
 #include "SysObj/obj.h"
 #include "SysVirtualMemory/vmem.h"
 #include "SysTaskMgr/task.h"

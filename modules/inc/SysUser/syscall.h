@@ -8,7 +8,12 @@
 
 #include <types.h>
 
+#define SYSCALL_COUNT 256
+#define SYSCALL_SET_COUNT 256
+
 int syscall_sethandler(int idx, void *func);
+int syscall_set_syscallset(int idx, void **set);
+void** syscall_get_syscallset(int idx);
 void syscall_touser(void *arg);
 
 void syscall_getfullstate(void *dst);
