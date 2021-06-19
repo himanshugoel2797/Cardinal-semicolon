@@ -330,6 +330,10 @@ free_descriptors(process_desc_t *pinfo, descriptor_entry_t *desc_table, cs_id ba
             desc_table[i].type = descriptor_type_unused_entry;
         }
         break;
+        case descriptor_type_resource_entry:
+        {
+            task_freedescriptor(pinfo->id, base_id + i);
+        }
         case descriptor_type_descriptor_entry:
         {
             if (desc_table[i].desc_entry != NULL)
@@ -657,6 +661,89 @@ cs_error task_unmap(cs_id id, cs_id shmem_id)
 
                 free(d->map_entry);
                 d->map_entry = NULL;
+                d->type = descriptor_type_unused_entry;
+            }
+            local_spinlock_unlock(&iter->lock);
+        }
+        local_spinlock_unlock(&process_lock);
+        sti(cli_state);
+        return CS_OK;
+    }
+    local_spinlock_unlock(&process_lock);
+    sti(cli_state);
+    return CS_UNKN;
+}
+
+cs_error task_allocdescriptor(cs_id id, DescriptorResourceFreeAction action, void *state NULLABLE, cs_id *descriptor NULLABLE)
+{
+    if (action == NULL)
+        return CS_UNKN;
+
+    int cli_state = cli();
+    local_spinlock_lock(&process_lock);
+    if (processes != NULL)
+    {
+        process_desc_t *iter = processes;
+        while (iter != NULL)
+        {
+            process_desc_t *cur_iter = iter;
+            local_spinlock_lock(&cur_iter->lock);
+            if (iter->id == id)
+                break;
+            iter = iter->next;
+            local_spinlock_unlock(&cur_iter->lock);
+        }
+        if (iter != NULL)
+        {
+            //Lock is already held from the break in the previous loop
+            cs_id shmem_k_id = alloc_descriptor(iter, descriptor_type_resource_entry);
+            descriptor_entry_t *d = read_descriptor(iter, shmem_k_id);
+            //Map memory region
+            d->type = descriptor_type_resource_entry;
+            d->resource_entry = malloc(sizeof(resource_entry_t));
+            d->resource_entry->action = action;
+            d->resource_entry->state = state;
+
+            if (descriptor != NULL)
+                *descriptor = shmem_k_id;
+            local_spinlock_unlock(&iter->lock);
+        }
+        local_spinlock_unlock(&process_lock);
+        sti(cli_state);
+        return CS_OK;
+    }
+    local_spinlock_unlock(&process_lock);
+    sti(cli_state);
+    return CS_UNKN;
+}
+
+cs_error task_freedescriptor(cs_id id, cs_id descriptor)
+{
+    int cli_state = cli();
+    local_spinlock_lock(&process_lock);
+    if (processes != NULL)
+    {
+        process_desc_t *iter = processes;
+        while (iter != NULL)
+        {
+            process_desc_t *cur_iter = iter;
+            local_spinlock_lock(&cur_iter->lock);
+            if (iter->id == id)
+                break;
+            iter = iter->next;
+            local_spinlock_unlock(&cur_iter->lock);
+        }
+        if (iter != NULL)
+        {
+            //Lock is already held from the break in the previous loop
+            descriptor_entry_t *d = read_descriptor(iter, descriptor);
+            if (d->type == descriptor_type_resource_entry)
+            {
+                //Free the associated resource
+                d->resource_entry->action(d->resource_entry->state);
+
+                free(d->resource_entry);
+                d->resource_entry = NULL;
                 d->type = descriptor_type_unused_entry;
             }
             local_spinlock_unlock(&iter->lock);

@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include "thread.h"
 
+typedef void (*DescriptorResourceFreeAction)(void *);
+
 typedef enum
 {
     task_permissions_none = 0,
@@ -46,5 +48,11 @@ cs_error task_virttophys(cs_id id, intptr_t vaddr, intptr_t *phys);
 cs_error task_updatemap(cs_id id, cs_id shmem_id, task_map_perms_t perms);
 
 cs_error task_unmap(cs_id id, cs_id shmem_id);
+
+cs_error task_allocdescriptor(cs_id id, DescriptorResourceFreeAction action, void *state, cs_id *descriptor);
+
+cs_error task_freedescriptor(cs_id id, cs_id descriptor);
+
+
 
 #endif

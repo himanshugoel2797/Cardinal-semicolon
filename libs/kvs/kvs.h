@@ -29,10 +29,11 @@ typedef enum {
     kvs_error_exists = 5,
 } kvs_error;
 
-#define key_len 232
+#define key_len 228
 
 typedef struct kvs {
     char key[key_len];
+    bool owner_locked;
     uint32_t key_hash;
     int val_type;
     union {
@@ -47,6 +48,10 @@ typedef struct kvs {
 } kvs_t;
 
 int kvs_create(kvs_t **r);
+
+int kvs_islocked(kvs_t *r, bool *status);
+int kvs_lockentry(kvs_t *r);
+int kvs_unlockentry(kvs_t *r);
 
 int kvs_add_sint(kvs_t *r, const char *key, int64_t sval);
 int kvs_add_bool(kvs_t *r, const char *key, bool sval);

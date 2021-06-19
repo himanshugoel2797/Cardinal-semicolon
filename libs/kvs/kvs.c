@@ -30,9 +30,37 @@ int kvs_create(kvs_t **r NULLABLE) {
     if (k == NULL)
         return kvs_error_outofmemory;
 
+    k->owner_locked = false;
     k->val_type = kvs_val_uninit;
     k->next = NULL;
     *r = k;
+    return kvs_ok;
+}
+
+int kvs_islocked(kvs_t *r NULLABLE, bool *status) {
+    if (r == NULL)
+        return kvs_error_invalidargs;
+
+    if (status == NULL)
+        return kvs_error_invalidargs;
+
+    *status = r->owner_locked;
+    return kvs_ok;
+}
+
+int kvs_lockentry(kvs_t *r NULLABLE) {
+    if (r == NULL)
+        return kvs_error_invalidargs;
+
+    r->owner_locked = true;
+    return kvs_ok;
+}
+
+int kvs_unlockentry(kvs_t *r NULLABLE) {
+    if (r == NULL)
+        return kvs_error_invalidargs;
+
+    r->owner_locked = false;
     return kvs_ok;
 }
 
@@ -52,6 +80,7 @@ static int kvs_add_internal(kvs_t *r NULLABLE, const char *key, void *val,
         return kvs_error_outofmemory;
 
     strncpy(v->key, key, key_len);
+    v->owner_locked = false;
     v->key_hash = key_hash;
     v->val_type = val_type;
     v->ptr = val;

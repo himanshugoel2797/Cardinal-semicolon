@@ -80,4 +80,10 @@ int obj_readlocal_bool(dir_t dir, bool *val);
 
 int obj_readlocal_dir(dir_t dir, dir_t *val);
 
+int obj_lock(dir_t dir);
+
+int obj_unlock(dir_t dir);
+
+int obj_islocked(dir_t dir, bool *status);
+
 #endif

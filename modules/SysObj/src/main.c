@@ -750,7 +750,14 @@ int obj_removekey(const char *path, const char *keyname)
         return obj_err_dne;
     }
 
-    kvs_remove(parent_kvs, key_kvs);
+    bool locked = false;
+    if (kvs_islocked(key_kvs, &locked) != kvs_ok){
+        local_spinlock_unlock(&kern_lock);
+        return obj_err_dne;
+    }
+
+    if (!locked)
+        kvs_remove(parent_kvs, key_kvs);
     local_spinlock_unlock(&kern_lock);
 
     return obj_err_ok;
@@ -830,6 +837,33 @@ int obj_readlocal_dir(dir_t dir, dir_t *val)
 {
     local_spinlock_lock(&kern_lock);
     int err = kvs_get_child((kvs_t *)dir, (kvs_t **)val);
+    local_spinlock_unlock(&kern_lock);
+    if (err != obj_err_ok)
+        return obj_err_dne;
+    return obj_err_ok;
+}
+
+int obj_lock(dir_t dir){
+    local_spinlock_lock(&kern_lock);
+    int err = kvs_lockentry((kvs_t *)dir);
+    local_spinlock_unlock(&kern_lock);
+    if (err != obj_err_ok)
+        return obj_err_dne;
+    return obj_err_ok;
+}
+
+int obj_unlock(dir_t dir){
+    local_spinlock_lock(&kern_lock);
+    int err = kvs_unlockentry((kvs_t *)dir);
+    local_spinlock_unlock(&kern_lock);
+    if (err != obj_err_ok)
+        return obj_err_dne;
+    return obj_err_ok;
+}
+
+int obj_islocked(dir_t dir, bool *status){
+    local_spinlock_lock(&kern_lock);
+    int err = kvs_islocked((kvs_t *)dir, status);
     local_spinlock_unlock(&kern_lock);
     if (err != obj_err_ok)
         return obj_err_dne;

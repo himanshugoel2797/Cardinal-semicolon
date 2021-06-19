@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdlist.h>
 
+#include "SysObj/obj.h"
 #include "SysVirtualMemory/vmem.h"
 #include "SysTaskMgr/task.h"
 #include "thread.h"
@@ -34,6 +35,7 @@ typedef enum
     descriptor_type_unused_entry = 0,
     descriptor_type_map_entry = 1,
     descriptor_type_descriptor_entry = 2, //Recursive descriptor set
+    descriptor_type_resource_entry = 3,  //Describes a generic resource that may need to be freed on exit
 } descriptor_type_t;
 
 typedef struct map_entry
@@ -48,10 +50,16 @@ typedef struct map_entry
     int child_count;
 } map_entry_t;
 
+typedef struct resource_entry{
+    void *state;
+    DescriptorResourceFreeAction action;
+} resource_entry_t;
+
 typedef struct descriptor_entry
 {
     union {
         map_entry_t *map_entry;
+        resource_entry_t *resource_entry;
         struct descriptor_entry *desc_entry;
     };
     descriptor_type_t type;
