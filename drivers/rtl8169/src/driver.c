@@ -30,8 +30,9 @@ void rtl8169_intr_handler(rtl8169_state_t *state)
 {
     while (true)
     {
-        while(!isr_pending)
-            task_yield();  //halt(); //stop after each iteration to allow other tasks to work, swap for yield later
+        task_monitor(task_current(), (uint32_t*)&isr_pending, 0);
+        //while (!isr_pending)
+        //    task_yield();  //halt(); //stop after each iteration to allow other tasks to work, swap for yield later
 
         local_spinlock_lock(&state->lock);
         if (*(uint16_t *)&state->memar[ISR_REG] & INTR_ROK)

@@ -392,6 +392,11 @@ static void task_switch_handler(int irq)
             {
                 local_spinlock_unlock(&cur_ntask->lock);
                 break;
+            }else if (ntask->state == task_state_suspended_monitor_mem_32){
+                if(*ntask->monitor_tgt != ntask->monitor_value){
+                    local_spinlock_unlock(&cur_ntask->lock);
+                    break;
+                }
             }
             ntask = ntask->next;
             local_spinlock_unlock(&cur_ntask->lock);
@@ -410,6 +415,11 @@ static void task_switch_handler(int irq)
             {
                 local_spinlock_unlock(&cur_ntask->lock);
                 break;
+            }else if (ntask->state == task_state_suspended_monitor_mem_32){
+                if(*ntask->monitor_tgt != ntask->monitor_value){
+                    local_spinlock_unlock(&cur_ntask->lock);
+                    break;
+                }
             }
             ntask = ntask->next;
             local_spinlock_unlock(&cur_ntask->lock);
@@ -438,8 +448,7 @@ static void task_switch_handler(int irq)
     sti(cli_state);
 }
 
-void task_yield_stage2(interrupt_register_state_t *mp_state){
-    //halt();
+static void task_yield_stage2(interrupt_register_state_t *mp_state){
     local_spinlock_lock(&process_lock);
 
     process_desc_t *ntask = NULL; //find the first pending task
@@ -466,6 +475,11 @@ void task_yield_stage2(interrupt_register_state_t *mp_state){
             {
                 local_spinlock_unlock(&cur_ntask->lock);
                 break;
+            }else if (ntask->state == task_state_suspended_monitor_mem_32){
+                if(*ntask->monitor_tgt != ntask->monitor_value){
+                    local_spinlock_unlock(&cur_ntask->lock);
+                    break;
+                }
             }
             ntask = ntask->next;
             local_spinlock_unlock(&cur_ntask->lock);
@@ -484,6 +498,11 @@ void task_yield_stage2(interrupt_register_state_t *mp_state){
             {
                 local_spinlock_unlock(&cur_ntask->lock);
                 break;
+            }else if (ntask->state == task_state_suspended_monitor_mem_32){
+                if(*ntask->monitor_tgt != ntask->monitor_value){
+                    local_spinlock_unlock(&cur_ntask->lock);
+                    break;
+                }
             }
             ntask = ntask->next;
             local_spinlock_unlock(&cur_ntask->lock);
@@ -626,6 +645,52 @@ cs_error task_virttophys(cs_id id, intptr_t vaddr, intptr_t *phys)
         return res_cs;
     }
     local_spinlock_unlock(&process_lock);
+    sti(cli_state);
+    return CS_UNKN;
+}
+
+cs_id task_current()
+{
+    return core_descs->cur_task->id;
+}
+
+cs_error task_monitor(cs_id id, uint32_t *tgt, uint32_t cur_val)
+{
+    if (tgt == NULL)
+        return CS_UNKN;
+
+    int cli_state = cli();
+    local_spinlock_lock(&process_lock);
+    if (processes != NULL)
+    {
+        cs_error res_cs = CS_UNKN;
+        process_desc_t *iter = processes;
+        while (iter != NULL)
+        {
+            process_desc_t *cur_iter = iter;
+            local_spinlock_lock(&cur_iter->lock);
+            if (iter->id == id)
+                break;
+            iter = iter->next;
+            local_spinlock_unlock(&cur_iter->lock);
+        }
+        if (iter != NULL)
+        {
+            intptr_t phys_ptr = 0;
+            vmem_virttophys(iter->mem, (intptr_t)tgt, &phys_ptr);
+            iter->monitor_tgt = (uint32_t*)vmem_phystovirt(phys_ptr, 4, vmem_flags_uncached | vmem_flags_kernel);
+            iter->monitor_value = cur_val;
+            iter->state = task_state_suspended_monitor_mem_32;
+
+            //Lock is already held from the break in the previous loop
+            local_spinlock_unlock(&iter->lock);
+        }
+        local_spinlock_unlock(&process_lock);
+        sti(cli_state);
+        return res_cs;
+    }
+    local_spinlock_unlock(&process_lock);
+    task_yield();
     sti(cli_state);
     return CS_UNKN;
 }

@@ -26,6 +26,7 @@ typedef enum
     task_state_pending,
     task_state_running,
     task_state_suspended,
+    task_state_suspended_monitor_mem_32,
     task_state_blocked,
     task_state_exited,
 } task_state_t;
@@ -96,6 +97,9 @@ typedef struct process_desc
     uint8_t *user_stack;
     intptr_t user_stack_phys;
     uint8_t *syscall_data;
+
+    volatile uint32_t *monitor_tgt;
+    uint32_t monitor_value;
 
     struct cardinal_program_setup_params *usersetup_params;
 
