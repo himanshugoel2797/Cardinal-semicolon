@@ -51,7 +51,7 @@ int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int len) {
     udp_t *udp = (udp_t*)packet->body;
 
     if((udp_ipv4_verify_csum(packet, udp) == 0) | (udp->csum == 0)) {
-        DEBUG_PRINT("UDP!!\r\n");
+        //DEBUG_PRINT("UDP!!\r\n");
         //TODO: Interface for services to subscribe to ports
         //  From here, the packet gets queued into the destination udp port, if present
         //  If not present, the packet is dropped

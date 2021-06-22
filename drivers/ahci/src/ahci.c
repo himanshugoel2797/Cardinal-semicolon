@@ -10,6 +10,7 @@
 #include <cardinal/local_spinlock.h>
 
 #include "SysVirtualMemory/vmem.h"
+#include "SysTaskMgr/task.h"
 #include "SysTimer/timer.h"
 
 #include "ahci.h"
@@ -62,9 +63,9 @@ PRIVATE uint32_t ahci_readports(ahci_instance_t *inst)
 PRIVATE void ahci_obtainownership(ahci_instance_t *inst)
 {
     ahci_write32(inst, HBA_BOHC, (1 << 1)); //Obtain ownership of the HBA
-    timer_wait(25 * 1000 * 1000);           //Sleep 25ms
+    task_sleep(task_current(), 25 * 1000 * 1000);           //Sleep 25ms
     if (ahci_read32(inst, HBA_BOHC) & (1 << 4))
-        timer_wait(2000 * 1000 * 1000); //wait 2 seconds for the BIOs to finish up
+        task_sleep(task_current(), 2000 * 1000 * 1000); //wait 2 seconds for the BIOs to finish up
 }
 
 PRIVATE void ahci_reportawareness(ahci_instance_t *inst)
@@ -87,7 +88,7 @@ PRIVATE int ahci_initializeport(ahci_instance_t *inst, int index)
 
         for (int i = 0; i < 5; i++)
         {
-            timer_wait(500 * 1000 * 1000); //Sleep 500ms
+            task_sleep(task_current(), 500 * 1000 * 1000); //Sleep 500ms
             if ((ahci_read32(inst, HBA_PxCMD(index)) & (HBA_PxCMD_FR | HBA_PxCMD_CR)) == 0)
                 break;
         }

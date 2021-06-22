@@ -397,6 +397,11 @@ static void task_switch_handler(int irq)
                     local_spinlock_unlock(&cur_ntask->lock);
                     break;
                 }
+            }else if(ntask->state == task_state_sleep) {
+                if(timer_timestamp_ns() >= ntask->sleep_end){
+                    local_spinlock_unlock(&cur_ntask->lock);
+                    break;
+                }
             }
             ntask = ntask->next;
             local_spinlock_unlock(&cur_ntask->lock);
@@ -420,6 +425,11 @@ static void task_switch_handler(int irq)
                     local_spinlock_unlock(&cur_ntask->lock);
                     break;
                 }
+            }else if(ntask->state == task_state_sleep) {
+                if(timer_timestamp_ns() >= ntask->sleep_end){
+                    local_spinlock_unlock(&cur_ntask->lock);
+                    break;
+                }
             }
             ntask = ntask->next;
             local_spinlock_unlock(&cur_ntask->lock);
@@ -436,6 +446,7 @@ static void task_switch_handler(int irq)
     core_descs->cur_task = ntask;
 
     local_spinlock_lock(&ntask->lock);
+    ntask->state = task_state_running;
     vmem_setactive(ntask->mem);             //Set virtual memory
     fp_platform_setstate(ntask->fpu_state); //Set fpu state
     mp_platform_setstate(ntask->reg_state); //Set registers
@@ -480,6 +491,11 @@ static void task_yield_stage2(interrupt_register_state_t *mp_state){
                     local_spinlock_unlock(&cur_ntask->lock);
                     break;
                 }
+            }else if(ntask->state == task_state_sleep) {
+                if(timer_timestamp_ns() >= ntask->sleep_end){
+                    local_spinlock_unlock(&cur_ntask->lock);
+                    break;
+                }
             }
             ntask = ntask->next;
             local_spinlock_unlock(&cur_ntask->lock);
@@ -503,6 +519,11 @@ static void task_yield_stage2(interrupt_register_state_t *mp_state){
                     local_spinlock_unlock(&cur_ntask->lock);
                     break;
                 }
+            }else if(ntask->state == task_state_sleep) {
+                if(timer_timestamp_ns() >= ntask->sleep_end){
+                    local_spinlock_unlock(&cur_ntask->lock);
+                    break;
+                }
             }
             ntask = ntask->next;
             local_spinlock_unlock(&cur_ntask->lock);
@@ -519,6 +540,7 @@ static void task_yield_stage2(interrupt_register_state_t *mp_state){
     core_descs->cur_task = ntask;
 
     local_spinlock_lock(&ntask->lock);
+    ntask->state = task_state_running;
     vmem_setactive(ntask->mem);             //Set virtual memory
     fp_platform_setstate(ntask->fpu_state); //Set fpu state
     //mp_platform_setstate(ntask->reg_state); //Set registers
@@ -982,6 +1004,41 @@ cs_error task_freedescriptor(cs_id id, cs_id descriptor)
         return CS_OK;
     }
     local_spinlock_unlock(&process_lock);
+    sti(cli_state);
+    return CS_UNKN;
+}
+
+cs_error task_sleep(cs_id id, uint64_t ns)
+{
+    int cli_state = cli();
+    local_spinlock_lock(&process_lock);
+    if (processes != NULL)
+    {
+        cs_error res_cs = CS_UNKN;
+        process_desc_t *iter = processes;
+        while (iter != NULL)
+        {
+            process_desc_t *cur_iter = iter;
+            local_spinlock_lock(&cur_iter->lock);
+            if (iter->id == id)
+                break;
+            iter = iter->next;
+            local_spinlock_unlock(&cur_iter->lock);
+        }
+        if (iter != NULL)
+        {
+            iter->sleep_end = timer_timestamp_ns() + ns;
+            iter->state = task_state_sleep;
+
+            //Lock is already held from the break in the previous loop
+            local_spinlock_unlock(&iter->lock);
+        }
+        local_spinlock_unlock(&process_lock);
+        sti(cli_state);
+        return res_cs;
+    }
+    local_spinlock_unlock(&process_lock);
+    task_yield();
     sti(cli_state);
     return CS_UNKN;
 }

@@ -84,7 +84,7 @@ int usb_device_connection_changed(void *handle, int port, bool connected)
         DEBUG_PRINT("[UHCI] Device disconnected\r\n");
     //if connected, register the device and start its task
     //submit GET_DESCRIPTOR request
-    //
+    //assign address etc
 
     return 0;
 }

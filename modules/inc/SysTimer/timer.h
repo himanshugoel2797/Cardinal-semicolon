@@ -30,4 +30,6 @@ int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int));
 
 uint64_t timer_timestamp();
 
+uint64_t timer_timestamp_ns();
+
 #endif

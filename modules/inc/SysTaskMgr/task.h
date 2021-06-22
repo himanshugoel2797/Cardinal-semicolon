@@ -45,6 +45,8 @@ void task_yield();
 
 cs_id task_current();
 
+cs_error task_sleep(cs_id id, uint64_t ns);
+
 cs_error task_monitor(cs_id id, uint32_t *tgt, uint32_t cur_val);
 
 cs_error task_map(cs_id id, const char *name, intptr_t vaddr, size_t sz, task_map_flags_t flags, task_map_perms_t owner_perms, task_map_perms_t child_perms, int child_count, cs_id *shmem_id);

@@ -19,12 +19,12 @@ int arp_rx(interface_def_t *interface, void *packet, int len) {
 
     arp_t *pkt = (arp_t *)packet;
 
-    if (TO_LE_FRM_BE_16(pkt->opcode) == ARP_REQUEST)
+    /*if (TO_LE_FRM_BE_16(pkt->opcode) == ARP_REQUEST)
         DEBUG_PRINT("ARP_REQUEST\r\n");
     else if (TO_LE_FRM_BE_16(pkt->opcode) == ARP_REPLY)
         DEBUG_PRINT("ARP_REPLY\r\n");
     else
-        DEBUG_PRINT("ARP_UNKNOWN\r\n");
+        DEBUG_PRINT("ARP_UNKNOWN\r\n");*/
 
     return 0;
 }

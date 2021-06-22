@@ -57,7 +57,7 @@ static uint32_t read32(uhci_ctrl_state_t *state, uint16_t addr)
 static void uhci_reset(uhci_ctrl_state_t *state)
 {
     write16(state, USBCMD_REG, USBCMD_GRESET);
-    timer_wait(10 * 1000 * 1000);
+    task_sleep(task_current(), 10 * 1000 * 1000);
     write16(state, USBCMD_REG, 0);  //Exit GRESET 10ms after starting
 
     //now perform an HCRESET
@@ -74,9 +74,9 @@ static void uhci_enableport(uhci_ctrl_state_t *state, int idx)
     
     //Reset port
     write16(state, PORTSCn_REG(idx), PORTSC_PORTRESET);
-    timer_wait(10 * 1000 * 1000);
+    task_sleep(task_current(), 10 * 1000 * 1000);
     write16(state, PORTSCn_REG(idx), 0);
-    timer_wait(500 * 1000 * 1000);
+    task_sleep(task_current(), 500 * 1000 * 1000);
     write16(state, PORTSCn_REG(idx), PORTSC_PORTEN | PORTSC_PORTENCHG);
 }
 

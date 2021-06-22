@@ -173,12 +173,22 @@ int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int))
 
 uint64_t timer_timestamp()
 {
-    //Allocate a timer for the desired mode with a rate that can match the desired time
     int idx = 0;
     for (; idx < timer_idx; idx++)
         if ((timer_defs[idx].features & (timer_features_read | timer_features_persistent | timer_features_counter)) == (timer_features_read | timer_features_persistent | timer_features_counter))
             if (timer_defs[idx].handlers.read != NULL)
                 return timer_defs[idx].handlers.read(&timer_defs[idx].handlers);
+
+    return (uint64_t)-1;
+}
+
+uint64_t timer_timestamp_ns()
+{
+    int idx = 0;
+    for (; idx < timer_idx; idx++)
+        if ((timer_defs[idx].features & (timer_features_read | timer_features_persistent | timer_features_counter)) == (timer_features_read | timer_features_persistent | timer_features_counter))
+            if (timer_defs[idx].handlers.read != NULL)
+                return (uint64_t)(timer_defs[idx].handlers.read(&timer_defs[idx].handlers) * ((1000.0 * 1000.0 * 1000.0) / timer_defs[idx].handlers.rate));
 
     return (uint64_t)-1;
 }
