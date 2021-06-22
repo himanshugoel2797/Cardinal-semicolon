@@ -11,7 +11,7 @@
 
 typedef struct {
     network_device_type_t type;
-    network_device_desc_t *device;
+    network_device_desc_t device;
     uint8_t mac[6];
     int idx;
 } interface_def_t;

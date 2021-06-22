@@ -58,7 +58,7 @@ int network_register(network_device_desc_t *desc, void **network_handle)
     {
         interface_def_t *def = (interface_def_t *)malloc(sizeof(interface_def_t));
         def->type = devType;
-        def->device = desc;
+        def->device = *desc;
         def->idx = devIDs[def->type]++;
         for (int i = 0; i < 6; i++)
             def->mac[i] = mac[i];

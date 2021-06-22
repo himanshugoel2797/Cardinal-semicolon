@@ -10,6 +10,10 @@
 #include "cs_syscall.h"
 
 typedef void (*DescriptorResourceFreeAction)(void *);
+typedef struct {
+    volatile uint32_t count;
+    uint32_t spinlock;
+} semaphore_t;
 
 typedef enum
 {
@@ -61,6 +65,10 @@ cs_error task_allocdescriptor(cs_id id, DescriptorResourceFreeAction action, voi
 
 cs_error task_freedescriptor(cs_id id, cs_id descriptor);
 
+void semaphore_init(semaphore_t *sema);
 
+uint32_t semaphore_signal(semaphore_t *sema);
+
+uint32_t semaphore_wait(semaphore_t *sema);
 
 #endif

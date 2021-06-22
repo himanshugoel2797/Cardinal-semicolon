@@ -676,7 +676,7 @@ cs_id task_current()
     return core_descs->cur_task->id;
 }
 
-cs_error task_monitor(cs_id id, uint32_t *tgt, uint32_t cur_val)
+cs_error task_monitor_noyield(cs_id id, uint32_t *tgt, uint32_t cur_val)
 {
     if (tgt == NULL)
         return CS_UNKN;
@@ -712,6 +712,17 @@ cs_error task_monitor(cs_id id, uint32_t *tgt, uint32_t cur_val)
         return res_cs;
     }
     local_spinlock_unlock(&process_lock);
+    sti(cli_state);
+    return CS_UNKN;
+}
+
+cs_error task_monitor(cs_id id, uint32_t *tgt, uint32_t cur_val)
+{
+    if (tgt == NULL)
+        return CS_UNKN;
+
+    int cli_state = cli();
+    task_monitor_noyield(id, tgt, cur_val);
     task_yield();
     sti(cli_state);
     return CS_UNKN;
@@ -1111,6 +1122,38 @@ static void task_cleanup(void *arg)
         local_spinlock_unlock(&process_lock);
         sti(cli_state);
     }
+}
+
+void semaphore_init(semaphore_t *sema)
+{
+    sema->count = 0;
+    sema->spinlock = 0;
+}
+
+int semaphore_signal(semaphore_t *sema)
+{
+    int rVal = 0;
+    local_spinlock_lock(&sema->spinlock);
+    rVal = sema->count++;
+    local_spinlock_unlock(&sema->spinlock);
+    return rVal;
+}
+
+int semaphore_wait(semaphore_t *sema)
+{
+    int rVal = 0;
+    local_spinlock_lock(&sema->spinlock);
+    while (sema->count == 0){
+        int state = cli();
+        task_monitor_noyield(task_current(), (uint32_t*)&sema->count, 0);
+        local_spinlock_unlock(&sema->spinlock);
+        task_yield();
+        sti(state);
+        local_spinlock_lock(&sema->spinlock);
+    }
+    rVal = --sema->count;
+    local_spinlock_unlock(&sema->spinlock);
+    return rVal;
 }
 
 int servicescript_execute();
