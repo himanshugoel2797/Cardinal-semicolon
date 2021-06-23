@@ -12,7 +12,7 @@
 typedef void (*DescriptorResourceFreeAction)(void *);
 typedef struct {
     volatile uint32_t count;
-    uint32_t spinlock;
+    int spinlock;
 } semaphore_t;
 
 typedef enum
@@ -67,8 +67,8 @@ cs_error task_freedescriptor(cs_id id, cs_id descriptor);
 
 void semaphore_init(semaphore_t *sema);
 
-uint32_t semaphore_signal(semaphore_t *sema);
+int semaphore_signal(semaphore_t *sema);
 
-uint32_t semaphore_wait(semaphore_t *sema);
+int semaphore_wait(semaphore_t *sema);
 
 #endif

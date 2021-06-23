@@ -9,6 +9,7 @@
 #include <stdlib.h>
 
 #include "SysReg/registry.h"
+#include "SysTaskMgr/task.h"
 #include "module_lib/module_def.h"
 
 #include "initrd.h"
@@ -114,6 +115,10 @@ int module_init()
                 print_str("[CoreDriver] LOADED at ");
                 print_str(ltoa((uint64_t)entry_pt, tmp_entry_addr, 16));
                 print_str("\r\n");
+
+                //cs_id proc_id;
+                //create_task_kernel((char*)exec_str, task_permissions_kernel, &proc_id);
+                //start_task_kernel(proc_id, (void(*)(void*))(void*)entry_pt_real, (void*)ecam_addr);
 
                 int err = entry_pt_real((void *)ecam_addr);
                 char idx_str[10];

@@ -81,27 +81,12 @@ int usb_register_hostcontroller(usb_hci_desc_t *desc, void **handle)
 
 int usb_register_device(usb_device_t *desc, void **handle)
 {
-    usb_device_type_t devType;
     local_spinlock_lock(&device_list_lock);
     local_spinlock_lock(&desc->lock);
     {
         list_append(&device_list, desc);
 
-        devType = desc->device_type;
-        DEBUG_PRINT("[CoreUsb] Registered ");
-        switch(desc->device_type)
-        {
-            case usb_device_type_uhci:
-                DEBUG_PRINT("UHCI: ");
-                break;
-            default:
-                DEBUG_PRINT("unknown: ");
-                break;
-        }
-        DEBUG_PRINT(desc->name);
-        DEBUG_PRINT("\r\n");
-
-        *handle = desc;
+        DEBUG_PRINT("[CoreUsb] Registered Device");
     }
     local_spinlock_unlock(&desc->lock);
     local_spinlock_unlock(&device_list_lock);
@@ -124,7 +109,7 @@ int usb_register_device(usb_device_t *desc, void **handle)
 
 int usb_remove_device(void *handle)
 {
-
+    handle = NULL;
     return 0;
 }
 

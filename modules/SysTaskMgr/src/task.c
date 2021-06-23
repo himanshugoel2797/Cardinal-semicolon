@@ -72,7 +72,7 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
     //Allocate the kernel level stack
     proc_info->kernel_stack = malloc(KERNEL_STACK_LEN);
     if (proc_info->kernel_stack == NULL)
-        PANIC("[SysTaskMgr] Unexpected memory allocaiton failure.");
+        PANIC("[SysTaskMgr] Unexpected memory allocation failure.");
     proc_info->kernel_stack += KERNEL_STACK_LEN;
 
     proc_info->user_stack = NULL;
@@ -98,7 +98,7 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
     proc_info->reg_state = malloc(mp_platform_getstatesize());
     if (proc_info->reg_state == NULL)
         PANIC("[SysTaskMgr] Unexpected memory allocation failure.");
-    mp_platform_getdefaultstate(proc_info->reg_state, proc_info->kernel_stack, NULL, NULL);
+    mp_platform_getdefaultstate(proc_info->reg_state, proc_info->kernel_stack, NULL, NULL, NULL);
 
     //add this to the process queue
     int cli_state = cli();
@@ -119,6 +119,14 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
     process_count++;
 
     return CS_OK;
+}
+
+static void NORETURN kernel_entry_handler(void (*handler)(void *arg), void *arg)
+{
+    handler(arg);
+    end_task_kernel(task_current());
+    while(true)
+        task_yield();
 }
 
 cs_error start_task_kernel(cs_id id, void (*handler)(void *arg), void *arg)
@@ -168,11 +176,11 @@ cs_error start_task_kernel(cs_id id, void (*handler)(void *arg), void *arg)
 
                     //setup userspace transition
                     syscall_getdefaultstate(iter->syscall_data, iter->kernel_stack, iter->user_stack, (void *)handler);
-                    mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)syscall_touser, iter->user_stack); //Rebuild stack state
+                    mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)syscall_touser, iter->user_stack, NULL); //Rebuild stack state
                 }
                 else
                 {
-                    mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)handler, arg); //Rebuild stack state
+                    mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void*)kernel_entry_handler, handler, arg); //Rebuild stack state
                 }
                 iter->state = task_state_pending; //Set task to initialized
 
@@ -238,17 +246,12 @@ cs_error start_task_syscall(cs_id id, void (*handler)(void *arg), void *arg)
 cs_error end_task_syscall()
 {
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    local_spinlock_lock(&core_descs->cur_task->lock);
-    cs_id id = core_descs->cur_task->id;
-    local_spinlock_unlock(&core_descs->cur_task->lock);
-    local_spinlock_unlock(&process_lock);
-    cs_error retVal = end_task_kernel(id);
+    cs_error retVal = end_task_kernel(task_current());
     sti(cli_state);
 
     if (retVal == CS_OK)
         while (1)
-            asm("hlt");
+            task_yield();
     return retVal;
 }
 

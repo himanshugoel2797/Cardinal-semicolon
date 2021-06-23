@@ -22,6 +22,6 @@ void mp_platform_getstate(void* buf);
 
 void mp_platform_setstate(void* buf);
 
-void mp_platform_getdefaultstate(void *buf, void *stackpointer, void *instr_ptr, void *args);
+void mp_platform_getdefaultstate(void *buf, void *stackpointer, void *instr_ptr, void *args0, void *args1);
 
 #endif

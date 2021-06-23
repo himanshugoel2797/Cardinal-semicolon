@@ -91,7 +91,7 @@ static void intr_handler(uhci_ctrl_state_t *inst){
             uint16_t p_sts = read16(inst, PORTSCn_REG(i));
 
             if (p_sts & PORTSC_CONNECTCHG){
-                usb_device_connection_changed(inst->handle, i, !!(p_sts & PORTSC_CURCONNECT));
+                //usb_device_connection_changed(inst->handle, i, !!(p_sts & PORTSC_CURCONNECT));
                 write16(inst, PORTSCn_REG(i), PORTSC_CONNECTCHG);   //Acknowledge connection status change
             }
         }

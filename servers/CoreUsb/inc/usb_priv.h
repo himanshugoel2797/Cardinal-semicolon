@@ -16,6 +16,7 @@ typedef struct {
 } usb_hci_def_t;
 
 typedef struct {
+    usb_device_type_t type;
     usb_device_t device;
     usb_device_state_t state;
     int idx;
