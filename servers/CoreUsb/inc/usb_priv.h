@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include "CoreUsb/usb.h"
+#include "SysTaskMgr/task.h"
 
 typedef struct {
     usb_device_type_t type;
@@ -18,8 +19,11 @@ typedef struct {
 typedef struct {
     usb_device_type_t type;
     usb_device_t device;
-    usb_device_state_t state;
+    volatile usb_device_state_t state;
     int idx;
+    uint32_t dev_list_idx;
+    cs_id thread_id;
+    semaphore_t sema;
 } usb_dev_def_t;
 
 #endif

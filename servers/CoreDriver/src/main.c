@@ -61,6 +61,10 @@ int module_init()
             if (registry_readkey_uint(key_idx, "SUBCLASS", &dev_subclass) != registry_err_ok)
                 return -1;
 
+            uint64_t dev_progIF = 0;
+            if (registry_readkey_uint(key_idx, "INTERFACE", &dev_progIF) != registry_err_ok)
+                return -1;
+
             uint64_t dev_devID = 0;
             if (registry_readkey_uint(key_idx, "DEVICE_ID", &dev_devID) != registry_err_ok)
                 return -1;
@@ -73,8 +77,9 @@ int module_init()
             bool subclassMatch = (subclass == (int)dev_subclass) || (subclass == 0xFFFF);
             bool devIDMatch = (devID == (int)dev_devID) || (devID == 0xFFFF);
             bool vendorIDMatch = (vendorID == (int)dev_vendorID) || (vendorID == 0xFFFF);
+            bool progIFMatch = (progif == (int)dev_progIF) || (progif == 0xFFFF);
 
-            if (classMatch && subclassMatch && devIDMatch && vendorIDMatch)
+            if (classMatch && subclassMatch && devIDMatch && vendorIDMatch && progIFMatch)
             {
 
                 char *tmp = (char *)strchr(cursor, '|');

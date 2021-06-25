@@ -121,15 +121,15 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
     return CS_OK;
 }
 
-static void NORETURN kernel_entry_handler(void (*handler)(void *arg), void *arg)
+static void NORETURN kernel_entry_handler(void *handler, void *arg)
 {
-    handler(arg);
+    ((void(*)(void*))handler)(arg);
     end_task_kernel(task_current());
     while(true)
         task_yield();
 }
 
-cs_error start_task_kernel(cs_id id, void (*handler)(void *arg), void *arg)
+cs_error start_task_kernel(cs_id id, void *handler, void *arg)
 {
     if (handler != NULL)
     {

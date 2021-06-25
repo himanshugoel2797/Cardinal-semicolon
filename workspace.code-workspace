@@ -12,6 +12,7 @@
 			"stdlist.h": "c",
 			"types.h": "c",
 			"vmem.h": "c"
-		}
+		},
+		"editor.fontFamily": "JetBrains Mono"
 	}
 }

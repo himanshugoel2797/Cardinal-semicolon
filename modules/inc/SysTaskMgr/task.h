@@ -41,7 +41,7 @@ typedef enum
 
 cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id);
 
-cs_error start_task_kernel(cs_id id, void (*handler)(void *arg), void *argval);
+cs_error start_task_kernel(cs_id id, void *handler, void *argval);
 
 cs_error end_task_kernel(cs_id id);
 

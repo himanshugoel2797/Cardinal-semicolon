@@ -1,5 +1,4 @@
 {
-    "licenser.projectName": "Cardinal;",
     "files.associations": {
         "priv_timers.h": "c",
         "phys_mem.h": "c",
@@ -8,4 +7,5 @@
         "vmem.h": "c"
     },
     "cmake.configureOnOpen": false,
+    "licenser.projectName": "Cardinal;"
 }

@@ -156,14 +156,17 @@ int pci_reg_init() {
             if(registry_addkey_uint(key_idx, "SUBCLASS", devInfo.SubClassCode) != registry_err_ok)
                 return -6;
 
-            if(registry_addkey_uint(key_idx, "DEVICE_ID", devInfo.DeviceID) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "INTERFACE", devInfo.ProgIF) != registry_err_ok)
                 return -7;
 
-            if(registry_addkey_uint(key_idx, "VENDOR_ID", devInfo.VendorID) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "DEVICE_ID", devInfo.DeviceID) != registry_err_ok)
                 return -8;
 
-            if(registry_addkey_uint(key_idx, "BAR_COUNT", devInfo.BarCount) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "VENDOR_ID", devInfo.VendorID) != registry_err_ok)
                 return -9;
+
+            if(registry_addkey_uint(key_idx, "BAR_COUNT", devInfo.BarCount) != registry_err_ok)
+                return -10;
 
             for(uint32_t mcfg_idx = 0; mcfg_idx < len / sizeof(MCFG_Entry); mcfg_idx++)
                 if(mcfg->entries[mcfg_idx].start_bus_number <= bus && mcfg->entries[mcfg_idx].end_bus_number >= bus) {

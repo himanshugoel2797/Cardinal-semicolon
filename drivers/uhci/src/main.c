@@ -91,6 +91,11 @@ static void intr_handler(uhci_ctrl_state_t *inst){
             uint16_t p_sts = read16(inst, PORTSCn_REG(i));
 
             if (p_sts & PORTSC_CONNECTCHG){
+                if (p_sts & PORTSC_CURCONNECT){
+                    DEBUG_PRINT("[UHCI] Device connected\r\n");
+                }else{
+                    DEBUG_PRINT("[UHCI] Device disconnected\r\n");
+                }
                 //usb_device_connection_changed(inst->handle, i, !!(p_sts & PORTSC_CURCONNECT));
                 write16(inst, PORTSCn_REG(i), PORTSC_CONNECTCHG);   //Acknowledge connection status change
             }
@@ -158,6 +163,8 @@ int module_init(void *ecam_addr)
     for (int i = 0; i < PORT_COUNT; i++)
         uhci_enableport(instance, i);
     instance->init_complete = true;
+
+    DEBUG_PRINT("[UHCI] Init complete\r\n");
 
     return 0;
 }

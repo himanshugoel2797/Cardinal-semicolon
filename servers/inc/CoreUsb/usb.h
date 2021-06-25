@@ -25,6 +25,7 @@ typedef enum
 {
     usb_device_state_uninitialized,
     usb_device_state_disconnecting,
+    usb_device_state_driver_disconnected,
 } usb_device_state_t;
 
 typedef struct {
@@ -38,6 +39,7 @@ typedef struct {
 } usb_hci_desc_t;
 
 typedef struct {
+    char name[256];
     uint32_t hci_id;
     uint32_t address;
     uint32_t port;

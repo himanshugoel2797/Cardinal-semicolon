@@ -26,4 +26,5 @@
 ./hdaudio.celf|8086|293e|FFFF|FFFF|FFFF
 ./hdaudio.celf|8086|2668|FFFF|FFFF|FFFF
 ./uhci.celf|FFFF|FFFF|000C|0003|0000
+./ehci.celf|FFFF|FFFF|000C|0003|0020
 ./ahci.celf|8086|2922|FFFF|FFFF|FFFF
