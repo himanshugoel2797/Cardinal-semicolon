@@ -25,6 +25,25 @@ static ehci_ctrl_state_t *instances = NULL;
 static int instance_count = 0;
 static int instance_lock = 0;
 
+static void intr_handler(ehci_ctrl_state_t *inst)
+{
+    inst = NULL;
+}
+
+static void ehci_reset(ehci_ctrl_state_t *inst)
+{
+    inst->opreg->usbcmd.rs = 0;
+    while(!inst->opreg->usbsts.hchalted)
+        ;
+    inst->opreg->usbcmd.hcreset = 1;
+    while(inst->opreg->usbcmd.hcreset)
+        ;
+    inst->opreg->ctrldssegment = 0;
+    //set periodiclistbase
+    //setup usbcmd
+    //take ownership of all ports
+}
+
 int module_init(void *ecam_addr)
 {
     pci_config_t *device = (pci_config_t *)vmem_phystovirt((intptr_t)ecam_addr, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
@@ -44,7 +63,10 @@ int module_init(void *ecam_addr)
     sti(cli_state);
 
     uint64_t bar = (device->bar[0] & 0xFFFFFFF0);
-    instance->membar = bar;
+    instance->phys_membar = bar;
+    instance->membar = (uint8_t*)vmem_phystovirt((intptr_t)instance->phys_membar, KiB(16), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    instance->capreg = (ehci_cap_registers_t*)instance->membar;
+    instance->opreg = (ehci_op_registers_t*)(instance->membar + instance->capreg->caplength);
 
     //Frame list: 4x1024 entries
     //Each frame contains transfer descriptors
@@ -56,18 +78,18 @@ int module_init(void *ecam_addr)
     usb_hci_desc_t *desc = malloc(sizeof(usb_hci_desc_t));  //TODO: allocate on stack, CoreUsb should make own copy
     itoa(instance->id, desc->name, 10);
     desc->state = instance;
-    desc->device_type = usb_device_type_uhci;
+    desc->device_type = usb_device_type_ehci;
     desc->lock = 0;
     usb_register_hostcontroller(desc, &instance->handle);
 
     //Start polling process
-    //cs_id int_task = 0;
-    //create_task_kernel("ehci_int_poll", task_permissions_kernel, &int_task);
-    //start_task_kernel(int_task, (void (*)(void *))intr_handler, instance);
-    //instance->intr_task = int_task;
+    cs_id int_task = 0;
+    create_task_kernel("ehci_int_poll", task_permissions_kernel, &int_task);
+    start_task_kernel(int_task, (void (*)(void *))intr_handler, instance);
+    instance->intr_task = int_task;
 
     //Reset HCI
-    //uhci_reset(instance);
+    ehci_reset(instance);
 
     //Enable all ports
     //for (int i = 0; i < PORT_COUNT; i++)

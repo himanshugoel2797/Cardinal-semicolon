@@ -63,6 +63,9 @@ int usb_register_hostcontroller(usb_hci_desc_t *desc, void **handle)
             case usb_device_type_uhci:
                 DEBUG_PRINT("UHCI: ");
                 break;
+            case usb_device_type_ehci:
+                DEBUG_PRINT("EHCI: ");
+                break;
             default:
                 DEBUG_PRINT("unknown: ");
                 break;
