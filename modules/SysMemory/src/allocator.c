@@ -63,6 +63,12 @@ void *WEAK malloc(size_t sz)
             alloc_sz += KiB(4) - (alloc_sz % KiB(4));
 
         uintptr_t phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, alloc_sz);
+        if (phys == PHYSMEM_NO_ALLOC)
+        {
+            //Out of physical memory: fail the allocation gracefully.
+            sti(cli_state);
+            return NULL;
+        }
 
         //setup a mem_node_t at the top
         mem_node_t *n_node = (mem_node_t *)vmem_phystovirt(phys, alloc_sz, vmem_flags_cachewriteback | vmem_flags_kernel | vmem_flags_rw);

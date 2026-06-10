@@ -133,6 +133,17 @@ int module_init(void *ecam_addr) {
     dev_state->tx_cmd_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, tx_cmd_rings_sz);
     dev_state->rx_bufs_mem.paddr = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, rx_bufs_sz);
 
+    if (dev_state->tx_sched_mem.paddr == PHYSMEM_NO_ALLOC ||
+        dev_state->kw_mem.paddr == PHYSMEM_NO_ALLOC ||
+        dev_state->rx_mem.paddr == PHYSMEM_NO_ALLOC ||
+        dev_state->tx_mem.paddr == PHYSMEM_NO_ALLOC ||
+        dev_state->tx_cmd_mem.paddr == PHYSMEM_NO_ALLOC ||
+        dev_state->rx_bufs_mem.paddr == PHYSMEM_NO_ALLOC)
+    {
+        DEBUG_PRINT("[iwm] Out of memory allocating DMA rings.\r\n");
+        return -1;
+    }
+
     dev_state->tx_sched_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->tx_sched_mem.paddr, tx_sched_rings_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
     dev_state->kw_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->kw_mem.paddr, kw_page_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
     dev_state->rx_mem.vaddr = (uint8_t*)vmem_phystovirt((intptr_t)dev_state->rx_mem.paddr, rx_rings_sz, vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);

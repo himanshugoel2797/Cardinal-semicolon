@@ -83,7 +83,15 @@ but it defeats short-circuiting and reads as a typo. Low risk; cleanup.
 `modules/SysPhysicalMemory/src/page_allocator.c:224` returns `-1`; callers such
 as `modules/SysVirtualMemory/.../vmem.c:127` use the result without checking,
 so an allocation failure becomes a write to `0xFFFF…FFFF`. Define an explicit
-error sentinel and check it.
+error sentinel and check it. *(Fixed: `phys_mem.h` now defines
+`PHYSMEM_NO_ALLOC`; `pagealloc_alloc` returns it consistently on all failure
+paths (the mid-scan `PANIC` is gone). Callers handle it in tiers — critical
+infra (vmem page tables, SysMemory heap, SysTaskMgr stack/image) PANICs with a
+clear message; device drivers log and fail init/probe gracefully. Note: vmem's
+old check tested `== 0`, which both missed the real sentinel and would have
+fired on a legitimate page at address 0 — now fixed to `== PHYSMEM_NO_ALLOC`.
+The debug-only `pmem_initial_test` is left as-is since it only prints the
+result.)*
 
 ### [LIKELY] Unsynchronised bump allocator on SMP
 `modules/SysVirtualMemory/src/platform/x86_64/pc/vmem.c:76` — `vmem_vmalloc`

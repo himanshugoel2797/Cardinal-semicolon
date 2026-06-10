@@ -125,6 +125,8 @@ int vmem_init()
     wrmsr(PAT_MSR, pat);
 
     uintptr_t ktable_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
+    if (ktable_phys == PHYSMEM_NO_ALLOC)
+        PANIC("Failed to allocate kernel pagetable!");
     uint64_t *ktable = (uint64_t *)vmem_phystovirt(ktable_phys, KiB(4), vmem_flags_cachewriteback);
     memset(ktable, 0, KiB(4));
 
@@ -200,6 +202,8 @@ int vmem_mp_init()
     wrmsr(PAT_MSR, pat);
 
     uintptr_t ktable_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
+    if (ktable_phys == PHYSMEM_NO_ALLOC)
+        PANIC("Failed to allocate kernel pagetable!");
     uint64_t *ktable = (uint64_t *)vmem_phystovirt(ktable_phys, KiB(4), vmem_flags_cachewriteback);
     memset(ktable, 0, KiB(4));
 
@@ -276,7 +280,7 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
             if (n_lv == 0)
             {
                 n_lv = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
-                if (n_lv == 0)
+                if (n_lv == PHYSMEM_NO_ALLOC)
                     PANIC("Pagetable allocation failure!");
 
                 memset((uint64_t *)vmem_phystovirt(n_lv, KiB(4), vmem_flags_cachewriteback), 0, KiB(4));

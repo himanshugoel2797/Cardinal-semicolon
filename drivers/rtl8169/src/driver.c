@@ -125,6 +125,11 @@ int rtl8169_init(rtl8169_state_t *state)
 
     //Allocate physical memory for the network buffers
     uintptr_t buffer_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, RX_BUFFER_SIZE + TX_BUFFER_SIZE);
+    if (buffer_phys == PHYSMEM_NO_ALLOC)
+    {
+        DEBUG_PRINT("[RTL8169] Out of memory allocating network buffers.\r\n");
+        return -1;
+    }
     intptr_t buffer_virt = vmem_phystovirt((intptr_t)buffer_phys, RX_BUFFER_SIZE + TX_BUFFER_SIZE, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     memset((void*)buffer_virt, 0, RX_BUFFER_SIZE + TX_BUFFER_SIZE);
 

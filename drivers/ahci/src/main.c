@@ -134,6 +134,13 @@ int module_init(void *ecam_addr)
     //32 * (CMD_BUF_SIZE + FIS_SIZE + sizeof(ahci_cmdtable_t))
     size_t dma_sz = port_cnt * (CMD_BUF_SIZE + FIS_SIZE + sizeof(ahci_cmdtable_t));
     instance->port_dma.phys_addr = (uint64_t)pagealloc_alloc(0, 0, physmem_alloc_flags_zero | physmem_alloc_flags_data, dma_sz);
+    if (instance->port_dma.phys_addr == PHYSMEM_NO_ALLOC)
+    {
+        DEBUG_PRINT("[AHCI] Out of memory allocating port DMA region.\r\n");
+        local_spinlock_unlock(&device_init_lock);
+        sti(cli_state);
+        return -1;
+    }
     instance->port_dma.virt_addr = (uint64_t)vmem_phystovirt(instance->port_dma.phys_addr, dma_sz, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     //initialize ports

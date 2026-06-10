@@ -361,6 +361,11 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd)
             //set its backing data
             size_t sz = display_info->pmodes[i].r.width * display_info->pmodes[i].r.height * sizeof(uint32_t);
             uintptr_t fbuf = pagealloc_alloc(0, 0, physmem_alloc_flags_data, sz);
+            if (fbuf == PHYSMEM_NO_ALLOC)
+            {
+                DEBUG_PRINT("[VirtIO-GPU] Out of memory allocating framebuffer.\r\n");
+                return;
+            }
             virtio_gpu_attachbacking(n_res_id, fbuf, sz);
 
             //set scanout

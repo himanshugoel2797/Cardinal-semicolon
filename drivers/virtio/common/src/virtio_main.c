@@ -164,6 +164,11 @@ PRIVATE void *virtio_setupqueue(virtio_state_t *state, int idx, int entcnt)
     size_t ts = 16 * entcnt + 6 + 2 * entcnt + 6 + 8 * entcnt;
 
     uintptr_t virtqueue_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, ts);
+    if (virtqueue_phys == PHYSMEM_NO_ALLOC)
+    {
+        DEBUG_PRINT("[VirtIO] Out of memory allocating virtqueue.\r\n");
+        return NULL;
+    }
     intptr_t virtqueue_virt = vmem_phystovirt((intptr_t)virtqueue_phys, ts, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     memset((void *)virtqueue_virt, 0, ts);
