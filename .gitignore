@@ -68,3 +68,8 @@ CTestTestfile.cmake
 CMakeSettings.json
 .vs/
 .vscode/
+# Local dev environment (scripts/devenv)
+/.devenv/
+/toolchain/
+/.toolchain-build/
+/scripts/devenv/*.log
