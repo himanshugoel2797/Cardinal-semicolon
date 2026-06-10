@@ -231,7 +231,11 @@ multiboot_end:
 
                                .size _start, . - _start
 
-                               .section .bootstrap_stack, "ax"
+                               # NOBITS (zero-filled by the loader): emitting these
+                               # 32 KiB as PROGBITS writes them into the image and
+                               # pushes .trampoline_code (which carries the multiboot2
+                               # header) past GRUB's 32 KiB header scan window.
+                               .section .bootstrap_stack, "aw", @nobits
                                stack_bottom:
                                .skip 16384 # 16 KiB	(16 KiB is enough for initialization until threading is setup)
                                stack_top:

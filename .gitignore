@@ -73,3 +73,6 @@ CMakeSettings.json
 /toolchain/
 /.toolchain-build/
 /scripts/devenv/*.log
+
+# clangd index
+/.cache/

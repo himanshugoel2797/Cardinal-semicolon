@@ -240,7 +240,12 @@ PRIVATE int syscall_plat_init()
 
     uint64_t star_val = (0x08ull << 32) | (0x18ull << 48);
     uint64_t lstar = (uint64_t)syscall_handler;
-    uint64_t sfmask = (uint64_t)-1;
+    // IA32_FMASK (0xC0000084) only defines bits 31:0 (the RFLAGS clear-mask on
+    // SYSCALL); bits 63:32 are reserved and writing 1s to them #GPs on a CPU
+    // that enforces reserved bits (e.g. KVM). 0xFFFFFFFF clears every RFLAGS
+    // bit on entry — same intent as the previous (uint64_t)-1, without the
+    // reserved bits.
+    uint64_t sfmask = 0xFFFFFFFF;
 
     wrmsr(EFER_MSR, rdmsr(EFER_MSR) | 1); // Enable the syscall instruction
     wrmsr(0xC0000081, star_val);
