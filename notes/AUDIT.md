@@ -93,6 +93,22 @@ fired on a legitimate page at address 0 — now fixed to `== PHYSMEM_NO_ALLOC`.
 The debug-only `pmem_initial_test` is left as-is since it only prints the
 result.)*
 
+On the failure path itself there is nothing to unwind: the scan dequeues one
+free-list entry at a time and always returns it or re-inserts it before the next
+iteration, so the free list is whole at every iteration boundary. The bail
+(`page_allocator.c:182`) triggers on a *failed* `queue_trydequeue` (empty queue,
+nothing removed), so `btm_level` and `free_mem` are left exactly as they were —
+no partial allocation, no leaked pages.
+
+### [LIKELY] pagealloc re-insert failures are unchecked (page leak vector)
+`modules/SysPhysicalMemory/src/page_allocator.c:195,204,219` — when the scan
+puts a dequeued block back (wrong zone, too small, or the leftover after a
+split), it ignores the `insert_queue*` return value. If the queue is full the
+entry is silently dropped, leaking those pages and shrinking the free list (a
+later `queue_trydequeue` then fails). Independent of the OOM-sentinel work; the
+allocation logic itself otherwise conserves pages. Should check the return and
+size the queue so re-inserts cannot fail.
+
 ### [LIKELY] Unsynchronised bump allocator on SMP
 `modules/SysVirtualMemory/src/platform/x86_64/pc/vmem.c:76` — `vmem_vmalloc`
 advances `kernel_vmalloc` with no lock; the code's own TODO notes it is not
