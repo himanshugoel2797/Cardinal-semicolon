@@ -1,0 +1,72 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: clang/lld x86_64-elf
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}   # login shell so the conda env stays activated
+    steps:
+      - uses: actions/checkout@v4
+
+      # Reuse the repo's single source of truth for the toolchain
+      # (scripts/devenv/environment.yml) so CI matches local dev exactly.
+      - name: Set up toolchain (conda env)
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-file: scripts/devenv/environment.yml
+          activate-environment: cardinal-dev
+          use-mamba: true
+
+      - name: Toolchain versions
+        run: |
+          clang --version | head -1
+          ld.lld --version | head -1
+          cmake --version | head -1
+
+      - name: Build host tools (sign_exec)
+        run: |
+          cmake -S utils -B utils_build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build utils_build
+          test -x utils_build/sign_exec/sign_exec
+
+      - name: Build kernel + modules
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_SYSTEM_NAME=Generic \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_ASM_COMPILER=clang
+          cmake --build build
+
+      - name: Verify artifacts
+        run: |
+          test -f build/kernel/kernel.bin
+          file build/kernel/kernel.bin
+          modules=$(find build -name '*.celf' -printf '%f\n' | sort -u)
+          echo "Signed modules:"; echo "$modules"
+          count=$(echo "$modules" | grep -c . || true)
+          echo "module count: $count"
+          test "$count" -ge 30
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cardinal-build
+          path: |
+            build/kernel/kernel.bin
+            build/ISO/isodir/boot/*.celf
+          if-no-files-found: error
