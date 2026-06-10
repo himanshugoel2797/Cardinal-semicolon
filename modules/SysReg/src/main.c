@@ -372,7 +372,7 @@ int registry_readkey_ptr(const char *path, const char *keyname,
         return registry_err_typematchfailure;
     }
 
-    if (val != NULL && kvs_get_uint(key_kvs, val) != kvs_ok)
+    if (val != NULL && kvs_get_ptr(key_kvs, val) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
         return registry_err_failure;

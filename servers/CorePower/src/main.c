@@ -33,7 +33,7 @@ int pwr_sendevent_g(device_pwr_class_t pwr_class, global_pwr_state_t state, int 
     pwr_device_t *device = NULL;
     int entcnt = queue_entcnt(&devices);
     for(int i = 0; i < entcnt; i++)
-        if(queue_trydequeue(&devices, (uint64_t*)device)) {
+        if(queue_trydequeue(&devices, (uint64_t*)&device)) {
             if(device->event_g != NULL && (device->dev_class & pwr_class))
                 device->event_g(state, p_state);
             queue_tryenqueue(&devices, (uint64_t)device);
@@ -49,7 +49,7 @@ int pwr_sendevent_d(device_pwr_class_t pwr_class, device_pwr_state_t state) {
     pwr_device_t *device = NULL;
     int entcnt = queue_entcnt(&devices);
     for(int i = 0; i < entcnt; i++)
-        if(queue_trydequeue(&devices, (uint64_t*)device)) {
+        if(queue_trydequeue(&devices, (uint64_t*)&device)) {
             if(device->event_d != NULL && (device->dev_class & pwr_class))
                 device->event_d(state);
             queue_tryenqueue(&devices, (uint64_t)device);

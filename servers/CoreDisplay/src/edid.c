@@ -100,7 +100,7 @@ bool coredisplay_parse_edid(uint8_t *raw, edid_t *result)
             // display descriptor
             if (raw[54 + i + 3] == 0xFC)
                 for (int n_i = 0; n_i < 13; n_i++)
-                    result->display_name[n_i] = raw[54 + i + 5];
+                    result->display_name[n_i] = raw[54 + i + 5 + n_i];
         }
         else
         {
