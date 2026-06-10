@@ -161,6 +161,40 @@ void interrupt_sendipi(int cpu, int vector, ipi_delivery_mode_t delivery_mode) {
 static int intrpt_num = 0;
 
 //configure timer for tsc deadline
+// Measure the local APIC timer's input frequency against PIT channel 2 (a
+// fixed 1.193182 MHz source present on every PC, including QEMU). Used when
+// CPUID/MSR don't report the bus frequency (e.g. under QEMU/KVM, where the
+// CPUID-based path in SysReg/cpuid.c yields APIC_FREQ == 0). Returns the bus
+// frequency in Hz (pre-divider), matching the meaning of HW/PROC/APIC_FREQ.
+#define PIT_FREQ 1193182u
+static uint64_t apic_timer_calibrate(void) {
+    const uint32_t calib_ms = 10;
+    uint16_t pit_count = (uint16_t)((uint64_t)PIT_FREQ * calib_ms / 1000); //~11932
+
+    // PIT channel 2: gate on (0x61 bit0), speaker off (bit1); mode 0 one-shot.
+    outb(0x61, (inb(0x61) & (uint8_t)~0x02) | 0x01);
+    outb(0x43, 0xB0); //ch2, lobyte/hibyte, mode 0, binary
+
+    // Arm the APIC timer: divide by 2, masked one-shot, max initial count.
+    apic_write(APIC_DCR, 0x0);
+    apic_write(APIC_TIMER, (1u << 16)); //masked
+    apic_write(APIC_ICoR, 0xFFFFFFFFu);
+
+    // Load the PIT count (starts it), then poll OUT (0x61 bit5) for terminal count.
+    outb(0x42, (uint8_t)(pit_count & 0xff));
+    outb(0x42, (uint8_t)((pit_count >> 8) & 0xff));
+    while (!(inb(0x61) & 0x20))
+        ;
+
+    uint32_t remaining = (uint32_t)apic_read(APIC_CCoR);
+    apic_write(APIC_ICoR, 0); //stop
+    uint32_t elapsed = 0xFFFFFFFFu - remaining;
+
+    // elapsed ticks happened in calib_ms at divide-by-2; undo both to get the
+    // pre-divider bus frequency in Hz.
+    return (uint64_t)elapsed * (1000 / calib_ms) * 2;
+}
+
 int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap) {
 
     if(!ap) {
@@ -180,8 +214,19 @@ int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap) {
 
         uint64_t apic_freq = 0;
         if(registry_readkey_uint("HW/PROC", "APIC_FREQ", &apic_freq) != registry_err_ok)
-            return -1;
+            apic_freq = 0;
 
+        //CPUID/MSR did not report a usable bus frequency (e.g. QEMU/KVM): fall
+        //back to measuring it against the PIT. Cache it so APs and repeat calls
+        //don't re-run the 10ms calibration (the rate is uniform across cores).
+        if(apic_freq < 20000) {
+            static uint64_t calibrated_apic_freq = 0;
+            if(calibrated_apic_freq == 0)
+                calibrated_apic_freq = apic_timer_calibrate();
+            apic_freq = calibrated_apic_freq;
+        }
+
+        apic_write(APIC_DCR, 0x0); //divide by 2 (matches the calibration)
         //tick every 0.05ms
         apic_write(APIC_ICoR, apic_freq / 20000);
     }
