@@ -1,0 +1,36 @@
+# Repo-local conda environment for Cardinal; development.
+#
+# Create/update with:   ./scripts/devenv/setup.sh
+# (creates the env at ./.devenv via `conda env create --prefix ./.devenv`)
+#
+# The cross compiler is Clang/LLVM: clang is natively a cross compiler, so we
+# target `--target=x86_64-elf` (freestanding, no OS) directly with no separate
+# toolchain build. lld is the linker; llvm-tools provides llvm-ar / llvm-objcopy
+# / llvm-nm / llvm-ranlib used in place of binutils.
+#
+# clang is pinned to 20.x to match the version commonly installed on dev hosts;
+# bump deliberately and re-verify the build when moving major versions.
+name: cardinal-dev
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  # --- build orchestration ---
+  - cmake>=3.20
+  - make
+  - ninja
+  # --- cross compiler + binutils replacements (LLVM) ---
+  - clang=20
+  - clangxx=20
+  - lld=20
+  - llvm-tools=20
+  # --- code style (matches scripts/style_com.sh) ---
+  - astyle
+#
+# NOT available via conda-forge/linux-64 (install from the system package
+# manager if you need them; only required to build/boot a bootable ISO, not to
+# compile the kernel + modules):
+#   qemu        -> sudo apt install qemu-system-x86
+#   grub tools  -> sudo apt install grub-pc-bin grub-efi-amd64-bin
+#   mtools      -> sudo apt install mtools
+#   xorriso     -> sudo apt install xorriso
