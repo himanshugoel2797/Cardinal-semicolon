@@ -2,10 +2,39 @@
 An extremely modular, security oriented microkernel operating system based on a cleanup and partial rewrite of the Cardinal operating system.
 
 ## Building
-CMake configuration command, for out-of-source builds:
+
+The toolchain is **Clang/LLVM** targeting freestanding `x86_64-elf` (clang is a
+native cross compiler, so no separate GCC/binutils cross build is needed). A
+repo-local conda environment under `scripts/devenv/` provides clang, lld,
+llvm-tools, cmake and ninja.
+
 ```bash
-CC=x86_64-elf-cardinalsemi-gcc cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_SYSTEM_NAME="Generic" ..
+# One-time: build the local toolchain environment (./.devenv)
+./scripts/devenv/setup.sh
+
+# Each build session: put the toolchain on PATH
+source ./scripts/devenv/activate.sh
+
+# Build everything (host sign_exec tool + kernel + modules)
+./scripts/build.sh
 ```
+
+`scripts/build.sh` is a thin wrapper around the two CMake builds it runs:
+
+```bash
+# 1. host-side signing tool
+cmake -S utils -B utils_build -G Ninja && cmake --build utils_build
+# 2. the OS itself
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+      -DCMAKE_SYSTEM_NAME=Generic -DCMAKE_C_COMPILER=clang -DCMAKE_ASM_COMPILER=clang
+cmake --build build
+```
+
+Artifacts land in `build/`: `kernel/kernel.bin` and the signed `*.celf` modules
+(also staged under `build/ISO/isodir/boot/`).
+
+See `scripts/devenv/README.md` for details and the optional system packages
+(qemu/grub/mtools/xorriso) needed to build a bootable ISO.
 
 To generate a custom kmod signing key, use:
 ```bash

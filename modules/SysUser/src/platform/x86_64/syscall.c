@@ -33,7 +33,46 @@ typedef struct
 } syscall_state_t;
 TLS syscall_state_t *syscall_state = NULL;
 
+// Copy a register_state_t field by field. A plain struct assignment through a
+// __seg_gs (address space 256) pointer makes clang emit an llvm.memcpy in that
+// address space, which its backend cannot lower ("cannot lower memory intrinsic
+// in address space 256"). Scalar field copies sidestep the intrinsic.
+#define COPY_REGISTER_STATE(dst, src)        \
+    do {                                     \
+        (dst).rip = (src).rip;               \
+        (dst).rflags = (src).rflags;         \
+        (dst).rsp = (src).rsp;               \
+        (dst).rbp = (src).rbp;               \
+        (dst).rbx = (src).rbx;               \
+        (dst).r12 = (src).r12;               \
+        (dst).r13 = (src).r13;               \
+        (dst).r14 = (src).r14;               \
+        (dst).r15 = (src).r15;               \
+    } while (0)
+
 static void *syscall_funcs[SYSCALL_COUNT];
+
+// Error handlers for syscall_handler. They are reached only through the `call`
+// instructions in syscall_handler's assembly, so the compiler cannot see the
+// references: mark them `used` so they are still emitted. They are kept out of
+// the naked function because clang only permits asm statements inside a naked
+// function (GCC was lenient and allowed the C bodies inline).
+static NORETURN __attribute__((used)) void syscall_oor_syscall(void) {
+    PANIC("[SysUser] Out of range syscall!");
+    __builtin_unreachable();
+}
+static NORETURN __attribute__((used)) void syscall_oor_syscallset(void) {
+    PANIC("[SysUser] Out of range syscall set!");
+    __builtin_unreachable();
+}
+static NORETURN __attribute__((used)) void syscall_null_syscallset(void) {
+    PANIC("[SysUser] Null syscall set!");
+    __builtin_unreachable();
+}
+static NORETURN __attribute__((used)) void syscall_null_syscall(void) {
+    PANIC("[SysUser] Null syscall!");
+    __builtin_unreachable();
+}
 
 PRIVATE NAKED NORETURN void syscall_handler(void)
 {
@@ -85,14 +124,16 @@ PRIVATE NAKED NORETURN void syscall_handler(void)
                                   "swapgs\r\n"
                                   "sysretq\r\n"
 
-                                  "outofrange_syscall_handler:\r\n");
-    PANIC("[SysUser] Out of range syscall!");
-    __asm__ volatile("outofrange_syscallset_handler:\r\n");
-    PANIC("[SysUser] Out of range syscall set!");
-    __asm__ volatile("null_syscallset_handler:\r\n");
-    PANIC("[SysUser] Null syscall set!");
-    __asm__ volatile("null_syscall_handler:\r\n");
-    PANIC("[SysUser] Null syscall!");
+                                  //Error paths: jump targets above land here and
+                                  //call the (noreturn) panic helpers.
+                                  "outofrange_syscall_handler:\r\n"
+                                  "callq syscall_oor_syscall\r\n"
+                                  "outofrange_syscallset_handler:\r\n"
+                                  "callq syscall_oor_syscallset\r\n"
+                                  "null_syscallset_handler:\r\n"
+                                  "callq syscall_null_syscallset\r\n"
+                                  "null_syscall_handler:\r\n"
+                                  "callq syscall_null_syscall\r\n");
 }
 
 //Processes are started and functions called via syscall exit
@@ -148,7 +189,7 @@ void syscall_getfullstate(void *dst)
 {
     syscall_state_t *st = (syscall_state_t *)dst;
     st->kernel_stack = syscall_state->kernel_stack;
-    st->registers = syscall_state->registers;
+    COPY_REGISTER_STATE(st->registers, syscall_state->registers);
     for (int i = 0; i < SYSCALL_SET_COUNT; i++)
         st->syscall_set_table[i] = syscall_state->syscall_set_table[i];
 }
@@ -157,7 +198,7 @@ void syscall_setfullstate(void *state)
 {
     syscall_state_t *st = (syscall_state_t *)state;
     syscall_state->kernel_stack = st->kernel_stack;
-    syscall_state->registers = st->registers;
+    COPY_REGISTER_STATE(syscall_state->registers, st->registers);
     for (int i = 0; i < SYSCALL_SET_COUNT; i++)
         syscall_state->syscall_set_table[i] = st->syscall_set_table[i];
 }
@@ -199,7 +240,12 @@ PRIVATE int syscall_plat_init()
 
     uint64_t star_val = (0x08ull << 32) | (0x18ull << 48);
     uint64_t lstar = (uint64_t)syscall_handler;
-    uint64_t sfmask = (uint64_t)-1;
+    // IA32_FMASK (0xC0000084) only defines bits 31:0 (the RFLAGS clear-mask on
+    // SYSCALL); bits 63:32 are reserved and writing 1s to them #GPs on a CPU
+    // that enforces reserved bits (e.g. KVM). 0xFFFFFFFF clears every RFLAGS
+    // bit on entry — same intent as the previous (uint64_t)-1, without the
+    // reserved bits.
+    uint64_t sfmask = 0xFFFFFFFF;
 
     wrmsr(EFER_MSR, rdmsr(EFER_MSR) | 1); // Enable the syscall instruction
     wrmsr(0xC0000081, star_val);

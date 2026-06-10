@@ -45,14 +45,20 @@ typedef struct {
     uint64_t Rsv0;
 } HPET_Timer;
 
+// The HPET General Capabilities and ID register is a single 64-bit register at
+// offset 0; per the spec it must be accessed with 32- or 64-bit reads. Using
+// uint64_t (not uint16_t) bitfields keeps every field in one 64-bit storage
+// unit so the compiler emits a 64-bit load, matching the other registers here.
+// (uint16_t fields made TimerCount/Is64Bit a 2-byte MMIO read, which QEMU
+// rejects: "Invalid read ... size 2, region 'hpet'".)
 typedef struct {
-    uint16_t RevID : 8;
-    uint16_t TimerCount : 5;
-    uint16_t Is64Bit : 1;
-    uint16_t Rsv0 : 1;
-    uint16_t LegacyReplacementCapable : 1;
-    uint16_t VendorID;
-    uint32_t ClockPeriod;
+    uint64_t RevID : 8;
+    uint64_t TimerCount : 5;
+    uint64_t Is64Bit : 1;
+    uint64_t Rsv0 : 1;
+    uint64_t LegacyReplacementCapable : 1;
+    uint64_t VendorID : 16;
+    uint64_t ClockPeriod : 32;
 } HPET_CapRegister;
 
 typedef struct {

@@ -41,31 +41,35 @@ SECTIONS
 	
 	. = KERNEL_VADDR + 2M;
   	_region_kernel_start_ = . - KERNEL_VADDR;
+	/* -mcmodel=large makes clang emit large-model sections (.ltext/.lrodata/
+	   .ldata/.lbss, marked SHF_X86_64_LARGE). They must be matched explicitly
+	   or lld places them as orphans at a low address, leaving most of the
+	   kernel below the -2GB window and breaking calls/relocations. */
 	.text ALIGN(4K) : AT(ADDR(.text) - KERNEL_VADDR)
 	{
 		*(.entry_point)
 		*(.tramp_handler)
 		*(.tramp_handler_code)
-		*(.text)
+		*(.text .text.* .ltext .ltext.*)
 	}
 
 	/* Read-only data. */
 	.rodata ALIGN(4K) : AT(ADDR(.rodata) - KERNEL_VADDR)
 	{
-		*(.rodata)
+		*(.rodata .rodata.* .lrodata .lrodata.*)
 	}
 
 	/* Read-write data (initialized) */
 	.data ALIGN(4K) : AT(ADDR(.data) - KERNEL_VADDR)
 	{
-		*(.data)
+		*(.data .data.* .ldata .ldata.*)
 	}
 
 	/* Read-write data (uninitialized) and stack */
 	.bss ALIGN(4K) : AT(ADDR(.bss) - KERNEL_VADDR)
 	{
 		*(COMMON)
-		*(.bss)
+		*(.bss .bss.* .lbss .lbss.*)
 	}
 
 	/* The compiler may produce other sections, by default it will put them in
