@@ -5,11 +5,15 @@
  * https://opensource.org/licenses/MIT
  */
 
+#include "stdbool.h"
 #include "stddef.h"
 #include "stdint.h"
 
 #include "devices.h"
 #include "gmbus.h"
+
+// Upper bound on GMBUS HW-Ready poll iterations before giving up.
+#define IGFX_GMBUS_WAIT_ITERS 1000000
 
 void igfx_gmbus_init(igfx_dev_state_t *driver_state)
 {
@@ -35,10 +39,21 @@ void igfx_gmbus_reset(igfx_dev_state_t *driver)
     igfx_gmbus_disable_writeprot(driver);
 }
 
-void igfx_gmbus_wait(igfx_dev_state_t *driver)
+// Wait for the GMBUS controller to signal HW Ready (GMBUS2 bit 11), bounding
+// the spin so a dead/absent panel or a bus error can't wedge the driver. Also
+// bails out on the NAK/error bit (GMBUS2 bit 10). Returns true on HW Ready,
+// false on timeout or error.
+bool igfx_gmbus_wait(igfx_dev_state_t *driver)
 {
-    while (!(igfx_read32(driver, driver->display_mmio_base + IGFX_GMBUS2) & (1 << 11)))
-        ;
+    for (uint32_t i = 0; i < IGFX_GMBUS_WAIT_ITERS; i++)
+    {
+        uint32_t status = igfx_read32(driver, driver->display_mmio_base + IGFX_GMBUS2);
+        if (status & (1 << 10)) // GMBUS error / NAK
+            return false;
+        if (status & (1 << 11)) // HW Ready
+            return true;
+    }
+    return false;
 }
 
 void igfx_gmbus_stoptransaction(igfx_dev_state_t *driver)
@@ -68,7 +83,12 @@ void igfx_gmbus_read(igfx_dev_state_t *driver, uint32_t disp_idx, uint8_t offset
 
     for (int i = 0; i < sz; i += 4)
     {
-        igfx_gmbus_wait(driver);
+        if (!igfx_gmbus_wait(driver))
+        {
+            // Timeout or bus error: abort the transaction instead of hanging.
+            igfx_gmbus_stoptransaction(driver);
+            return;
+        }
 
         uint32_t bytes = igfx_read32(driver, driver->display_mmio_base + IGFX_GMBUS3);
 

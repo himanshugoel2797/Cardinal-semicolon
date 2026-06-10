@@ -172,7 +172,7 @@ int elf_installkernelsymbols()
     {
         shdr_cp[i].sh_addr += 0xffffffff80000000;
 
-        if ((shdr_cp[i].sh_type == SHT_SYMTAB) | (shdr_cp[i].sh_type == SHT_STRTAB))
+        if ((shdr_cp[i].sh_type == SHT_SYMTAB) || (shdr_cp[i].sh_type == SHT_STRTAB))
         {
             //Copy all shdr's into local memory too, and update addresses appropriately
             void *cur_shdr_content = malloc(shdr_cp[i].sh_size);
@@ -269,7 +269,7 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)())
     {
         Elf64_Shdr *shdr = &shdr_root[i];
 
-        if ((shdr->sh_type == SHT_STRTAB) | (shdr->sh_type == SHT_PROGBITS))
+        if ((shdr->sh_type == SHT_STRTAB) || (shdr->sh_type == SHT_PROGBITS))
             shdr->sh_addr = (uintptr_t)hdr + shdr->sh_offset;
     }
 
@@ -286,7 +286,7 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)())
                 for (uint32_t j = 0; j < shdr->sh_size / shdr->sh_entsize; j++)
                 {
 
-                    if ((sym[j].st_shndx == SHN_ABS) | (sym[j].st_shndx == SHN_UNDEF))
+                    if ((sym[j].st_shndx == SHN_ABS) || (sym[j].st_shndx == SHN_UNDEF))
                         continue;
 
                     Elf64_Shdr *sec_shdr = &shdr_root[sym[j].st_shndx];
@@ -338,7 +338,7 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)())
             for (uint32_t j = 0; j < shdr->sh_size / shdr->sh_entsize; j++)
             {
 
-                if ((sym[j].st_shndx == SHN_ABS) | (sym[j].st_shndx == SHN_UNDEF))
+                if ((sym[j].st_shndx == SHN_ABS) || (sym[j].st_shndx == SHN_UNDEF))
                     continue;
 
                 Elf64_Shdr *sec_shdr = &shdr_root[sym[j].st_shndx];

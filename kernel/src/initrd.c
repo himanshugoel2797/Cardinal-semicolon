@@ -44,7 +44,7 @@ bool Initrd_GetFile(const char *file,
 {
 
     CardinalBootInfo *bootInfo = GetBootInfo();
-    if ((bootInfo->InitrdStartAddress == 0) | (bootInfo->InitrdLength == 0))
+    if ((bootInfo->InitrdStartAddress == 0) || (bootInfo->InitrdLength == 0))
         return false;
 
     *loc = NULL;

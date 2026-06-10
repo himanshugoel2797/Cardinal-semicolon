@@ -34,6 +34,8 @@ void igfx_gmbus_wait(igfx_dev_state_t *driver) {
 ```
 A dead/absent panel or a GMBUS error wedges the driver. Needs an iteration/time
 bound and an error-bit (GMBUS2 bit 10) check. Same pattern in the EDID read path.
+*(Fixed: `igfx_gmbus_wait` now bounds the spin and checks the error bit,
+returning failure; `igfx_gmbus_read` aborts the transaction on timeout/error.)*
 
 ### [INCOMPLETE] Haswell support is essentially absent
 - `drivers/intel_gfx/inc/hsw-regs.h` is empty (header guards only).
@@ -75,6 +77,7 @@ if ((shdr[i].sh_type == SHT_SYMTAB) | (shdr[i].sh_type == SHT_STRTAB))
 ```
 Operands are side-effect-free comparisons so the result is currently correct,
 but it defeats short-circuiting and reads as a typo. Low risk; cleanup.
+*(Fixed: switched to `||` at all listed sites.)*
 
 ### [LIKELY] pagealloc OOM sentinel is `-1` cast to `uintptr_t`
 `modules/SysPhysicalMemory/src/page_allocator.c:224` returns `-1`; callers such
