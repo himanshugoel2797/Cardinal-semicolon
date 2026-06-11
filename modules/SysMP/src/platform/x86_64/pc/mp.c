@@ -69,11 +69,25 @@ int mp_corecount(void) {
     return coreCount;
 }
 
+//Entry point the scheduler hands to parked APs (set via mp_set_ap_entry).
+static void (*volatile ap_entry)(void) = NULL;
+
+void mp_set_ap_entry(void (*entry)(void)) {
+    ap_entry = entry;
+}
+
 int mp_signalready() {
 
     coreCount++;
     core_ready = 1;
 
+    //Park until the scheduler is online and hands us an entry point, then join it.
+    while(ap_entry == NULL)
+        __asm__ volatile("pause");
+
+    ap_entry();
+
+    //ap_entry() is not expected to return; spin defensively if it ever does.
     while(true)
         ;
 
@@ -84,6 +98,12 @@ int mp_tls_setup() {
     uint64_t tls = (uint64_t)malloc(TLS_SIZE);
     if(tls == 0)
         return -1;
+
+    //Zero the per-core TLS block: static TLS variables (apic_state, lcl,
+    //core_descs, ...) are written assuming zero-initialisation, and their
+    //NULL checks gate per-core setup. malloc does not guarantee zeroed memory,
+    //so an AP would otherwise see garbage and skip its own initialisation.
+    memset((void*)tls, 0, TLS_SIZE);
 
     g_tls = NULL;   //Set the g_tls internal offset to 0, so it refers to GS_BASE_MSR+0
     wrmsr(GS_BASE_MSR, tls);

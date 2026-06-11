@@ -1128,6 +1128,11 @@ static void task_cleanup(void *arg)
 
         local_spinlock_unlock(&process_lock);
         sti(cli_state);
+
+        //Yield between passes instead of busy-spinning. The cleanup task does not
+        //need to run continuously, and on SMP a tight loop here would hammer
+        //process_lock and starve other cores of the scheduler.
+        task_yield();
     }
 }
 
@@ -1170,7 +1175,20 @@ void servicescript_handler(void *arg)
     servicescript_execute();
 }
 
-int module_mp_init()
+static void NORETURN idle_task(void *arg)
+{
+    arg = NULL;
+    //Always-runnable fallback so a core with no other work never starves the
+    //scheduler (which would otherwise PANIC in task_switch_handler).
+    while (true)
+        halt();
+}
+
+//Per-core scheduler bring-up, run on the BSP and every AP: allocate this core's
+//interrupt stack and create its idle task. Does NOT arm the preemption timer --
+//call task_core_arm() only once every task this core might immediately schedule
+//exists, so the first tick cannot fire into an empty run queue.
+static void task_core_setup()
 {
     //Allocate and setup interrupt stack
     uint8_t *interrupt_stack = (uint8_t *)malloc(KERNEL_STACK_LEN) + KERNEL_STACK_LEN;
@@ -1180,27 +1198,40 @@ int module_mp_init()
 
     interrupt_setstack(interrupt_stack);
 
-    //Launch servicescript task
-    cs_id ss_id = 0;
-    cs_error ss_err = create_task_kernel("servicescript", task_permissions_kernel, &ss_id);
-    if (ss_err != CS_OK)
-        PANIC("[SysTaskMgr] Failed to create servicescript task.");
-    ss_err = start_task_kernel(ss_id, servicescript_handler, NULL);
-    if (ss_err != CS_OK)
-        PANIC("[SysTaskMgr] Failed to start servicescript task.");
+    //Each core needs an always-runnable idle task
+    cs_id idle_id = 0;
+    if (create_task_kernel("idle", task_permissions_kernel, &idle_id) != CS_OK)
+        PANIC("[SysTaskMgr] Failed to create idle task.");
+    if (start_task_kernel(idle_id, idle_task, NULL) != CS_OK)
+        PANIC("[SysTaskMgr] Failed to start idle task.");
+}
 
-    //Launch task cleanup task
-    cs_id tc_id = 0;
-    cs_error tc_err = create_task_kernel("task_cleanup", task_permissions_kernel, &tc_id);
-    if (tc_err != CS_OK)
-        PANIC("[SysTaskMgr] Failed to create task_cleanup task.");
-    tc_err = start_task_kernel(tc_id, task_cleanup, NULL);
-    if (tc_err != CS_OK)
-        PANIC("[SysTaskMgr] Failed to start task_cleanup task.");
-
+//Arm this core's periodic preemption timer and enable interrupts. Must be the
+//last bring-up step: the first tick abandons the current (boot/AP) context for a
+//scheduled task and never returns to it.
+static void task_core_arm()
+{
     if (timer_request(timer_features_periodic | timer_features_local, 50000, task_switch_handler))
         PANIC("[SysTaskMgr] Failed to allocate periodic timer!");
-    return 0;
+
+    __asm__ volatile("sti");
+}
+
+//Entry point handed to SysMP via mp_set_ap_entry; each application processor
+//runs this once the scheduler is online. It allocates the core's per-core state,
+//joins scheduling, then idles until the preemption timer switches it to a task.
+static void task_ap_entry(void)
+{
+    if (core_descs == NULL)
+        core_descs = (TLS core_desc_t *)mp_tls_get(mp_tls_alloc(sizeof(core_desc_t)));
+    core_descs->interrupt_stack = NULL;
+    core_descs->cur_task = NULL;
+
+    task_core_setup();
+    task_core_arm();
+
+    while (true)
+        halt();
 }
 
 void task_startnew_user(void *elf, size_t elf_len)
@@ -1224,7 +1255,22 @@ int module_init()
     core_descs->cur_task = NULL;
 
     registry_createdirectory("", "procs");
-    module_mp_init();
+
+    //Per-core bring-up for the BSP (interrupt stack + its idle task)
+    task_core_setup();
+
+    //One-time global tasks, created once and scheduled by any core
+    cs_id ss_id = 0;
+    if (create_task_kernel("servicescript", task_permissions_kernel, &ss_id) != CS_OK)
+        PANIC("[SysTaskMgr] Failed to create servicescript task.");
+    if (start_task_kernel(ss_id, servicescript_handler, NULL) != CS_OK)
+        PANIC("[SysTaskMgr] Failed to start servicescript task.");
+
+    cs_id tc_id = 0;
+    if (create_task_kernel("task_cleanup", task_permissions_kernel, &tc_id) != CS_OK)
+        PANIC("[SysTaskMgr] Failed to create task_cleanup task.");
+    if (start_task_kernel(tc_id, task_cleanup, NULL) != CS_OK)
+        PANIC("[SysTaskMgr] Failed to start task_cleanup task.");
 
     syscall_sethandler(1, (void *)nanosleep_syscall);
 
@@ -1240,11 +1286,19 @@ int module_init()
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers
 
-    //Make sure that execution on the boot path doesn't continue past here.
+    //NOTE: AP scheduling is implemented (task_ap_entry / mp_set_ap_entry) but not
+    //yet activated. Releasing the APs here exposes further per-core SMP issues in
+    //the interrupt-dispatch state; until those are resolved the APs remain parked
+    //in mp_signalready() and only the BSP schedules. To activate, restore:
+    //    mp_set_ap_entry(task_ap_entry);
+    (void)task_ap_entry;
+
+    //Arm the BSP's preemption timer last, so nothing above can be cut short by a tick
+    task_core_arm();
+
+    //The first timer tick abandons this boot thread for a scheduled task.
     while (true)
         halt();
-
-    task_cleanup(NULL);
 
     return 0;
 }

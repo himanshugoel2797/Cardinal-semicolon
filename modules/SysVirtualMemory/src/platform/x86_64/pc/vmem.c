@@ -376,6 +376,10 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
 {
     uint64_t *ptable = 0;
 
+    //kmem.lock / vm->lock are also taken by the preemption-timer ISR (via
+    //vmem_setactive). Hold interrupts off so this core cannot be preempted while
+    //holding them, which would otherwise self-deadlock (or ABBA across cores).
+    int cli_state = cli();
     if (virt < 0)
     {
         //Add to kernel map
@@ -398,6 +402,7 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
         memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&kmem.lock);
     }
+    sti(cli_state);
     return rVal;
 }
 
@@ -406,6 +411,8 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size)
     uint64_t *ptable = 0;
     size = 0;
 
+    //See vmem_map: interrupts off while holding kmem.lock / vm->lock.
+    int cli_state = cli();
     if (virt < 0)
     {
         //Add to kernel map
@@ -428,6 +435,7 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size)
         memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&kmem.lock);
     }
+    sti(cli_state);
 
     return rVal;
 }
@@ -450,13 +458,19 @@ void vmem_destroy(vmem_t *vm_r)
 {
     if (vm_r != NULL)
     {
+        int cli_state = cli();
         local_spinlock_lock(&vm_r->lock);
         free(vm_r);
+        sti(cli_state);
     }
 }
 
 static void vmem_savestate()
 {
+    //Runs both standalone (task context) and from the preemption-timer ISR via
+    //vmem_setactive. cli()/sti() nest correctly: when already in the ISR (IF=0)
+    //cli() returns 0 and sti(0) leaves interrupts off.
+    int cli_state = cli();
     if (lcl->cur_vmem != NULL)
     {
         vmem_t *vmem = lcl->cur_vmem;
@@ -474,6 +488,7 @@ static void vmem_savestate()
         memcpy(kmem.ptable, p_table + 256, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&kmem.lock);
     }
+    sti(cli_state);
 }
 
 int vmem_setactive(vmem_t *vm)
@@ -481,6 +496,7 @@ int vmem_setactive(vmem_t *vm)
     vmem_savestate();
 
     //copy state to ktable
+    int cli_state = cli();
     local_spinlock_lock(&vm->lock);
     uint64_t *p_table = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
     memcpy(p_table, vm->ptable, 256 * sizeof(uint64_t));
@@ -489,6 +505,7 @@ int vmem_setactive(vmem_t *vm)
     lcl->cur_vmem = vm;
     __asm__ volatile("mov %0, %%cr3" ::"r"(lcl->ktable)
                      :);
+    sti(cli_state);
 
     return 0;
 }

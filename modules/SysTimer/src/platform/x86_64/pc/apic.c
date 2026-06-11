@@ -62,25 +62,28 @@ PRIVATE void apic_timer_sethandler(timer_handlers_t *state, void (*handler)(int)
 
 
 static bool apic_init_done = false;
+static bool apic_local_registered = false;
 PRIVATE int apic_timer_init() {
 
-
-    if(apic_state == NULL) {
+    //The local APIC timer is per-core hardware: each core gets its own state,
+    //but it is exposed as a single (non-exclusive) global timer registration.
+    if(apic_state == NULL)
         apic_state = (TLS tls_apic_timer_state_t*)mp_tls_get(mp_tls_alloc(sizeof(tls_apic_timer_state_t)));
 
-        {
-            timer_handlers_t main_counter = { .name = "apic_local"};
-            timer_features_t main_features = timer_features_persistent | timer_features_oneshot | timer_features_periodic | timer_features_local;
+    if(!apic_local_registered) {
+        apic_local_registered = true;
 
-            main_counter.rate = 20000;   //0.05ms
-            main_counter.read = NULL;
-            main_counter.write = NULL;
-            main_counter.set_mode = apic_timer_setmode;       //TODO
-            main_counter.set_enable = apic_timer_setenable;     //TODO
-            main_counter.set_handler = apic_timer_sethandler;    //TODO
+        timer_handlers_t main_counter = { .name = "apic_local"};
+        timer_features_t main_features = timer_features_persistent | timer_features_oneshot | timer_features_periodic | timer_features_local;
 
-            timer_register(main_features, &main_counter);
-        }
+        main_counter.rate = 20000;   //0.05ms
+        main_counter.read = NULL;
+        main_counter.write = NULL;
+        main_counter.set_mode = apic_timer_setmode;       //TODO
+        main_counter.set_enable = apic_timer_setenable;     //TODO
+        main_counter.set_handler = apic_timer_sethandler;    //TODO
+
+        timer_register(main_features, &main_counter);
     }
 
 

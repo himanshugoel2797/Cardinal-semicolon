@@ -118,11 +118,47 @@ atomic to preemption. Race on concurrent callers. *(Fixed: a dedicated
 keeps its LIFO-only release behaviour — only the most recent allocation can be
 returned — which is inherent to a bump allocator, not a bug.)*
 
+### [INCOMPLETE] SMP application-processor (AP) bring-up
+APs are brought up (TLS/vmem/interrupts/timer per `apscript.txt`) but historically
+parked forever in `mp_signalready()` (`SysMP/.../mp.c`) — only the BSP ever ran the
+scheduler. Work toward unparking them is **partially landed**: the scheduler entry
+is now split into per-core (`task_core_setup`/`task_core_arm`, plus a per-core idle
+task) and one-time global steps, and an AP entry point (`task_ap_entry`) can be
+handed to SysMP via `mp_set_ap_entry`. Activation is **not enabled yet**
+(`module_init` deliberately does not call `mp_set_ap_entry`) because live AP
+scheduling exposes further per-core SMP issues — notably a NULL deref of per-core
+interrupt-dispatch state (`idt`/`reg_ref`, `SysInterrupts/.../idt.c`) that cascades
+into a double fault. To resume: restore the `mp_set_ap_entry(task_ap_entry)` call
+and audit the remaining per-core state (interrupt dispatch, then the kernel module
+loader / registry) for SMP-safety.
+
+Fixed along the way (all valid on single-core too):
+- **`malloc`/`free` were not SMP-safe** (`SysMemory/src/allocator.c`) — used only
+  `cli()` (local-core) to guard a shared free list. Now also serialised by an
+  `alloc_lock` spinlock taken after `cli()`.
+- **`kmem.lock`/`vm->lock` were acquired with interrupts enabled**
+  (`SysVirtualMemory/.../vmem.c`) — the preemption-timer ISR also takes these via
+  `vmem_setactive`, so a task preempted while holding one self-deadlocked (latent
+  even single-core; reliable hang on SMP). All runtime acquirers now `cli()` across
+  the critical section.
+- **Per-core TLS was not zeroed** (`SysMP/.../mp.c` `mp_tls_setup`) — `static TLS`
+  pointers (`apic_state`, `lcl`, `core_descs`, `idt`) are written assuming
+  zero-init and gate per-core setup on a NULL check; an AP saw garbage and skipped
+  its own init. Now `memset(0)` on allocation.
+- **Local APIC timer registration was per-core and exclusive**
+  (`SysTimer/.../apic.c`, `SysTimer/src/main.c`) — registered once per core into a
+  fixed-size global table and marked globally `in_use`, so a second core could not
+  request "the local timer". Now registered once, with per-core TLS state, and
+  `timer_request` treats `timer_features_local` timers as non-exclusive.
+- **`task_cleanup` busy-spun `process_lock`** (`SysTaskMgr/src/task.c`) — an
+  infinite non-yielding loop that relied on preemption; on SMP it starved other
+  cores of the scheduler. Now `task_yield()`s each pass.
+
 ### [INCOMPLETE] Stubs / TODOs (tracked, not bugs)
 - `kernel/src/bootstrap_alloc.c:101` `realloc` → `PANIC("unimplemented")`.
 - `common/src/time.c` `gmtime` partial, `strftime` is a no-op.
-- TLB shootdown missing (`vmem.c:260`), SMP timer/IPI TODOs
-  (`SysTimer/src/main.c:39`, `SysInterrupts/.../apic.c:125`).
+- TLB shootdown missing (`vmem.c` `vmem_flush`), SMP timer/IPI TODOs
+  (`SysTimer/src/main.c:39`). (Both only become load-bearing once APs schedule.)
 
 ---
 
