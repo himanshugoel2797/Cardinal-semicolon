@@ -536,6 +536,11 @@ int module_init(void *ecam_addr)
     memset(instance->cmds, 0, sizeof(hdaudio_cmd_entry_t) * instance->corb.entcnt);
 
     uintptr_t corb_rirb_buffer_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, (instance->corb.entcnt + 2 * instance->rirb.entcnt) * sizeof(uint32_t));
+    if (corb_rirb_buffer_phys == PHYSMEM_NO_ALLOC)
+    {
+        DEBUG_PRINT("[HDAudio] Out of memory allocating CORB/RIRB buffer.\r\n");
+        return -1;
+    }
 
     uint32_t *corb_rirb_buffer = (uint32_t *)vmem_phystovirt(corb_rirb_buffer_phys, (instance->corb.entcnt + 2 * instance->rirb.entcnt) * sizeof(uint32_t), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     instance->corb.buffer = corb_rirb_buffer;

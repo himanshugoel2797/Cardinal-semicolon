@@ -83,6 +83,14 @@ SysReg:
 
 SysPhysicalMemory:
     - Physical memory management
+    - pagealloc_alloc returns a physical address, or PHYSMEM_NO_ALLOC
+      ((uintptr_t)-1) when the request cannot be satisfied. Physical address 0
+      is a legal allocation, so the all-ones address is the failure sentinel.
+      Callers MUST check the return; callers that narrow it to 32 bits must
+      check the full uintptr_t before truncating.
+    - Failure policy is tiered: critical infrastructure (page tables, kernel
+      heap backing, process stack/image) PANICs; device drivers log the
+      condition and fail init/probe gracefully so the kernel survives.
 
 SysVirtualMemory:
     - Virtual memory management

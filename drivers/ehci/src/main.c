@@ -71,7 +71,13 @@ int module_init(void *ecam_addr)
     //Frame list: 4x1024 entries
     //Each frame contains transfer descriptors
     //Queue Heads are for bulk transfers
-    instance->framelist_pmem = (uint32_t)pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
+    uintptr_t framelist_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
+    if (framelist_phys == PHYSMEM_NO_ALLOC)
+    {
+        DEBUG_PRINT("[EHCI] Out of memory allocating frame list.\r\n");
+        return -1;
+    }
+    instance->framelist_pmem = (uint32_t)framelist_phys;
     instance->framelist = (uint32_t *)vmem_phystovirt((intptr_t)instance->framelist_pmem, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     instance->init_complete = false;
 

@@ -160,6 +160,11 @@ int module_init(void *ecam)
 
     //Fill the receive virtq with buffers
     uintptr_t rcv_buf = pagealloc_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
+    if (rcv_buf == PHYSMEM_NO_ALLOC)
+    {
+        DEBUG_PRINT("[VirtIO-Net] Out of memory allocating RX buffer.\r\n");
+        return -1;
+    }
     uint8_t *rcv_buf_virt = (uint8_t *)vmem_phystovirt((intptr_t)rcv_buf, VIRTIO_NET_QUEUE_LEN * KiB(2), vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
     device.rx_buf_phys = rcv_buf;
 
@@ -171,6 +176,11 @@ int module_init(void *ecam)
 
     //Allocate tx buffer
     device.tx_buf_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
+    if (device.tx_buf_phys == PHYSMEM_NO_ALLOC)
+    {
+        DEBUG_PRINT("[VirtIO-Net] Out of memory allocating TX buffer.\r\n");
+        return -1;
+    }
     device.tx_buf_virt = (uint8_t *)vmem_phystovirt((intptr_t)device.tx_buf_phys, VIRTIO_NET_QUEUE_LEN * KiB(2), vmem_flags_uncached | vmem_flags_rw | vmem_flags_kernel);
 
     //register as a network device

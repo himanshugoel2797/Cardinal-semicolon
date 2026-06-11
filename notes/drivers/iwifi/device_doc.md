@@ -73,6 +73,10 @@ Lots of work seems to be handled by the firmware.
         - An rx ring - 256-byte aligned
         - tx rings - 256 byte aligned
 
+   If any of these allocations fails (pagealloc_alloc returns PHYSMEM_NO_ALLOC),
+   the driver logs the condition and aborts init rather than proceeding with an
+   invalid physical address.
+
 4. Startup the hardware (iwm_start_hw)
     - Reset the device by setting the SW_RESET bit of CSR_RESET and waiting 10us
     - Setup and enable the associated HW_KILL interrupt.

@@ -180,7 +180,7 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
         for (int32_t i = 0; i < max_iter; i++) {
             uint64_t deq = 0;
             if (queue_trydequeue(&btm_level, &deq) == false)
-                PANIC("Out of Memory!");
+                break; // free list drained mid-scan; fall through to OOM return
 
             /*{
                     char tmp_buf[20];
@@ -221,7 +221,7 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
         compact_queue();
     }
 
-    return -1;
+    return PHYSMEM_NO_ALLOC;
 }
 
 int pagealloc_init() {

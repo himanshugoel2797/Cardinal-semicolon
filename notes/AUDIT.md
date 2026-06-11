@@ -34,6 +34,8 @@ void igfx_gmbus_wait(igfx_dev_state_t *driver) {
 ```
 A dead/absent panel or a GMBUS error wedges the driver. Needs an iteration/time
 bound and an error-bit (GMBUS2 bit 10) check. Same pattern in the EDID read path.
+*(Fixed: `igfx_gmbus_wait` now bounds the spin and checks the error bit,
+returning failure; `igfx_gmbus_read` aborts the transaction on timeout/error.)*
 
 ### [INCOMPLETE] Haswell support is essentially absent
 - `drivers/intel_gfx/inc/hsw-regs.h` is empty (header guards only).
@@ -75,12 +77,37 @@ if ((shdr[i].sh_type == SHT_SYMTAB) | (shdr[i].sh_type == SHT_STRTAB))
 ```
 Operands are side-effect-free comparisons so the result is currently correct,
 but it defeats short-circuiting and reads as a typo. Low risk; cleanup.
+*(Fixed: switched to `||` at all listed sites.)*
 
 ### [LIKELY] pagealloc OOM sentinel is `-1` cast to `uintptr_t`
 `modules/SysPhysicalMemory/src/page_allocator.c:224` returns `-1`; callers such
 as `modules/SysVirtualMemory/.../vmem.c:127` use the result without checking,
 so an allocation failure becomes a write to `0xFFFF…FFFF`. Define an explicit
-error sentinel and check it.
+error sentinel and check it. *(Fixed: `phys_mem.h` now defines
+`PHYSMEM_NO_ALLOC`; `pagealloc_alloc` returns it consistently on all failure
+paths (the mid-scan `PANIC` is gone). Callers handle it in tiers — critical
+infra (vmem page tables, SysMemory heap, SysTaskMgr stack/image) PANICs with a
+clear message; device drivers log and fail init/probe gracefully. Note: vmem's
+old check tested `== 0`, which both missed the real sentinel and would have
+fired on a legitimate page at address 0 — now fixed to `== PHYSMEM_NO_ALLOC`.
+The debug-only `pmem_initial_test` is left as-is since it only prints the
+result.)*
+
+On the failure path itself there is nothing to unwind: the scan dequeues one
+free-list entry at a time and always returns it or re-inserts it before the next
+iteration, so the free list is whole at every iteration boundary. The bail
+(`page_allocator.c:182`) triggers on a *failed* `queue_trydequeue` (empty queue,
+nothing removed), so `btm_level` and `free_mem` are left exactly as they were —
+no partial allocation, no leaked pages.
+
+### [LIKELY] pagealloc re-insert failures are unchecked (page leak vector)
+`modules/SysPhysicalMemory/src/page_allocator.c:195,204,219` — when the scan
+puts a dequeued block back (wrong zone, too small, or the leftover after a
+split), it ignores the `insert_queue*` return value. If the queue is full the
+entry is silently dropped, leaking those pages and shrinking the free list (a
+later `queue_trydequeue` then fails). Independent of the OOM-sentinel work; the
+allocation logic itself otherwise conserves pages. Should check the return and
+size the queue so re-inserts cannot fail.
 
 ### [LIKELY] Unsynchronised bump allocator on SMP
 `modules/SysVirtualMemory/src/platform/x86_64/pc/vmem.c:76` — `vmem_vmalloc`

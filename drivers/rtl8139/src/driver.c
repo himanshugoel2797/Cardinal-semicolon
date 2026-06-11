@@ -92,6 +92,11 @@ int rtl8139_init(rtl8139_state_t *state)
 
     //Allocate physical memory for the network buffers
     uintptr_t buffer_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero | physmem_alloc_flags_32bit, RX_BUFFER_SIZE + TX_BUFFER_SIZE);
+    if (buffer_phys == PHYSMEM_NO_ALLOC)
+    {
+        DEBUG_PRINT("[RTL8139] Out of memory allocating network buffers.\r\n");
+        return -1;
+    }
     intptr_t buffer_virt = vmem_phystovirt((intptr_t)buffer_phys, RX_BUFFER_SIZE + TX_BUFFER_SIZE, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     state->rx_buffer_phys = buffer_phys;
