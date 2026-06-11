@@ -161,16 +161,39 @@ One real UAF here was found and fixed but is *not* the whole story:
 reproduces it ~1/8 under TCG. But *any* validation probe added to the scheduler hot
 path (e.g. checking each task pointer / saved RIP before use) shifts timing enough to
 hide it entirely (0/10) — so the usual "add a check to catch it" approach is a dead
-end. Productive next steps that do **not** perturb the hot path:
-- **Guard pages**: map an unmapped page just below each kernel/AP-bootstrap stack so a
-  stack overflow faults precisely (caught by the IST dump) at the overflow site,
-  instead of silently scribbling on adjacent heap. The AP bootstrap stack is only 16 KiB
-  (`kernel/.../main.c` `alloc_ap_stack` = `malloc(4096*4)`), same as the BSP's
-  `.bootstrap_stack` — a prime suspect to rule in/out this way.
-- **Heap red-zones / allocator validation** in `SysMemory` (off the hot path) to catch
-  the freed-chunk-over-live-pointer write when it happens.
-- Architectural review of the exact AP-first-schedule window vs. concurrent
-  `task_cleanup`, since the corruption is constant-valued (deterministic writer).
+end; detection must be passive (fault-on-access), not active polling.
+
+Ruled out so far:
+- **Stack overflow** — a canary at the bottom of the AP's 16 KiB bootstrap stack
+  (`alloc_ap_stack`) stayed intact across runs where the `#PF` still fired, so the AP
+  is not overflowing its bootstrap stack into adjacent heap. (Both bootstrap stacks are
+  16 KiB; not the cause here.)
+
+Refined diagnosis (from the legible IST dumps): the restored task's saved registers
+are **foreign context**, not the task's own — in one build `rax` = the APIC physmap
+vaddr, `rdi` = `0xB0` (the `APIC_EOI` register offset), `rip` = `0xb8` (exactly the
+values live inside `interrupt_sendeoi`); in another, `rsp`/`rbp` point into the AP
+interrupt stack and `rip`/`rcx`/`rdx` hold heap/code pointers. So a task's `reg_state`
+buffer is being **overwritten with interrupt/stack context** — its corrupt content
+just tracks the build's allocation layout (the constant `0xb8` was a coincidence of
+one layout, not a fixed writer).
+
+A poison test pinned the buffer involved: in `task_cleanup`, *poisoning and leaking*
+`reg_state` (instead of `free`-ing it, so it can't be reused) **changed** the fault —
+which means **servicescript's freed-and-reused `reg_state` is implicated**. The
+working theory: servicescript's `reg_state` is freed, the about-to-schedule AP reuses
+that buffer for a new task's `reg_state`, and something still writes servicescript's
+state into the old buffer — corrupting the new task. The two-phase reap closed the
+`cur_task`-dangling path but a second freed-while-referenced `reg_state` path remains
+(likely tied to the AP's *first* schedule racing servicescript's exit/reap).
+
+Productive next step (passive, won't perturb the hot path): **page-guard the
+`reg_state` buffer**. Allocate each task's `reg_state` as its own page (page-allocator
++ `vmem_map`) and `vmem_unmap` it when the task is freed, instead of `malloc`/`free`.
+Any access to a freed `reg_state` then faults precisely at the offending instruction
+(caught by the IST dump), turning the intermittent UAF into a deterministic, located
+fault. Once identified, the fix is to close that free path (as the two-phase reap did
+for the `cur_task` case). Heap red-zones in `SysMemory` would generalise this.
 
 Two pieces of hardening landed to make such faults debuggable (previously a fault
 during AP bring-up cascaded silently into a triple-fault reboot):
