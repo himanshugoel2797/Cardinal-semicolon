@@ -187,13 +187,46 @@ state into the old buffer — corrupting the new task. The two-phase reap closed
 `cur_task`-dangling path but a second freed-while-referenced `reg_state` path remains
 (likely tied to the AP's *first* schedule racing servicescript's exit/reap).
 
-Productive next step (passive, won't perturb the hot path): **page-guard the
-`reg_state` buffer**. Allocate each task's `reg_state` as its own page (page-allocator
-+ `vmem_map`) and `vmem_unmap` it when the task is freed, instead of `malloc`/`free`.
-Any access to a freed `reg_state` then faults precisely at the offending instruction
-(caught by the IST dump), turning the intermittent UAF into a deterministic, located
-fault. Once identified, the fix is to close that free path (as the two-phase reap did
-for the `cur_task` case). Heap red-zones in `SysMemory` would generalise this.
+**Page-guard landed — the heisenbug is now deterministic.** Each task's `reg_state`
+is now allocated as its own dedicated kernel page from the `vmem_vmalloc` region
+(page-allocator + `vmem_map`, zero-filled) and `vmem_unmap`'d on free, with the
+virtual range deliberately *never* recycled (`regstate_guard_alloc`/`_free` in
+`SysTaskMgr/src/task.c`). Surfacing this required fixing a latent bug it depended on:
+**`vmem_unmap` was a complete no-op** — it began with `size = 0;`, so its
+`while (size > 0)` loop never ran and no mapping was ever torn down (the user-stack and
+descriptor unmaps in `task_cleanup` silently leaked). Removed that line; `vmem_destroy`
+only frees the `vmem_t` struct (never walks page tables) so honoring the size cannot
+double-free. A second prerequisite: each AP snapshots the kernel half of the page table
+*once* in `vmem_mp_init` and never refreshes it, so a kernel mapping that creates a
+**new** PML4 entry after that snapshot is invisible to a running AP. `vmem_init` now
+pre-creates the vmalloc region's PML4 entry before any AP boots, so guard mappings stay
+coherent across cores (verified: APs schedule on guarded `reg_state` with no
+false-positive faults).
+
+**What it caught (first post-release run, deterministically):** an instruction-fetch
+`#PF` (`err=0x10`, `rip = cr2 = 0xa0`) on the **AP** (`apicid 0x1`), immediately after
+`releasing APs`, in the same instant the BSP finished `end_task_syscall` and exited
+`servicescript`. The restored task's saved context was foreign interrupt state:
+`rax = 0xffff8080fee00000` (the UC APIC physmap base), `rdi = 0xb0` (`APIC_EOI`),
+`rcx = 0x2c` (vector 44) — i.e. mid-`interrupt_sendeoi` register state — and crucially
+`rbp = 0xffff810000004000`, **an address inside the `reg_state` guard region itself**.
+So a task was scheduled with a `reg_state` whose contents had been overwritten by EOI
+interrupt context (and a guard-region/`reg_state` pointer leaked into its saved `rbp`),
+then `iret`'d into garbage. This **confirms `reg_state` is the corrupted object** and
+ties the corruption precisely to *the AP's first schedule racing the BSP's exit/reap of
+`servicescript`*.
+
+Note the guard did **not** fault on the corrupting *write*: the overwritten
+`reg_state` was still **live/mapped** (no fault reading it during restore), so the wild
+write went into a *valid* buffer — this is a write into a live `reg_state`, not a
+use-after-free of a freed one. To name the exact writer, the next passive technique is
+to keep each `reg_state` page **read-only except during the explicit save window**
+(flip RW around `mp_platform_getstate`), so any other write faults at the offending
+instruction. Caveat: without cross-core TLB shootdown (`vmem_flush` only does local
+`invlpg`; shootdown is an acknowledged TODO) a write from a core with the page cached
+RW in its TLB may not trap — so this may need a shootdown first, or correlating the
+faulting RIP from a disassembly of the scheduler save/restore + `idt_mainhandler` EOI
+path. Heap red-zones in `SysMemory` would generalise the live-buffer case.
 
 Two pieces of hardening landed to make such faults debuggable (previously a fault
 during AP bring-up cascaded silently into a triple-fault reboot):

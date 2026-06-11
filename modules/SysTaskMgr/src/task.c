@@ -37,6 +37,47 @@ static int process_lock = 0;
 // current core description
 static TLS core_desc_t *core_descs = NULL;
 
+// Page-guarded reg_state.
+//
+// Each task's saved register state lives on its own kernel page taken from the
+// vmalloc region instead of the shared heap. On free, the page is unmapped but
+// its virtual range is deliberately never recycled, so any use-after-free of a
+// task's reg_state faults precisely at the offending access and is caught by the
+// IST exception dump. This is a diagnostic aid for the residual SMP AP
+// context-switch race; see notes/AUDIT.md. (vmem_init pre-creates this region's
+// PML4 entry so the mappings are coherent on every core.)
+static void *regstate_guard_alloc(void)
+{
+    size_t sz = mp_platform_getstatesize();
+    if (sz > KiB(4))
+        PANIC("[SysTaskMgr] reg_state larger than a page; guard needs more pages.");
+
+    intptr_t virt = vmem_vmalloc(KiB(4));
+    uintptr_t phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
+    if (phys == PHYSMEM_NO_ALLOC)
+        PANIC("[SysTaskMgr] Failed to allocate reg_state page.");
+    if (vmem_map(NULL, virt, (intptr_t)phys, KiB(4), vmem_flags_kernel | vmem_flags_rw, 0) != 0)
+        PANIC("[SysTaskMgr] Failed to map reg_state page.");
+
+    return (void *)virt;
+}
+
+static void regstate_guard_free(void *ptr)
+{
+    if (ptr == NULL)
+        return;
+
+    intptr_t phys = 0;
+    if (vmem_virttophys(NULL, (intptr_t)ptr, &phys) == 0)
+    {
+        vmem_unmap(NULL, (intptr_t)ptr, KiB(4));
+        vmem_flush((intptr_t)ptr, KiB(4));
+        pagealloc_free((uintptr_t)phys, KiB(4));
+    }
+    //Deliberately do NOT vmem_vfree the virtual range: leaving it permanently
+    //unmapped turns any later use-after-free into an immediate page fault.
+}
+
 cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
 {
     cs_id alloc_id = cur_id++;
@@ -95,7 +136,7 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
 
     fp_platform_getdefaultstate(proc_info->fpu_state);
 
-    proc_info->reg_state = malloc(mp_platform_getstatesize());
+    proc_info->reg_state = regstate_guard_alloc();
     if (proc_info->reg_state == NULL)
         PANIC("[SysTaskMgr] Unexpected memory allocation failure.");
     mp_platform_getdefaultstate(proc_info->reg_state, proc_info->kernel_stack, NULL, NULL, NULL);
@@ -1118,7 +1159,7 @@ static void task_cleanup(void *arg)
                     }
                     vmem_destroy(iter->mem);
                     free(iter->fpu_state_unaligned);
-                    free(iter->reg_state);
+                    regstate_guard_free(iter->reg_state);
                     free(iter->kernel_stack - KERNEL_STACK_LEN);
 
                     iter->mem = NULL;

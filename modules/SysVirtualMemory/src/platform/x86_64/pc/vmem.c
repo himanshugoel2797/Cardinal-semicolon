@@ -163,6 +163,21 @@ int vmem_init()
     vmem_map(NULL, KERN_PHYSMAP_BASE, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_cachewriteback, 0);
     vmem_map(NULL, KERN_PHYSMAP_BASE_UC, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_uncached, 0);
 
+    //Pre-create the top-level (PML4) entry covering the kernel vmalloc region.
+    //Each AP snapshots the kernel half of the page table once, in vmem_mp_init;
+    //a kernel mapping that creates a *new* PML4 entry after that snapshot is
+    //invisible to that AP (the kernel half is never refreshed on a running core).
+    //By establishing the vmalloc PML4 entry here, before any AP boots, every core
+    //inherits it, and later vmalloc-backed kernel mappings land under the shared
+    //PDPT and stay coherent across cores.
+    {
+        intptr_t pre = vmem_vmalloc(KiB(4));
+        uintptr_t prep = pagealloc_alloc(-1, -1, physmem_alloc_flags_data, KiB(4));
+        if (prep == PHYSMEM_NO_ALLOC)
+            PANIC("Failed to reserve kernel vmalloc region!");
+        vmem_map(NULL, pre, (intptr_t)prep, KiB(4), vmem_flags_kernel | vmem_flags_rw, 0);
+    }
+
     __asm__ volatile("mov %0, %%cr3" ::"r"(ktable_phys)
                      :);
 
@@ -409,7 +424,6 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
 int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size)
 {
     uint64_t *ptable = 0;
-    size = 0;
 
     //See vmem_map: interrupts off while holding kmem.lock / vm->lock.
     int cli_state = cli();
