@@ -12,6 +12,7 @@
 
 #define IGFX_CHERRYTRAIL 1
 #define IGFX_HASWELL 2
+#define IGFX_IRONLAKE 3
 
 #define IGFX_CHERRYTRAIL_DISP_BASE 0x180000
 #define IGFX_HASWELL_DISP_BASE 0xC0000
@@ -47,6 +48,18 @@ typedef struct
 
     uint32_t display_mmio_base;
     uint32_t gtt_base;
+
+    // BAR2 graphics aperture (GMADR) physical base, used by the Ironlake
+    // firmware hand-off path to expose the existing framebuffer.
+    uintptr_t aperture_phys;
+
+    // Active framebuffer captured from the firmware (Ironlake hand-off).
+    uintptr_t fb_virt; // CPU-visible address of the framebuffer
+    uint32_t fb_width;
+    uint32_t fb_height;
+    uint32_t fb_stride; // bytes per scanline
+    uint32_t fb_pipe;   // pipe driving the active plane
+    uint32_t fb_plane;  // active display plane index
 } igfx_dev_state_t;
 
 extern igfx_dev_t igfx_devices[];

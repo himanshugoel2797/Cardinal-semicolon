@@ -12,6 +12,7 @@
 
 #include "display.h"
 #include "gmbus.h"
+#include "ilk_display.h"
 
 void igfx_display_init(igfx_dev_state_t *driver)
 {
@@ -33,6 +34,11 @@ void igfx_display_init(igfx_dev_state_t *driver)
                                                              // detection for HDMI D
 
         igfx_display_checkhotplugs(driver);
+    }
+    else if (driver->device->arch == IGFX_IRONLAKE)
+    {
+        // Ironlake brings up its display via the firmware hand-off path.
+        igfx_ilk_init(driver);
     }
 }
 
