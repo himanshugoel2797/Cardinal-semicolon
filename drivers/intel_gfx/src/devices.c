@@ -14,6 +14,8 @@
 igfx_dev_t igfx_devices[] = {
     {"Intel Haswell-ULT Integrated Graphics", 0x0a16, IGFX_HASWELL},
     {"Intel Cherrylake-E8000/J3xxx/N3xxx Graphics", 0x22b0, IGFX_CHERRYTRAIL},
+    {"Intel Ironlake Mobile (Arrandale) Graphics", 0x0046, IGFX_IRONLAKE},
+    {"Intel Ironlake Desktop (Clarkdale) Graphics", 0x0042, IGFX_IRONLAKE},
     {NULL, 0, 0}};
 
 PRIVATE int igfx_getdevice(uint16_t devID, igfx_dev_t **dev)

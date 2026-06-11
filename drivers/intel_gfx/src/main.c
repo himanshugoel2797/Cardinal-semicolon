@@ -68,13 +68,30 @@ int module_init(void *ecam_addr)
             break;
     }
     dev_state->bar_phys = (uintptr_t)bar;
-    dev_state->bar = (uint8_t *)vmem_phystovirt((intptr_t)bar, KiB(4), vmem_flags_rw | vmem_flags_uncached | vmem_flags_kernel);
+
+    // Map enough of the register BAR (GTTMMADR) to reach the display registers.
+    // The default 4 KiB only covers the very start; Cherrytrail's display block
+    // begins at 0x180000 and Ironlake's PCH registers run past 0xC0000.
+    size_t mmio_sz = KiB(4);
 
     if (dev_state->device->arch == IGFX_CHERRYTRAIL)
     {
         dev_state->display_mmio_base = IGFX_CHERRYTRAIL_DISP_BASE;
         dev_state->gtt_base = IGFX_CHERRYTRAIL_GTT_BASE;
+        mmio_sz = MiB(2);
     }
+    else if (dev_state->device->arch == IGFX_IRONLAKE)
+    {
+        dev_state->display_mmio_base = IGFX_IRONLAKE_DISP_BASE;
+        mmio_sz = MiB(2);
+
+        // BAR2 is the graphics memory aperture (GMADR); the firmware framebuffer
+        // is visible through it. Capture its physical base for the hand-off path.
+        uint64_t aperture = (device->bar[2] & 0xFFFFFFF0) + ((uint64_t)device->bar[3] << 32);
+        dev_state->aperture_phys = (uintptr_t)aperture;
+    }
+
+    dev_state->bar = (uint8_t *)vmem_phystovirt((intptr_t)bar, mmio_sz, vmem_flags_rw | vmem_flags_uncached | vmem_flags_kernel);
 
     igfx_gmbus_init(dev_state);
     igfx_display_init(dev_state);
