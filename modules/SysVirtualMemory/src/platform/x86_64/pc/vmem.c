@@ -72,19 +72,24 @@ static vmem_t kmem;
 static size_t phys_map_sz;
 
 static uint64_t kernel_vmalloc = (KERN_PHYSMAP_BASE_UC + GiB(512));
+static int kernel_vmalloc_lock = 0;
 
-//TODO: none of these operations are atomic to preemption within the kernel
 intptr_t vmem_vmalloc(size_t sz)
 {
+    local_spinlock_lock(&kernel_vmalloc_lock);
     intptr_t rVal = (intptr_t)kernel_vmalloc;
     kernel_vmalloc += sz;
+    local_spinlock_unlock(&kernel_vmalloc_lock);
     return rVal;
 }
 
 void vmem_vfree(intptr_t virt, size_t sz)
 {
+    local_spinlock_lock(&kernel_vmalloc_lock);
+    //Only the most recent allocation can be returned to this bump allocator
     if (virt + sz == kernel_vmalloc)
         kernel_vmalloc -= sz;
+    local_spinlock_unlock(&kernel_vmalloc_lock);
 }
 
 int vmem_init()

@@ -112,7 +112,11 @@ size the queue so re-inserts cannot fail.
 ### [LIKELY] Unsynchronised bump allocator on SMP
 `modules/SysVirtualMemory/src/platform/x86_64/pc/vmem.c:76` — `vmem_vmalloc`
 advances `kernel_vmalloc` with no lock; the code's own TODO notes it is not
-atomic to preemption. Race on concurrent callers.
+atomic to preemption. Race on concurrent callers. *(Fixed: a dedicated
+`kernel_vmalloc_lock` (`local_spinlock`) now guards both `vmem_vmalloc` and
+`vmem_vfree`, so the bump pointer is updated atomically across cores. `vmem_vfree`
+keeps its LIFO-only release behaviour — only the most recent allocation can be
+returned — which is inherent to a bump allocator, not a bug.)*
 
 ### [INCOMPLETE] Stubs / TODOs (tracked, not bugs)
 - `kernel/src/bootstrap_alloc.c:101` `realloc` → `PANIC("unimplemented")`.
