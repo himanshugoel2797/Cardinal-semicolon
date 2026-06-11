@@ -30,6 +30,12 @@ typedef enum
     task_state_sleep,
     task_state_blocked,
     task_state_exited,
+    //Set by the owning core's scheduler once it has switched away from an
+    //exited task (so the task is no longer any core's cur_task). task_cleanup
+    //only frees tasks in this state -- freeing a merely-exited task would race
+    //with the owning core still holding it as cur_task on SMP (use-after-free
+    //of its reg_state during the next context switch).
+    task_state_reapable,
 } task_state_t;
 
 typedef enum

@@ -378,12 +378,22 @@ static void task_switch_handler(int irq)
     {
         local_spinlock_lock(&core_descs->cur_task->lock);
 
-        if (core_descs->cur_task->state == task_state_running)
-            core_descs->cur_task->state = task_state_pending;  //Set the cur_task to pending again
-        fp_platform_getstate(core_descs->cur_task->fpu_state); //Save the current tasks's fpu state
-        mp_platform_getstate(core_descs->cur_task->reg_state); //Save the current task's register state
-        if (core_descs->cur_task->syscall_data != NULL)
-            syscall_getfullstate(core_descs->cur_task->syscall_data);
+        if (core_descs->cur_task->state == task_state_exited)
+        {
+            //This core is switching away from a task that has exited: hand it to
+            //task_cleanup by marking it reapable. Do NOT save its state -- it is
+            //dead, and once we drop cur_task below, task_cleanup may free it.
+            core_descs->cur_task->state = task_state_reapable;
+        }
+        else
+        {
+            if (core_descs->cur_task->state == task_state_running)
+                core_descs->cur_task->state = task_state_pending;  //Set the cur_task to pending again
+            fp_platform_getstate(core_descs->cur_task->fpu_state); //Save the current tasks's fpu state
+            mp_platform_getstate(core_descs->cur_task->reg_state); //Save the current task's register state
+            if (core_descs->cur_task->syscall_data != NULL)
+                syscall_getfullstate(core_descs->cur_task->syscall_data);
+        }
 
         //find the next pending task
         ntask = core_descs->cur_task->next;
@@ -472,12 +482,22 @@ static void task_yield_stage2(interrupt_register_state_t *mp_state){
     {
         local_spinlock_lock(&core_descs->cur_task->lock);
 
-        if (core_descs->cur_task->state == task_state_running)
-            core_descs->cur_task->state = task_state_pending;  //Set the cur_task to pending again
-        fp_platform_getstate(core_descs->cur_task->fpu_state); //Save the current tasks's fpu state
-        memcpy(core_descs->cur_task->reg_state, mp_state, sizeof(interrupt_register_state_t)); //Save the current task's register state
-        if (core_descs->cur_task->syscall_data != NULL)
-            syscall_getfullstate(core_descs->cur_task->syscall_data);
+        if (core_descs->cur_task->state == task_state_exited)
+        {
+            //Yielding out of an exited task (e.g. the tail of end_task_syscall):
+            //mark it reapable for task_cleanup and skip the save -- it is dead and
+            //about to be freed once we drop cur_task below.
+            core_descs->cur_task->state = task_state_reapable;
+        }
+        else
+        {
+            if (core_descs->cur_task->state == task_state_running)
+                core_descs->cur_task->state = task_state_pending;  //Set the cur_task to pending again
+            fp_platform_getstate(core_descs->cur_task->fpu_state); //Save the current tasks's fpu state
+            memcpy(core_descs->cur_task->reg_state, mp_state, sizeof(interrupt_register_state_t)); //Save the current task's register state
+            if (core_descs->cur_task->syscall_data != NULL)
+                syscall_getfullstate(core_descs->cur_task->syscall_data);
+        }
 
         //find the next pending task
         ntask = core_descs->cur_task->next;
@@ -1083,7 +1103,7 @@ static void task_cleanup(void *arg)
             process_desc_t *cur_iter = iter;
             if (!local_spinlock_trylock(&cur_iter->lock))
                 break;
-            if (iter->state == task_state_exited)
+            if (iter->state == task_state_reapable)
             {
                 //Delete task
                 if (iter->mem != NULL)
@@ -1169,10 +1189,27 @@ int semaphore_wait(semaphore_t *sema)
 }
 
 int servicescript_execute();
+static void task_ap_entry(void); //defined below; released by task_release_aps()
 void servicescript_handler(void *arg)
 {
     arg = NULL;
     servicescript_execute();
+}
+
+//Releases the application processors into the scheduler once every Core* server and
+//device driver has been loaded (the kernel module loader is single-threaded-only, so
+//the APs stay parked in mp_signalready() throughout loading). Each AP then runs
+//task_ap_entry: per-core setup (interrupt stack + idle task), then joins scheduling.
+//
+//PARKED BY DEFAULT: this is invoked via `CALL:task_release_aps` in servicescript.txt,
+//but that line is currently removed so the shipped boot stays single-core. Re-add it
+//to activate AP scheduling. Activation works under KVM but a timing-sensitive SMP race
+//(heap corruption of task state) still reproduces under TCG -- see notes/AUDIT.md.
+int task_release_aps()
+{
+    DEBUG_PRINT("[SysTaskMgr] Boot services loaded; releasing APs into scheduler\r\n");
+    mp_set_ap_entry(task_ap_entry);
+    return 0;
 }
 
 static void NORETURN idle_task(void *arg)
@@ -1286,12 +1323,10 @@ int module_init()
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers
 
-    //NOTE: AP scheduling is implemented (task_ap_entry / mp_set_ap_entry) but not
-    //yet activated. Releasing the APs here exposes further per-core SMP issues in
-    //the interrupt-dispatch state; until those are resolved the APs remain parked
-    //in mp_signalready() and only the BSP schedules. To activate, restore:
-    //    mp_set_ap_entry(task_ap_entry);
-    (void)task_ap_entry;
+    //NOTE: the application processors are released into the scheduler later, at
+    //the end of servicescript_handler -- only once every Core* server/driver has
+    //been loaded. The kernel module loader is single-threaded-only, so the APs
+    //must stay parked in mp_signalready() until loading is complete.
 
     //Arm the BSP's preemption timer last, so nothing above can be cut short by a tick
     task_core_arm();

@@ -118,21 +118,89 @@ atomic to preemption. Race on concurrent callers. *(Fixed: a dedicated
 keeps its LIFO-only release behaviour — only the most recent allocation can be
 returned — which is inherent to a bump allocator, not a bug.)*
 
-### [INCOMPLETE] SMP application-processor (AP) bring-up
-APs are brought up (TLS/vmem/interrupts/timer per `apscript.txt`) but historically
-parked forever in `mp_signalready()` (`SysMP/.../mp.c`) — only the BSP ever ran the
-scheduler. Work toward unparking them is **partially landed**: the scheduler entry
-is now split into per-core (`task_core_setup`/`task_core_arm`, plus a per-core idle
-task) and one-time global steps, and an AP entry point (`task_ap_entry`) can be
-handed to SysMP via `mp_set_ap_entry`. Activation is **not enabled yet**
-(`module_init` deliberately does not call `mp_set_ap_entry`) because live AP
-scheduling exposes further per-core SMP issues — notably a NULL deref of per-core
-interrupt-dispatch state (`idt`/`reg_ref`, `SysInterrupts/.../idt.c`) that cascades
-into a double fault. To resume: restore the `mp_set_ap_entry(task_ap_entry)` call
-and audit the remaining per-core state (interrupt dispatch, then the kernel module
-loader / registry) for SMP-safety.
+### [PARTIAL] SMP application-processor (AP) bring-up — works under KVM, parked by default
+APs are brought up (TLS/vmem/interrupts/timer per `apscript.txt`) and the machinery to
+release them into the scheduler is fully in place. The mechanism is *single-threaded
+boot, then release*: the kernel module loader (`elf_load`/`elf_resolvefunction`/symbol
+DB/`bootstrap_alloc`) is single-threaded-only, so the APs stay parked in
+`mp_signalready()` (`SysMP/.../mp.c`) for the entire load; a `CALL:task_release_aps`
+line in `servicescript.txt` (just before `CALL:end_task_syscall`) then calls
+`mp_set_ap_entry(task_ap_entry)`, and each AP runs `task_ap_entry`: per-core setup
+(`task_core_setup`/`task_core_arm`, interrupt stack + a per-core idle task) and joins
+scheduling. The scheduler entry is split into per-core and one-time global steps.
+
+**Currently parked by default**: the `CALL:task_release_aps` line is *removed* from
+`servicescript.txt`, so the shipped boot is single-core. Re-add that one line to
+activate. When activated, under **KVM** both cores schedule independently (verified:
+two distinct per-core GS bases take timer interrupts, no faults across many runs).
+
+**The blocker to trusting it on by default is a timing-sensitive SMP race** that, under
+**TCG only**, intermittently corrupts a task structure on the heap. Two distinct
+manifestations were captured (both legible only thanks to the IST work below; before
+it they triple-faulted silently):
+- AP returns from its timer interrupt into a task whose saved `reg_state.rip` is a
+  constant `0xb8`;
+- the scheduler dereferences a `cur_task`/`next` task pointer whose **high 32 bits are
+  clobbered** (`0x00000110` instead of `0xffffffff`; the low 32 are intact) — a
+  classic allocator-metadata-over-live-pointer signature. The constant small values
+  (`0xb8` = 184, `0x110` = 272) are consistent with a freed chunk's `len` field landing
+  on a still-referenced task field, i.e. a use-after-free / double-use of a task buffer.
+
+One real UAF here was found and fixed but is *not* the whole story:
+- **task_cleanup could free an exited task while a core still held it as `cur_task`**
+  (`SysTaskMgr/src/task.c`). On exit (`end_task_kernel`) a task is marked
+  `task_state_exited` and releases `process_lock`; in the gap before it re-yields,
+  `task_cleanup` on another core could free it, leaving the owning core's `cur_task`
+  dangling and corrupting reused memory. Fix: a **two-phase reap** — a new
+  `task_state_reapable` is set by the *owning* core's scheduler once it has switched
+  away from an exited task, and `task_cleanup` only frees `reapable` tasks. This is
+  correct and necessary and removed the common case, but the corruption still
+  reproduces, so at least one more freed-while-referenced path remains.
+
+**This race is a heisenbug.** A stress "churn" task (spawn+exit tasks continuously)
+reproduces it ~1/8 under TCG. But *any* validation probe added to the scheduler hot
+path (e.g. checking each task pointer / saved RIP before use) shifts timing enough to
+hide it entirely (0/10) — so the usual "add a check to catch it" approach is a dead
+end. Productive next steps that do **not** perturb the hot path:
+- **Guard pages**: map an unmapped page just below each kernel/AP-bootstrap stack so a
+  stack overflow faults precisely (caught by the IST dump) at the overflow site,
+  instead of silently scribbling on adjacent heap. The AP bootstrap stack is only 16 KiB
+  (`kernel/.../main.c` `alloc_ap_stack` = `malloc(4096*4)`), same as the BSP's
+  `.bootstrap_stack` — a prime suspect to rule in/out this way.
+- **Heap red-zones / allocator validation** in `SysMemory` (off the hot path) to catch
+  the freed-chunk-over-live-pointer write when it happens.
+- Architectural review of the exact AP-first-schedule window vs. concurrent
+  `task_cleanup`, since the corruption is constant-valued (deterministic writer).
+
+Two pieces of hardening landed to make such faults debuggable (previously a fault
+during AP bring-up cascaded silently into a triple-fault reboot):
+- **Full CPU-exception dumps** (`SysInterrupts/.../idt.c`) — any vector <32 now prints
+  the named exception, error code, CR2 (for `#PF`), the whole register frame, and the
+  faulting core's APIC id (read via CPUID so it works even when per-core TLS is bad),
+  then panics. `intr.c`'s dedicated `pagefault_handler` was removed so `#PF` flows
+  through this unified path. NULL guards on `idt`/`reg_state`/`reg_ref` in the dispatch
+  and register-state accessors turn an uninitialised-per-core-state fault into a
+  legible panic instead of a NULL deref.
+- **IST fault stacks** (`SysInterrupts/.../gdt.c` + `idt.c`) — the per-core TSS now
+  carries two dedicated fault stacks; the IDT routes `#DF` to IST2 and every other
+  architectural exception (0..31) to IST1, so a fault whose own stack is corrupt or
+  exhausted still runs its handler on a known-good stack and can print, rather than
+  triple-faulting. Device IRQs (>=32) keep the running task's kernel stack.
 
 Fixed along the way (all valid on single-core too):
+- **AHCI `module_init` hung the boot forever via `task_sleep` under `cli()`**
+  (`drivers/ahci/src/ahci.c` `ahci_obtainownership`) — it called `task_sleep` for the
+  BIOS/OS handoff delay while the driver held `cli()` across init. `task_sleep`
+  (`SysTaskMgr/src/task.c`) only marks the task `task_state_sleep` and relies on the
+  preemption timer to wake it, which can never fire with interrupts off, so the
+  servicescript task was flagged sleeping and never resumed. Because AHCI is the last
+  service loaded, the boot *looked* complete (it stalled right at AHCI's last print) —
+  in fact `coredisplay_postinit`/`end_task_syscall` had never run. Replaced all three
+  `task_sleep` calls in AHCI init (`ahci_obtainownership` ×2, `ahci_initializeport`
+  ×1) with bounded polled spins (appropriate for an interrupts-off init); also wrote
+  back the cleared `PxCMD` bits in `ahci_initializeport`, which the original code
+  computed but never stored. NB: `task_sleep` itself is still broken for the general
+  case (see below).
 - **`malloc`/`free` were not SMP-safe** (`SysMemory/src/allocator.c`) — used only
   `cli()` (local-core) to guard a shared free list. Now also serialised by an
   `alloc_lock` spinlock taken after `cli()`.
@@ -153,6 +221,17 @@ Fixed along the way (all valid on single-core too):
 - **`task_cleanup` busy-spun `process_lock`** (`SysTaskMgr/src/task.c`) — an
   infinite non-yielding loop that relied on preemption; on SMP it starved other
   cores of the scheduler. Now `task_yield()`s each pass.
+
+### [VERIFIED] task_sleep does not actually deschedule
+`modules/SysTaskMgr/src/task.c` `task_sleep` — in the found-task branch it sets
+`state = task_state_sleep` and `sleep_end`, then **returns to the caller without
+yielding**, so the "sleeping" task keeps running. Waking depends on the scheduler's
+`timer_timestamp_ns() >= sleep_end` check, but a caller that holds `cli()` (e.g. a
+driver init) never yields and never gets preempted, so it runs straight through with
+its state mislabelled. The AHCI hang above was a symptom. A correct `task_sleep`
+should set the sleep state and then `task_yield()` so the core actually switches away,
+and the wake path / timestamp source needs verifying. Until then, callers must not
+rely on it for real delays.
 
 ### [INCOMPLETE] Stubs / TODOs (tracked, not bugs)
 - `kernel/src/bootstrap_alloc.c:101` `realloc` → `PANIC("unimplemented")`.
@@ -180,7 +259,9 @@ correctness-fixes PR.)*
 garbage. Recent EHCI/UHCI/CoreUsb work is mid-flight here.
 
 ### [LIKELY] Unbounded hardware busy-waits (no timeout)
-- `drivers/ahci/src/ahci.c:236` spins on `PxCI` while spamming `DEBUG_PRINT`.
+- `drivers/ahci/src/ahci.c:236` spins on `PxCI` while spamming `DEBUG_PRINT`
+  (the read path; `ahci_resethba`'s `while (GHC & 1)` and the port-init waits are
+  likewise unbounded — bound these like `ahci_obtainownership` now is).
 - `drivers/rtl8169/src/driver.c:86`, `drivers/rtl8139/src/driver.c:56` spin on
   descriptor ownership with no timeout (8169 also drops/retakes the lock around
   the spin, racing the DMA engine).
