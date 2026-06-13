@@ -94,6 +94,11 @@ typedef struct process_desc
 
     task_state_t state;
     task_permissions_t permissions;
+
+    //Diagnostic tripwire for the SMP AP race: the APIC id of the core that last
+    //claimed this task (set running). -1 when never run. A core saving a task it
+    //does not own indicates two cores held the same cur_task. See notes/AUDIT.md.
+    int owner_core;
     
     union{
         uint32_t monitor_value;
