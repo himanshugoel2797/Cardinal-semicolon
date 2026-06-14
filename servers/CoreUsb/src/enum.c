@@ -108,6 +108,30 @@ int usb_dev_find_endpoint(usb_enum_device_t *dev, int type, int dir_in, int *max
     return -1;
 }
 
+static usb_interface_descriptor_t *first_interface(usb_enum_device_t *dev) {
+    int off = 0;
+    while (off + 2 <= dev->config_len) {
+        uint8_t len = dev->config_buf[off];
+        uint8_t dtype = dev->config_buf[off + 1];
+        if (len == 0)
+            break;
+        if (dtype == USB_DESC_INTERFACE && off + (int)sizeof(usb_interface_descriptor_t) <= dev->config_len)
+            return (usb_interface_descriptor_t *)&dev->config_buf[off];
+        off += len;
+    }
+    return NULL;
+}
+
+int usb_dev_interface_protocol(usb_enum_device_t *dev) {
+    usb_interface_descriptor_t *i = first_interface(dev);
+    return i ? i->bInterfaceProtocol : -1;
+}
+
+int usb_dev_interface_number(usb_enum_device_t *dev) {
+    usb_interface_descriptor_t *i = first_interface(dev);
+    return i ? i->bInterfaceNumber : -1;
+}
+
 static usb_enum_device_t *alloc_enum_device(void) {
     local_spinlock_lock(&enum_lock);
     usb_enum_device_t *r = NULL;
