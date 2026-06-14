@@ -13,9 +13,13 @@
  * The adapter is offered to SysGdb via its transport-registration API
  * (gdb_register_transport): this driver provides only getc/putc/poll and carries
  * no GDB protocol knowledge -- SysGdb owns the RSP protocol and the async
- * break-in decision. (The link to SysGdb is a load-order dependency, not a
- * functional one; a future generic serial-registration server would remove even
- * that, letting the adapter come up with no debugger present.)
+ * break-in decision.
+ *
+ * The dependency on SysGdb is OPTIONAL: the driver resolves the two SysGdb hooks
+ * by name at runtime (symboldb_findfunc) rather than linking them, so it has no
+ * undefined SysGdb symbols and loads fine in a build with no debugger. If SysGdb
+ * is absent the adapter simply comes up idle (no consumer yet); a future generic
+ * serial-registration server would give it one.
  */
 
 #include <stdint.h>
@@ -24,8 +28,9 @@
 #include <types.h>
 
 #include "CoreUsb/usb.h"
-#include "SysGdb/gdb.h"
+#include "SysGdb/gdb.h"  // gdb_transport_t (type only -- no symbol is imported)
 #include "SysTaskMgr/task.h"
+#include "symbol_db.h"   // symboldb_findfunc: resolve SysGdb hooks optionally
 
 #define FTDI_VID 0x0403
 
@@ -46,6 +51,20 @@ typedef struct {
 
 // Single instance is enough for the current single-adapter use case.
 static ftdi_dev_t the_ftdi;
+
+// SysGdb hooks, resolved by name at runtime so the link is optional (NULL when
+// SysGdb is not loaded). gdb_transport_t is just a type from the header.
+static void (*gdb_register_transport_fn)(const gdb_transport_t *) = NULL;
+static int (*gdb_poll_breakin_fn)(void) = NULL;
+
+static void resolve_gdb_hooks(void) {
+    Elf64_Shdr *h;
+    Elf64_Sym *s;
+    if (symboldb_findfunc("gdb_register_transport", &h, &s) == 0)
+        gdb_register_transport_fn = (void (*)(const gdb_transport_t *))s->st_value;
+    if (symboldb_findfunc("gdb_poll_breakin", &h, &s) == 0)
+        gdb_poll_breakin_fn = (int (*)(void))s->st_value;
+}
 
 // Pull one bulk-IN packet from the device; push its data bytes (after the 2
 // FTDI status bytes) into the RX ring. Returns the number of data bytes added.
@@ -102,7 +121,8 @@ static void ftdi_ctrl(usb_enum_device_t *dev, uint8_t req, uint16_t val, uint16_
 static void usb_serial_pump(void *arg) {
     arg = NULL;
     while (true) {
-        gdb_poll_breakin();
+        if (gdb_poll_breakin_fn != NULL)
+            gdb_poll_breakin_fn();
         task_yield();
     }
 }
@@ -135,20 +155,26 @@ static int usb_serial_probe(usb_enum_device_t *dev) {
     ftdi_ctrl(dev, FTDI_REQ_SET_MODEM_CTRL, 0x0303, 1);  // DTR+RTS on
     ftdi_ctrl(dev, FTDI_REQ_SET_BAUDRATE, 0x001A, 0);
 
-    // Offer this adapter to SysGdb as a byte transport and start the pump that
-    // lets GDB's async Ctrl-C break in (USB bulk has no RX IRQ). SysGdb owns all
-    // GDB protocol; we only provide byte I/O.
-    gdb_transport_t transport = {
-        .getc = ftdi_getc,
-        .putc = ftdi_putc,
-        .poll = ftdi_poll,
-        .state = &the_ftdi,
-    };
-    gdb_register_transport(&transport);
-    DEBUG_PRINT("[usb_serial] FTDI up; offered as GDB transport (connect GDB to attach)\r\n");
-    cs_id t = 0;
-    if (create_task_kernel("usb_serial_pump", task_permissions_kernel, &t) == CS_OK)
-        start_task_kernel(t, usb_serial_pump, NULL);
+    // If SysGdb is present, offer this adapter to it as a byte transport and
+    // start the pump that lets GDB's async Ctrl-C break in (USB bulk has no RX
+    // IRQ). SysGdb owns all GDB protocol; we only provide byte I/O. If SysGdb is
+    // absent the adapter just comes up idle.
+    resolve_gdb_hooks();
+    if (gdb_register_transport_fn != NULL) {
+        gdb_transport_t transport = {
+            .getc = ftdi_getc,
+            .putc = ftdi_putc,
+            .poll = ftdi_poll,
+            .state = &the_ftdi,
+        };
+        gdb_register_transport_fn(&transport);
+        DEBUG_PRINT("[usb_serial] FTDI up; offered as GDB transport (connect GDB to attach)\r\n");
+        cs_id t = 0;
+        if (create_task_kernel("usb_serial_pump", task_permissions_kernel, &t) == CS_OK)
+            start_task_kernel(t, usb_serial_pump, NULL);
+    } else {
+        DEBUG_PRINT("[usb_serial] FTDI up; SysGdb not loaded, adapter idle\r\n");
+    }
     return 0;
 }
 
