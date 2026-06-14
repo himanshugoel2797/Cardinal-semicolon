@@ -39,7 +39,33 @@ struct usb_enum_device {
 static struct usb_enum_device enum_devices[MAX_ENUM_DEVICES];
 static int enum_lock = 0;
 
-static int next_address = 1;  // 1..127, 0 is the default address
+// USB bus addresses 1..127 (0 is the default address). Allocated per device and
+// returned to the pool when enumeration fails or a device's enum slot is freed
+// (full disconnect-driven recycling needs a disconnect path, still TODO -- but
+// at least failed enumerations no longer permanently consume addresses, and the
+// pool can never overflow past 127). enum_lock guards both this and enum_devices.
+static uint8_t addr_used[128 / 8];
+
+static int alloc_address(void) {
+    local_spinlock_lock(&enum_lock);
+    int addr = -1;
+    for (int a = 1; a <= 127; a++)
+        if (!(addr_used[a >> 3] & (1 << (a & 7)))) {
+            addr_used[a >> 3] |= (uint8_t)(1 << (a & 7));
+            addr = a;
+            break;
+        }
+    local_spinlock_unlock(&enum_lock);
+    return addr;
+}
+
+static void free_address(int addr) {
+    if (addr < 1 || addr > 127)
+        return;
+    local_spinlock_lock(&enum_lock);
+    addr_used[addr >> 3] &= (uint8_t)~(1 << (addr & 7));
+    local_spinlock_unlock(&enum_lock);
+}
 
 static usb_class_probe_t class_probes[256] = {0};
 
@@ -167,6 +193,16 @@ static usb_enum_device_t *alloc_enum_device(void) {
     return r;
 }
 
+// Release an enum slot and the device's bus address back to their pools.
+static void free_enum_device(usb_enum_device_t *dev) {
+    local_spinlock_lock(&enum_lock);
+    int addr = dev->address;
+    if (addr >= 1 && addr <= 127)
+        addr_used[addr >> 3] &= (uint8_t)~(1 << (addr & 7));
+    dev->in_use = false;
+    local_spinlock_unlock(&enum_lock);
+}
+
 static void print_hex16(const char *label, uint16_t v) {
     char tmp[8];
     DEBUG_PRINT(label);
@@ -198,21 +234,26 @@ int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
     if (mps0 == 0)
         mps0 = 8;
 
-    // 2) Assign an address.
-    local_spinlock_lock(&enum_lock);
-    int addr = next_address++;
-    local_spinlock_unlock(&enum_lock);
+    // 2) Assign an address (1..127; 0 is the default address).
+    int addr = alloc_address();
+    if (addr < 0) {
+        DEBUG_PRINT("[CoreUsb] enum: out of USB bus addresses\r\n");
+        return -1;
+    }
     usb_setup_packet_t sa = {USB_REQ_DIR_OUT, USB_REQ_SET_ADDRESS, (uint16_t)addr, 0, 0};
     r = hc->handlers.control(hc->state, 0, speed, mps0, &sa, NULL, 0);
     if (r < 0) {
         DEBUG_PRINT("[CoreUsb] enum: SET_ADDRESS failed\r\n");
+        free_address(addr);
         return -1;
     }
     usb_delay_ns(5 * 1000 * 1000);  // >=2ms for the device to switch address
 
     usb_enum_device_t *dev = alloc_enum_device();
-    if (dev == NULL)
+    if (dev == NULL) {
+        free_address(addr);
         return -1;
+    }
     dev->hc = hc;
     dev->hc_handle = hc_handle;
     dev->address = addr;
@@ -226,7 +267,7 @@ int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
     r = usb_dev_control(dev, &sd, &dev->dev_desc, sizeof(usb_device_descriptor_t));
     if (r < (int)sizeof(usb_device_descriptor_t)) {
         DEBUG_PRINT("[CoreUsb] enum: device descriptor read failed\r\n");
-        dev->in_use = false;
+        free_enum_device(dev);
         return -1;
     }
 
@@ -243,7 +284,7 @@ int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
     r = usb_dev_control(dev, &sc, &cfg, sizeof(usb_config_descriptor_t));
     if (r < (int)sizeof(usb_config_descriptor_t)) {
         DEBUG_PRINT("[CoreUsb] enum: config descriptor (short) read failed\r\n");
-        dev->in_use = false;
+        free_enum_device(dev);
         return -1;
     }
     int total = cfg.wTotalLength;
@@ -253,7 +294,7 @@ int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
     r = usb_dev_control(dev, &sc, dev->config_buf, total);
     if (r < total) {
         DEBUG_PRINT("[CoreUsb] enum: config descriptor (full) read failed\r\n");
-        dev->in_use = false;
+        free_enum_device(dev);
         return -1;
     }
     dev->config_len = total;
@@ -264,7 +305,7 @@ int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
     r = usb_dev_control(dev, &scfg, NULL, 0);
     if (r < 0) {
         DEBUG_PRINT("[CoreUsb] enum: SET_CONFIGURATION failed\r\n");
-        dev->in_use = false;
+        free_enum_device(dev);
         return -1;
     }
 
@@ -288,11 +329,10 @@ int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
         DEBUG_PRINT("[CoreUsb] dispatching to class driver\r\n");
         class_probes[dev_class](dev);
     } else {
-        // No driver owns this device: release the enum-table slot so it is not
-        // leaked. (The assigned bus address stays consumed -- recycling that
-        // needs a disconnect path that does not exist yet.)
+        // No driver owns this device: release the enum-table slot and bus
+        // address so neither is leaked.
         DEBUG_PRINT("[CoreUsb] no class driver registered for this device\r\n");
-        dev->in_use = false;
+        free_enum_device(dev);
     }
 
     return 0;
