@@ -37,4 +37,21 @@ const storage_blockdev_t *storage_blockdev_info(void *handle);
 int storage_blockdev_read(void *handle, uint64_t lba, uint32_t count, void *buf);
 int storage_blockdev_write(void *handle, uint64_t lba, uint32_t count, const void *buf);
 
+// A filesystem provider (e.g. cardfs, tarfs) plugs into CoreStorage. Each
+// registered provider is offered every block device -- those already present at
+// registration time, and each new one as it registers -- via `probe`. `probe`
+// is a read-only "is this volume mine?" check: it must NOT format or otherwise
+// mutate a device it does not recognise. Return 0 to claim/mount the device, <0
+// to decline. This is the synchronous replacement for a filesystem polling the
+// block-device list; the probe runs in the registering driver's context.
+//
+// NOTE: first-cut interface, expected to evolve with the filesystem direction
+// (see notes/servers/CoreStorage/filesystem-direction.md).
+typedef struct {
+    char name[32];
+    int (*probe)(void *blockdev_handle);
+} storage_fsprovider_t;
+
+int storage_register_fsprovider(storage_fsprovider_t *desc);
+
 #endif
