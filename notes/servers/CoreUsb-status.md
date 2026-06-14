@@ -8,6 +8,7 @@ devices (the apic-timer-kvm fix is merged in, so KVM boots).
 | Piece | Where | Validation |
 |-------|-------|------------|
 | Host controller (UHCI) | `drivers/uhci` | enumerates devices on a `piix3-usb-uhci` |
+| Host controller (xHCI) | `drivers/xhci` | same class drivers drive a `qemu-xhci`: kbd + mass storage verified |
 | Control transfers | `drivers/uhci` (`uhci_control_transfer`) | device + config descriptor reads |
 | Interrupt / bulk transfers | `drivers/uhci` (`uhci_data_transfer`) | HID polling, mass-storage BBB |
 | Enumeration + class dispatch | `servers/CoreUsb/src/enum.c` | addr assign, descriptors, SET_CONFIGURATION, class match |
@@ -57,12 +58,21 @@ redesign:
 - **Toggle/halt handling is minimal** (no CLEAR_FEATURE(HALT) recovery on STALL;
   per-endpoint toggle reset only at init). Fine for the tested paths.
 
-## Next controllers
+## Controllers
 
-The transfer API is controller-agnostic, so **xHCI** (and EHCI) can be added as
-additional backends that fill in `usb_hci_handlers_t` and call
-`usb_port_connected` — the enumeration layer and all three class drivers are
-reused unchanged. xHCI is the modern/most-general controller (handles all speeds
-on one controller) and is the recommended next backend; it is substantially more
-involved than UHCI (command/event rings, device/input contexts, TRBs, doorbells),
-which is why UHCI was brought up first to prove the stack.
+Both **UHCI** (`drivers/uhci`) and **xHCI** (`drivers/xhci`) implement the
+controller-agnostic `usb_hci_handlers_t`; the enumeration layer and all class
+drivers are shared unchanged. EHCI remains a stub and could be added the same
+way. xHCI notes:
+
+- xHCI's slot/command model is adapted to CoreUsb's address-based enumeration:
+  on connect it does Enable Slot + Address Device(BSR=1) so EP0 works at the
+  default address, the control handler intercepts SET_ADDRESS → Address
+  Device(BSR=0), and non-control endpoints are Configure-Endpoint'd lazily on
+  first transfer.
+- Polled (no interrupts) like UHCI; single interrupter, single event-ring
+  segment; 64-byte-or-32-byte contexts read from HCCPARAMS.
+- **Hub-on-xHCI is not yet supported**: a device behind a hub needs the slot
+  context's route string + parent-hub-slot/port fields, which the first-cut
+  Address Device path doesn't populate (it only sets the root port). Hubs work
+  on UHCI. Adding route-string support to `xhci_address_device` is the fix.
