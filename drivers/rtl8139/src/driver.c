@@ -53,9 +53,22 @@ int rtl8139_tx(void *state, void *packet, int len, network_device_tx_flags_t gso
         return -1;
 
     rtl8139_state_t *device = (rtl8139_state_t *)state;
+    //Wait for the previous transmission on this descriptor to finish, bounded by
+    //a hard iteration cap. The hardware clears the TX status bits via DMA (no
+    //interrupt is required), so this is a tight register poll -- the cap is a
+    //meaningful sub-second wall-clock bound (matching the AHCI poll loops),
+    //unlike an hlt-paced loop where the same count would be effectively
+    //infinite. On timeout drop the packet. This runs before the lock is taken,
+    //so no unlock is needed on the timeout path.
     if ((device->memar[TX_STS_REG(device->free_tx_buf_idx)] & 0xfff) != 0)
+    {
+        volatile uint64_t i = 0;
         while ((device->memar[TX_STS_REG(device->free_tx_buf_idx)] & (TX_STS_OWN | TX_STS_TOK)) != (TX_STS_OWN | TX_STS_TOK))
-            halt();
+        {
+            if (i++ >= 200000000)
+                return -1;
+        }
+    }
 
     local_spinlock_lock(&device->lock);
 

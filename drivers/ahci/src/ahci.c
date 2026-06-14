@@ -48,8 +48,10 @@ PRIVATE void ahci_resethba(ahci_instance_t *inst)
     //Start the reset
     ahci_write32(inst, HBA_GHC, 1);
 
-    //Wait for the HBA to be done reseting
-    while (ahci_read32(inst, HBA_GHC) & 1)
+    //Wait for the HBA to be done reseting. Bound the spin with a hard iteration
+    //cap rather than blocking forever; a wedged reset is left for the caller's
+    //later TFD/readiness checks to catch.
+    for (volatile uint64_t i = 0; (ahci_read32(inst, HBA_GHC) & 1) && i < 200000000; i++)
         ;
 }
 
@@ -244,7 +246,11 @@ PRIVATE int ahci_readdev(ahci_instance_t *inst, int index, uint64_t loc, void *a
     inst->activeCmdBits[index] |= (1 << slot);
     local_spinlock_unlock(&inst->lock);
 
-    while (ahci_read32(inst, HBA_PxCI(index)) & (1 << slot))
-        DEBUG_PRINT("[AHCI] Read Pending\r\n");
+    //Wait for the command to complete, bounded by a hard iteration cap so a
+    //stuck device cannot hang the caller forever.
+    for (volatile uint64_t i = 0; (ahci_read32(inst, HBA_PxCI(index)) & (1 << slot)) && i < 200000000; i++)
+        ;
+    if (ahci_read32(inst, HBA_PxCI(index)) & (1 << slot))
+        return -1;
     return 0;
 }
