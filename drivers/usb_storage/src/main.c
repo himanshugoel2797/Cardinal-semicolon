@@ -141,6 +141,14 @@ static void stor_test_task(void *arg) {
         s->block_count = 0;
     }
 
+    // A device with no usable capacity must not be registered: CoreStorage would
+    // reject every I/O against it, and consumers (e.g. cardfs) would pick it up
+    // as block device 0 and fail opaquely. Bail out instead.
+    if (s->block_count == 0) {
+        DEBUG_PRINT("[usb_storage] no usable capacity; not registering block device\r\n");
+        return;
+    }
+
     // Register as a CoreStorage block device.
     storage_blockdev_t bd;
     memset(&bd, 0, sizeof(bd));

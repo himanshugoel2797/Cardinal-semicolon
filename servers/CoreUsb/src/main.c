@@ -66,14 +66,18 @@ int usb_register_hostcontroller(usb_hci_desc_t *desc, void **handle)
             case usb_device_type_ehci:
                 DEBUG_PRINT("EHCI: ");
                 break;
+            case usb_device_type_ohci:
+                DEBUG_PRINT("OHCI: ");
+                break;
+            case usb_device_type_xhci:
+                DEBUG_PRINT("xHCI: ");
+                break;
             default:
                 DEBUG_PRINT("unknown: ");
                 break;
         }
         DEBUG_PRINT(desc->name);
         DEBUG_PRINT("\r\n");
-
-        *handle = desc;
     }
     local_spinlock_unlock(&desc->lock);
     local_spinlock_unlock(&hostcontroller_list_lock);
