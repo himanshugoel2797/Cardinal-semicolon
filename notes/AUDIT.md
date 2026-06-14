@@ -385,30 +385,26 @@ rely on it for real delays.
 - `common/src/time.c` `gmtime` partial, `strftime` is a no-op.
 - SMP timer/IPI TODOs (`SysTimer/src/main.c:39`) — load-bearing once APs schedule.
 
-### [DONE] Shared kernel PML4 + cross-core TLB shootdown
-**Shared kernel PML4 (`SysVirtualMemory/.../vmem.c`).** The kernel half of the address
-space is no longer copied per-core. There is one **master kernel PML4** (`kmem.pml4`)
-whose upper 256 entries are the kernel address space; every process's PML4 (its own
-hardware page, allocated in `vmem_create`) copies those 256 entries *once* at creation.
-Because the entries point at **shared** lower-level tables, a runtime kernel-map change
-is instantly visible in every address space with no resync — provided no *new* top-level
-kernel PML4 entry is created after boot, which is why `vmem_init` pre-creates every
-kernel PML4 entry (physmap, kernel-top, vmalloc). This deleted the per-core `lcl->ktable`,
-the three 256-entry `memcpy`s per context switch, and `vmem_savestate` entirely:
-`vmem_setactive` is now just a `cr3` load (cr3 points straight at the task's PML4), and a
-core with no task runs on `kmem.pml4` directly.
+### [DONE] Shared kernel PML4
+The kernel half of the address space is no longer copied per-core. There is one **master
+kernel PML4** (`kmem.pml4` in `SysVirtualMemory/.../vmem.c`) whose upper 256 entries are
+the kernel address space; every process's PML4 (its own hardware page, allocated in
+`vmem_create`) copies those 256 entries *once* at creation. Because the entries point at
+**shared** lower-level tables, a runtime kernel-map change is instantly visible in every
+address space with no resync — provided no *new* top-level kernel PML4 entry is created
+after boot, which is why `vmem_init` pre-creates every kernel PML4 entry (physmap,
+kernel-top, vmalloc). This deleted the per-core `lcl->ktable`, the three 256-entry
+`memcpy`s per context switch, and `vmem_savestate` entirely: `vmem_setactive` is now just
+a `cr3` load (cr3 points straight at the task's PML4), and a core with no task runs on
+`kmem.pml4` directly. Verified: 6/6 SMP boots fault-free, every context switch a bare cr3
+load against per-task shared-kernel PML4s.
 
-**Cross-core TLB shootdown.** `vmem_flush` used to do only a *local* `invlpg`/`cr3`
-reload, so an *unmap* of a kernel mapping on one core left others with stale TLB entries —
-a use-after-free vector once the freed frame is reused. It now broadcasts a shootdown IPI
-to the other cores for **kernel** ranges (`virt < 0`) and waits for each to ack, so the
-invalidation is globally complete before the caller frees/reuses the frame. With the
-shared PML4 there is no per-core page-table state to refresh, so the handler just flushes
-and acks. Set up by `vmem_smp_init` (`CALL:vmem_smp_init` in `loadscript.txt`, after
-`mp_init`); no-op on a single core; user ranges stay local (per-task tables, only ever
-active on one core, flushed by the cr3 reload on switch). Verified: IPI round-trip
-completes (initiator → AP handler → ack), and 6/6 SMP boots are fault-free with every
-context switch now doing a bare cr3 load against per-task shared-kernel PML4s.
+A cross-core TLB-shootdown primitive (`vmem_flush` + an IPI vector) was prototyped while
+this was per-core, but was **removed** as dead code: nothing unmaps a kernel range at
+runtime (every `vmem_unmap` is a user range), so it had zero callers, and the shared PML4
+makes kernel-map *creation* visible everywhere without any IPI. Recover it from git
+(commit `422d332`) if runtime kernel-map churn is ever added — that is the only thing that
+would need it (to invalidate stale TLB entries left by a kernel *unmap*).
 
 Remaining (latent): a kernel map that needed a brand-new *top-level* PML4 entry at
 runtime would not propagate to already-created address spaces — but nothing creates one

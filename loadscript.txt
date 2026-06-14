@@ -14,7 +14,6 @@ CALL:intr_init
 LOAD:./SysFP.celf
 LOAD:./SysTimer.celf
 CALL:mp_init
-CALL:vmem_smp_init
 CALL:sysdebug_install_lfb
 CALL:mem_init
 CALL:kernel_free_avl_bootstrap
