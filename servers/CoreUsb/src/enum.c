@@ -25,6 +25,7 @@
 
 struct usb_enum_device {
     usb_hci_desc_t *hc;
+    void *hc_handle;  // the host-controller handle (for downstream hub enumeration)
     int address;
     usb_speed_t speed;
     int max_packet0;
@@ -132,6 +133,13 @@ int usb_dev_interface_number(usb_enum_device_t *dev) {
     return i ? i->bInterfaceNumber : -1;
 }
 
+// Enumerate a device on a (reset, enabled) downstream port of a hub. The
+// downstream device is on the same host controller as the hub (transfers route
+// by address), so this just runs normal enumeration on the hub's controller.
+int usb_dev_enumerate_downstream(usb_enum_device_t *hub, int port, usb_speed_t speed) {
+    return usb_port_connected(hub->hc_handle, port, speed);
+}
+
 static usb_enum_device_t *alloc_enum_device(void) {
     local_spinlock_lock(&enum_lock);
     usb_enum_device_t *r = NULL;
@@ -192,6 +200,7 @@ int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
     if (dev == NULL)
         return -1;
     dev->hc = hc;
+    dev->hc_handle = hc_handle;
     dev->address = addr;
     dev->speed = speed;
     dev->max_packet0 = mps0;

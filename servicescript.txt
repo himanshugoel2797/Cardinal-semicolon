@@ -9,6 +9,7 @@ LOAD:./CoreNetwork.celf
 LOAD:./CoreUsb.celf
 LOAD:./usb_hid.celf
 LOAD:./usb_storage.celf
+LOAD:./usb_hub.celf
 LOAD:./CoreDriver.celf
 CALL:coredisplay_postinit
 #USER:./mana.celf
