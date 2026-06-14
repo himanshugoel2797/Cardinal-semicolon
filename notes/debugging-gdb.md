@@ -10,11 +10,16 @@ hardware with no native serial port.
 
 - Read/write registers (`g`/`G`, `info registers`, `$rax = ...`).
 - Read/write memory (`m`/`M`, `x`, `set {int}addr = ...`), disassembly (`x/i`).
-- Software breakpoints + single-step + continue (GDB drives these via memory
-  writes and the TF flag; no `Z` packets needed).
+- Software breakpoints + single-step + continue + source-level backtrace (GDB
+  drives breakpoints via memory writes and the TF flag; the stub clears CR0.WP so
+  breakpoints can be written into read-only kernel text).
+- **Async Ctrl-C** over COM2: interrupt a *running* system from GDB (the COM2
+  UART RX IRQ catches GDB's `0x03`).
 
-Validated under QEMU/KVM over both COM2 and a USB-serial adapter: GDB read sane
-registers, disassembled `$rip`, and resumed the OS.
+Validated under QEMU/KVM: GDB set a breakpoint in kernel code, hit it on
+`continue`, and produced a full backtrace with symbols/source/args; Ctrl-C halted
+the running OS; register/memory reads worked over both COM2 and a USB-serial
+adapter.
 
 ## Over COM2 (built-in serial)
 
@@ -64,9 +69,10 @@ far end to the host running GDB (e.g. a second USB-serial + null modem), and
 
 - Single-core: entering the stub freezes the core (interrupts off). Other cores
   keep running; a full-machine stop would need a halt IPI.
-- USB-serial re-attach after `detach` needs a reboot (the monitor breaks in once
-  to avoid a poll-vs-breakpoint lock race). An async Ctrl-C break-in is future
-  work.
+- **Async Ctrl-C works over COM2 only** (it relies on the UART RX IRQ). USB-serial
+  has no interrupt source here (the USB controllers are polled), so over
+  USB-serial you attach via a breakpoint / the one-shot monitor and interrupt via
+  breakpoints; re-attach after `detach` needs a reboot.
 - `m`/`M` read/write memory directly; a fault on a bad address is not yet
   recovered (GDB normally only touches valid addresses).
 - Only software breakpoints (no hardware watchpoints).
