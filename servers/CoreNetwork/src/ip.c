@@ -10,38 +10,42 @@
 
 #include "ip.h"
 #include "udp.h"
-#include "arp.h"
 #include "icmp.h"
 #include "ethernet.h"
 #include "checksum.h"
 
-// IPv4 header checksum: valid headers fold to zero. Covers ihl*4 bytes so the
-// (currently unused) options area is still summed if present.
-static uint16_t ipv4_verify_csum(ipv4_t *packet) {
-    return net_checksum16(packet, packet->ihl * 4);
-}
-
 int ipv4_rx(interface_def_t *interface, const uint8_t *src_mac, void *packet, int len) {
-    ipv4_t *ip_pack = (ipv4_t*)packet;
+    if (len < (int)sizeof(ipv4_t))
+        return 0;
 
+    ipv4_t *ip_pack = (ipv4_t*)packet;
     if (ip_pack->version != 4 || ip_pack->ihl < 5)
         return 0;
 
-    if(ipv4_verify_csum(ip_pack) == 0) {
-        // Learn the sender's L2/L3 mapping from any valid traffic so replies do
-        // not depend on a prior ARP exchange being cached.
-        arp_cache_update(ip_pack->src_ip, src_mac);
+    // Bound every header-derived length against the bytes actually received
+    // (`len`) before reading them -- total_len/ihl come from the remote peer.
+    int hdr_len = ip_pack->ihl * 4;
+    int total_len = (int)TO_LE_FRM_BE_16(ip_pack->total_len);
+    if (hdr_len < (int)sizeof(ipv4_t) || hdr_len > len)
+        return 0;
+    if (total_len < hdr_len || total_len > len)
+        return 0;
 
-        if (ip_pack->protocol == IP_PROTOCOL_ICMP) {
-            icmp_ipv4_rx(interface, src_mac, ip_pack);
-        } else if (ip_pack->protocol == IP_PROTOCOL_TCP) {
-            //TODO: Forward to TCP layer (see notes/servers/CoreNetwork.md)
-        } else if (ip_pack->protocol == IP_PROTOCOL_UDP) {
-            //Forward to UDP layer
-            udp_ipv4_rx(interface, ip_pack, len - sizeof(ipv4_t));
-        } else {
-            //TODO: Queue this packet into the raw queue, for potential user mode processing
-        }
+    // Header checksum (covers ihl*4 bytes, now known to fit): valid -> folds to 0.
+    if (net_checksum16(ip_pack, hdr_len) != 0)
+        return 0;
+
+    int payload_len = total_len - hdr_len;
+
+    if (ip_pack->protocol == IP_PROTOCOL_ICMP) {
+        icmp_ipv4_rx(interface, src_mac, ip_pack, hdr_len, payload_len);
+    } else if (ip_pack->protocol == IP_PROTOCOL_TCP) {
+        //TODO: Forward to TCP layer (see notes/servers/CoreNetwork.md)
+    } else if (ip_pack->protocol == IP_PROTOCOL_UDP) {
+        //Forward to UDP layer
+        udp_ipv4_rx(interface, ip_pack, payload_len);
+    } else {
+        //TODO: Queue this packet into the raw queue, for potential user mode processing
     }
 
     return 0;

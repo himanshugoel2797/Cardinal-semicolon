@@ -31,14 +31,30 @@ permitting) ICMP echo should now be answered. Note QEMU slirp's ICMP support is
 limited and host→guest reachability is restricted, so a packet-trace or a
 TAP/bridge setup is the reliable way to verify, not a host `ping`.
 
+## RX length handling (hardened)
+
+The receive path treats all header length fields as untrusted. The virtio-net
+driver now reports the **real** frame length (from the used-ring `len`, clamped
+to the rx buffer's data region) instead of a hard-coded `1514`, and every layer
+bounds the lengths it derives against the bytes actually received before reading
+them:
+
+- `ethernet_rx` drops runts shorter than an ethernet header.
+- `ipv4_rx` validates `ihl*4` and `total_len` against `len` (and `version == 4`,
+  `ihl >= 5`) before the header checksum, and passes the validated header/payload
+  lengths down.
+- `icmp_ipv4_rx` locates the ICMP message at `ihl*4` (options-correct) and reads
+  exactly `total_len - ihl*4` bytes, which the caller has confirmed fit the frame.
+
+This closes the remotely-triggerable over-read where a crafted `total_len`/`ihl`
+would have driven the checksum and reply `memcpy` past the 2 KiB rx buffer. Note
+that opportunistic ARP learning from arbitrary IP datagrams was intentionally
+**removed** (it was unauthenticated cache-poisoning surface with no consumer —
+the ICMP reply path uses the received frame's own L2 source, and ARP entries are
+learned only from actual ARP traffic).
+
 ## Known caveats in the current code
 
-- **Driver RX length is unreliable.** `drivers/virtio/net` passes a hard-coded
-  `1514` to `network_rx_packet` rather than the real frame length. The RX path is
-  therefore written to derive payload sizes from header fields (IPv4 `total_len`,
-  fixed ARP size) and must not trust the `len` argument. Fixing the driver to
-  report the actual used-buffer length is a prerequisite for anything that needs
-  exact bounds (e.g. trailing-data handling, raw delivery).
 - **TX from RX context.** Replies (ARP, ICMP) are sent synchronously from the
   driver's RX callback, which runs under `cli()`. This is fine for the current
   reply-only traffic but is not a general design (see "tx path" below).

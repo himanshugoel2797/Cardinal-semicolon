@@ -22,6 +22,9 @@ typedef struct {
     uint8_t body[0];  // type-specific (for echo: 16-bit id, 16-bit seq, then data)
 } PACKED icmp_t;
 
-int icmp_ipv4_rx(interface_def_t *interface, const uint8_t *src_mac, ipv4_t *packet);
+// `hdr_len` and `icmp_len` are the IPv4 header length and ICMP message length,
+// already validated by the caller to lie within the received frame.
+int icmp_ipv4_rx(interface_def_t *interface, const uint8_t *src_mac, ipv4_t *packet,
+                 int hdr_len, int icmp_len);
 
 #endif

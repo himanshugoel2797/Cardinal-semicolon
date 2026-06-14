@@ -358,6 +358,7 @@ PRIVATE void virtio_accept_used(virtio_state_t *state, int idx)
         for (int i = state->used_idx[idx]; i != d_idx; i++)
         {
             int r_id = descs->ring[i % q_len].id;
+            uint32_t r_len = descs->ring[i % q_len].len;
 
             /*{
                 char tmp[10];
@@ -371,6 +372,7 @@ PRIVATE void virtio_accept_used(virtio_state_t *state, int idx)
             }*/
 
             state->cmds[idx][r_id].waiting = false;
+            state->cmds[idx][r_id].used_len = r_len;
             if (state->cmds[idx][r_id].handler != NULL)
                 state->cmds[idx][r_id].handler(&state->cmds[idx][r_id]);
             state->cmds[idx][r_id].finished = true;

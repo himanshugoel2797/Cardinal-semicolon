@@ -65,7 +65,18 @@ static void virtio_net_resphandler(virtio_virtq_cmd_state_t *cmd)
 
     virtio_net_cmd_hdr_t *resp = (virtio_net_cmd_hdr_t *)cmd->resp.virt;
     uint8_t *resp_u8 = (uint8_t *)cmd->resp.virt;
-    network_rx_packet(device.handle, resp_u8 + sizeof(virtio_net_cmd_hdr_t), 1514);
+
+    // Derive the real frame length from the used-ring length the device
+    // reported, rather than a fixed guess: the buffer holds [virtio_net hdr]
+    // [ethernet frame], so the frame is used_len - the virtio header. Clamp to
+    // the data region of the 2KiB rx buffer so a bogus length can never make the
+    // stack read past the buffer.
+    int frame_len = (int)cmd->used_len - (int)sizeof(virtio_net_cmd_hdr_t);
+    int max_frame = (int)(KiB(2) - sizeof(virtio_net_cmd_hdr_t));
+    if (frame_len > max_frame)
+        frame_len = max_frame;
+    if (frame_len > 0)
+        network_rx_packet(device.handle, resp_u8 + sizeof(virtio_net_cmd_hdr_t), frame_len);
 
     memset(resp_u8, 0, KiB(2));
     virtio_addresponse(device.common_state, VIRTIO_NET_Q_RX, resp_u8, KiB(2), virtio_net_resphandler);

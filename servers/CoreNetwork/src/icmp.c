@@ -12,20 +12,19 @@
 #include "ip.h"
 #include "checksum.h"
 
-int icmp_ipv4_rx(interface_def_t *interface, const uint8_t *src_mac, ipv4_t *packet) {
+int icmp_ipv4_rx(interface_def_t *interface, const uint8_t *src_mac, ipv4_t *packet,
+                 int hdr_len, int icmp_len) {
     // Only handle datagrams addressed to this interface.
     if (packet->dst_ip != interface->ip)
         return 0;
 
-    // The driver does not report the true frame length, so derive the ICMP
-    // message length from the IPv4 total-length field rather than a passed len.
-    int total_len = (int)TO_LE_FRM_BE_16(packet->total_len);
-    int hdr_len = packet->ihl * 4;
-    int icmp_len = total_len - hdr_len;
     if (icmp_len < (int)sizeof(icmp_t))
         return 0;
 
-    icmp_t *icmp = (icmp_t *)packet->body;
+    // The ICMP message begins after the IPv4 header (hdr_len, which accounts for
+    // options when ihl > 5), not at a fixed offset. The caller has validated
+    // that hdr_len + icmp_len lies within the received frame.
+    icmp_t *icmp = (icmp_t *)((uint8_t *)packet + hdr_len);
 
     if (net_checksum16(icmp, icmp_len) != 0)
         return 0;  // corrupt ICMP message
