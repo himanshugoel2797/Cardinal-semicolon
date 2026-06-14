@@ -172,7 +172,7 @@ Task load script:                           -determines which tasks to create to
     SysStdInputDev          module_init     -manages standard input devices
     SysStdDisplay           module_init     -manages display devices/loads primary display driver
     SysDisk                 module_init     -handles standard disk drivers
-    SysBtrfs                module_init     -handles btrfs implementation
+    SysBtrfs                module_init     -OBSOLETE NAME: not btrfs. Storage/filesystem is CoreStorage, a custom relational/object FS inspired by libs/kvs -- see notes/servers/CoreStorage/filesystem-direction.md
     SysUsb                  module_init     -handles standard usb hubs
     SysUsb                  usb_load_init   -loads initial devices: keyboard
     SysReg                  reg_load        -loads registries from disk
