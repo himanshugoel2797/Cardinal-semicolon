@@ -180,11 +180,11 @@ to attach to `CoreDisplay`). Debug output is `DEBUG_PRINT(...)` over COM1.
 
 ## Git workflow for this environment
 
-- The default branch is `master`. The active development branch for this work
-  is **`claude/claude-md-docs-brlt6x`** — commit and push there, never to
-  `master` without explicit permission.
+- The default branch is `master`. Do all work on a short-lived feature branch
+  (e.g. `claude/<topic>`) cut from `master`; never commit or push to `master`
+  without explicit permission.
 - Push with `git push -u origin <branch>`; after pushing, open a **draft** PR if
-  one doesn't already exist.
+  one doesn't already exist. Once a PR is merged, delete its branch.
 - `git commit`/`push` only when asked.
 
 ## Gotchas
