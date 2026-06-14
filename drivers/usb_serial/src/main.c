@@ -84,20 +84,27 @@ static void ftdi_ctrl(usb_enum_device_t *dev, uint8_t req, uint16_t val, uint16_
     usb_dev_control(dev, &s, NULL, 0);
 }
 
-// Attach monitor: while no debugger is connected the system runs normally and
-// this task just polls the adapter for incoming GDB traffic. On the first byte
-// from GDB it drops into the stub (int3) over this channel; from there GDB
-// drives the session via breakpoints. It does NOT resume polling afterwards --
-// that would let it hold the USB lock while a breakpoint fires elsewhere and
-// deadlock; re-attaching after a detach currently needs a reboot (a Ctrl-C /
-// async-break path is future work).
+// Attach + async-break monitor. While no debugger is connected the system runs
+// normally and this task polls the adapter for incoming GDB traffic. Any byte
+// from GDB -- the initial RSP handshake on connect, or a lone 0x03 (Ctrl-C) sent
+// to halt a running target -- drops us into the stub (int3) over this channel.
+//
+// This is USB-serial's stand-in for the COM2 UART RX interrupt: USB bulk-IN has
+// no "byte arrived" IRQ, so we poll. After GDB resumes (continue/step/detach)
+// the stub returns here and we keep polling, so a later Ctrl-C breaks in again;
+// the stub reads g_resumed and re-sends the stop reply GDB expects.
+//
+// The received byte that triggered entry stays in the RX ring; the stub's
+// recv_packet discards anything before '$', so a stray Ctrl-C is harmless. We
+// only hold the USB lock inside the per-poll bulk transfer (released before
+// gdb_stub_wait), and in-stub transfers run with interrupts off where xhci_wait
+// self-pumps the event ring, so the session does not deadlock on the USB lock.
 static void usb_serial_monitor(void *arg) {
     arg = NULL;
     while (true) {
         if (ftdi_fill() > 0) {
             DEBUG_PRINT("[usb_serial] GDB activity detected; entering debugger\r\n");
             gdb_stub_wait();  // int3 -> SysGdb stub, talking over this adapter
-            return;
         }
         task_yield();
     }

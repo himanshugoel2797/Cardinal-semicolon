@@ -397,7 +397,15 @@ int module_init(void *ecam_addr)
     //enable pci bus master
     device->command.busmaster = 1;
 
-    //TODO: interrupts are not supported, so use a polling task
+    // UHCI is driven by a cooperative polling task rather than interrupts: the
+    // PIIX/ICH9 UHCI function has no MSI capability, and its legacy INTx# routes
+    // through a PCI link whose IOAPIC GSI is only discoverable via ACPI _PRT --
+    // which this kernel does not yet parse (interrupt_mapinterrupt maps a known
+    // GSI, but we have no way to learn UHCI's). Transfer completion does not
+    // actually need an interrupt here: the controller writes TD status to DMA
+    // memory, which uhci_*_transfer polls directly. The clean interrupt path is
+    // on xHCI (MSI); see notes/servers/CoreUsb-status.md. The poll task also
+    // handles port connect/enumeration cooperatively (it task_yield()s).
     uhci_ctrl_state_t *instance = malloc(sizeof(uhci_ctrl_state_t));
 
     int cli_state = cli();
