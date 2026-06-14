@@ -54,14 +54,16 @@ static uint32_t read32(uhci_ctrl_state_t *state, uint16_t addr)
     return inl(state->iobar + addr);
 }
 
-// task_sleep does not actually deschedule (see notes/AUDIT.md), so the reset
-// delays below previously did not happen at all. Busy-wait off the timer instead:
-// this runs in the init task with interrupts enabled, so timer_timestamp_ns()
-// advances. It is one-time init, so the spin cost is acceptable.
+// task_sleep does not deschedule (see notes/AUDIT.md) and timer_timestamp_ns is
+// unreliable here (it uses floating point, which kernel modules build without,
+// and depends on a counter timer that may be absent), so use a plain bounded
+// busy-spin for the one-time init delays. Not wall-clock precise -- only "at
+// least roughly this long" -- which is all the USB reset/recovery delays need.
 static void uhci_delay_ns(uint64_t ns)
 {
-    uint64_t start = timer_timestamp_ns();
-    while (timer_timestamp_ns() - start < ns)
+    // ~a few cycles per iteration; one iteration per nanosecond is comfortably
+    // generous on the emulated targets (over-waiting on init is harmless).
+    for (volatile uint64_t i = 0; i < ns; i++)
         ;
 }
 
@@ -71,10 +73,13 @@ static void uhci_reset(uhci_ctrl_state_t *state)
     uhci_delay_ns(10 * 1000 * 1000);
     write16(state, USBCMD_REG, 0);  //Exit GRESET 10ms after starting
 
-    //now perform an HCRESET
+    //now perform an HCRESET (bounded wait for it to clear)
     write16(state, USBCMD_REG, USBCMD_HCRESET);
-    while(read16(state, USBCMD_REG) & USBCMD_HCRESET)   //wait for HCRESET to finish
-        ;
+    for (volatile uint64_t i = 0; i < 50000000; i++)
+        if (!(read16(state, USBCMD_REG) & USBCMD_HCRESET))
+            break;
+    if (read16(state, USBCMD_REG) & USBCMD_HCRESET)
+        DEBUG_PRINT("[UHCI] HCRESET timeout\r\n");
     write32(state, FRBASEADDR_REG, state->framelist_pmem);
     write16(state, USBCMD_REG, 1);
 }
@@ -83,12 +88,149 @@ static void uhci_enableport(uhci_ctrl_state_t *state, int idx)
 {
     uint16_t v = read16(state, PORTSCn_REG(idx));
     
-    //Reset port
+    //Reset port (>=10ms asserted), de-assert, then a recovery delay before enable.
     write16(state, PORTSCn_REG(idx), PORTSC_PORTRESET);
-    uhci_delay_ns(10 * 1000 * 1000);
+    uhci_delay_ns(15 * 1000 * 1000);
     write16(state, PORTSCn_REG(idx), 0);
-    uhci_delay_ns(500 * 1000 * 1000);
+    uhci_delay_ns(20 * 1000 * 1000);
     write16(state, PORTSCn_REG(idx), PORTSC_PORTEN | PORTSC_PORTENCHG);
+    uhci_delay_ns(20 * 1000 * 1000);
+}
+
+// Synchronous control transfer on endpoint 0, used by CoreUsb for enumeration
+// and by class drivers. Builds a SETUP/DATA/STATUS TD chain in the per-controller
+// DMA scratch, links it under the persistent control QH, and polls to completion.
+// Returns bytes transferred on the data stage (0 for a no-data control), or <0 on
+// timeout/STALL/error. See notes/drivers/uhci-enumeration.md.
+static int uhci_control_transfer(void *hc_state, int dev_addr, usb_speed_t speed,
+                                 int max_packet, const usb_setup_packet_t *setup,
+                                 void *data, int data_len)
+{
+    uhci_ctrl_state_t *st = (uhci_ctrl_state_t *)hc_state;
+    int low_speed = (speed == usb_speed_low) ? 1 : 0;
+    if (max_packet <= 0)
+        max_packet = 8;
+    if (data_len < 0)
+        data_len = 0;
+    if (data_len > UHCI_DATA_MAX)
+        data_len = UHCI_DATA_MAX;
+
+    local_spinlock_lock(&st->ctrl_lock);
+
+    uint8_t *setup_buf = st->dma_virt + UHCI_SETUP_OFF;
+    uint8_t *data_buf = st->dma_virt + UHCI_DATA_OFF;
+    transfer_descriptor_t *tds = (transfer_descriptor_t *)(st->dma_virt + UHCI_TD_OFF);
+    uhci_qh_t *qh = (uhci_qh_t *)(st->dma_virt + UHCI_QH_OFF);
+    uint32_t setup_phys = (uint32_t)(st->dma_phys + UHCI_SETUP_OFF);
+    uint32_t data_phys = (uint32_t)(st->dma_phys + UHCI_DATA_OFF);
+    uint32_t td_phys_base = (uint32_t)(st->dma_phys + UHCI_TD_OFF);
+
+    memcpy(setup_buf, setup, sizeof(usb_setup_packet_t));
+
+    int is_read = (setup->bmRequestType & USB_REQ_DIR_IN) != 0;
+    if (data_len > 0 && !is_read && data != NULL)
+        memcpy(data_buf, data, data_len);
+
+    int n = 0;
+    // SETUP stage (always 8 bytes, DATA0).
+    memset(&tds[n], 0, sizeof(transfer_descriptor_t));
+    tds[n].status.status = 0x80;  // Active
+    tds[n].status.err_count = 3;
+    tds[n].status.ls = low_speed;
+    tds[n].token.pid = UHCI_PID_SETUP;
+    tds[n].token.device = dev_addr;
+    tds[n].token.endpoint = 0;
+    tds[n].token.data_toggle = 0;
+    tds[n].token.maxlen = (8 - 1) & 0x7FF;
+    tds[n].buffer_ptr = setup_phys;
+    n++;
+
+    // DATA stage (if any), max_packet chunks, toggle alternating from 1.
+    int data_pid = is_read ? UHCI_PID_IN : UHCI_PID_OUT;
+    int toggle = 1;
+    int rem = data_len;
+    uint32_t bptr = data_phys;
+    while (rem > 0 && n < UHCI_TD_COUNT - 1) {
+        int chunk = rem > max_packet ? max_packet : rem;
+        memset(&tds[n], 0, sizeof(transfer_descriptor_t));
+        tds[n].status.status = 0x80;
+        tds[n].status.err_count = 3;
+        tds[n].status.ls = low_speed;
+        tds[n].token.pid = data_pid;
+        tds[n].token.device = dev_addr;
+        tds[n].token.endpoint = 0;
+        tds[n].token.data_toggle = toggle;
+        tds[n].token.maxlen = (chunk - 1) & 0x7FF;
+        tds[n].buffer_ptr = bptr;
+        n++;
+        toggle ^= 1;
+        rem -= chunk;
+        bptr += chunk;
+    }
+
+    // STATUS stage: opposite direction, zero length, DATA1.
+    int status_pid = is_read ? UHCI_PID_OUT : UHCI_PID_IN;
+    int status_idx = n;
+    memset(&tds[n], 0, sizeof(transfer_descriptor_t));
+    tds[n].status.status = 0x80;
+    tds[n].status.err_count = 3;
+    tds[n].status.ls = low_speed;
+    tds[n].token.pid = status_pid;
+    tds[n].token.device = dev_addr;
+    tds[n].token.endpoint = 0;
+    tds[n].token.data_toggle = 1;
+    tds[n].token.maxlen = 0x7FF;  // zero-length
+    tds[n].buffer_ptr = 0;
+    n++;
+
+    // Link the chain depth-first; last TD terminates.
+    for (int i = 0; i < n; i++) {
+        if (i == n - 1)
+            tds[i].link.lp = 1;  // Terminate
+        else
+            tds[i].link.lp = (td_phys_base + (i + 1) * sizeof(transfer_descriptor_t)) | (1 << 2);  // depth-first, TD
+    }
+
+    // Arm: QH element -> first TD (QH head terminates; we run a single QH).
+    qh->hlp = 1;
+    qh->elp = td_phys_base;
+
+    // Poll until the STATUS TD retires, a fatal error latches, or we time out.
+    // Bounded by iteration count (timer_timestamp_ns is unreliable here); the HC
+    // updates TD status via DMA so success exits promptly.
+    int result = -1;
+    for (volatile uint64_t spin = 0; spin < 200000000ULL; spin++) {
+        int fatal = 0;
+        for (int i = 0; i < n; i++)
+            if (tds[i].status.status & 0x76)  // STALL/databuf/babble/CRC-timeout/bitstuff (NAK excluded)
+                fatal = 1;
+        if (fatal)
+            break;
+        if (!(tds[status_idx].status.status & 0x80)) {  // status stage done
+            result = 0;
+            break;
+        }
+    }
+
+    qh->elp = 1;  // detach the chain
+
+    int transferred = -1;
+    if (result == 0) {
+        int total = 0;
+        for (int i = 1; i < status_idx; i++) {
+            uint32_t al = tds[i].status.act_len;
+            total += (al == 0x7FF) ? 0 : (int)al + 1;
+        }
+        if (is_read && data != NULL && total > 0) {
+            if (total > data_len)
+                total = data_len;
+            memcpy(data, data_buf, total);
+        }
+        transferred = total;
+    }
+
+    local_spinlock_unlock(&st->ctrl_lock);
+    return transferred;
 }
 
 static void intr_handler(uhci_ctrl_state_t *inst){
@@ -101,14 +243,20 @@ static void intr_handler(uhci_ctrl_state_t *inst){
         for (int i = 0; i < PORT_COUNT; i++){
             uint16_t p_sts = read16(inst, PORTSCn_REG(i));
 
-            if (p_sts & PORTSC_CONNECTCHG){
-                if (p_sts & PORTSC_CURCONNECT){
-                    DEBUG_PRINT("[UHCI] Device connected\r\n");
-                }else{
-                    DEBUG_PRINT("[UHCI] Device disconnected\r\n");
-                }
-                //usb_device_connection_changed(inst->handle, i, !!(p_sts & PORTSC_CURCONNECT));
-                write16(inst, PORTSCn_REG(i), PORTSC_CONNECTCHG);   //Acknowledge connection status change
+            if (p_sts & PORTSC_CONNECTCHG)
+                write16(inst, PORTSCn_REG(i), PORTSC_CONNECTCHG);  //ack change
+
+            bool connected = (p_sts & PORTSC_CURCONNECT) != 0;
+            if (connected && !inst->port_enum[i]) {
+                inst->port_enum[i] = true;
+                DEBUG_PRINT("[UHCI] Device connected; resetting + enumerating\r\n");
+                uhci_enableport(inst, i);
+                uint16_t after = read16(inst, PORTSCn_REG(i));
+                usb_speed_t spd = (after & PORTSC_LOWSPEED) ? usb_speed_low : usb_speed_full;
+                usb_port_connected(inst->handle, i, spd);
+            } else if (!connected && inst->port_enum[i]) {
+                inst->port_enum[i] = false;
+                DEBUG_PRINT("[UHCI] Device disconnected\r\n");
             }
         }
 
@@ -142,6 +290,7 @@ int module_init(void *ecam_addr)
 
     uint64_t bar = (device->bar[4] & 0xFFFFFFF0); //I/O space BAR
     instance->iobar = bar;
+    { char b[20]; DEBUG_PRINT("[UHCI] iobar="); DEBUG_PRINT(itoa((int)bar, b, 16)); DEBUG_PRINT("\r\n"); }
 
     //Frame list: 4x1024 entries
     //Each frame contains transfer descriptors
@@ -155,30 +304,46 @@ int module_init(void *ecam_addr)
     instance->framelist_pmem = (uint32_t)framelist_phys;
     instance->framelist = (uhci_framelist_entry_t *)vmem_phystovirt((intptr_t)instance->framelist_pmem, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     instance->init_complete = false;
+    instance->ctrl_lock = 0;
+    for (int i = 0; i < PORT_COUNT; i++)
+        instance->port_enum[i] = false;
 
-    //All frames are initially invalid
+    //Allocate the control-transfer DMA scratch (QH + TD pool + buffers).
+    uintptr_t dma_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
+    if (dma_phys == PHYSMEM_NO_ALLOC)
+    {
+        DEBUG_PRINT("[UHCI] Out of memory allocating DMA scratch.\r\n");
+        return -1;
+    }
+    instance->dma_phys = dma_phys;
+    instance->dma_virt = (uint8_t *)vmem_phystovirt((intptr_t)dma_phys, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+
+    //Point every frame at the (idle) control QH so submitted transfers run; the
+    //QH's element pointer terminates until a transfer is armed.
+    uhci_qh_t *qh = (uhci_qh_t *)(instance->dma_virt + UHCI_QH_OFF);
+    qh->hlp = 1;  // Terminate
+    qh->elp = 1;  // Terminate (idle)
     for (int i = 0; i < FRAME_COUNT; i++)
-        instance->framelist[i].invalid = 1;
+        instance->framelist[i].flp = (uint32_t)dma_phys | (1 << 1);  // is_qh, valid
 
     usb_hci_desc_t *desc = malloc(sizeof(usb_hci_desc_t));
+    memset(desc, 0, sizeof(usb_hci_desc_t));
     itoa(instance->id, desc->name, 10);
     desc->state = instance;
     desc->device_type = usb_device_type_uhci;
+    desc->handlers.control = uhci_control_transfer;
     desc->lock = 0;
     usb_register_hostcontroller(desc, &instance->handle);
 
-    //Start polling process
+    //Reset HCI
+    uhci_reset(instance);
+
+    //Start polling process (also handles connect detection + enumeration)
     cs_id int_task = 0;
     create_task_kernel("uhci_int_poll", task_permissions_kernel, &int_task);
     start_task_kernel(int_task, (void (*)(void *))intr_handler, instance);
     instance->intr_task = int_task;
 
-    //Reset HCI
-    uhci_reset(instance);
-
-    //Enable all ports
-    for (int i = 0; i < PORT_COUNT; i++)
-        uhci_enableport(instance, i);
     instance->init_complete = true;
 
     DEBUG_PRINT("[UHCI] Init complete\r\n");

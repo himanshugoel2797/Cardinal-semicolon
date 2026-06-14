@@ -101,6 +101,9 @@ int usb_register_device(usb_device_t *desc, void **handle)
     {
         def = (usb_dev_def_t *)malloc(sizeof(usb_dev_def_t));
         def->device = *desc;
+        // usb_device_t has no class/type field yet, so default to a valid in-range
+        // value instead of indexing devIDs[] with uninitialised garbage (OOB).
+        def->type = usb_device_type_unknown;
         def->state = usb_device_state_uninitialized;
         def->idx = devIDs[def->type]++;
         def->dev_list_idx = list_len(&device_handles_list);

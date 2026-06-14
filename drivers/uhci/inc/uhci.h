@@ -29,7 +29,22 @@
 #define PORTSC_CONNECTCHG (1 << 1)
 #define PORTSC_PORTEN (1 << 2)
 #define PORTSC_PORTENCHG (1 << 3)
+#define PORTSC_LOWSPEED (1 << 8)
 #define PORTSC_PORTRESET (1 << 9)
+
+// UHCI packet IDs.
+#define UHCI_PID_SETUP 0x2D
+#define UHCI_PID_IN 0x69
+#define UHCI_PID_OUT 0xE1
+
+// Per-controller DMA scratch layout (one 32-bit, 16-byte-aligned 4 KiB page),
+// reused under ctrl_lock for the (serialised, synchronous) control transfers.
+#define UHCI_QH_OFF 0x000
+#define UHCI_TD_OFF 0x100
+#define UHCI_TD_COUNT 64
+#define UHCI_SETUP_OFF 0x600
+#define UHCI_DATA_OFF 0x800
+#define UHCI_DATA_MAX 2048
 
 typedef struct uhci_framelist_entry {
     union{
@@ -76,6 +91,13 @@ typedef struct transfer_descriptor {
     uint32_t buffer_ptr;
 } transfer_descriptor_t;
 
+// UHCI Queue Head: two 32-bit link pointers (head -> next QH, element -> first
+// TD). Bit0 = Terminate, bit1 = QH/TD select.
+typedef struct uhci_qh {
+    uint32_t hlp;  // queue head link pointer (next QH)
+    uint32_t elp;  // element link pointer (first TD)
+} PACKED uhci_qh_t;
+
 typedef struct uhci_ctrl_state
 {
     uint32_t iobar;
@@ -85,6 +107,12 @@ typedef struct uhci_ctrl_state
     void *handle;
     cs_id intr_task;
     int id;
+
+    // Control-transfer DMA scratch (one 32-bit page) + serialisation lock.
+    uintptr_t dma_phys;
+    uint8_t *dma_virt;
+    int ctrl_lock;
+    bool port_enum[PORT_COUNT];  // whether the device on each port is enumerated
 
     struct uhci_ctrl_state *next;
 } uhci_ctrl_state_t;
