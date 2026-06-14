@@ -303,16 +303,18 @@ void idt_mainhandler(regs_t *regs)
 
     int state = cli();
 
-    local_spinlock_lock(&interrupt_alloc_lock);
+    // Lock-free dispatch: interrupt_alloc_lock is global; holding it here
+    // serialised every core's interrupt handling (incl. the scheduler tick),
+    // starving AP/BSP preemption. Slots are aligned pointers (atomic load).
     for (int i = 0; i < IDT_HANDLER_CNT; i++)
     {
-        if (interrupt_funcs[regs->int_no][i] != NULL)
+        InterruptHandler h = interrupt_funcs[regs->int_no][i];
+        if (h != NULL)
         {
-            interrupt_funcs[regs->int_no][i](regs->int_no);
+            h(regs->int_no);
             handled = true;
         }
     }
-    local_spinlock_unlock(&interrupt_alloc_lock);
     sti(state);
 
     if (!handled)
