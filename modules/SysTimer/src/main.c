@@ -185,15 +185,77 @@ uint64_t timer_timestamp()
     return (uint64_t)-1;
 }
 
+// Persistent counter rate in ticks/sec (0 if no readable persistent counter).
+uint64_t timer_counter_rate()
+{
+    int idx = 0;
+    for (; idx < timer_idx; idx++)
+        if ((timer_defs[idx].features & (timer_features_read | timer_features_persistent | timer_features_counter)) == (timer_features_read | timer_features_persistent | timer_features_counter))
+            if (timer_defs[idx].handlers.read != NULL)
+                return timer_defs[idx].handlers.rate;
+
+    return 0;
+}
+
 uint64_t timer_timestamp_ns()
 {
     int idx = 0;
     for (; idx < timer_idx; idx++)
         if ((timer_defs[idx].features & (timer_features_read | timer_features_persistent | timer_features_counter)) == (timer_features_read | timer_features_persistent | timer_features_counter))
             if (timer_defs[idx].handlers.read != NULL)
-                return (uint64_t)(timer_defs[idx].handlers.read(&timer_defs[idx].handlers) * ((1000.0 * 1000.0 * 1000.0) / timer_defs[idx].handlers.rate));
+            {
+                uint64_t rate = timer_defs[idx].handlers.rate;
+                if (rate == 0)
+                    return (uint64_t)-1;
+                // Integer ns = ticks/rate*1e9 + (ticks%rate)*1e9/rate. Kernel
+                // modules build -mno-sse, so no floating point here; the split
+                // avoids overflow (ticks*1e9 would wrap a few seconds after boot).
+                uint64_t ticks = timer_defs[idx].handlers.read(&timer_defs[idx].handlers);
+                return (ticks / rate) * 1000000000ULL + ((ticks % rate) * 1000000000ULL) / rate;
+            }
 
     return (uint64_t)-1;
+}
+
+// Bounded busy-wait timeouts backed by the persistent counter (see timer.h).
+// Safe with interrupts disabled (pure counter polling, no scheduler dependency),
+// which is why drivers can use these from module_init where task_sleep cannot.
+void timer_timeout_start(timer_timeout_t *t, uint64_t ns)
+{
+    uint64_t rate = timer_counter_rate();
+    if (rate != 0)
+    {
+        uint64_t whole = ns / 1000000000ULL;
+        uint64_t frac = ns % 1000000000ULL;
+        t->timed = 1;
+        t->deadline = timer_timestamp() + whole * rate + (frac * rate) / 1000000000ULL;
+        t->spin = 0;
+        t->spin_cap = 0;
+    }
+    else
+    {
+        // No calibrated time source: fall back to a bounded iteration count so
+        // the loop still terminates (cpu-speed dependent, but never infinite).
+        t->timed = 0;
+        t->deadline = 0;
+        t->spin = 0;
+        t->spin_cap = 200000000ULL;
+    }
+}
+
+int timer_timeout_expired(timer_timeout_t *t)
+{
+    if (t->timed)
+        return timer_timestamp() >= t->deadline;
+    return (t->spin++ >= t->spin_cap);
+}
+
+void timer_busywait_ns(uint64_t ns)
+{
+    timer_timeout_t t;
+    timer_timeout_start(&t, ns);
+    while (!timer_timeout_expired(&t))
+        ;
 }
 
 static int timer_init()

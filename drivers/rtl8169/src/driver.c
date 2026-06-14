@@ -14,6 +14,7 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysTaskMgr/task.h"
+#include "SysTimer/timer.h"
 #include "CoreNetwork/driver.h"
 
 #include "state.h"
@@ -82,16 +83,14 @@ int rtl8169_tx(void *state, void *packet, int len, network_device_tx_flags_t gso
     rtl8169_state_t *device = (rtl8169_state_t *)state;
     local_spinlock_lock(&device->lock);
 
-    //Wait until the descriptor is available, bounded by a hard iteration cap.
-    //The NIC clears the descriptor OWN bit via DMA when it finishes the previous
-    //send (no interrupt is required), so this is a tight poll whose cap is a
-    //meaningful sub-second wall-clock bound (matching the AHCI poll loops),
-    //unlike an hlt-paced loop where the same count would be effectively
-    //infinite. On timeout drop the packet, releasing the lock first since it is
-    //held here.
-    volatile uint64_t wait_iters = 0;
+    //Wait until the descriptor is available, bounded by a real wall-clock
+    //timeout. The NIC clears the descriptor OWN bit via DMA when it finishes the
+    //previous send (no interrupt is required), so this is a tight poll. On
+    //timeout drop the packet, releasing the lock first since it is held here.
+    timer_timeout_t to;
+    timer_timeout_start(&to, 100ULL * 1000 * 1000);  //100ms (a TX completes in us)
     while (device->tx_descs[device->free_tx_buf_idx].status.own != 0){
-        if (wait_iters++ >= 200000000){
+        if (timer_timeout_expired(&to)){
             local_spinlock_unlock(&device->lock);
             return -1;
         }
