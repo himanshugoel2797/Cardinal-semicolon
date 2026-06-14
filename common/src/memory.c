@@ -92,10 +92,18 @@ size_t WEAK strnlen(const char *string, size_t maxLen) {
 }
 
 int WEAK strncmp(const char *s1, const char *s2, size_t n) {
-    while(n--)
-        if(*s1++!=*s2++)
-            return *(unsigned char*)(s1 - 1) - *(unsigned char*)(s2 - 1);
-    return 0;
+    // Standard strncmp: compare at most n chars but STOP at the first NUL. The
+    // previous version compared all n bytes, so a short NUL-terminated string
+    // was wrongly compared against the trailing bytes past the other's
+    // terminator (e.g. a string literal's neighbouring rodata).
+    while (n && *s1 && (*s1 == *s2)) {
+        n--;
+        s1++;
+        s2++;
+    }
+    if (n == 0)
+        return 0;
+    return *(unsigned char *)s1 - *(unsigned char *)s2;
 }
 
 int WEAK strcmp(const char *s1, const char *s2) {
