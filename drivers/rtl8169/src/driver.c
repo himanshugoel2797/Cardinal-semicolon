@@ -82,8 +82,14 @@ int rtl8169_tx(void *state, void *packet, int len, network_device_tx_flags_t gso
     rtl8169_state_t *device = (rtl8169_state_t *)state;
     local_spinlock_lock(&device->lock);
 
-    //Wait until the descriptor is available
+    //Wait until the descriptor is available, bounded by a hard iteration cap. On
+    //timeout drop the packet, releasing the lock first since it is held here.
+    volatile uint64_t wait_iters = 0;
     while (device->tx_descs[device->free_tx_buf_idx].status.own != 0){
+        if (wait_iters++ >= 200000000){
+            local_spinlock_unlock(&device->lock);
+            return -1;
+        }
         local_spinlock_unlock(&device->lock);
         halt();
         local_spinlock_lock(&device->lock);

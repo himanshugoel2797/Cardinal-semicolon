@@ -53,9 +53,19 @@ int rtl8139_tx(void *state, void *packet, int len, network_device_tx_flags_t gso
         return -1;
 
     rtl8139_state_t *device = (rtl8139_state_t *)state;
+    //Wait for the previous transmission on this descriptor to finish, bounded by
+    //a hard iteration cap. On timeout drop the packet. This runs before the lock
+    //is taken, so no unlock is needed on the timeout path.
     if ((device->memar[TX_STS_REG(device->free_tx_buf_idx)] & 0xfff) != 0)
+    {
+        volatile uint64_t i = 0;
         while ((device->memar[TX_STS_REG(device->free_tx_buf_idx)] & (TX_STS_OWN | TX_STS_TOK)) != (TX_STS_OWN | TX_STS_TOK))
+        {
+            if (i++ >= 200000000)
+                return -1;
             halt();
+        }
+    }
 
     local_spinlock_lock(&device->lock);
 
