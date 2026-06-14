@@ -10,6 +10,7 @@
 #include <cardinal/local_spinlock.h>
 
 #include "SysVirtualMemory/vmem.h"
+#include "SysTimer/timer.h"
 
 #include "ahci.h"
 
@@ -48,10 +49,12 @@ PRIVATE void ahci_resethba(ahci_instance_t *inst)
     //Start the reset
     ahci_write32(inst, HBA_GHC, 1);
 
-    //Wait for the HBA to be done reseting. Bound the spin with a hard iteration
-    //cap rather than blocking forever; a wedged reset is left for the caller's
+    //Wait for the HBA to be done reseting. Bound the spin with a real wall-clock
+    //timeout rather than blocking forever; a wedged reset is left for the caller's
     //later TFD/readiness checks to catch.
-    for (volatile uint64_t i = 0; (ahci_read32(inst, HBA_GHC) & 1) && i < 200000000; i++)
+    timer_timeout_t to;
+    timer_timeout_start(&to, 1000ULL * 1000 * 1000);  //1s
+    while ((ahci_read32(inst, HBA_GHC) & 1) && !timer_timeout_expired(&to))
         ;
 }
 
@@ -67,15 +70,18 @@ PRIVATE void ahci_obtainownership(ahci_instance_t *inst)
     //NOTE: this runs from module_init with interrupts disabled (the driver holds
     //cli() across init), so we must NOT call task_sleep here -- task_sleep marks
     //the task sleeping and depends on the preemption timer to wake it, which can
-    //never fire with interrupts off, hanging the task forever. Bound the BIOS/OS
-    //handoff with a polled spin that has a hard iteration cap instead.
-    for (volatile uint64_t i = 0; i < 25000000; i++) //~settle delay for the OOC write
-        if (!(ahci_read32(inst, HBA_BOHC) & (1 << 4)))
-            break;
+    //never fire with interrupts off, hanging the task forever. The timer_timeout
+    //helper is pure counter polling (no scheduler dependency), so it is safe here.
+    timer_timeout_t settle;
+    timer_timeout_start(&settle, 100ULL * 1000 * 1000);  //100ms settle for the OOC write
+    while ((ahci_read32(inst, HBA_BOHC) & (1 << 4)) && !timer_timeout_expired(&settle))
+        ;
 
     //If the BIOS still owns the HBA (BOS busy), give it a bounded grace period
     //rather than blocking indefinitely.
-    for (volatile uint64_t i = 0; (ahci_read32(inst, HBA_BOHC) & (1 << 4)) && i < 200000000; i++)
+    timer_timeout_t grace;
+    timer_timeout_start(&grace, 1000ULL * 1000 * 1000);  //1s
+    while ((ahci_read32(inst, HBA_BOHC) & (1 << 4)) && !timer_timeout_expired(&grace))
         ;
 }
 
@@ -100,11 +106,12 @@ PRIVATE int ahci_initializeport(ahci_instance_t *inst, int index)
 
         //Bounded polled wait for FR/CR to clear. Like ahci_obtainownership, this
         //runs from module_init with interrupts disabled, so task_sleep cannot be
-        //used here (it would never be woken -- see notes/AUDIT.md). Cap the spin
-        //instead of blocking forever on a wedged port.
-        for (volatile uint64_t i = 0; i < 500000000; i++)
-            if ((ahci_read32(inst, HBA_PxCMD(index)) & (HBA_PxCMD_FR | HBA_PxCMD_CR)) == 0)
-                break;
+        //used here (it would never be woken -- see notes/AUDIT.md). timer_timeout
+        //is pure counter polling, so it gives a real timeout that is safe here.
+        timer_timeout_t to;
+        timer_timeout_start(&to, 1000ULL * 1000 * 1000);  //1s
+        while ((ahci_read32(inst, HBA_PxCMD(index)) & (HBA_PxCMD_FR | HBA_PxCMD_CR)) != 0 && !timer_timeout_expired(&to))
+            ;
         //Failed to bring the device into an idle state, can't continue with init
         if ((ahci_read32(inst, HBA_PxCMD(index)) & (HBA_PxCMD_FR | HBA_PxCMD_CR)) != 0)
             return -1;
@@ -246,9 +253,11 @@ PRIVATE int ahci_readdev(ahci_instance_t *inst, int index, uint64_t loc, void *a
     inst->activeCmdBits[index] |= (1 << slot);
     local_spinlock_unlock(&inst->lock);
 
-    //Wait for the command to complete, bounded by a hard iteration cap so a
+    //Wait for the command to complete, bounded by a real wall-clock timeout so a
     //stuck device cannot hang the caller forever.
-    for (volatile uint64_t i = 0; (ahci_read32(inst, HBA_PxCI(index)) & (1 << slot)) && i < 200000000; i++)
+    timer_timeout_t to;
+    timer_timeout_start(&to, 1000ULL * 1000 * 1000);  //1s
+    while ((ahci_read32(inst, HBA_PxCI(index)) & (1 << slot)) && !timer_timeout_expired(&to))
         ;
     if (ahci_read32(inst, HBA_PxCI(index)) & (1 << slot))
         return -1;

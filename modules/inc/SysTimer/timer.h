@@ -32,4 +32,31 @@ uint64_t timer_timestamp();
 
 uint64_t timer_timestamp_ns();
 
+// Ticks/sec of the persistent counter (TSC/HPET), or 0 if none is calibrated.
+uint64_t timer_counter_rate();
+
+// A bounded busy-wait timeout. Backed by the persistent counter when one is
+// calibrated (a real, cpu-speed-independent wall-clock bound); otherwise it
+// falls back to a bounded iteration count so the loop still always terminates.
+// Pure polling -- safe to use with interrupts disabled (e.g. from a driver's
+// module_init), unlike task_sleep. Usage:
+//     timer_timeout_t to;
+//     timer_timeout_start(&to, 500 * 1000 * 1000);   // 500ms
+//     while (!device_ready())
+//         if (timer_timeout_expired(&to)) { /* timed out */ break; }
+typedef struct
+{
+    uint64_t deadline;  // counter ticks at which the timeout fires (when timed)
+    uint64_t spin;      // fallback iteration counter (when no calibrated counter)
+    uint64_t spin_cap;  // fallback iteration cap
+    int timed;          // 1 = using the persistent counter, 0 = iteration fallback
+} timer_timeout_t;
+
+void timer_timeout_start(timer_timeout_t *t, uint64_t ns);
+int timer_timeout_expired(timer_timeout_t *t);
+
+// Busy-wait roughly `ns` nanoseconds (counter-paced when calibrated, else a
+// bounded spin). For one-off hardware settle/recovery delays.
+void timer_busywait_ns(uint64_t ns);
+
 #endif
