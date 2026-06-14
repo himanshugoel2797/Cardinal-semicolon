@@ -3,4 +3,5 @@ CALL:vmem_mp_init
 CALL:intr_mp_init
 CALL:timer_mp_init
 CALL:mem_mp_init
+CALL:fp_mp_init
 CALL:mp_signalready
