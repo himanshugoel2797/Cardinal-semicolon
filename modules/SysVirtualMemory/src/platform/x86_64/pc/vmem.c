@@ -1,6 +1,7 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysReg/registry.h"
+#include "SysInterrupts/interrupts.h" //IPI enums/typedefs only; functions resolved at runtime
 #include "elf.h"
 #include <cardinal/local_spinlock.h>
 #include <stdint.h>
@@ -531,23 +532,135 @@ int vmem_getactive(vmem_t **vm)
     return 0;
 }
 
-int vmem_flush(intptr_t virt, size_t sz)
+// --- Cross-core TLB shootdown (SMP) ---------------------------------------
+//
+// Invalidating a *kernel* (shared, virt < 0) mapping has to reach every core: a
+// stale TLB entry on another core could keep reading/writing a page after it is
+// unmapped and its physical frame reused. vmem_flush therefore broadcasts a
+// shootdown IPI to the other cores and waits for each to acknowledge before
+// returning, so the caller knows the invalidation is globally complete before it
+// frees/reuses the frame.
+//
+// Scope/limitations (see notes/AUDIT.md):
+//  - User mappings (virt >= 0) live in per-task page tables that are only ever
+//    active on one core at a time, and a task switch reloads cr3 (flushing
+//    non-global entries), so a *local* invalidate is sufficient -- no IPI.
+//  - The kernel half of the page table is still synced between cores coarsely,
+//    by memcpy of kmem.ptable in vmem_savestate/setactive. The shootdown handler
+//    refreshes the receiving core's kernel half from kmem.ptable before flushing,
+//    so a newly *created* kernel mapping also becomes visible there. Fully
+//    race-free concurrent kernel-map mutation additionally wants a kernel PML4
+//    that is physically shared across cores (so savestate cannot write a stale
+//    half back to the master); that rework is tracked separately.
+//  - Contract: call vmem_flush with interrupts enabled and without holding
+//    kmem.lock -- the handler takes kmem.lock, and the initiator must remain
+//    able to service an inbound shootdown while it waits.
+#define VMEM_MAX_CORES 256
+static int tlb_vec = -1;                 // IPI vector, -1 until vmem_smp_init
+static int tlb_lock = 0;                 // serialises shootdown initiators
+static volatile intptr_t tlb_virt;       // range being shot down (under tlb_lock)
+static volatile size_t tlb_size;
+static volatile int tlb_ack;             // set by the target after it flushes
+static int tlb_apicids[VMEM_MAX_CORES];  // APIC ids of the *other* cores
+static int tlb_other_count = 0;
+static void (*tlb_sendipi)(int, int, ipi_delivery_mode_t) = NULL;
+
+static void tlb_local_flush(intptr_t virt, size_t sz)
 {
-    //TODO: shootdown cores when kmem flushed
-    // Alternatively, every 'thread' has its own memory space, so changes don't affect other cores
-    //Thus, kernel can be flushed once every task switch
-
-    vmem_savestate();
-
     if (sz > GiB(1))
         __asm__ volatile("mov %0, %%cr3" ::"r"(lcl->ktable)
                          :);
     else
-    {
         for (size_t n = 0; n < sz; n += KiB(4), virt += KiB(4))
-            __asm__("invlpg (%0)" ::"r"(virt)
-                    :);
+            __asm__ volatile("invlpg (%0)" ::"r"(virt)
+                             : "memory");
+}
+
+//IPI handler (runs in interrupt context on a *receiving* core). Refresh this
+//core's kernel-half page-table copy from the master, then flush, then ack.
+static void tlb_shootdown_handler(int irq)
+{
+    (void)irq;
+    intptr_t v = tlb_virt;
+    size_t s = tlb_size;
+
+    local_spinlock_lock(&kmem.lock);
+    uint64_t *p_table = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
+    memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
+    local_spinlock_unlock(&kmem.lock);
+
+    tlb_local_flush(v, s);
+    __atomic_store_n(&tlb_ack, 1, __ATOMIC_SEQ_CST);
+}
+
+int vmem_flush(intptr_t virt, size_t sz)
+{
+    vmem_savestate();
+    tlb_local_flush(virt, sz);
+
+    //Only kernel (shared) mappings need a cross-core shootdown, and only once
+    //other cores are online and the IPI vector has been set up.
+    if (virt < 0 && tlb_vec >= 0 && tlb_other_count > 0)
+    {
+        local_spinlock_lock(&tlb_lock);
+        tlb_virt = virt;
+        tlb_size = sz;
+        for (int i = 0; i < tlb_other_count; i++)
+        {
+            __atomic_store_n(&tlb_ack, 0, __ATOMIC_SEQ_CST);
+            tlb_sendipi(tlb_apicids[i], tlb_vec, ipi_delivery_mode_fixed);
+            //One core at a time: also avoids overrunning the local APIC ICR.
+            while (__atomic_load_n(&tlb_ack, __ATOMIC_SEQ_CST) == 0)
+                __asm__ volatile("pause");
+        }
+        local_spinlock_unlock(&tlb_lock);
     }
+    return 0;
+}
+
+//Set up the cross-core TLB-shootdown IPI. Must run after SysInterrupts and the
+//AP enumeration are up (acpi_init populated HW/LAPIC, intr_init armed the APIC)
+//but before APs start scheduling -- i.e. CALL:vmem_smp_init after CALL:mp_init in
+//loadscript.txt. SysInterrupts/SysMP load after SysVirtualMemory, so their
+//entry points are resolved at runtime via the kernel symbol DB, not linked.
+int vmem_smp_init()
+{
+    int (*intr_allocate)(int, interrupt_flags_t, int *) =
+        (int (*)(int, interrupt_flags_t, int *))elf_resolvefunction("interrupt_allocate");
+    void (*intr_register)(int, InterruptHandler) =
+        (void (*)(int, InterruptHandler))elf_resolvefunction("interrupt_registerhandler");
+    int (*intr_cpuidx)(void) = (int (*)(void))elf_resolvefunction("interrupt_get_cpuidx");
+    tlb_sendipi = (void (*)(int, int, ipi_delivery_mode_t))elf_resolvefunction("interrupt_sendipi");
+
+    if (intr_allocate == NULL || intr_register == NULL || intr_cpuidx == NULL || tlb_sendipi == NULL)
+        return -1;
+
+    //Enumerate every core's APIC id from the registry, recording all but our own.
+    int self = intr_cpuidx();
+    uint64_t count = 0;
+    registry_readkey_uint("HW/LAPIC", "COUNT", &count);
+    tlb_other_count = 0;
+    for (uint64_t i = 0; i < count && tlb_other_count < VMEM_MAX_CORES; i++)
+    {
+        char idx_str[16] = "";
+        char key_str[256] = "HW/LAPIC/";
+        char *key = strncat(key_str, itoa((int)i, idx_str, 16), 255);
+
+        uint64_t apic_id = 0;
+        if (registry_readkey_uint(key, "APIC ID", &apic_id) != registry_err_ok)
+            continue;
+        if ((int)apic_id == self)
+            continue;
+        tlb_apicids[tlb_other_count++] = (int)apic_id;
+    }
+
+    //Allocate a dedicated vector and register the handler once (the handler table
+    //is global, so this one registration covers every core's IDT).
+    int base = 0;
+    if (intr_allocate(1, interrupt_flags_exclusive, &base) != 0)
+        return -1;
+    intr_register(base, tlb_shootdown_handler);
+    tlb_vec = base;
     return 0;
 }
 

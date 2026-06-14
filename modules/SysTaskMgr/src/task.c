@@ -37,77 +37,6 @@ static int process_lock = 0;
 // current core description
 static TLS core_desc_t *core_descs = NULL;
 
-// Page-guarded reg_state.
-//
-// Each task's saved register state lives on its own kernel page taken from the
-// vmalloc region instead of the shared heap. On free, the page is unmapped but
-// its virtual range is deliberately never recycled, so any use-after-free of a
-// task's reg_state faults precisely at the offending access and is caught by the
-// IST exception dump. This is a diagnostic aid for the residual SMP AP
-// context-switch race; see notes/AUDIT.md. (vmem_init pre-creates this region's
-// PML4 entry so the mappings are coherent on every core.)
-static void *regstate_guard_alloc(void)
-{
-    size_t sz = mp_platform_getstatesize();
-    if (sz > KiB(4))
-        PANIC("[SysTaskMgr] reg_state larger than a page; guard needs more pages.");
-
-    intptr_t virt = vmem_vmalloc(KiB(4));
-    uintptr_t phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
-    if (phys == PHYSMEM_NO_ALLOC)
-        PANIC("[SysTaskMgr] Failed to allocate reg_state page.");
-    if (vmem_map(NULL, virt, (intptr_t)phys, KiB(4), vmem_flags_kernel | vmem_flags_rw, 0) != 0)
-        PANIC("[SysTaskMgr] Failed to map reg_state page.");
-
-    return (void *)virt;
-}
-
-static void regstate_guard_free(void *ptr)
-{
-    if (ptr == NULL)
-        return;
-
-    intptr_t phys = 0;
-    if (vmem_virttophys(NULL, (intptr_t)ptr, &phys) == 0)
-    {
-        vmem_unmap(NULL, (intptr_t)ptr, KiB(4));
-        vmem_flush((intptr_t)ptr, KiB(4));
-        pagealloc_free((uintptr_t)phys, KiB(4));
-    }
-    //Deliberately do NOT vmem_vfree the virtual range: leaving it permanently
-    //unmapped turns any later use-after-free into an immediate page fault.
-}
-
-//Ownership tripwire for the residual SMP AP race. The corrupting write captured
-//by the page-guard is an interrupted trap frame written into a task's reg_state,
-//and the only code that does that is the scheduler save (mp_platform_getstate /
-//memcpy into cur_task->reg_state). So the writer is a save targeting the WRONG
-//task -- two cores holding the same cur_task. Before a core saves a task, assert
-//it still owns it (it claimed ownership when it set the task running). A mismatch
-//names both cores and the task at the exact save, instead of faulting later on the
-//downstream iret into the clobbered state.
-static void task_dbg_print_hex(const char *label, uint64_t v)
-{
-    char buf[20];
-    DEBUG_PRINT(label);
-    DEBUG_PRINT(ltoa(v, buf, 16));
-    DEBUG_PRINT("\r\n");
-}
-
-static void task_assert_owner(process_desc_t *t)
-{
-    int me = interrupt_get_cpuidx();
-    if (t->owner_core != me)
-    {
-        DEBUG_PRINT("[SysTaskMgr] OWNERSHIP VIOLATION saving task\r\n");
-        task_dbg_print_hex("  saving core   : 0x", (uint64_t)(uint32_t)me);
-        task_dbg_print_hex("  owner core    : 0x", (uint64_t)(uint32_t)t->owner_core);
-        task_dbg_print_hex("  task id       : 0x", (uint64_t)t->id);
-        task_dbg_print_hex("  task state    : 0x", (uint64_t)t->state);
-        PANIC("[SysTaskMgr] Task saved by non-owning core (concurrent cur_task)");
-    }
-}
-
 cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
 {
     cs_id alloc_id = cur_id++;
@@ -139,7 +68,6 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
 
     proc_info->state = task_state_uninitialized;
     proc_info->permissions = perms;
-    proc_info->owner_core = -1; //not yet run on any core (memset would leave 0 == BSP)
 
     //Allocate the kernel level stack
     proc_info->kernel_stack = malloc(KERNEL_STACK_LEN);
@@ -167,7 +95,7 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
 
     fp_platform_getdefaultstate(proc_info->fpu_state);
 
-    proc_info->reg_state = regstate_guard_alloc();
+    proc_info->reg_state = malloc(mp_platform_getstatesize());
     if (proc_info->reg_state == NULL)
         PANIC("[SysTaskMgr] Unexpected memory allocation failure.");
     mp_platform_getdefaultstate(proc_info->reg_state, proc_info->kernel_stack, NULL, NULL, NULL);
@@ -483,7 +411,6 @@ static void task_switch_handler(int irq)
         {
             if (core_descs->cur_task->state == task_state_running)
                 core_descs->cur_task->state = task_state_pending;  //Set the cur_task to pending again
-            task_assert_owner(core_descs->cur_task); //tripwire: this core must still own the task it saves
             fp_platform_getstate(core_descs->cur_task->fpu_state); //Save the current tasks's fpu state
             mp_platform_getstate(core_descs->cur_task->reg_state); //Save the current task's register state
             if (core_descs->cur_task->syscall_data != NULL)
@@ -557,7 +484,6 @@ static void task_switch_handler(int irq)
 
     local_spinlock_lock(&ntask->lock);
     ntask->state = task_state_running;
-    ntask->owner_core = interrupt_get_cpuidx(); //claim ownership (ownership tripwire)
     vmem_setactive(ntask->mem);             //Set virtual memory
     fp_platform_setstate(ntask->fpu_state); //Set fpu state
     mp_platform_setstate(ntask->reg_state); //Set registers
@@ -595,7 +521,6 @@ static void task_yield_stage2(interrupt_register_state_t *mp_state){
         {
             if (core_descs->cur_task->state == task_state_running)
                 core_descs->cur_task->state = task_state_pending;  //Set the cur_task to pending again
-            task_assert_owner(core_descs->cur_task); //tripwire: this core must still own the task it saves
             fp_platform_getstate(core_descs->cur_task->fpu_state); //Save the current tasks's fpu state
             memcpy(core_descs->cur_task->reg_state, mp_state, sizeof(interrupt_register_state_t)); //Save the current task's register state
             if (core_descs->cur_task->syscall_data != NULL)
@@ -669,7 +594,6 @@ static void task_yield_stage2(interrupt_register_state_t *mp_state){
 
     local_spinlock_lock(&ntask->lock);
     ntask->state = task_state_running;
-    ntask->owner_core = interrupt_get_cpuidx(); //claim ownership (ownership tripwire)
     vmem_setactive(ntask->mem);             //Set virtual memory
     fp_platform_setstate(ntask->fpu_state); //Set fpu state
     //mp_platform_setstate(ntask->reg_state); //Set registers
@@ -1222,7 +1146,7 @@ static void task_cleanup(void *arg)
                     }
                     vmem_destroy(iter->mem);
                     free(iter->fpu_state_unaligned);
-                    regstate_guard_free(iter->reg_state);
+                    free(iter->reg_state);
                     free(iter->kernel_stack - KERNEL_STACK_LEN);
 
                     iter->mem = NULL;

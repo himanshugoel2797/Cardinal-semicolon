@@ -45,6 +45,11 @@ typedef enum
 
 int vmem_init();
 
+//Sets up the cross-core TLB-shootdown IPI. Call once, after SysInterrupts and
+//AP enumeration are up and before APs schedule (CALL:vmem_smp_init in
+//loadscript.txt, just after CALL:mp_init).
+int vmem_smp_init();
+
 int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, int flags);
 
 int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size);

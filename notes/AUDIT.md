@@ -123,7 +123,18 @@ returned — which is inherent to a bump allocator, not a bug.)*
 > one-quantum reap — see "ROOT CAUSE FOUND & FIXED" below). `CALL:task_release_aps` is
 > back in `servicescript.txt`, so the default boot is multi-core. The historical
 > narrative below is kept because it documents the diagnosis and the supporting
-> infrastructure (page-guard, IST dumps, two-phase reap) that the fix builds on.
+> infrastructure (IST exception dumps, two-phase reap) the fix built on.
+>
+> The two **diagnostic** aids used to localise the bug were removed once it was fixed:
+> the per-task `reg_state` **page-guard** (it never recycled its vmalloc virtual range,
+> leaking address space per task — `reg_state` is back on the heap, which the
+> deferred reap makes safe) and the `owner_core` **ownership tripwire** (its hypothesis
+> was disproven; it added a panic in the scheduler hot path). Residual caveat: under a
+> *synthetic* sustained-preemption stress (a kernel task spinning ~5e7 iterations without
+> yielding while APs churn) a single #GP with a garbage selector was seen once — i.e. a
+> rare reg_state corruption may still exist outside the exit/reap window. It did not recur
+> in normal boots; chasing it wants an uncontended host (TCG-only repro) and likely the
+> page-guard temporarily re-enabled to name the writer. Tracked, not yet root-caused.
 
 APs are brought up (TLS/vmem/interrupts/timer per `apscript.txt`) and the machinery to
 release them into the scheduler is fully in place. The mechanism is *single-threaded
@@ -268,8 +279,9 @@ running on a **different** task's stack, so `task_cleanup` can free the dead tas
 stack/reg_state/struct with no live reference remaining. No hot-path validation probe
 (which the AUDIT notes perturbs the timing and hides the race) — the change is purely
 structural. Every core always idles + takes the periodic tick, so the one-quantum
-hold drains promptly. The page-guard, two-phase reap, and `vmem_unmap`/PML4
-prerequisites above all remain and compose with this.
+hold drains promptly. The two-phase reap and the `vmem_unmap`/PML4 prerequisites above
+remain and compose with this; the `reg_state` page-guard was a diagnostic and has since
+been reverted (see the banner at the top of this section).
 
 *Reproduction & validation:* the pre-fix `#PF` reproduces under **TCG** with the full
 `servicescript` (`cr2 = 0xa0`, a freed-chunk metadata value, dereferenced in the
@@ -345,8 +357,28 @@ rely on it for real delays.
 ### [INCOMPLETE] Stubs / TODOs (tracked, not bugs)
 - `kernel/src/bootstrap_alloc.c:101` `realloc` → `PANIC("unimplemented")`.
 - `common/src/time.c` `gmtime` partial, `strftime` is a no-op.
-- TLB shootdown missing (`vmem.c` `vmem_flush`), SMP timer/IPI TODOs
-  (`SysTimer/src/main.c:39`). (Both only become load-bearing once APs schedule.)
+- SMP timer/IPI TODOs (`SysTimer/src/main.c:39`) — load-bearing once APs schedule.
+
+### [PARTIAL] Cross-core TLB shootdown
+`vmem_flush` (`SysVirtualMemory/.../vmem.c`) used to do only a *local* `invlpg`/`cr3`
+reload, so a kernel-mapping change on one core left other cores with stale TLB entries —
+a use-after-free vector once a freed frame is reused. `vmem_flush` now broadcasts a
+shootdown IPI to the other cores for **kernel** ranges (`virt < 0`) and waits for each to
+ack, so the invalidation is globally complete before the caller frees/reuses the frame;
+the receiving handler also refreshes that core's kernel-half page-table copy from the
+master before flushing. Set up by `vmem_smp_init` (`CALL:vmem_smp_init` in
+`loadscript.txt`, after `mp_init`); no-op on a single core; user ranges stay local
+(per-task tables, only ever active on one core, refreshed by the cr3 reload on switch).
+Verified: the IPI round-trip completes (initiator → AP handler → ack) with no hang/fault.
+
+Remaining: the kernel half of the page table is still **per-core**, synced coarsely by
+memcpy of `kmem.ptable` in `vmem_savestate`/`vmem_setactive` — and `vmem_savestate`
+writes a core's local kernel half *back* to the master, so two cores mutating kernel
+maps concurrently can still clobber each other at the table level (the shootdown only
+fixes the TLB/visibility layer). Fully race-free concurrent kernel-map mutation wants a
+kernel PML4 that is physically **shared** across cores. Currently *no* code path mutates
+kernel maps at runtime (drivers use the pre-existing physmap), so this is latent; the
+shootdown is the primitive future kernel-map churn will need.
 
 ---
 
