@@ -207,6 +207,7 @@ int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap) {
     v = v & ~0x007100ff;
     v |= (intrpt_num & 0xff);
 
+    uint64_t initial_count = 0;
     if(tsc_mode) {
         v |= (2 << 17); //Set TSC-Deadline mode
     } else {
@@ -227,11 +228,22 @@ int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap) {
         }
 
         apic_write(APIC_DCR, 0x0); //divide by 2 (matches the calibration)
-        //tick every 0.05ms
-        apic_write(APIC_ICoR, apic_freq / 20000);
+        initial_count = apic_freq / 20000; //tick every 0.05ms
     }
 
+    //Program the LVT (mode + vector + unmask) BEFORE loading the initial count.
+    //Writing APIC_ICoR is what arms the timer, and in periodic mode the count
+    //must be loaded while the LVT already holds periodic mode -- otherwise (the
+    //previous order: ICoR then LVT) the count was loaded while the LVT still held
+    //the calibration routine's masked one-shot config, so it counted to zero with
+    //no interrupt and stopped, and periodic ticks never started. TCG's APIC model
+    //tolerated this; KVM's faithful in-kernel APIC did not, hanging the boot for
+    //want of preemption ticks (no scheduler tick -> the BSP never leaves the boot
+    //path for idle/servicescript). See notes/AUDIT.md.
     apic_write(APIC_TIMER, v);
+    if(!tsc_mode)
+        apic_write(APIC_ICoR, initial_count);
+
     return intrpt_num;
 }
 
