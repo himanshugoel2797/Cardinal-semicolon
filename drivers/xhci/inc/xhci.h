@@ -29,7 +29,11 @@
 #define XHCI_USBCMD_HCRST (1 << 1)
 #define XHCI_USBCMD_INTE (1 << 2)
 #define XHCI_USBSTS_HCH (1 << 0)
+#define XHCI_USBSTS_EINT (1 << 3)  // event interrupt (write 1 to clear)
 #define XHCI_USBSTS_CNR (1 << 11)  // controller not ready
+
+#define XHCI_IMAN_IP (1 << 0)  // interrupt pending (write 1 to clear)
+#define XHCI_IMAN_IE (1 << 1)  // interrupt enable
 
 #define XHCI_PORTSC_CCS (1 << 0)   // current connect status
 #define XHCI_PORTSC_PED (1 << 1)   // port enabled
@@ -150,6 +154,13 @@ typedef struct xhci_ctrl_state {
     int lock;           // serialises command/transfer submission
     int enumerating_slot;  // slot currently at USB address 0 (during enumeration)
     int addr_to_slot[256]; // USB address -> slot id
+
+    // Interrupt-driven completion: the ISR (or the polled fallback) drains the
+    // event ring and records the command/transfer completion here.
+    int event_lock;            // guards event-ring draining (held with IRQs off)
+    volatile int irq_done;     // set when a command/transfer event is recorded
+    xhci_trb_t irq_trb;        // the recorded completion event
+    int irq_vector;
 
     volatile bool init_complete;
     struct xhci_ctrl_state *next;
