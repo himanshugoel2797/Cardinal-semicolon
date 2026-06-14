@@ -6,51 +6,50 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "udp.h"
+#include "checksum.h"
 
-static uint16_t udp_ipv4_verify_csum(ipv4_t *packet, udp_t *udp) {
+// UDP checksum covers a pseudo-header + the UDP segment (header, including the
+// stored checksum field, + payload). A valid packet folds to zero, so there is
+// no need to zero/restore the checksum field -- the packet is never mutated.
+//
+// All multi-byte IP/UDP fields sit in network byte order in memory, and
+// net_csum_acc reads raw bytes; the internet-checksum byte-order property
+// (RFC 1071) makes the fold-to-zero check endianness-independent. `avail` is the
+// number of segment bytes actually received, used to clamp the on-wire length so
+// a lying udp->len cannot drive an out-of-bounds read.
 
-    uint16_t csum_bkp = udp->csum;
-    udp->csum = 0;
+static int udp_seg_len(const udp_t *udp, int avail) {
+    int seg_len = (int)TO_LE_FRM_BE_16(udp->len);
+    if (seg_len < (int)sizeof(udp_t))  // shorter than the UDP header -> malformed
+        return -1;
+    if (seg_len > avail)
+        seg_len = avail;
+    return seg_len;
+}
 
-    uint32_t csum = 0;
-    uint8_t *udp_u8 = (uint8_t*)udp;
-    uint16_t *packet_ptr = (uint16_t*)udp;
-
-    uint32_t src_ip = (packet->src_ip);
-    uint32_t dst_ip = (packet->dst_ip);
-
-    uint16_t *src_ip_a = (uint16_t *)&src_ip;
-    uint16_t *dst_ip_a = (uint16_t *)&dst_ip;
-
-    csum += (src_ip >> 16) & 0xffff;
-    csum += (src_ip) & 0xffff;
-    csum += (dst_ip >> 16) & 0xffff;
-    csum += (dst_ip) & 0xffff;
-    csum += ((uint16_t)packet->protocol) << 8;
-
-    csum += udp->len;
-    
-    uint32_t udp_len = TO_LE_FRM_BE_16(udp->len);
-    while (udp_len > 1){
-        csum += *packet_ptr++;
-        udp_len -= 2;
-    }
-
-    if(udp_len > 0)
-        csum += *packet_ptr & 0x00ff;
-
-    while(csum > 0xffff)
-        csum = (csum & 0xffff) + (csum >> 16);
-
-    return !(((uint16_t)~csum) == csum_bkp);
+static int udp_ipv4_csum_ok(const ipv4_t *packet, const udp_t *udp, int seg_len) {
+    uint8_t ph[12];
+    memcpy(ph + 0, &packet->src_ip, 4);   // network order in memory
+    memcpy(ph + 4, &packet->dst_ip, 4);
+    ph[8] = 0;
+    ph[9] = IP_PROTOCOL_UDP;
+    memcpy(ph + 10, &udp->len, 2);        // network order on-wire length
+    uint32_t sum = net_csum_acc(0, ph, sizeof(ph));
+    sum = net_csum_acc(sum, udp, seg_len);
+    return net_csum_fold(sum) == 0;
 }
 
 int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int len) {
-    udp_t *udp = (udp_t*)packet->body;
+    udp_t *udp = (udp_t *)packet->body;
+    int seg_len = udp_seg_len(udp, len);
+    if (seg_len < 0)
+        return 0;  // malformed -> drop
 
-    if((udp_ipv4_verify_csum(packet, udp) == 0) | (udp->csum == 0)) {
+    // A transmitted checksum of 0 means "no checksum" for UDP-over-IPv4.
+    if (udp->csum == 0 || udp_ipv4_csum_ok(packet, udp, seg_len)) {
         //DEBUG_PRINT("UDP!!\r\n");
         //TODO: Interface for services to subscribe to ports
         //  From here, the packet gets queued into the destination udp port, if present
@@ -61,48 +60,35 @@ int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int len) {
     }
 
     interface = NULL;
-    len = 0;
-
     return 0;
 }
 
-static uint16_t udp_ipv6_verify_csum(ipv6_t *packet, udp_t *udp) {
-
-    uint32_t csum = 0;
-    uint8_t *udp_u8 = (uint8_t*)udp;
-    uint16_t *packet_ptr = (uint16_t*)udp;
-
-    uint16_t *pseudo_ip = (uint16_t*)packet->src_ip;
-
-    csum += packet->protocol;
-    for(uint32_t i = 0; i < 16; i++)
-        csum += TO_LE_FRM_BE_16(pseudo_ip[i]);
-
-    for(uint32_t i = 0; i < udp->len / 2; i++)
-        csum += TO_LE_FRM_BE_16(packet_ptr[i]);
-
-    if(udp->len & 1)
-        csum += udp_u8[udp->len - 1];
-
-    csum += TO_LE_FRM_BE_16(udp->len);
-
-    while(csum > 0xffff)
-        csum = (csum & 0xffff) + (csum >> 16);
-
-    return ~csum;
+static int udp_ipv6_csum_ok(const ipv6_t *packet, const udp_t *udp, int seg_len) {
+    uint8_t ph[40];
+    memcpy(ph + 0, packet->src_ip, 16);
+    memcpy(ph + 16, packet->dst_ip, 16);
+    uint32_t ulen_be = TO_BE_FRM_LE_32((uint32_t)seg_len);
+    memcpy(ph + 32, &ulen_be, 4);         // upper-layer length, network order
+    ph[36] = ph[37] = ph[38] = 0;
+    ph[39] = IP_PROTOCOL_UDP;
+    uint32_t sum = net_csum_acc(0, ph, sizeof(ph));
+    sum = net_csum_acc(sum, udp, seg_len);
+    return net_csum_fold(sum) == 0;
 }
 
 int udp_ipv6_rx(interface_def_t *interface, ipv6_t *packet, int len) {
-    udp_t *udp = (udp_t*)packet->body;
+    udp_t *udp = (udp_t *)packet->body;
+    int seg_len = udp_seg_len(udp, len);
+    if (seg_len < 0)
+        return 0;  // malformed -> drop
 
-    if((udp_ipv6_verify_csum(packet, udp) == 0) | (udp->csum == 0)) {
+    // Unlike IPv4, the UDP checksum is mandatory over IPv6.
+    if (udp_ipv6_csum_ok(packet, udp, seg_len)) {
         DEBUG_PRINT("UDPv6!!\r\n");
         //From here, the packet gets queued into the destination udp port, if present
         //If not present, the packet is dropped
     }
 
     interface = NULL;
-    len = 0;
-
     return 0;
 }
