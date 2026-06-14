@@ -67,16 +67,17 @@ interactive 3D desktop and is not used for smoke tests.
 `.github/workflows/build.yml` reuses `scripts/devenv/environment.yml` as the
 single source of truth for the toolchain, builds host tools + target, and
 asserts `kernel.bin` exists and ≥30 `.celf` modules were produced. Keep that
-module count in mind when adding/removing modules.
+module count in mind when adding/removing modules (the tree currently builds
+~40 `.celf`s).
 
 ## Repository layout
 
 | Path | Role |
 |------|------|
 | `kernel/` | The tiny core: ELF/relocatable loader, initrd (tar) parsing, boot-script interpreter, bootstrap allocator, symbol DB, DWARF. Linked at a fixed high virtual address. |
-| `modules/` | `Sys*` kernel-privileged modules: memory (`SysPhysicalMemory`, `SysVirtualMemory`, `SysMemory`), `SysInterrupts`, `SysMP`, `SysTimer`, `SysFP`, `SysObj` (object model), `SysReg` (registry), `SysUser` (syscalls), `SysTaskMgr` (scheduler), `SysDebug`. |
-| `servers/` | `Core*` OS services: `CoreDisplay`, `CoreAudio`, `CoreInput`, `CoreNetwork`, `CoreStorage`, `CoreUsb`, `CorePower`, `CoreDriver`. |
-| `drivers/` | Device drivers: `virtio` (gpu/net/common), `intel_gfx`, `intel_wifi`, `hdaudio`, `rtl8139`, `rtl8169`, `ahci`, `uhci`, `ehci`, `ps2`, `lfb`, `tarfs`. |
+| `modules/` | `Sys*` kernel-privileged modules: memory (`SysPhysicalMemory`, `SysVirtualMemory`, `SysMemory`), `SysInterrupts`, `SysMP`, `SysTimer`, `SysFP`, `SysObj` (object model), `SysReg` (registry), `SysUser` (syscalls), `SysTaskMgr` (scheduler), `SysDebug`, `SysGdb` (GDB remote-serial-protocol stub — debug the OS over serial/USB-serial; see `notes/debugging-gdb.md`). |
+| `servers/` | `Core*` OS services: `CoreDisplay`, `CoreAudio`, `CoreInput`, `CoreNetwork` (ARP/ICMP/IPv4), `CoreStorage` (block-device registry + the `cardfs` object-store exploration), `CoreUsb` (controller-agnostic transfer/enumeration + class-driver registration), `CorePower`, `CoreDriver`. |
+| `drivers/` | Device drivers: `virtio` (gpu/net/common), `intel_gfx`, `intel_wifi`, `hdaudio`, `rtl8139`, `rtl8169`, `ahci`, USB host controllers `uhci`/`xhci` (both implement the CoreUsb transfer backend; `ehci` is a stub) + USB class drivers `usb_hid` (kbd/mouse), `usb_storage` (BBB/SCSI block device), `usb_hub`, `usb_serial` (FTDI, routes the GDB stub), `ps2`, `lfb`, `tarfs`. |
 | `libs/` | Static libs linked into modules: `crypto` (sha256/hmac), `miniz`, `module_lib` (CELF header build/verify), `kvs`, `ubsan_handlers`, plus header-only `pci/` and `syscalls/`. |
 | `common/` | Freestanding mini-libc (`string`, `stdlib`, `stdio`, lists/queues, `time`) + platform type headers. Included as a SYSTEM include everywhere. |
 | `platform/<isa>/<plat>/` | Per-target CMake fragments (`flags.cmake`), `linker.ld`, GRUB configs, and the `image`/`run` custom targets. |
@@ -183,9 +184,10 @@ to attach to `CoreDisplay`). Debug output is `DEBUG_PRINT(...)` over COM1.
 - The default branch is `master`. Do all work on a short-lived feature branch
   (e.g. `claude/<topic>`) cut from `master`; never commit or push to `master`
   without explicit permission.
-- Push with `git push -u origin <branch>`; after pushing, open a **draft** PR if
-  one doesn't already exist. Once a PR is merged, delete its branch.
-- `git commit`/`push` only when asked.
+- **Push each feature branch as you commit it** (`git push -u origin <branch>`)
+  so the work is reviewable, and open a **draft** PR if one doesn't already
+  exist (set the PR base to the parent branch for stacked work, so each PR shows
+  only its own diff). Once a PR is merged, delete its branch.
 
 ## Gotchas
 
@@ -196,7 +198,22 @@ to attach to `CoreDisplay`). Debug output is `DEBUG_PRINT(...)` over COM1.
 - **No floating point / no libc** in kernel-space code — use `common/`.
 - **Load order** is explicit in the boot scripts; an unresolved import means a
   module is loaded before the one that exports the symbol.
-- `notes/AUDIT.md` enumerates known stubs (`CoreAudio`/`CoreStorage`/`tarfs`
-  `module_init` are empty; `CoreNetwork` ARP/IP/TCP TODO; Haswell `intel_gfx`
-  largely absent; several unbounded hardware busy-waits). Check it before
-  assuming something is broken vs. intentionally unfinished.
+- `notes/AUDIT.md` enumerates known stubs and which are now addressed
+  (`CoreAudio`/`tarfs` `module_init` still empty; `CoreStorage` now has a
+  block-device registry + the `cardfs` object-store exploration; `CoreNetwork`
+  ARP/ICMP/IPv4 work, TCP/sockets still TODO; the USB stack works over UHCI/xHCI;
+  Haswell `intel_gfx` largely absent). Check it before assuming something is
+  broken vs. intentionally unfinished.
+- **Boot timing knobs that bit recent work** (all detailed in `notes/AUDIT.md` /
+  `notes/debugging-gdb.md`): `task_sleep`/`timer_timestamp_ns` are unreliable for
+  delays in this tree — drivers use bounded busy-spins instead; the
+  boot-script files (`loadscript.txt`/`servicescript.txt`) use **CRLF** line
+  endings — keep them CRLF or the parser panics with "Unknown Command".
+
+## Debugging
+
+`SysGdb` is a GDB remote-serial-protocol stub: attach GDB over COM2, or over a
+USB-serial (FTDI) adapter that `drivers/usb_serial` brings up (works on real
+hardware). See **`notes/debugging-gdb.md`** for the QEMU recipes and how to break
+in. The full boot now also works under `-accel kvm` (fast) thanks to the
+APIC-timer ordering fix; before that it booted only under TCG.
