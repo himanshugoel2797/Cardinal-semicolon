@@ -12,6 +12,7 @@
 #include <types.h>
 
 #include "SysTimer/timer.h"
+#include "SysMP/mp.h"
 #include "timer.h"
 
 typedef struct
@@ -36,18 +37,33 @@ PRIVATE int timer_register(timer_features_t features, timer_handlers_t *handlers
     return timer_idx++;
 }
 
-//TODO Figure out how to handle smp timer usage
-static _Atomic uint64_t timer_wait_pending = 0;
-static _Atomic uint64_t timer_wait_count = 0;
-static _Atomic uint64_t timer_wait_target = 0;
-static timer_defs_t *timer_wait_d = NULL;
+// Wait state for the periodic-interrupt fallback path of timer_wait(). This is
+// PER-CORE (TLS): the fallback drives each core's own local timer, whose handler
+// fires on that same core, so concurrent timer_wait() calls on different cores
+// never share state. (The preferred path is the SMP-safe counter poll; this
+// fallback is only taken on a platform with no readable counter timer.)
+typedef struct
+{
+    _Atomic uint64_t pending;
+    _Atomic uint64_t count;
+    _Atomic uint64_t target;
+} timer_wait_state_t;
+
+static int timer_wait_tls_off = -1;
+
+static timer_wait_state_t *timer_wait_self(void)
+{
+    return (timer_wait_state_t *)mp_tls_get(timer_wait_tls_off);
+}
+
 PRIVATE void timer_wait_handler(int irq)
 {
     irq = 0;
-    if (++timer_wait_count >= timer_wait_target && timer_wait_pending != 0)
+    timer_wait_state_t *w = timer_wait_self();
+    if (++w->count >= w->target && w->pending != 0)
     {
         DEBUG_PRINT("[SysTimer] Timer Wait Done\r\n");
-        timer_wait_pending = 0;
+        w->pending = 0;
     }
 }
 
@@ -55,67 +71,69 @@ void timer_wait(uint64_t ns)
 {
 #define TIMER_WAIT_PERIODIC_INTR 1
 #define TIMER_WAIT_COUNTER 2
-    //Allocate a timer for oneshot mode with a rate that can match the desired time
-    int idx = 0;
+    int idx = -1;
     int waitType = 0;
-    for (; idx < timer_idx; idx++)
-        if (!timer_defs[idx].in_use) // && (timer_defs[idx].features & timer_features_periodic))
+
+    // Prefer a readable counter (e.g. the calibrated TSC): polling it uses only
+    // caller-stack state and no shared hardware, so it is SMP-safe -- any number
+    // of cores can timer_wait() concurrently. The periodic-interrupt path below
+    // relies on module-global wait state and a single timer, so it is only a
+    // fallback for platforms with no counter timer (and is not safe for
+    // concurrent callers -- see the globals above).
+    for (int i = 0; i < timer_idx; i++)
+        if ((timer_defs[i].features & (timer_features_counter | timer_features_read)) &&
+            timer_defs[i].handlers.read != NULL)
         {
-            if (timer_defs[idx].features & timer_features_periodic)
-            {
-                if (timer_defs[idx].handlers.set_handler != NULL &&
-                    timer_defs[idx].handlers.set_enable != NULL)
-                {
-                    waitType = TIMER_WAIT_PERIODIC_INTR;
-                    break;
-                }
-            }
-            else if (timer_defs[idx].features & (timer_features_counter | timer_features_read))
-            {
-                if (timer_defs[idx].handlers.read != NULL)
-                {
-                    waitType = TIMER_WAIT_COUNTER;
-                    break;
-                }
-            }
+            idx = i;
+            waitType = TIMER_WAIT_COUNTER;
+            break;
         }
-    if (idx == timer_idx)
+
+    // Fallback: a per-core (local) periodic timer. It must be `local` so each
+    // core drives its own hardware and its own TLS wait state; a shared periodic
+    // timer could not serve concurrent waiters.
+    if (idx < 0)
+        for (int i = 0; i < timer_idx; i++)
+            if ((timer_defs[i].features & timer_features_local) &&
+                (timer_defs[i].features & timer_features_periodic) &&
+                timer_defs[i].handlers.set_handler != NULL &&
+                timer_defs[i].handlers.set_enable != NULL)
+            {
+                idx = i;
+                waitType = TIMER_WAIT_PERIODIC_INTR;
+                break;
+            }
+
+    if (idx < 0)
         PANIC("[SysTimer] Failed to select timer.");
 
     if (waitType == TIMER_WAIT_PERIODIC_INTR)
     {
-        timer_wait_count = 0;
-        timer_wait_pending = 1;
+        // Per-core wait state; the local timer's handler fires on this same core.
+        timer_wait_state_t *w = timer_wait_self();
+        w->count = 0;
+        w->target = (ns * timer_defs[idx].handlers.rate) / (1000 * 1000 * 1000);
+        if (w->target == 0)
+            w->target = 1;
+        w->pending = 1;
         DEBUG_PRINT("[SysTimer] Timer wait start!\r\n");
 
-        //Configure it for oneshot wait handler
         timer_defs_t *t = &timer_defs[idx];
-        timer_wait_d = t;
-
-        timer_wait_target = (ns * t->handlers.rate) / (1000 * 1000 * 1000);
-
-        if (timer_wait_target == 0)
-            timer_wait_target = 1;
-
-        DEBUG_PRINT("[SysTimer] Allocated one-shot timer: ");
+        DEBUG_PRINT("[SysTimer] Using local periodic timer: ");
         DEBUG_PRINT(t->handlers.name);
         DEBUG_PRINT("\r\n");
 
-        t->in_use = true;
-        //t->handlers.set_mode(&t->handlers, timer_features_oneshot);
+        // No in_use claim: a local timer is per-core, non-exclusive.
         t->handlers.set_handler(&t->handlers, timer_wait_handler);
         t->handlers.set_enable(&t->handlers, true);
 
-        //Halt the cpu
-        while (timer_wait_pending)
+        //Halt the cpu until this core's handler signals completion.
+        while (w->pending)
             halt();
 
         t->handlers.set_enable(&t->handlers, false);
 
         DEBUG_PRINT("[SysTimer] Timer Finish\r\n");
-
-        timer_wait_d = NULL;
-        t->in_use = false;
     }
     else if (waitType == TIMER_WAIT_COUNTER)
     {
@@ -264,6 +282,10 @@ static int timer_init()
 
 int module_init()
 {
+    // Reserve a per-core TLS slot for the periodic timer_wait() fallback state,
+    // once on the BSP before any AP comes up (so every core's TLS includes it).
+    timer_wait_tls_off = mp_tls_alloc(sizeof(timer_wait_state_t));
+
     timer_def_cnt = timer_platform_gettimercount();
     timer_defs = malloc(sizeof(timer_defs_t) * timer_def_cnt);
     memset(timer_defs, 0, sizeof(timer_defs_t) * timer_def_cnt);
