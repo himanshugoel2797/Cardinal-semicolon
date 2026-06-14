@@ -54,14 +54,17 @@ static uint32_t read32(uhci_ctrl_state_t *state, uint16_t addr)
     return inl(state->iobar + addr);
 }
 
-// task_sleep does not actually deschedule (see notes/AUDIT.md), so the reset
-// delays below previously did not happen at all. Busy-wait off the timer instead:
-// this runs in the init task with interrupts enabled, so timer_timestamp_ns()
-// advances. It is one-time init, so the spin cost is acceptable.
+// task_sleep does not deschedule (see notes/AUDIT.md) and timer_timestamp_ns is
+// unreliable here (it uses floating point, which kernel modules build without,
+// and depends on a counter timer that may be absent -- it can return (uint64_t)-1,
+// collapsing a timestamp-based wait to zero), so use a plain bounded busy-spin for
+// the one-time init delays. Not wall-clock precise -- only "at least roughly this
+// long" -- which is all the USB reset/recovery delays need.
 static void uhci_delay_ns(uint64_t ns)
 {
-    uint64_t start = timer_timestamp_ns();
-    while (timer_timestamp_ns() - start < ns)
+    // ~a few cycles per iteration; one iteration per nanosecond is comfortably
+    // generous on the emulated targets (over-waiting on init is harmless).
+    for (volatile uint64_t i = 0; i < ns; i++)
         ;
 }
 
