@@ -11,13 +11,17 @@
  * "objects with keys" model) so the on-disk persistence path can be exercised
  * end-to-end on real hardware before the real log-structured/COW design lands.
  *
+ * It is a standalone filesystem-provider module: it registers a
+ * storage_fsprovider_t with CoreStorage and is offered each block device via its
+ * probe. The probe is read-only by default -- it mounts an existing cardfs
+ * volume and otherwise declines, NEVER formatting a device implicitly. The old
+ * destructive format-on-boot behaviour now lives behind CARDFS_SELFTEST (off by
+ * default; see below).
+ *
  * On-disk layout (block_size B):
  *   LBA 0                 : superblock
  *   LBA 1 .. table_blocks : object table (array of 128-byte entries)
  *   LBA data_start ..     : object data blocks (bump-allocated)
- *
- * A TEMP self-test (started from CoreStorage module_init) waits for a block
- * device, formats it, puts a couple of objects, and reads them back.
  */
 
 #include <stdint.h>
@@ -26,7 +30,12 @@
 #include <types.h>
 
 #include "CoreStorage/storage.h"
-#include "SysTaskMgr/task.h"
+
+// Exploration self-test. DESTRUCTIVE: formats whatever block device CoreStorage
+// hands the probe, writes a couple of objects, and reads them back. Off by
+// default so cardfs never eats a real disk on boot; set to 1 to exercise the
+// persistence path end-to-end.
+#define CARDFS_SELFTEST 0
 
 #define CARDFS_MAGIC "CARDFS01"
 #define CARDFS_TABLE_BLOCKS 8
@@ -65,6 +74,22 @@ static uint32_t fs_bs(void *bdev) {
     return info ? info->block_size : 512;
 }
 
+static int read_super(void *bdev, cardfs_super_t *sb) {
+    uint32_t bs = fs_bs(bdev);
+    uint8_t *blk = (uint8_t *)malloc(bs);
+    if (blk == NULL)
+        return -1;
+    int r = blk_read(bdev, 0, blk);
+    if (r == 0) {
+        memcpy(sb, blk, sizeof(*sb));
+        if (memcmp(sb->magic, CARDFS_MAGIC, 8) != 0)
+            r = -1;
+    }
+    free(blk);
+    return r;
+}
+
+#if CARDFS_SELFTEST
 static int cardfs_format(void *bdev) {
     uint32_t bs = fs_bs(bdev);
     uint8_t *blk = (uint8_t *)malloc(bs);
@@ -91,21 +116,6 @@ static int cardfs_format(void *bdev) {
 
     free(blk);
     return 0;
-}
-
-static int read_super(void *bdev, cardfs_super_t *sb) {
-    uint32_t bs = fs_bs(bdev);
-    uint8_t *blk = (uint8_t *)malloc(bs);
-    if (blk == NULL)
-        return -1;
-    int r = blk_read(bdev, 0, blk);
-    if (r == 0) {
-        memcpy(sb, blk, sizeof(*sb));
-        if (memcmp(sb->magic, CARDFS_MAGIC, 8) != 0)
-            r = -1;
-    }
-    free(blk);
-    return r;
 }
 
 // Store `data` (len bytes) under `key`. Bump-allocates data blocks.
@@ -214,21 +224,9 @@ static int cardfs_get(void *bdev, const char *key, void *buf, uint32_t maxlen, u
     return 0;
 }
 
-// ---- TEMP self-test ----
-static void cardfs_test_task(void *arg) {
-    arg = NULL;
-    // Wait for a block device to be registered (usb_storage enumerates late).
-    void *bdev = NULL;
-    while (bdev == NULL) {
-        if (storage_blockdev_count() > 0)
-            bdev = storage_blockdev_get(0);
-        task_yield();
-    }
-    // A few extra yields so the device's self-test (if any) settles.
-    for (int i = 0; i < 1000; i++)
-        task_yield();
-
-    DEBUG_PRINT("[cardfs] formatting block device 0\r\n");
+// Format the device, write a couple of objects, read them back. DESTRUCTIVE.
+static void cardfs_selftest(void *bdev) {
+    DEBUG_PRINT("[cardfs] SELFTEST: formatting block device (DESTRUCTIVE)\r\n");
     if (cardfs_format(bdev) != 0) {
         DEBUG_PRINT("[cardfs] format failed\r\n");
         return;
@@ -258,12 +256,32 @@ static void cardfs_test_task(void *arg) {
     }
 
     DEBUG_PRINT("[cardfs] self-test done\r\n");
-    while (true)
-        task_yield();
+}
+#endif  // CARDFS_SELFTEST
+
+// CoreStorage fs-provider probe. Read-only: mount an existing cardfs volume,
+// otherwise decline. Never formats implicitly (the destructive path is the
+// CARDFS_SELFTEST exploration only).
+static int cardfs_probe(void *bdev) {
+    cardfs_super_t sb;
+    if (read_super(bdev, &sb) == 0) {
+        DEBUG_PRINT("[cardfs] mounted existing cardfs volume\r\n");
+        return 0;
+    }
+#if CARDFS_SELFTEST
+    cardfs_selftest(bdev);
+    return 0;
+#else
+    return -1;  // not a cardfs volume; leave it untouched
+#endif
 }
 
-void cardfs_start_selftest(void) {
-    cs_id task = 0;
-    if (create_task_kernel("cardfs_test", task_permissions_kernel, &task) == CS_OK)
-        start_task_kernel(task, cardfs_test_task, NULL);
+int module_init() {
+    storage_fsprovider_t prov;
+    memset(&prov, 0, sizeof(prov));
+    strncpy(prov.name, "cardfs", sizeof(prov.name) - 1);
+    prov.probe = cardfs_probe;
+    storage_register_fsprovider(&prov);
+    DEBUG_PRINT("[cardfs] registered fs provider\r\n");
+    return 0;
 }

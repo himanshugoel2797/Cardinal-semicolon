@@ -1,6 +1,6 @@
 # cardfs — object-store exploration (status)
 
-`servers/CoreStorage/src/cardfs.c` is a **minimal, working exploration** of the
+`drivers/cardfs/src/main.c` is a **minimal, working exploration** of the
 relational/object filesystem direction (see `filesystem-direction.md`). It is
 NOT the final design — it's the simplest expression of the "objects with keys"
 model, built to exercise the on-disk persistence path end-to-end on real
@@ -46,14 +46,24 @@ stone. Deliberately absent, to add when the real design lands:
   relational/tag model. The "relational" layer is the next thing to prototype
   (e.g. a tag index object pointing at object ids, kvs-style).
 - **No B-tree** — linear table scan; fine for tens of objects, not thousands.
-- **No FS-provider registration / userspace API** — it's a built-in self-test,
-  not yet wired to a `SysObj`/syscall surface.
+- **No userspace API** — cardfs registers as a CoreStorage fs provider
+  (`storage_register_fsprovider`) and its probe mounts an existing volume, but it
+  is not yet wired to a `SysObj`/syscall surface.
 - **512-byte block / single device** assumptions; key length capped at 64.
+
+## Done since the first cut
+
+- **Split into its own module** (`drivers/cardfs`), out of `CoreStorage`.
+- **FS-provider registration API** (`storage_register_fsprovider`): CoreStorage
+  probes each registered provider per block device (synchronously at
+  registration), replacing the old poll-the-list-and-settle self-test task.
+- **Non-destructive by default**: the probe mounts an existing cardfs volume and
+  otherwise declines; the format/roundtrip exploration is behind `CARDFS_SELFTEST`
+  (off), so it never formats a real disk on boot.
 
 ## Suggested next steps
 
 1. Replace the flat table with the `Main.md` object-store-table + a tag object
    (the relational layer) — still on top of the same block device.
-2. A CoreStorage FS-provider registration API (mount a provider on a block dev),
-   moving cardfs out of the module_init self-test.
+2. Wire the provider to a `SysObj`/syscall surface so userspace can do file I/O.
 3. Crash consistency (journal/COW) once the structure is settled.
