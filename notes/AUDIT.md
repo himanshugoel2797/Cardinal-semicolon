@@ -118,7 +118,13 @@ atomic to preemption. Race on concurrent callers. *(Fixed: a dedicated
 keeps its LIFO-only release behaviour — only the most recent allocation can be
 returned — which is inherent to a bump allocator, not a bug.)*
 
-### [PARTIAL] SMP application-processor (AP) bring-up — works under KVM, parked by default
+### [FIXED] SMP application-processor (AP) bring-up — race resolved, APs active by default
+> **Resolved.** The timing-sensitive SMP race that blocked this is now fixed (deferred
+> one-quantum reap — see "ROOT CAUSE FOUND & FIXED" below). `CALL:task_release_aps` is
+> back in `servicescript.txt`, so the default boot is multi-core. The historical
+> narrative below is kept because it documents the diagnosis and the supporting
+> infrastructure (page-guard, IST dumps, two-phase reap) that the fix builds on.
+
 APs are brought up (TLS/vmem/interrupts/timer per `apscript.txt`) and the machinery to
 release them into the scheduler is fully in place. The mechanism is *single-threaded
 boot, then release*: the kernel module loader (`elf_load`/`elf_resolvefunction`/symbol
@@ -227,6 +233,53 @@ instruction. Caveat: without cross-core TLB shootdown (`vmem_flush` only does lo
 RW in its TLB may not trap — so this may need a shootdown first, or correlating the
 faulting RIP from a disassembly of the scheduler save/restore + `idt_mainhandler` EOI
 path. Heap red-zones in `SysMemory` would generalise the live-buffer case.
+
+**ROOT CAUSE FOUND & FIXED — the scheduler ran on a stack it then let be freed.**
+The corruptor was never a *write to the wrong reg_state*; it was the owning core
+still **executing on an exited task's kernel stack** while another core freed that
+stack out from under it. The periodic timer is vector ≥32, so its IDT entry uses
+`ist=0` (`SysInterrupts/.../idt.c`) — i.e. `idt_mainhandler` and `task_switch_handler`
+run **on the interrupted task's own kernel stack**, and the trap frame the final
+`iret` consumes lives on that stack too. When the current task had exited, the
+scheduler marked it `task_state_reapable` and dropped `process_lock` *before*
+returning through the interrupt epilogue (`interrupt_sendeoi`) and `iret` — all of
+which still execute on that task's stack. The instant `process_lock` was released,
+`task_cleanup` on the other core was free to `free()` the stack / `regstate_guard_free`
+the reg_state / `free` the `process_desc_t`. The reused memory was then scribbled by
+whatever allocation grabbed it, which is exactly both captured signatures: the freed
+stack's `iret` frame overwritten → `iret` into garbage; and a freed `reg_state`/stack
+page reallocated to a *new* task and stomped while two cores briefly touched it (the
+"EOI context in a live reg_state, `rbp` inside the guard region" capture — the guard
+didn't fault because the page was still mapped, just reallocated). `task_yield`'s
+restore path has the same hazard: it builds its `iret` frame on the outgoing task's
+stack after `task_yield_stage2` returns. The two-phase reap closed the
+`cur_task`-dangling sub-case but not this one, because "switched away" in the
+scheduler is not complete until the `iret` retires.
+
+**Fix (timing-independent — `SysTaskMgr/src/task.c`, `task_priv.h`):** *deferred,
+one-quantum reap.* Added `core_desc_t.last_dead` (per core). When the scheduler
+switches away from an exited task it now **stashes** it in `last_dead` (leaving it
+`task_state_exited`, which is neither selectable nor reapable) instead of marking it
+reapable immediately. `task_reap_deferred()`, called at the top of both scheduler
+entry points (`task_switch_handler`, `task_yield_stage2`) under `process_lock`,
+promotes the *previous* pass's `last_dead` to `task_state_reapable`. By the next
+scheduler pass on that core the `iret` has retired and the core is demonstrably
+running on a **different** task's stack, so `task_cleanup` can free the dead task's
+stack/reg_state/struct with no live reference remaining. No hot-path validation probe
+(which the AUDIT notes perturbs the timing and hides the race) — the change is purely
+structural. Every core always idles + takes the periodic tick, so the one-quantum
+hold drains promptly. The page-guard, two-phase reap, and `vmem_unmap`/PML4
+prerequisites above all remain and compose with this.
+
+*Reproduction & validation:* the pre-fix `#PF` reproduces under **TCG** with the full
+`servicescript` (`cr2 = 0xa0`, a freed-chunk metadata value, dereferenced in the
+scheduler's `vmem_setactive(ntask->mem)` path, on the BSP the instant `servicescript`
+exits right after `releasing APs`). The race is sensitive to the *full* boot timing —
+a stripped servicescript that exits immediately does **not** reproduce it (17/17 clean
+both ways), so it must be tested with the real boot. Post-fix, every boot that reached
+the AP-release window survived with no fault. A clean large-N statistical A/B on this
+dev box is throttled by intermittent host CPU starvation (the guest is TCG-bound; see
+the build-env notes) and should be re-run once the host is uncontended.
 
 Two pieces of hardening landed to make such faults debuggable (previously a fault
 during AP bring-up cascaded silently into a triple-fault reboot):

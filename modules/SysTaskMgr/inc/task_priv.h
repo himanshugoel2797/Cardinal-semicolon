@@ -30,11 +30,12 @@ typedef enum
     task_state_sleep,
     task_state_blocked,
     task_state_exited,
-    //Set by the owning core's scheduler once it has switched away from an
-    //exited task (so the task is no longer any core's cur_task). task_cleanup
-    //only frees tasks in this state -- freeing a merely-exited task would race
-    //with the owning core still holding it as cur_task on SMP (use-after-free
-    //of its reg_state during the next context switch).
+    //Set by the owning core's scheduler one full pass AFTER it switched away
+    //from an exited task (see core_desc_t.last_dead). task_cleanup only frees
+    //tasks in this state -- freeing a merely-exited task would race with the
+    //owning core, which is still executing the interrupt epilogue / iret on that
+    //task's kernel stack when it drops process_lock (use-after-free of its
+    //stack/reg_state, corrupting the page that gets reallocated next).
     task_state_reapable,
 } task_state_t;
 
@@ -127,6 +128,13 @@ typedef struct
 {
     uint8_t *interrupt_stack;
     process_desc_t *cur_task;
+    //Deferred reap: the exited task this core switched away from on its previous
+    //scheduler pass. The core is still executing the interrupt epilogue / iret on
+    //that task's kernel stack when it drops process_lock, so the task cannot be
+    //freed yet. It is promoted to task_state_reapable on the core's NEXT pass --
+    //by then the core has iret'd onto a different task's stack, so task_cleanup
+    //may safely free its stack/reg_state/struct. See notes/AUDIT.md.
+    process_desc_t *last_dead;
 } core_desc_t;
 
 #endif

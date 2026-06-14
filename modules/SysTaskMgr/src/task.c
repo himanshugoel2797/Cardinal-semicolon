@@ -438,12 +438,31 @@ free_descriptors(process_desc_t *pinfo, descriptor_entry_t *desc_table, cs_id ba
     }
 }
 
+//Promote the exited task this core retired on its previous scheduler pass (if
+//any) to task_state_reapable. By now the core has fully iret'd off that task's
+//kernel stack and is running another task, so task_cleanup may safely reclaim
+//its stack/reg_state/struct. Must be called holding process_lock.
+static void task_reap_deferred(void)
+{
+    process_desc_t *dead = core_descs->last_dead;
+    if (dead != NULL)
+    {
+        local_spinlock_lock(&dead->lock);
+        dead->state = task_state_reapable;
+        local_spinlock_unlock(&dead->lock);
+        core_descs->last_dead = NULL;
+    }
+}
+
 static void task_switch_handler(int irq)
 {
     irq = 0;
 
     int cli_state = cli();
     local_spinlock_lock(&process_lock);
+
+    //Release the previous pass's retired task now that we've left its stack.
+    task_reap_deferred();
 
     process_desc_t *ntask = NULL; //find the first pending task
     if (core_descs->cur_task != NULL)
@@ -452,10 +471,13 @@ static void task_switch_handler(int irq)
 
         if (core_descs->cur_task->state == task_state_exited)
         {
-            //This core is switching away from a task that has exited: hand it to
-            //task_cleanup by marking it reapable. Do NOT save its state -- it is
-            //dead, and once we drop cur_task below, task_cleanup may free it.
-            core_descs->cur_task->state = task_state_reapable;
+            //This core is switching away from a task that has exited. Do NOT mark
+            //it reapable yet: we are still executing this interrupt's epilogue and
+            //iret on its kernel stack, and once we drop process_lock below
+            //task_cleanup could free that stack out from under us. Stash it and
+            //let the NEXT pass (task_reap_deferred) release it. Do NOT save its
+            //state either -- it is dead.
+            core_descs->last_dead = core_descs->cur_task;
         }
         else
         {
@@ -551,6 +573,9 @@ static void task_switch_handler(int irq)
 static void task_yield_stage2(interrupt_register_state_t *mp_state){
     local_spinlock_lock(&process_lock);
 
+    //Release the previous pass's retired task now that we've left its stack.
+    task_reap_deferred();
+
     process_desc_t *ntask = NULL; //find the first pending task
     if (core_descs->cur_task != NULL)
     {
@@ -558,10 +583,13 @@ static void task_yield_stage2(interrupt_register_state_t *mp_state){
 
         if (core_descs->cur_task->state == task_state_exited)
         {
-            //Yielding out of an exited task (e.g. the tail of end_task_syscall):
-            //mark it reapable for task_cleanup and skip the save -- it is dead and
-            //about to be freed once we drop cur_task below.
-            core_descs->cur_task->state = task_state_reapable;
+            //Yielding out of an exited task (e.g. the tail of end_task_syscall).
+            //Do NOT mark it reapable yet: task_yield restores registers and irets
+            //off this same kernel stack after we return, so freeing it now (from
+            //task_cleanup on another core) would corrupt the stack mid-switch.
+            //Stash it; the NEXT pass (task_reap_deferred) releases it. Skip the
+            //save -- it is dead.
+            core_descs->last_dead = core_descs->cur_task;
         }
         else
         {
@@ -1308,6 +1336,7 @@ static void task_core_setup()
 
     core_descs->interrupt_stack = interrupt_stack;
     core_descs->cur_task = NULL;
+    core_descs->last_dead = NULL;
 
     interrupt_setstack(interrupt_stack);
 
