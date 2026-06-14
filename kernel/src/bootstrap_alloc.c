@@ -62,6 +62,7 @@ void bootstrap_free(void *mem, size_t s)
 }
 void *(*malloc_hndl)(size_t) = NULL;
 void (*free_hndl)(void *) = NULL;
+void *(*realloc_hndl)(void *, size_t) = NULL;
 
 void *WEAK malloc(size_t size)
 {
@@ -100,11 +101,38 @@ void WEAK free(void *ptr)
 
 void *WEAK realloc(void *ptr, size_t size)
 {
-    ptr = NULL;
-    size = 0;
+    if (realloc_hndl != NULL)
+        return realloc_hndl(ptr, size);
 
-    PANIC("realloc unimplemented!");
-    return NULL;
+    // The real heap allocator is installed but exports no realloc: its private
+    // metadata layout means we cannot recover the original allocation size to
+    // copy, so refuse rather than corrupt memory. SysMemory should export a
+    // `realloc` (then it auto-wires via kernel_updatememhandlers).
+    if (malloc_hndl != NULL || free_hndl != NULL)
+        PANIC("realloc: heap allocator installed no realloc handler");
+
+    // Bootstrap bump-allocator path: malloc() stashes the request size in the
+    // 16-byte header immediately before the returned pointer (see malloc/free).
+    if (ptr == NULL)
+        return malloc(size);
+    if (size == 0)
+    {
+        free(ptr);
+        return NULL;
+    }
+
+    size_t old_size = 0;
+    memcpy(&old_size, (uint8_t *)ptr - 16, sizeof(size_t));
+    if (size <= old_size)
+        return ptr; // existing block already satisfies the request
+
+    void *n = malloc(size);
+    if (n == NULL)
+        return NULL; // old block left intact, per C realloc semantics
+
+    memcpy(n, ptr, old_size);
+    free(ptr);
+    return n;
 }
 
 int kernel_free_avl_bootstrap()
@@ -136,6 +164,10 @@ int kernel_updatememhandlers()
     free_hndl = (void (*)(void *))elf_resolvefunction("free");
     if (free_hndl == free)
         free_hndl = NULL;
+
+    realloc_hndl = (void *(*)(void *, size_t))elf_resolvefunction("realloc");
+    if (realloc_hndl == realloc)
+        realloc_hndl = NULL;
 
     return 0;
 }

@@ -40,5 +40,6 @@ extern int g_checks_failed;
 void test_checksum(void);
 void test_sha256(void);
 void test_hmac(void);
+void test_time(void);
 
 #endif

@@ -100,14 +100,12 @@ iteration, so the free list is whole at every iteration boundary. The bail
 nothing removed), so `btm_level` and `free_mem` are left exactly as they were —
 no partial allocation, no leaked pages.
 
-### [LIKELY] pagealloc re-insert failures are unchecked (page leak vector)
-`modules/SysPhysicalMemory/src/page_allocator.c:195,204,219` — when the scan
-puts a dequeued block back (wrong zone, too small, or the leftover after a
-split), it ignores the `insert_queue*` return value. If the queue is full the
-entry is silently dropped, leaking those pages and shrinking the free list (a
-later `queue_trydequeue` then fails). Independent of the OOM-sentinel work; the
-allocation logic itself otherwise conserves pages. Should check the return and
-size the queue so re-inserts cannot fail.
+### [FIXED] pagealloc re-insert failures are unchecked (page leak vector)
+`modules/SysPhysicalMemory/src/page_allocator.c` — the scan's re-inserts no
+longer silently drop entries: `insert_queue`/`insert_queue_front` now
+`compact_queue()` and retry on a full queue, and `PANIC` if the entry still does
+not fit. So a re-insert either succeeds or halts loudly; it cannot leak pages or
+shrink the free list. (The original [LIKELY] finding described the pre-fix state.)
 
 ### [LIKELY] Unsynchronised bump allocator on SMP
 `modules/SysVirtualMemory/src/platform/x86_64/pc/vmem.c:76` — `vmem_vmalloc`
@@ -381,9 +379,40 @@ and the wake path / timestamp source needs verifying. Until then, callers must n
 rely on it for real delays.
 
 ### [INCOMPLETE] Stubs / TODOs (tracked, not bugs)
-- `kernel/src/bootstrap_alloc.c:101` `realloc` → `PANIC("unimplemented")`.
-- `common/src/time.c` `gmtime` partial, `strftime` is a no-op.
+- ~~`kernel/src/bootstrap_alloc.c` `realloc` → `PANIC("unimplemented")`.~~
+  *(Fixed: bootstrap `realloc` implemented via the size-prefix header
+  (alloc/copy/free, no-op on shrink). Added a `realloc_hndl` that
+  `kernel_updatememhandlers` resolves from the loaded heap allocator, mirroring
+  `malloc_hndl`/`free_hndl`; if the real heap is installed but exports no
+  `realloc`, the bootstrap one refuses rather than reading foreign metadata.
+  Note: SysMemory does not yet export `realloc`, so that path PANICs — it has no
+  callers today. SysMemory's allocator has the node metadata to add one.)*
+- ~~`common/src/time.c` `gmtime` partial, `strftime` is a no-op.~~ *(Fixed:
+  full `gmtime` (epoch→broken-down UTC, leap-correct, post-1970) and a real
+  `strftime` subset (`%Y %y %m %d %e %H %M %S %j %p %a %b %%`, bounds-checked,
+  unknown specifiers emitted verbatim). Host unit tests in `tests/test_time.c`.
+  No in-tree callers yet.)*
 - SMP timer/IPI TODOs (`SysTimer/src/main.c:39`) — load-bearing once APs schedule.
+
+### [FIXED] Unbounded hardware busy-waits (no timeout)
+The AHCI/RTL spins flagged below were bounded on branch
+`claude/driver-busywait-timeouts`: `ahci_resethba` (GHC reset) and the AHCI
+command-completion `PxCI` spin (also dropped its per-iteration `DEBUG_PRINT`
+flood, now returns -1 on timeout), and the `rtl8139`/`rtl8169` tx
+descriptor-ownership waits (bounded, drop the packet on timeout; rtl8169 unlocks
+before returning). All use ~2e8 iteration caps matching the existing
+`ahci_obtainownership` pattern.
+
+### [VERIFIED] crypto: short signing key reads out of bounds (documented, not changed)
+`libs/crypto/hmac.c` `hmac_init` unconditionally `sha256_update(..., key, 32)`,
+i.e. it always reads 32 bytes of the key. If a signing key file
+(`KMOD_HMAC_Key.txt`/`SERV_HMAC_Key.txt`) decodes to fewer than 32 bytes,
+`sign_exec` and the kernel verifier read past the buffer. *Not changed* (it is
+the signing boundary and changing it would invalidate every signed module), but
+callers must guarantee >=32-byte keys, and this HMAC is a **non-standard**
+construction (hashes a fixed 32 bytes, 32-byte pad not block-size) so it does
+not match RFC 2104/4231 — see `tests/test_hmac.c`. A future re-key should move to
+standard HMAC and a length-checked key load.
 
 ### [DONE] Shared kernel PML4
 The kernel half of the address space is no longer copied per-core. There is one **master
@@ -427,10 +456,14 @@ if (queue_trydequeue(&devices, (uint64_t*)device)) { ... }
 of `device` dereferences NULL. Must be `(uint64_t*)&device`. *(Fixed in the
 correctness-fixes PR.)*
 
-### [LIKELY] USB enumeration / type field uninitialised
-`servers/CoreUsb/src/main.c:105` — `def->idx = devIDs[def->type]++` with
-`def->type` never set from the incoming descriptor; indexes `devIDs` with
-garbage. Recent EHCI/UHCI/CoreUsb work is mid-flight here.
+### [FIXED] USB enumeration / type field uninitialised
+`servers/CoreUsb/src/main.c` `usb_register_device` — `def->idx =
+devIDs[def->type]++` indexed `devIDs` with an uninitialised `def->type` (an OOB
+read/write on garbage). *(Fixed: `def->type` is now pinned to
+`usb_device_type_unknown` before the index. Root cause is a design gap —
+`usb_device_t` carries no device-class/type field, unlike `usb_hci_desc_t`; a
+real type/class should be added there so devices get distinct id namespaces.
+Recent EHCI/UHCI/CoreUsb work is mid-flight, so this is the minimal safe fix.)*
 
 ### [LIKELY] Unbounded hardware busy-waits (no timeout)
 - `drivers/ahci/src/ahci.c:236` spins on `PxCI` while spamming `DEBUG_PRINT`
@@ -442,8 +475,10 @@ garbage. Recent EHCI/UHCI/CoreUsb work is mid-flight here.
 
 ### [INCOMPLETE] Stubs
 `CoreAudio`, `CoreStorage`, `tarfs` module_init are empty; `intel_wifi`
-`module_init` early-returns before any init; `CoreNetwork` ARP/IP/TCP paths are
-TODO. Matches the README status notes.
+`module_init` early-returns before any init. `CoreNetwork` ARP/ICMP/IPv4-rx and a
+minimal tx path are now implemented (echo/ARP reply work) — see
+`notes/servers/CoreNetwork.md`; TCP and the socket/port API remain TODO and are
+documented there as deferred design decisions. Matches the README status notes.
 
 ---
 
