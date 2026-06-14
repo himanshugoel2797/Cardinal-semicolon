@@ -133,10 +133,24 @@ int usb_dev_interface_number(usb_enum_device_t *dev) {
     return i ? i->bInterfaceNumber : -1;
 }
 
+// Declare a device a hub (lets controllers that care route to devices behind it).
+int usb_dev_mark_hub(usb_enum_device_t *hub, int nports) {
+    if (hub->hc->handlers.mark_hub != NULL)
+        return hub->hc->handlers.mark_hub(hub->hc->state, hub->address, nports);
+    return 0;
+}
+
 // Enumerate a device on a (reset, enabled) downstream port of a hub. The
 // downstream device is on the same host controller as the hub (transfers route
-// by address), so this just runs normal enumeration on the hub's controller.
+// by address). Controllers that need per-device slot setup behind a hub (xHCI)
+// prepare it here from the hub topology; then normal enumeration runs.
 int usb_dev_enumerate_downstream(usb_enum_device_t *hub, int port, usb_speed_t speed) {
+    if (hub->hc->handlers.prepare_downstream != NULL) {
+        if (hub->hc->handlers.prepare_downstream(hub->hc->state, hub->address, port, speed) != 0) {
+            DEBUG_PRINT("[CoreUsb] downstream slot prepare failed\r\n");
+            return -1;
+        }
+    }
     return usb_port_connected(hub->hc_handle, port, speed);
 }
 

@@ -110,6 +110,8 @@ typedef struct {
     uintptr_t dev_ctx_phys;
     int speed;
     int root_port;
+    uint32_t route;  // xHCI route string (0 for a device on a root port)
+    int depth;       // hub tiers above this device (0 on a root port)
     xhci_ep_t ep[31];  // DCI 1..31 (index by DCI)
     int in_use;
 } xhci_slot_t;
