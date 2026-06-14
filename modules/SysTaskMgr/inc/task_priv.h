@@ -29,14 +29,11 @@ typedef enum
     task_state_suspended_monitor_mem_32,
     task_state_sleep,
     task_state_blocked,
+    //Terminal state. The owning core's scheduler frees an exited task one pass
+    //after it switched away from it (see core_desc_t.prev_dead) -- by then the
+    //core has iret'd off that task's kernel stack. A task is only ever scheduled
+    //and freed by its single owning core, so the free is race-free.
     task_state_exited,
-    //Set by the owning core's scheduler one full pass AFTER it switched away
-    //from an exited task (see core_desc_t.last_dead). task_cleanup only frees
-    //tasks in this state -- freeing a merely-exited task would race with the
-    //owning core, which is still executing the interrupt epilogue / iret on that
-    //task's kernel stack when it drops process_lock (use-after-free of its
-    //stack/reg_state, corrupting the page that gets reallocated next).
-    task_state_reapable,
 } task_state_t;
 
 typedef enum
@@ -95,6 +92,7 @@ typedef struct process_desc
 
     task_state_t state;
     task_permissions_t permissions;
+    int owner_core; //run queue this task lives on (index into run_queues[])
 
     union{
         uint32_t monitor_value;
@@ -123,13 +121,11 @@ typedef struct
 {
     uint8_t *interrupt_stack;
     process_desc_t *cur_task;
-    //Deferred reap: the exited task this core switched away from on its previous
-    //scheduler pass. The core is still executing the interrupt epilogue / iret on
-    //that task's kernel stack when it drops process_lock, so the task cannot be
-    //freed yet. It is promoted to task_state_reapable on the core's NEXT pass --
-    //by then the core has iret'd onto a different task's stack, so task_cleanup
-    //may safely free its stack/reg_state/struct. See notes/AUDIT.md.
-    process_desc_t *last_dead;
+    int core_idx; //sequential registration index; indexes run_queues[]/rq_locks[]
+    //The exited task this core switched away from on its previous scheduler pass.
+    //Freed (same-core) at the top of the next pass, once this core has iret'd off
+    //that task's kernel stack. Same-core ownership makes the free race-free.
+    process_desc_t *prev_dead;
 } core_desc_t;
 
 #endif

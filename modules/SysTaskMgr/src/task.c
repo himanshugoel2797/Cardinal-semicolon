@@ -26,18 +26,81 @@
 #include "error.h"
 #include "cs_syscall.h"
 
+#define MAX_CORES 256
+
 // thread/process id allocator
 static _Atomic cs_id cur_id = 1;
 
-// process descriptions
-static process_desc_t *processes = NULL;
 static _Atomic int process_count = 0;
-static int process_lock = 0;
+
+// Per-core run queues. Shared-nothing scheduling: a task is created, scheduled,
+// and freed by a single owning core, so the cross-core use-after-free of an
+// exited task's stack/reg_state that the old global run queue raced on is now
+// impossible by construction.
+//
+// These are plain globals (absolute addresses) -- indexed by a core's sequential
+// registration index (core_desc_t.core_idx, NOT its sparse APIC id) -- so any
+// core may enqueue work onto another core or look a task up by id. The per-core
+// core_desc_t itself lives in gs-relative TLS and is only addressable by its
+// owner, so the shareable parts of a queue (its head + lock) must live here.
+static process_desc_t *run_queues[MAX_CORES] = {0};
+static int rq_locks[MAX_CORES] = {0};
+static _Atomic int registered_cores = 0; // also the next free run-queue index
+static _Atomic int rr_cursor = 0;        // round-robin assignment cursor
 
 // current core description
 static TLS core_desc_t *core_descs = NULL;
 
-cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
+// Insert a freshly-built task into core `idx`'s run queue.
+static void rq_insert(int idx, process_desc_t *t)
+{
+    int cli_state = cli();
+    local_spinlock_lock(&rq_locks[idx]);
+    t->owner_core = idx;
+    t->next = run_queues[idx];
+    run_queues[idx] = t;
+    local_spinlock_unlock(&rq_locks[idx]);
+    sti(cli_state);
+}
+
+// Choose a core to host a newly-created task. Round-robins across the cores that
+// have come online so far. While booting single-core (registered_cores == 1)
+// everything lands on the BSP, which is required: the boot/servicescript task
+// must run on the BSP, and APs only begin pulling work once they register.
+static int pick_target_core(void)
+{
+    int n = registered_cores;
+    if (n <= 1)
+        return 0;
+    return (rr_cursor++) % n;
+}
+
+// Find a task by id across every core's run queue. On success returns the task
+// with its ->lock held (caller must unlock); returns NULL if no such id exists.
+// At most one rq_lock is held at a time, and always acquired before ->lock, so
+// this cannot deadlock against a core's scheduler (which locks its own rq_lock,
+// then a task ->lock).
+static process_desc_t *find_task_locked(cs_id id)
+{
+    int n = registered_cores;
+    for (int i = 0; i < n; i++)
+    {
+        local_spinlock_lock(&rq_locks[i]);
+        for (process_desc_t *it = run_queues[i]; it != NULL; it = it->next)
+        {
+            if (it->id == id)
+            {
+                local_spinlock_lock(&it->lock);
+                local_spinlock_unlock(&rq_locks[i]);
+                return it;
+            }
+        }
+        local_spinlock_unlock(&rq_locks[i]);
+    }
+    return NULL;
+}
+
+static cs_error create_task_core(char *name, task_permissions_t perms, cs_id *id, int target_core)
 {
     cs_id alloc_id = cur_id++;
 
@@ -100,25 +163,19 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
         PANIC("[SysTaskMgr] Unexpected memory allocation failure.");
     mp_platform_getdefaultstate(proc_info->reg_state, proc_info->kernel_stack, NULL, NULL, NULL);
 
-    //add this to the process queue
-    int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    if (processes == NULL)
-    {
-        proc_info->next = NULL;
-        processes = proc_info;
-    }
-    else
-    {
-        proc_info->next = processes;
-        processes = proc_info;
-    }
-    local_spinlock_unlock(&process_lock);
-    sti(cli_state);
+    //Assign to a core's run queue
+    if (target_core < 0)
+        target_core = pick_target_core();
+    rq_insert(target_core, proc_info);
 
     process_count++;
 
     return CS_OK;
+}
+
+cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
+{
+    return create_task_core(name, perms, id, -1);
 }
 
 static void NORETURN kernel_entry_handler(void *handler, void *arg)
@@ -134,65 +191,49 @@ cs_error start_task_kernel(cs_id id, void *handler, void *arg)
     if (handler != NULL)
     {
         int cli_state = cli();
-        local_spinlock_lock(&process_lock);
-        if (processes != NULL)
+        process_desc_t *iter = find_task_locked(id);
+        if (iter != NULL)
         {
-            process_desc_t *iter = processes;
-            while (iter != NULL)
+            //Lock is held from find_task_locked
+            DEBUG_PRINT("[SysTaskMgr] Process Started: ");
+            DEBUG_PRINT(iter->name);
+            DEBUG_PRINT("\r\n");
+
+            if (iter->permissions == task_permissions_none)
             {
-                process_desc_t *cur_iter = iter;
-                local_spinlock_lock(&cur_iter->lock);
-                if (iter->id == id)
-                    break;
-                iter = iter->next;
-                local_spinlock_unlock(&cur_iter->lock);
+                iter->user_stack = (uint8_t *)0x100000000;
+                iter->user_stack += USER_STACK_LEN - sizeof(struct cardinal_program_setup_params);
+
+                uintptr_t pmem = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, USER_STACK_LEN);
+                if (pmem == PHYSMEM_NO_ALLOC)
+                    PANIC("[SysTaskMgr] Out of memory allocating user stack.");
+                iter->user_stack_phys = pmem;
+                vmem_map(iter->mem, (intptr_t)0x100000000, (intptr_t)pmem, USER_STACK_LEN, vmem_flags_cachewriteback | vmem_flags_rw | vmem_flags_user, 0);
+
+                iter->usersetup_params = (struct cardinal_program_setup_params *)vmem_phystovirt(iter->user_stack_phys + USER_STACK_LEN - sizeof(struct cardinal_program_setup_params), sizeof(struct cardinal_program_setup_params), vmem_flags_cachewriteback | vmem_flags_rw);
+                iter->usersetup_params->ver = 1;
+                iter->usersetup_params->page_size = KiB(4);
+                iter->usersetup_params->argc = 0;
+                iter->usersetup_params->pid = iter->id;
+                iter->usersetup_params->rng_seed = 0;
+                iter->usersetup_params->entry_point = (uintptr_t)handler;
+                iter->usersetup_params->envp = NULL;
+                iter->usersetup_params->argv = NULL;
+
+                //setup userspace transition
+                syscall_getdefaultstate(iter->syscall_data, iter->kernel_stack, iter->user_stack, (void *)handler);
+                mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)syscall_touser, iter->user_stack, NULL); //Rebuild stack state
             }
-            if (iter != NULL)
+            else
             {
-                //Lock is already held from the break in the previous loop
-                //Entry found
-                DEBUG_PRINT("[SysTaskMgr] Process Started: ");
-                DEBUG_PRINT(iter->name);
-                DEBUG_PRINT("\r\n");
-
-                if (iter->permissions == task_permissions_none)
-                {
-                    iter->user_stack = (uint8_t *)0x100000000;
-                    iter->user_stack += USER_STACK_LEN - sizeof(struct cardinal_program_setup_params);
-
-                    uintptr_t pmem = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, USER_STACK_LEN);
-                    if (pmem == PHYSMEM_NO_ALLOC)
-                        PANIC("[SysTaskMgr] Out of memory allocating user stack.");
-                    iter->user_stack_phys = pmem;
-                    vmem_map(iter->mem, (intptr_t)0x100000000, (intptr_t)pmem, USER_STACK_LEN, vmem_flags_cachewriteback | vmem_flags_rw | vmem_flags_user, 0);
-
-                    iter->usersetup_params = (struct cardinal_program_setup_params *)vmem_phystovirt(iter->user_stack_phys + USER_STACK_LEN - sizeof(struct cardinal_program_setup_params), sizeof(struct cardinal_program_setup_params), vmem_flags_cachewriteback | vmem_flags_rw);
-                    iter->usersetup_params->ver = 1;
-                    iter->usersetup_params->page_size = KiB(4);
-                    iter->usersetup_params->argc = 0;
-                    iter->usersetup_params->pid = iter->id;
-                    iter->usersetup_params->rng_seed = 0;
-                    iter->usersetup_params->entry_point = (uintptr_t)handler;
-                    iter->usersetup_params->envp = NULL;
-                    iter->usersetup_params->argv = NULL;
-
-                    //setup userspace transition
-                    syscall_getdefaultstate(iter->syscall_data, iter->kernel_stack, iter->user_stack, (void *)handler);
-                    mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void *)syscall_touser, iter->user_stack, NULL); //Rebuild stack state
-                }
-                else
-                {
-                    mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void*)kernel_entry_handler, handler, arg); //Rebuild stack state
-                }
-                iter->state = task_state_pending; //Set task to initialized
-
-                local_spinlock_unlock(&iter->lock);
+                mp_platform_getdefaultstate(iter->reg_state, iter->kernel_stack, (void*)kernel_entry_handler, handler, arg); //Rebuild stack state
             }
-            local_spinlock_unlock(&process_lock);
+            iter->state = task_state_pending; //Set task to initialized
+
+            local_spinlock_unlock(&iter->lock);
             sti(cli_state);
             return CS_OK;
         }
-        local_spinlock_unlock(&process_lock);
         sti(cli_state);
     }
     return CS_UNKN;
@@ -201,36 +242,20 @@ cs_error start_task_kernel(cs_id id, void *handler, void *arg)
 cs_error end_task_kernel(cs_id id)
 {
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    if (processes != NULL)
+    process_desc_t *iter = find_task_locked(id);
+    if (iter != NULL)
     {
-        process_desc_t *iter = processes;
-        while (iter != NULL)
-        {
-            process_desc_t *cur_iter = iter;
-            local_spinlock_lock(&cur_iter->lock);
-            if (iter->id == id)
-                break;
-            iter = iter->next;
-            local_spinlock_unlock(&cur_iter->lock);
-        }
-        if (iter != NULL)
-        {
-            //Lock is already held from the break in the previous loop
-            //Entry found
-            DEBUG_PRINT("[SysTaskMgr] Process Exited: ");
-            DEBUG_PRINT(iter->name);
-            DEBUG_PRINT("\r\n");
+        //Lock is held from find_task_locked
+        DEBUG_PRINT("[SysTaskMgr] Process Exited: ");
+        DEBUG_PRINT(iter->name);
+        DEBUG_PRINT("\r\n");
 
-            iter->state = task_state_exited; //Set task to exited
+        iter->state = task_state_exited; //Set task to exited
 
-            local_spinlock_unlock(&iter->lock);
-        }
-        local_spinlock_unlock(&process_lock);
+        local_spinlock_unlock(&iter->lock);
         sti(cli_state);
         return CS_OK;
     }
-    local_spinlock_unlock(&process_lock);
     sti(cli_state);
     return CS_UNKN;
 }
@@ -366,20 +391,83 @@ free_descriptors(process_desc_t *pinfo, descriptor_entry_t *desc_table, cs_id ba
     }
 }
 
-//Promote the exited task this core retired on its previous scheduler pass (if
-//any) to task_state_reapable. By now the core has fully iret'd off that task's
-//kernel stack and is running another task, so task_cleanup may safely reclaim
-//its stack/reg_state/struct. Must be called holding process_lock.
-static void task_reap_deferred(void)
+//Free a task this core retired on a previous scheduler pass. Caller holds
+//rq_locks[self]. By now the core has switched onto another task's stack, so
+//reclaiming this task's kernel stack/reg_state/struct is safe. A task is only
+//ever created, scheduled, and freed by one owning core, so no other core can be
+//mid-iret on this stack -- the use-after-free this code used to race on is now
+//structurally impossible.
+static void free_task(int self, process_desc_t *t)
 {
-    process_desc_t *dead = core_descs->last_dead;
-    if (dead != NULL)
+    //Unlink from this core's run queue.
+    if (run_queues[self] == t)
+        run_queues[self] = t->next;
+    else
     {
-        local_spinlock_lock(&dead->lock);
-        dead->state = task_state_reapable;
-        local_spinlock_unlock(&dead->lock);
-        core_descs->last_dead = NULL;
+        for (process_desc_t *p = run_queues[self]; p != NULL; p = p->next)
+            if (p->next == t)
+            {
+                p->next = t->next;
+                break;
+            }
     }
+
+    //Exclude any in-flight cross-core management call holding this task's lock.
+    local_spinlock_lock(&t->lock);
+
+    if (t->mem != NULL)
+    {
+        free_descriptors(t, t->descriptors, 0); //Unmap/free all descriptor regions
+        if (t->syscall_data != NULL)
+            free(t->syscall_data);
+        if (t->user_stack != NULL)
+        {
+            vmem_unmap(t->mem, 0x100000000, USER_STACK_LEN);
+            pagealloc_free(t->user_stack_phys, USER_STACK_LEN);
+        }
+        vmem_destroy(t->mem);
+        free(t->fpu_state_unaligned);
+        free(t->reg_state);
+        free(t->kernel_stack - KERNEL_STACK_LEN);
+        t->mem = NULL;
+    }
+
+    free(t); //t->lock dies with the struct; nothing else can reach it now
+    process_count--;
+}
+
+static bool task_runnable(process_desc_t *t)
+{
+    switch (t->state)
+    {
+    case task_state_pending:
+        return true;
+    case task_state_suspended_monitor_mem_32:
+        return (*t->monitor_tgt != t->monitor_value);
+    case task_state_sleep:
+        return (timer_timestamp_ns() >= t->sleep_end);
+    default:
+        return false;
+    }
+}
+
+//Pick the next runnable task from this core's run queue: first the tasks after
+//the just-run one (round-robin fairness), then a full scan from the head. Caller
+//holds rq_locks[self]. Never returns NULL in practice -- every core owns an
+//always-runnable idle task.
+static process_desc_t *select_next(int self, process_desc_t *after)
+{
+    process_desc_t *t = (after != NULL) ? after->next : run_queues[self];
+    while (t != NULL)
+    {
+        if (task_runnable(t))
+            return t;
+        t = t->next;
+    }
+    for (t = run_queues[self]; t != NULL; t = t->next)
+        if (task_runnable(t))
+            return t;
+    return NULL;
 }
 
 static void task_switch_handler(int irq)
@@ -387,97 +475,46 @@ static void task_switch_handler(int irq)
     irq = 0;
 
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
+    int self = core_descs->core_idx;
+    local_spinlock_lock(&rq_locks[self]);
 
-    //Release the previous pass's retired task now that we've left its stack.
-    task_reap_deferred();
-
-    process_desc_t *ntask = NULL; //find the first pending task
-    if (core_descs->cur_task != NULL)
+    //Free the task we retired on the previous pass; we have since switched onto a
+    //different task's stack, so this is safe.
+    if (core_descs->prev_dead != NULL)
     {
-        local_spinlock_lock(&core_descs->cur_task->lock);
+        free_task(self, core_descs->prev_dead);
+        core_descs->prev_dead = NULL;
+    }
 
-        if (core_descs->cur_task->state == task_state_exited)
+    process_desc_t *cur = core_descs->cur_task;
+    if (cur != NULL)
+    {
+        local_spinlock_lock(&cur->lock);
+
+        if (cur->state == task_state_exited)
         {
-            //This core is switching away from a task that has exited. Do NOT mark
-            //it reapable yet: we are still executing this interrupt's epilogue and
-            //iret on its kernel stack, and once we drop process_lock below
-            //task_cleanup could free that stack out from under us. Stash it and
-            //let the NEXT pass (task_reap_deferred) release it. Do NOT save its
-            //state either -- it is dead.
-            core_descs->last_dead = core_descs->cur_task;
+            //Switching away from an exited task. We are still on its kernel stack
+            //(the interrupt epilogue + iret run after this returns), so we cannot
+            //free it yet. Defer to the next pass, by which point this core has
+            //iret'd onto the next task's stack. Do not save its state -- it is dead.
+            core_descs->prev_dead = cur;
+            local_spinlock_unlock(&cur->lock);
         }
         else
         {
-            if (core_descs->cur_task->state == task_state_running)
-                core_descs->cur_task->state = task_state_pending;  //Set the cur_task to pending again
-            fp_platform_getstate(core_descs->cur_task->fpu_state); //Save the current tasks's fpu state
-            mp_platform_getstate(core_descs->cur_task->reg_state); //Save the current task's register state
-            if (core_descs->cur_task->syscall_data != NULL)
-                syscall_getfullstate(core_descs->cur_task->syscall_data);
-        }
-
-        //find the next pending task
-        ntask = core_descs->cur_task->next;
-        local_spinlock_unlock(&core_descs->cur_task->lock);
-
-        while (ntask != NULL)
-        {
-            process_desc_t *cur_ntask = ntask;
-            local_spinlock_lock(&cur_ntask->lock);
-            if (ntask->state == task_state_pending)
-            {
-                local_spinlock_unlock(&cur_ntask->lock);
-                break;
-            }else if (ntask->state == task_state_suspended_monitor_mem_32){
-                if(*ntask->monitor_tgt != ntask->monitor_value){
-                    local_spinlock_unlock(&cur_ntask->lock);
-                    break;
-                }
-            }else if(ntask->state == task_state_sleep) {
-                if(timer_timestamp_ns() >= ntask->sleep_end){
-                    local_spinlock_unlock(&cur_ntask->lock);
-                    break;
-                }
-            }
-            ntask = ntask->next;
-            local_spinlock_unlock(&cur_ntask->lock);
+            if (cur->state == task_state_running)
+                cur->state = task_state_pending;  //Set the cur_task to pending again
+            fp_platform_getstate(cur->fpu_state); //Save the current task's fpu state
+            mp_platform_getstate(cur->reg_state); //Save the current task's register state
+            if (cur->syscall_data != NULL)
+                syscall_getfullstate(cur->syscall_data);
+            local_spinlock_unlock(&cur->lock);
         }
     }
 
-    //if an appropriate task could not be found, iterate over the entire list to find a task
+    process_desc_t *ntask = select_next(self, cur);
     if (ntask == NULL)
-    {
-        ntask = processes;
-        while (ntask != NULL)
-        {
-            process_desc_t *cur_ntask = ntask;
-            local_spinlock_lock(&cur_ntask->lock);
-            if (ntask->state == task_state_pending)
-            {
-                local_spinlock_unlock(&cur_ntask->lock);
-                break;
-            }else if (ntask->state == task_state_suspended_monitor_mem_32){
-                if(*ntask->monitor_tgt != ntask->monitor_value){
-                    local_spinlock_unlock(&cur_ntask->lock);
-                    break;
-                }
-            }else if(ntask->state == task_state_sleep) {
-                if(timer_timestamp_ns() >= ntask->sleep_end){
-                    local_spinlock_unlock(&cur_ntask->lock);
-                    break;
-                }
-            }
-            ntask = ntask->next;
-            local_spinlock_unlock(&cur_ntask->lock);
-        }
-    }
-
-    //if an appropriate task could still not be found, panic
-    if (ntask == NULL)
-    {
         PANIC("[SysTaskMgr] Out of Processes!\r\n");
-    }
 
     //switch to this task
     core_descs->cur_task = ntask;
@@ -489,105 +526,53 @@ static void task_switch_handler(int irq)
     mp_platform_setstate(ntask->reg_state); //Set registers
     if (ntask->syscall_data != NULL)
         syscall_setfullstate(ntask->syscall_data);
-
     local_spinlock_unlock(&ntask->lock);
 
-    local_spinlock_unlock(&process_lock);
+    local_spinlock_unlock(&rq_locks[self]);
     sti(cli_state);
 }
 
 static void task_yield_stage2(interrupt_register_state_t *mp_state){
-    local_spinlock_lock(&process_lock);
+    int self = core_descs->core_idx;
+    local_spinlock_lock(&rq_locks[self]);
 
-    //Release the previous pass's retired task now that we've left its stack.
-    task_reap_deferred();
-
-    process_desc_t *ntask = NULL; //find the first pending task
-    if (core_descs->cur_task != NULL)
+    //Free the task we retired on the previous pass; we have since switched onto a
+    //different task's stack, so this is safe.
+    if (core_descs->prev_dead != NULL)
     {
-        local_spinlock_lock(&core_descs->cur_task->lock);
+        free_task(self, core_descs->prev_dead);
+        core_descs->prev_dead = NULL;
+    }
 
-        if (core_descs->cur_task->state == task_state_exited)
+    process_desc_t *cur = core_descs->cur_task;
+    if (cur != NULL)
+    {
+        local_spinlock_lock(&cur->lock);
+
+        if (cur->state == task_state_exited)
         {
             //Yielding out of an exited task (e.g. the tail of end_task_syscall).
-            //Do NOT mark it reapable yet: task_yield restores registers and irets
-            //off this same kernel stack after we return, so freeing it now (from
-            //task_cleanup on another core) would corrupt the stack mid-switch.
-            //Stash it; the NEXT pass (task_reap_deferred) releases it. Skip the
-            //save -- it is dead.
-            core_descs->last_dead = core_descs->cur_task;
+            //task_yield restores registers and irets off this same kernel stack
+            //after we return, so we cannot free it yet. Defer to the next pass;
+            //skip the save -- it is dead.
+            core_descs->prev_dead = cur;
+            local_spinlock_unlock(&cur->lock);
         }
         else
         {
-            if (core_descs->cur_task->state == task_state_running)
-                core_descs->cur_task->state = task_state_pending;  //Set the cur_task to pending again
-            fp_platform_getstate(core_descs->cur_task->fpu_state); //Save the current tasks's fpu state
-            memcpy(core_descs->cur_task->reg_state, mp_state, sizeof(interrupt_register_state_t)); //Save the current task's register state
-            if (core_descs->cur_task->syscall_data != NULL)
-                syscall_getfullstate(core_descs->cur_task->syscall_data);
-        }
-
-        //find the next pending task
-        ntask = core_descs->cur_task->next;
-        local_spinlock_unlock(&core_descs->cur_task->lock);
-
-        while (ntask != NULL)
-        {
-            process_desc_t *cur_ntask = ntask;
-            local_spinlock_lock(&cur_ntask->lock);
-            if (ntask->state == task_state_pending)
-            {
-                local_spinlock_unlock(&cur_ntask->lock);
-                break;
-            }else if (ntask->state == task_state_suspended_monitor_mem_32){
-                if(*ntask->monitor_tgt != ntask->monitor_value){
-                    local_spinlock_unlock(&cur_ntask->lock);
-                    break;
-                }
-            }else if(ntask->state == task_state_sleep) {
-                if(timer_timestamp_ns() >= ntask->sleep_end){
-                    local_spinlock_unlock(&cur_ntask->lock);
-                    break;
-                }
-            }
-            ntask = ntask->next;
-            local_spinlock_unlock(&cur_ntask->lock);
+            if (cur->state == task_state_running)
+                cur->state = task_state_pending;  //Set the cur_task to pending again
+            fp_platform_getstate(cur->fpu_state); //Save the current task's fpu state
+            memcpy(cur->reg_state, mp_state, sizeof(interrupt_register_state_t)); //Save the current task's register state
+            if (cur->syscall_data != NULL)
+                syscall_getfullstate(cur->syscall_data);
+            local_spinlock_unlock(&cur->lock);
         }
     }
 
-    //if an appropriate task could not be found, iterate over the entire list to find a task
+    process_desc_t *ntask = select_next(self, cur);
     if (ntask == NULL)
-    {
-        ntask = processes;
-        while (ntask != NULL)
-        {
-            process_desc_t *cur_ntask = ntask;
-            local_spinlock_lock(&cur_ntask->lock);
-            if (ntask->state == task_state_pending)
-            {
-                local_spinlock_unlock(&cur_ntask->lock);
-                break;
-            }else if (ntask->state == task_state_suspended_monitor_mem_32){
-                if(*ntask->monitor_tgt != ntask->monitor_value){
-                    local_spinlock_unlock(&cur_ntask->lock);
-                    break;
-                }
-            }else if(ntask->state == task_state_sleep) {
-                if(timer_timestamp_ns() >= ntask->sleep_end){
-                    local_spinlock_unlock(&cur_ntask->lock);
-                    break;
-                }
-            }
-            ntask = ntask->next;
-            local_spinlock_unlock(&cur_ntask->lock);
-        }
-    }
-
-    //if an appropriate task could still not be found, panic
-    if (ntask == NULL)
-    {
         PANIC("[SysTaskMgr] Out of Processes!\r\n");
-    }
 
     //switch to this task
     core_descs->cur_task = ntask;
@@ -600,10 +585,9 @@ static void task_yield_stage2(interrupt_register_state_t *mp_state){
     memcpy(mp_state, ntask->reg_state, sizeof(interrupt_register_state_t));
     if (ntask->syscall_data != NULL)
         syscall_setfullstate(ntask->syscall_data);
-
     local_spinlock_unlock(&ntask->lock);
 
-    local_spinlock_unlock(&process_lock);
+    local_spinlock_unlock(&rq_locks[self]);
 }
 
 void task_yield(){
@@ -627,7 +611,7 @@ void task_yield(){
         "mov %%rcx, 0x58(%%rax)\r\n"
         "mov %%rbx, 0x60(%%rax)\r\n"
         "movq %%rax, 0x68(%%rax)\r\n"
-        
+
         //rflags
         "pushfq\r\n"
         "pop %%rbx\r\n"
@@ -692,36 +676,18 @@ cs_error task_virttophys(cs_id id, intptr_t vaddr, intptr_t *phys)
         return CS_UNKN;
 
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    if (processes != NULL)
+    cs_error res_cs = CS_UNKN;
+    process_desc_t *iter = find_task_locked(id);
+    if (iter != NULL)
     {
-        cs_error res_cs = CS_UNKN;
-        process_desc_t *iter = processes;
-        while (iter != NULL)
-        {
-            process_desc_t *cur_iter = iter;
-            local_spinlock_lock(&cur_iter->lock);
-            if (iter->id == id)
-                break;
-            iter = iter->next;
-            local_spinlock_unlock(&cur_iter->lock);
-        }
-        if (iter != NULL)
-        {
-            int res = vmem_virttophys(iter->mem, vaddr, phys);
-            if (res == 0)
-                res_cs = CS_OK;
+        int res = vmem_virttophys(iter->mem, vaddr, phys);
+        if (res == 0)
+            res_cs = CS_OK;
 
-            //Lock is already held from the break in the previous loop
-            local_spinlock_unlock(&iter->lock);
-        }
-        local_spinlock_unlock(&process_lock);
-        sti(cli_state);
-        return res_cs;
+        local_spinlock_unlock(&iter->lock);
     }
-    local_spinlock_unlock(&process_lock);
     sti(cli_state);
-    return CS_UNKN;
+    return res_cs;
 }
 
 cs_id task_current()
@@ -735,38 +701,20 @@ cs_error task_monitor_noyield(cs_id id, uint32_t *tgt, uint32_t cur_val)
         return CS_UNKN;
 
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    if (processes != NULL)
+    cs_error res_cs = CS_UNKN;
+    process_desc_t *iter = find_task_locked(id);
+    if (iter != NULL)
     {
-        cs_error res_cs = CS_UNKN;
-        process_desc_t *iter = processes;
-        while (iter != NULL)
-        {
-            process_desc_t *cur_iter = iter;
-            local_spinlock_lock(&cur_iter->lock);
-            if (iter->id == id)
-                break;
-            iter = iter->next;
-            local_spinlock_unlock(&cur_iter->lock);
-        }
-        if (iter != NULL)
-        {
-            intptr_t phys_ptr = 0;
-            vmem_virttophys(iter->mem, (intptr_t)tgt, &phys_ptr);
-            iter->monitor_tgt = (uint32_t*)vmem_phystovirt(phys_ptr, 4, vmem_flags_uncached | vmem_flags_kernel);
-            iter->monitor_value = cur_val;
-            iter->state = task_state_suspended_monitor_mem_32;
+        intptr_t phys_ptr = 0;
+        vmem_virttophys(iter->mem, (intptr_t)tgt, &phys_ptr);
+        iter->monitor_tgt = (uint32_t*)vmem_phystovirt(phys_ptr, 4, vmem_flags_uncached | vmem_flags_kernel);
+        iter->monitor_value = cur_val;
+        iter->state = task_state_suspended_monitor_mem_32;
 
-            //Lock is already held from the break in the previous loop
-            local_spinlock_unlock(&iter->lock);
-        }
-        local_spinlock_unlock(&process_lock);
-        sti(cli_state);
-        return res_cs;
+        local_spinlock_unlock(&iter->lock);
     }
-    local_spinlock_unlock(&process_lock);
     sti(cli_state);
-    return CS_UNKN;
+    return res_cs;
 }
 
 cs_error task_monitor(cs_id id, uint32_t *tgt, uint32_t cur_val)
@@ -800,195 +748,141 @@ cs_error task_map(cs_id id, const char *name, intptr_t vaddr, size_t sz, task_ma
         PANIC("[SysTaskMgr] Shared memory not implemented.");
 
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    if (processes != NULL)
+    process_desc_t *iter = find_task_locked(id);
+    if (iter != NULL)
     {
-        process_desc_t *iter = processes;
-        while (iter != NULL)
-        {
-            process_desc_t *cur_iter = iter;
-            local_spinlock_lock(&cur_iter->lock);
-            if (iter->id == id)
-                break;
-            iter = iter->next;
-            local_spinlock_unlock(&cur_iter->lock);
-        }
-        if (iter != NULL)
-        {
-            //Lock is already held from the break in the previous loop
-            cs_id shmem_k_id = alloc_descriptor(iter, descriptor_type_map_entry);
-            descriptor_entry_t *d = read_descriptor(iter, shmem_k_id);
-            //Map memory region
-            d->type = descriptor_type_map_entry;
-            d->map_entry = malloc(sizeof(map_entry_t));
-            d->map_entry->vaddr = vaddr;
-            d->map_entry->paddr = 0;
-            d->map_entry->sz = sz;
-            d->map_entry->owner_perms = owner_perms;
-            d->map_entry->child_perms = child_perms;
-            d->map_entry->flags = flags;
-            d->map_entry->child_count = child_count;
+        cs_id shmem_k_id = alloc_descriptor(iter, descriptor_type_map_entry);
+        descriptor_entry_t *d = read_descriptor(iter, shmem_k_id);
+        //Map memory region
+        d->type = descriptor_type_map_entry;
+        d->map_entry = malloc(sizeof(map_entry_t));
+        d->map_entry->vaddr = vaddr;
+        d->map_entry->paddr = 0;
+        d->map_entry->sz = sz;
+        d->map_entry->owner_perms = owner_perms;
+        d->map_entry->child_perms = child_perms;
+        d->map_entry->flags = flags;
+        d->map_entry->child_count = child_count;
 
-            if ((flags & task_map_shared) != 0)
+        if ((flags & task_map_shared) != 0)
+        {
+            if ((flags & task_map_oneway) != 0)
             {
-                if ((flags & task_map_oneway) != 0)
-                {
-                    //oneway
-                }
-
-                if ((flags & task_map_oneuse) != 0)
-                {
-                    //oneuse - unmapping doesn't release allowed map count
-                }
-                PANIC("[SysTaskMgr] Shared memory not implemented.");
-                //TODO: handle shared memory tree
+                //oneway
             }
+
+            if ((flags & task_map_oneuse) != 0)
+            {
+                //oneuse - unmapping doesn't release allowed map count
+            }
+            PANIC("[SysTaskMgr] Shared memory not implemented.");
+            //TODO: handle shared memory tree
+        }
+        else
+        {
+            int map_perms = 0;
+            if (owner_perms & task_map_perm_writeonly)
+                map_perms |= vmem_flags_rw;
+            if (owner_perms & task_map_perm_execute)
+                map_perms |= vmem_flags_exec;
+            if (owner_perms & task_map_perm_cachewritethrough)
+                map_perms |= vmem_flags_cachewritethrough;
+            else if (owner_perms & task_map_perm_cachewriteback)
+                map_perms |= vmem_flags_cachewriteback;
+            else if (owner_perms & task_map_perm_cachewritecomplete)
+                map_perms |= vmem_flags_cachewritecomplete;
+            else if (owner_perms & task_map_perm_uncached)
+                map_perms |= vmem_flags_uncached;
+
+            if (iter->permissions & task_permissions_kernel)
+                map_perms |= vmem_flags_kernel;
             else
-            {
-                int map_perms = 0;
-                if (owner_perms & task_map_perm_writeonly)
-                    map_perms |= vmem_flags_rw;
-                if (owner_perms & task_map_perm_execute)
-                    map_perms |= vmem_flags_exec;
-                if (owner_perms & task_map_perm_cachewritethrough)
-                    map_perms |= vmem_flags_cachewritethrough;
-                else if (owner_perms & task_map_perm_cachewriteback)
-                    map_perms |= vmem_flags_cachewriteback;
-                else if (owner_perms & task_map_perm_cachewritecomplete)
-                    map_perms |= vmem_flags_cachewritecomplete;
-                else if (owner_perms & task_map_perm_uncached)
-                    map_perms |= vmem_flags_uncached;
+                map_perms |= vmem_flags_user;
 
-                if (iter->permissions & task_permissions_kernel)
-                    map_perms |= vmem_flags_kernel;
-                else
-                    map_perms |= vmem_flags_user;
-
-                //Allocate physical memory and map it into the process
-                uintptr_t pmem = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_instr | physmem_alloc_flags_zero, sz);
-                if (pmem == PHYSMEM_NO_ALLOC)
-                    PANIC("[SysTaskMgr] Out of memory allocating process image.");
-                d->map_entry->paddr = pmem;
-                d->map_entry->is_owner = true;
-                vmem_map(iter->mem, d->map_entry->vaddr, (intptr_t)pmem, sz, map_perms, 0);
-            }
-
-            *shmem_id = shmem_k_id;
-            local_spinlock_unlock(&iter->lock);
+            //Allocate physical memory and map it into the process
+            uintptr_t pmem = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_instr | physmem_alloc_flags_zero, sz);
+            if (pmem == PHYSMEM_NO_ALLOC)
+                PANIC("[SysTaskMgr] Out of memory allocating process image.");
+            d->map_entry->paddr = pmem;
+            d->map_entry->is_owner = true;
+            vmem_map(iter->mem, d->map_entry->vaddr, (intptr_t)pmem, sz, map_perms, 0);
         }
-        local_spinlock_unlock(&process_lock);
-        sti(cli_state);
-        return CS_OK;
+
+        *shmem_id = shmem_k_id;
+        local_spinlock_unlock(&iter->lock);
     }
-    local_spinlock_unlock(&process_lock);
     sti(cli_state);
-    return CS_UNKN;
+    return CS_OK;
 }
 
 cs_error task_updatemap(cs_id id, cs_id shmem_id, task_map_perms_t perms)
 {
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    if (processes != NULL)
+    process_desc_t *iter = find_task_locked(id);
+    if (iter != NULL)
     {
-        process_desc_t *iter = processes;
-        while (iter != NULL)
+        descriptor_entry_t *d = read_descriptor(iter, shmem_id);
+        if (d->type == descriptor_type_map_entry)
         {
-            process_desc_t *cur_iter = iter;
-            local_spinlock_lock(&cur_iter->lock);
-            if (iter->id == id)
-                break;
-            iter = iter->next;
-            local_spinlock_unlock(&cur_iter->lock);
+            //Remap memory region
+            if (d->map_entry->is_owner)
+                perms &= d->map_entry->owner_perms;
+            else
+                perms &= d->map_entry->child_perms;
+
+            int map_perms = 0;
+            if (perms & task_map_perm_writeonly)
+                map_perms |= vmem_flags_rw;
+            if (perms & task_map_perm_execute)
+                map_perms |= vmem_flags_exec;
+            if (perms & task_map_perm_cachewritethrough)
+                map_perms |= vmem_flags_cachewritethrough;
+            else if (perms & task_map_perm_cachewriteback)
+                map_perms |= vmem_flags_cachewriteback;
+            else if (perms & task_map_perm_cachewritecomplete)
+                map_perms |= vmem_flags_cachewritecomplete;
+            else if (perms & task_map_perm_uncached)
+                map_perms |= vmem_flags_uncached;
+
+            if (iter->permissions & task_permissions_kernel)
+                map_perms |= vmem_flags_kernel;
+            else
+                map_perms |= vmem_flags_user;
+
+            vmem_unmap(iter->mem, d->map_entry->vaddr, d->map_entry->sz);
+            vmem_map(iter->mem, d->map_entry->vaddr, (intptr_t)d->map_entry->paddr, d->map_entry->sz, map_perms, 0);
         }
-        if (iter != NULL)
-        {
-            //Lock is already held from the break in the previous loop
-            descriptor_entry_t *d = read_descriptor(iter, shmem_id);
-            if (d->type == descriptor_type_map_entry)
-            {
-                //Remap memory region
-                if (d->map_entry->is_owner)
-                    perms &= d->map_entry->owner_perms;
-                else
-                    perms &= d->map_entry->child_perms;
-
-                int map_perms = 0;
-                if (perms & task_map_perm_writeonly)
-                    map_perms |= vmem_flags_rw;
-                if (perms & task_map_perm_execute)
-                    map_perms |= vmem_flags_exec;
-                if (perms & task_map_perm_cachewritethrough)
-                    map_perms |= vmem_flags_cachewritethrough;
-                else if (perms & task_map_perm_cachewriteback)
-                    map_perms |= vmem_flags_cachewriteback;
-                else if (perms & task_map_perm_cachewritecomplete)
-                    map_perms |= vmem_flags_cachewritecomplete;
-                else if (perms & task_map_perm_uncached)
-                    map_perms |= vmem_flags_uncached;
-
-                if (iter->permissions & task_permissions_kernel)
-                    map_perms |= vmem_flags_kernel;
-                else
-                    map_perms |= vmem_flags_user;
-
-                vmem_unmap(iter->mem, d->map_entry->vaddr, d->map_entry->sz);
-                vmem_map(iter->mem, d->map_entry->vaddr, (intptr_t)d->map_entry->paddr, d->map_entry->sz, map_perms, 0);
-            }
-            local_spinlock_unlock(&iter->lock);
-        }
-        local_spinlock_unlock(&process_lock);
-        sti(cli_state);
-        return CS_OK;
+        local_spinlock_unlock(&iter->lock);
     }
-    local_spinlock_unlock(&process_lock);
     sti(cli_state);
-    return CS_UNKN;
+    return CS_OK;
 }
 
 cs_error task_unmap(cs_id id, cs_id shmem_id)
 {
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    if (processes != NULL)
+    process_desc_t *iter = find_task_locked(id);
+    if (iter != NULL)
     {
-        process_desc_t *iter = processes;
-        while (iter != NULL)
+        descriptor_entry_t *d = read_descriptor(iter, shmem_id);
+        if (d->type == descriptor_type_map_entry)
         {
-            process_desc_t *cur_iter = iter;
-            local_spinlock_lock(&cur_iter->lock);
-            if (iter->id == id)
-                break;
-            iter = iter->next;
-            local_spinlock_unlock(&cur_iter->lock);
-        }
-        if (iter != NULL)
-        {
-            //Lock is already held from the break in the previous loop
-            descriptor_entry_t *d = read_descriptor(iter, shmem_id);
-            if (d->type == descriptor_type_map_entry)
+            //Unmap memory region
+            vmem_unmap(iter->mem, d->map_entry->vaddr, d->map_entry->sz);
+            if (d->map_entry->is_owner)
             {
-                //Unmap memory region
-                vmem_unmap(iter->mem, d->map_entry->vaddr, d->map_entry->sz);
-                if (d->map_entry->is_owner)
-                {
-                    //free physical memory
-                    pagealloc_free(d->map_entry->paddr, d->map_entry->sz);
-                }
-
-                free(d->map_entry);
-                d->map_entry = NULL;
-                d->type = descriptor_type_unused_entry;
+                //free physical memory
+                pagealloc_free(d->map_entry->paddr, d->map_entry->sz);
             }
-            local_spinlock_unlock(&iter->lock);
+
+            free(d->map_entry);
+            d->map_entry = NULL;
+            d->type = descriptor_type_unused_entry;
         }
-        local_spinlock_unlock(&process_lock);
-        sti(cli_state);
-        return CS_OK;
+        local_spinlock_unlock(&iter->lock);
     }
-    local_spinlock_unlock(&process_lock);
     sti(cli_state);
-    return CS_UNKN;
+    return CS_OK;
 }
 
 cs_error task_allocdescriptor(cs_id id, DescriptorResourceFreeAction action, void *state NULLABLE, cs_id *descriptor NULLABLE)
@@ -997,191 +891,68 @@ cs_error task_allocdescriptor(cs_id id, DescriptorResourceFreeAction action, voi
         return CS_UNKN;
 
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    if (processes != NULL)
+    process_desc_t *iter = find_task_locked(id);
+    if (iter != NULL)
     {
-        process_desc_t *iter = processes;
-        while (iter != NULL)
-        {
-            process_desc_t *cur_iter = iter;
-            local_spinlock_lock(&cur_iter->lock);
-            if (iter->id == id)
-                break;
-            iter = iter->next;
-            local_spinlock_unlock(&cur_iter->lock);
-        }
-        if (iter != NULL)
-        {
-            //Lock is already held from the break in the previous loop
-            cs_id shmem_k_id = alloc_descriptor(iter, descriptor_type_resource_entry);
-            descriptor_entry_t *d = read_descriptor(iter, shmem_k_id);
-            //Map memory region
-            d->type = descriptor_type_resource_entry;
-            d->resource_entry = malloc(sizeof(resource_entry_t));
-            d->resource_entry->action = action;
-            d->resource_entry->state = state;
+        cs_id shmem_k_id = alloc_descriptor(iter, descriptor_type_resource_entry);
+        descriptor_entry_t *d = read_descriptor(iter, shmem_k_id);
+        //Map memory region
+        d->type = descriptor_type_resource_entry;
+        d->resource_entry = malloc(sizeof(resource_entry_t));
+        d->resource_entry->action = action;
+        d->resource_entry->state = state;
 
-            if (descriptor != NULL)
-                *descriptor = shmem_k_id;
-            local_spinlock_unlock(&iter->lock);
-        }
-        local_spinlock_unlock(&process_lock);
-        sti(cli_state);
-        return CS_OK;
+        if (descriptor != NULL)
+            *descriptor = shmem_k_id;
+        local_spinlock_unlock(&iter->lock);
     }
-    local_spinlock_unlock(&process_lock);
     sti(cli_state);
-    return CS_UNKN;
+    return CS_OK;
 }
 
 cs_error task_freedescriptor(cs_id id, cs_id descriptor)
 {
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    if (processes != NULL)
+    process_desc_t *iter = find_task_locked(id);
+    if (iter != NULL)
     {
-        process_desc_t *iter = processes;
-        while (iter != NULL)
+        descriptor_entry_t *d = read_descriptor(iter, descriptor);
+        if (d->type == descriptor_type_resource_entry)
         {
-            process_desc_t *cur_iter = iter;
-            local_spinlock_lock(&cur_iter->lock);
-            if (iter->id == id)
-                break;
-            iter = iter->next;
-            local_spinlock_unlock(&cur_iter->lock);
-        }
-        if (iter != NULL)
-        {
-            //Lock is already held from the break in the previous loop
-            descriptor_entry_t *d = read_descriptor(iter, descriptor);
-            if (d->type == descriptor_type_resource_entry)
-            {
-                //Free the associated resource
-                d->resource_entry->action(d->resource_entry->state);
+            //Free the associated resource
+            d->resource_entry->action(d->resource_entry->state);
 
-                free(d->resource_entry);
-                d->resource_entry = NULL;
-                d->type = descriptor_type_unused_entry;
-            }
-            local_spinlock_unlock(&iter->lock);
+            free(d->resource_entry);
+            d->resource_entry = NULL;
+            d->type = descriptor_type_unused_entry;
         }
-        local_spinlock_unlock(&process_lock);
-        sti(cli_state);
-        return CS_OK;
+        local_spinlock_unlock(&iter->lock);
     }
-    local_spinlock_unlock(&process_lock);
     sti(cli_state);
-    return CS_UNKN;
+    return CS_OK;
 }
 
 cs_error task_sleep(cs_id id, uint64_t ns)
 {
     int cli_state = cli();
-    local_spinlock_lock(&process_lock);
-    if (processes != NULL)
+    process_desc_t *iter = find_task_locked(id);
+    if (iter != NULL)
     {
-        cs_error res_cs = CS_UNKN;
-        process_desc_t *iter = processes;
-        while (iter != NULL)
-        {
-            process_desc_t *cur_iter = iter;
-            local_spinlock_lock(&cur_iter->lock);
-            if (iter->id == id)
-                break;
-            iter = iter->next;
-            local_spinlock_unlock(&cur_iter->lock);
-        }
-        if (iter != NULL)
-        {
-            iter->sleep_end = timer_timestamp_ns() + ns;
-            iter->state = task_state_sleep;
+        iter->sleep_end = timer_timestamp_ns() + ns;
+        iter->state = task_state_sleep;
 
-            //Lock is already held from the break in the previous loop
-            local_spinlock_unlock(&iter->lock);
-        }
-        local_spinlock_unlock(&process_lock);
+        local_spinlock_unlock(&iter->lock);
         sti(cli_state);
-        return res_cs;
+        return CS_UNKN;
     }
-    local_spinlock_unlock(&process_lock);
-    task_yield();
     sti(cli_state);
+    task_yield();
     return CS_UNKN;
 }
 
 cs_error nanosleep_syscall()
 {
     return CS_OK;
-}
-
-static void task_cleanup(void *arg)
-{
-    arg = NULL;
-
-    while (true)
-    {
-        //Delete dead threads
-        int cli_state = cli();
-        local_spinlock_lock(&process_lock);
-        process_desc_t *iter = processes;
-        process_desc_t *prev_iter = NULL;
-
-        while (iter != NULL)
-        {
-            process_desc_t *cur_iter = iter;
-            if (!local_spinlock_trylock(&cur_iter->lock))
-                break;
-            if (iter->state == task_state_reapable)
-            {
-                //Delete task
-                if (iter->mem != NULL)
-                {
-                    free_descriptors(iter, iter->descriptors, 0); //Unmap/free all descriptors regions
-                    if (iter->syscall_data != NULL)
-                        free(iter->syscall_data);
-                    if (iter->user_stack != NULL)
-                    {
-                        vmem_unmap(iter->mem, 0x100000000, USER_STACK_LEN);
-                        pagealloc_free(iter->user_stack_phys, USER_STACK_LEN);
-                    }
-                    vmem_destroy(iter->mem);
-                    free(iter->fpu_state_unaligned);
-                    free(iter->reg_state);
-                    free(iter->kernel_stack - KERNEL_STACK_LEN);
-
-                    iter->mem = NULL;
-                }
-
-                if (prev_iter == NULL)
-                {
-                    processes = iter->next;
-                    free(iter);
-                    process_count--;
-                }
-                else if (local_spinlock_trylock(&prev_iter->lock))
-                {
-                    prev_iter->next = iter->next;
-                    local_spinlock_unlock(&prev_iter->lock);
-                    free(iter);
-                    process_count--; //NOTE: This will probably leak if the prev_iter is also task_state_exited
-                }
-                else
-                    local_spinlock_unlock(&cur_iter->lock);
-                break; //Exit inner loop every free to allow pre-emption
-            }
-            prev_iter = iter;
-            iter = iter->next;
-            local_spinlock_unlock(&cur_iter->lock);
-        }
-
-        local_spinlock_unlock(&process_lock);
-        sti(cli_state);
-
-        //Yield between passes instead of busy-spinning. The cleanup task does not
-        //need to run continuously, and on SMP a tight loop here would hammer
-        //process_lock and starve other cores of the scheduler.
-        task_yield();
-    }
 }
 
 void semaphore_init(semaphore_t *sema)
@@ -1227,12 +998,12 @@ void servicescript_handler(void *arg)
 //Releases the application processors into the scheduler once every Core* server and
 //device driver has been loaded (the kernel module loader is single-threaded-only, so
 //the APs stay parked in mp_signalready() throughout loading). Each AP then runs
-//task_ap_entry: per-core setup (interrupt stack + idle task), then joins scheduling.
+//task_ap_entry: per-core setup (interrupt stack + run queue + idle task), then joins
+//scheduling.
 //
-//PARKED BY DEFAULT: this is invoked via `CALL:task_release_aps` in servicescript.txt,
-//but that line is currently removed so the shipped boot stays single-core. Re-add it
-//to activate AP scheduling. Activation works under KVM but a timing-sensitive SMP race
-//(heap corruption of task state) still reproduces under TCG -- see notes/AUDIT.md.
+//With per-core run queues each AP schedules only the tasks on its own queue. Tasks
+//created after the APs come online round-robin across cores (see pick_target_core);
+//boot-time tasks stay on the BSP. See notes/AUDIT.md.
 int task_release_aps()
 {
     DEBUG_PRINT("[SysTaskMgr] Boot services loaded; releasing APs into scheduler\r\n");
@@ -1244,15 +1015,15 @@ static void NORETURN idle_task(void *arg)
 {
     arg = NULL;
     //Always-runnable fallback so a core with no other work never starves the
-    //scheduler (which would otherwise PANIC in task_switch_handler).
+    //scheduler (which would otherwise PANIC in the scheduler).
     while (true)
         halt();
 }
 
-//Per-core scheduler bring-up, run on the BSP and every AP: allocate this core's
-//interrupt stack and create its idle task. Does NOT arm the preemption timer --
-//call task_core_arm() only once every task this core might immediately schedule
-//exists, so the first tick cannot fire into an empty run queue.
+//Per-core scheduler bring-up, run on the BSP and every AP: register this core's
+//run queue, allocate its interrupt stack, and create its idle task. Does NOT arm
+//the preemption timer -- call task_core_arm() only once every task this core might
+//immediately schedule exists, so the first tick cannot fire into an empty run queue.
 static void task_core_setup()
 {
     //Allocate and setup interrupt stack
@@ -1260,13 +1031,22 @@ static void task_core_setup()
 
     core_descs->interrupt_stack = interrupt_stack;
     core_descs->cur_task = NULL;
-    core_descs->last_dead = NULL;
+    core_descs->prev_dead = NULL;
+
+    //Claim a run-queue slot. The index is sequential (not the sparse APIC id) so
+    //it can index run_queues[]/rq_locks[]. The slot's head/lock are statically
+    //zero-initialized, so publishing the index (the atomic increment) is enough
+    //to make the queue usable by other cores.
+    int idx = registered_cores++;
+    if (idx >= MAX_CORES)
+        PANIC("[SysTaskMgr] Too many cores.");
+    core_descs->core_idx = idx;
 
     interrupt_setstack(interrupt_stack);
 
-    //Each core needs an always-runnable idle task
+    //Each core needs an always-runnable idle task, pinned to this core.
     cs_id idle_id = 0;
-    if (create_task_kernel("idle", task_permissions_kernel, &idle_id) != CS_OK)
+    if (create_task_core("idle", task_permissions_kernel, &idle_id, idx) != CS_OK)
         PANIC("[SysTaskMgr] Failed to create idle task.");
     if (start_task_kernel(idle_id, idle_task, NULL) != CS_OK)
         PANIC("[SysTaskMgr] Failed to start idle task.");
@@ -1292,6 +1072,7 @@ static void task_ap_entry(void)
         core_descs = (TLS core_desc_t *)mp_tls_get(mp_tls_alloc(sizeof(core_desc_t)));
     core_descs->interrupt_stack = NULL;
     core_descs->cur_task = NULL;
+    core_descs->prev_dead = NULL;
 
     task_core_setup();
     task_core_arm();
@@ -1319,24 +1100,20 @@ int module_init()
         core_descs = (TLS core_desc_t *)mp_tls_get(mp_tls_alloc(sizeof(core_desc_t)));
     core_descs->interrupt_stack = NULL;
     core_descs->cur_task = NULL;
+    core_descs->prev_dead = NULL;
 
     registry_createdirectory("", "procs");
 
-    //Per-core bring-up for the BSP (interrupt stack + its idle task)
+    //Per-core bring-up for the BSP (run queue + interrupt stack + its idle task)
     task_core_setup();
 
-    //One-time global tasks, created once and scheduled by any core
+    //One-time global tasks. Created during single-core boot, so they land on the
+    //BSP's run queue (see pick_target_core).
     cs_id ss_id = 0;
     if (create_task_kernel("servicescript", task_permissions_kernel, &ss_id) != CS_OK)
         PANIC("[SysTaskMgr] Failed to create servicescript task.");
     if (start_task_kernel(ss_id, servicescript_handler, NULL) != CS_OK)
         PANIC("[SysTaskMgr] Failed to start servicescript task.");
-
-    cs_id tc_id = 0;
-    if (create_task_kernel("task_cleanup", task_permissions_kernel, &tc_id) != CS_OK)
-        PANIC("[SysTaskMgr] Failed to create task_cleanup task.");
-    if (start_task_kernel(tc_id, task_cleanup, NULL) != CS_OK)
-        PANIC("[SysTaskMgr] Failed to start task_cleanup task.");
 
     syscall_sethandler(1, (void *)nanosleep_syscall);
 

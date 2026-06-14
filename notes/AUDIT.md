@@ -119,11 +119,37 @@ keeps its LIFO-only release behaviour — only the most recent allocation can be
 returned — which is inherent to a bump allocator, not a bug.)*
 
 ### [FIXED] SMP application-processor (AP) bring-up — race resolved, APs active by default
-> **Resolved.** The timing-sensitive SMP race that blocked this is now fixed (deferred
-> one-quantum reap — see "ROOT CAUSE FOUND & FIXED" below). `CALL:task_release_aps` is
-> back in `servicescript.txt`, so the default boot is multi-core. The historical
+> **SUPERSEDED BY DESIGN CHANGE (per-core run queues).** The whole class of
+> cross-core scheduler races below was eliminated structurally rather than patched:
+> the scheduler is now **shared-nothing**. Each core owns a private run queue
+> (`run_queues[]`/`rq_locks[]`, indexed by a sequential `core_idx`); a task is
+> created on, scheduled by, and **freed only by** its single owning core. The
+> cross-core use-after-free that drove this entire investigation is therefore
+> *impossible by construction* — no other core can free a task's stack/reg_state
+> while its owner is mid-`iret` on it, because no other core can reach that task.
+>
+> What that removed: the global `processes` list + `process_lock` (the hot path now
+> takes only this core's `rq_lock`, ≈uncontended); the separate `task_cleanup` task
+> (each core frees its own departed task at the top of its next scheduler pass via
+> `core_desc_t.prev_dead`); the `task_state_reapable` state and the `last_dead`
+> deferred-reap *marking* dance; and the cross-core cleanup that the deferred reap
+> existed to make safe. The one remaining subtlety — not freeing a task on the same
+> pass we switch away from it (we're still on its stack until `iret`) — is now a
+> trivially-correct *same-core* one-pass deferral (`prev_dead`).
+>
+> Distribution: tasks created after the APs come online round-robin across cores
+> (`pick_target_core`); boot-time tasks (servicescript, per-core idle) stay on their
+> creating core. Cross-core task migration is not yet implemented (a follow-up: an
+> explicit "move descriptor between queues" message — the microkernel way).
+> Validated: 6/6 clean TCG SMP boots, APs active, servicescript exit/reap (the old
+> repro) faultless. The historical narrative below documents the original diagnosis
+> and the timing-based fix this design replaced; it is kept for context.
+>
+> **Prior fix (now replaced).** The timing-sensitive SMP race was first fixed with a
+> deferred one-quantum reap (see "ROOT CAUSE FOUND & FIXED" below). `CALL:task_release_aps`
+> is in `servicescript.txt`, so the default boot is multi-core. The historical
 > narrative below is kept because it documents the diagnosis and the supporting
-> infrastructure (IST exception dumps, two-phase reap) the fix built on.
+> infrastructure (IST exception dumps) the work built on.
 >
 > The two **diagnostic** aids used to localise the bug were removed once it was fixed:
 > the per-task `reg_state` **page-guard** (it never recycled its vmalloc virtual range,
