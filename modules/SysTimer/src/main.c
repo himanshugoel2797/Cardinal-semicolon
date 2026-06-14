@@ -159,7 +159,6 @@ int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int))
 
     //Configure the timer
     timer_defs_t *t = &timer_defs[idx];
-    timer_wait_d = t;
     t->in_use = true;
     t->handlers.set_mode(&t->handlers, features);
     if (features & timer_features_write)

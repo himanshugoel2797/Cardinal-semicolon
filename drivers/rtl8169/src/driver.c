@@ -125,10 +125,21 @@ static network_device_desc_t device_desc = {
 //Setup this device
 int rtl8169_init(rtl8169_state_t *state)
 {
-    //Reset
+    //Reset, bounded by a real wall-clock timeout so a wedged/absent NIC can't
+    //hang boot. The reset bit self-clears within microseconds on real hardware.
     state->memar[CMD_REG] = CMD_RST_VAL;
-    while (state->memar[CMD_REG] & CMD_RST_VAL)
-        ;
+    {
+        timer_timeout_t to;
+        timer_timeout_start(&to, 100ULL * 1000 * 1000);  //100ms
+        while (state->memar[CMD_REG] & CMD_RST_VAL)
+        {
+            if (timer_timeout_expired(&to))
+            {
+                DEBUG_PRINT("[RTL8169] Reset timed out.\r\n");
+                return -1;
+            }
+        }
+    }
 
     //Allocate physical memory for the network buffers
     uintptr_t buffer_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, RX_BUFFER_SIZE + TX_BUFFER_SIZE);

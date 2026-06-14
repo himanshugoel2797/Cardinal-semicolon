@@ -85,6 +85,9 @@ int ipv4_tx(interface_def_t *interface, uint32_t dst_ip, const uint8_t *dst_mac,
 }
 
 int ipv6_rx(interface_def_t *interface, const uint8_t *src_mac, void *packet, int len) {
+    if (len < (int)sizeof(ipv6_t))
+        return 0;
+
     ipv6_t *ip_pack = (ipv6_t*)packet;
     src_mac = NULL;
 

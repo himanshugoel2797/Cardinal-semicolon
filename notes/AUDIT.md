@@ -477,7 +477,10 @@ Recent EHCI/UHCI/CoreUsb work is mid-flight, so this is the minimal safe fix.)*
   the spin, racing the DMA engine).
 
 ### [INCOMPLETE] Stubs
-`CoreAudio`, `CoreStorage`, `tarfs` module_init are empty; `intel_wifi`
+`CoreAudio`, `tarfs` module_init are empty. `CoreStorage` now has a working
+block-device registry (`usb_storage` registers through it); the cardfs self-test
+that runs from its `module_init` is temporary and destructively formats block
+device 0 — FS-provider registration and a userspace I/O path remain TODO. `intel_wifi`
 `module_init` early-returns before any init. `CoreNetwork` ARP/ICMP/IPv4-rx and a
 minimal tx path are now implemented (echo/ARP reply work) — see
 `notes/servers/CoreNetwork.md`; TCP and the socket/port API remain TODO and are

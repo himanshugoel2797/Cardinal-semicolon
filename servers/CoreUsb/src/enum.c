@@ -288,7 +288,11 @@ int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
         DEBUG_PRINT("[CoreUsb] dispatching to class driver\r\n");
         class_probes[dev_class](dev);
     } else {
+        // No driver owns this device: release the enum-table slot so it is not
+        // leaked. (The assigned bus address stays consumed -- recycling that
+        // needs a disconnect path that does not exist yet.)
         DEBUG_PRINT("[CoreUsb] no class driver registered for this device\r\n");
+        dev->in_use = false;
     }
 
     return 0;
