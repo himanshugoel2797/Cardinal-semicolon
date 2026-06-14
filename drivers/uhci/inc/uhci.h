@@ -55,7 +55,7 @@ typedef struct transfer_descriptor {
         uint32_t lp;
     } link;
     struct {
-        uint32_t act_len : 10;
+        uint32_t act_len : 11;  // UHCI ActLen is 11 bits (was 10, misaligning the rest of the dword)
         uint32_t rsv0 : 5;
         uint32_t status : 8;
         uint32_t ioc : 1;

@@ -376,7 +376,10 @@ driver init) never yields and never gets preempted, so it runs straight through 
 its state mislabelled. The AHCI hang above was a symptom. A correct `task_sleep`
 should set the sleep state and then `task_yield()` so the core actually switches away,
 and the wake path / timestamp source needs verifying. Until then, callers must not
-rely on it for real delays.
+rely on it for real delays. Known affected callers fixed so far: AHCI init (bounded
+polled spins) and **UHCI init** (`drivers/uhci/src/main.c` reset/port-reset delays
+now use `uhci_delay_ns`, a wall-clock busy-wait off `timer_timestamp_ns`) — before
+this, UHCI's GRESET/port-reset delays never actually happened.
 
 ### [INCOMPLETE] Stubs / TODOs (tracked, not bugs)
 - ~~`kernel/src/bootstrap_alloc.c` `realloc` → `PANIC("unimplemented")`.~~
