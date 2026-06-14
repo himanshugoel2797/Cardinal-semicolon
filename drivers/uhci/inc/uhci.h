@@ -114,6 +114,10 @@ typedef struct uhci_ctrl_state
     int ctrl_lock;
     bool port_enum[PORT_COUNT];  // whether the device on each port is enumerated
 
+    // Data-toggle state per (device address, endpoint), maintained by the driver
+    // so callers of interrupt/bulk transfers don't have to track it.
+    uint8_t ep_toggle[128 * 16];
+
     struct uhci_ctrl_state *next;
 } uhci_ctrl_state_t;
 

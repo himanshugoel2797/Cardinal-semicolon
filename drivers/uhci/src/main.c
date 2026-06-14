@@ -233,6 +233,126 @@ static int uhci_control_transfer(void *hc_state, int dev_addr, usb_speed_t speed
     return transferred;
 }
 
+// Single-endpoint data transfer (interrupt or bulk) using the driver-tracked
+// per-endpoint data toggle. Returns bytes transferred; 0 means "no data" for an
+// IN poll that only saw NAKs within the spin budget; <0 on STALL/error.
+static int uhci_data_transfer(uhci_ctrl_state_t *st, int dev_addr, int low_speed,
+                              int endpoint, int dir_in, int max_packet,
+                              void *data, int len, uint64_t spin_limit)
+{
+    if (max_packet <= 0)
+        max_packet = 8;
+    if (len < 0)
+        len = 0;
+    if (len > UHCI_DATA_MAX)
+        len = UHCI_DATA_MAX;
+    int ep = endpoint & 0xF;
+
+    local_spinlock_lock(&st->ctrl_lock);
+
+    uint8_t *data_buf = st->dma_virt + UHCI_DATA_OFF;
+    transfer_descriptor_t *tds = (transfer_descriptor_t *)(st->dma_virt + UHCI_TD_OFF);
+    uhci_qh_t *qh = (uhci_qh_t *)(st->dma_virt + UHCI_QH_OFF);
+    uint32_t data_phys = (uint32_t)(st->dma_phys + UHCI_DATA_OFF);
+    uint32_t td_phys_base = (uint32_t)(st->dma_phys + UHCI_TD_OFF);
+
+    if (!dir_in && data != NULL && len > 0)
+        memcpy(data_buf, data, len);
+
+    int tidx = (dev_addr & 0x7F) * 16 + ep;
+    int toggle = st->ep_toggle[tidx] & 1;
+
+    int n = 0;
+    int rem = len;
+    uint32_t bptr = data_phys;
+    int pid = dir_in ? UHCI_PID_IN : UHCI_PID_OUT;
+    do {
+        int chunk = rem > max_packet ? max_packet : rem;
+        memset(&tds[n], 0, sizeof(transfer_descriptor_t));
+        tds[n].status.status = 0x80;
+        tds[n].status.err_count = 3;
+        tds[n].status.ls = low_speed;
+        tds[n].token.pid = pid;
+        tds[n].token.device = dev_addr;
+        tds[n].token.endpoint = ep;
+        tds[n].token.data_toggle = toggle;
+        tds[n].token.maxlen = (chunk > 0 ? (chunk - 1) : 0x7FF) & 0x7FF;
+        tds[n].buffer_ptr = chunk > 0 ? bptr : 0;
+        n++;
+        toggle ^= 1;
+        rem -= chunk;
+        bptr += chunk;
+    } while (rem > 0 && n < UHCI_TD_COUNT);
+
+    for (int i = 0; i < n; i++)
+        tds[i].link.lp = (i == n - 1) ? 1 : ((td_phys_base + (i + 1) * sizeof(transfer_descriptor_t)) | (1 << 2));
+
+    qh->hlp = 1;
+    qh->elp = td_phys_base;
+
+    int result = -1;  // -1 timeout/NAK, -2 fatal, 0 success
+    for (volatile uint64_t spin = 0; spin < spin_limit; spin++) {
+        int fatal = 0, active = 0;
+        for (int i = 0; i < n; i++) {
+            uint32_t s = tds[i].status.status;
+            if (s & 0x80)
+                active = 1;
+            if (s & 0x76)
+                fatal = 1;
+        }
+        if (fatal) {
+            result = -2;
+            break;
+        }
+        if (!active) {
+            result = 0;
+            break;
+        }
+    }
+
+    qh->elp = 1;
+
+    int transferred;
+    if (result == 0) {
+        int total = 0;
+        for (int i = 0; i < n; i++) {
+            uint32_t al = tds[i].status.act_len;
+            total += (al == 0x7FF) ? 0 : (int)al + 1;
+        }
+        if (dir_in && data != NULL && total > 0) {
+            if (total > len)
+                total = len;
+            memcpy(data, data_buf, total);
+        }
+        st->ep_toggle[tidx] = (uint8_t)(toggle & 1);  // advanced once per TD
+        transferred = total;
+    } else if (result == -1 && dir_in) {
+        transferred = 0;  // NAK within budget: no data available right now
+    } else {
+        transferred = -1;  // fatal, or OUT that didn't complete
+    }
+
+    local_spinlock_unlock(&st->ctrl_lock);
+    return transferred;
+}
+
+static int uhci_interrupt_in(void *hc_state, int dev_addr, usb_speed_t speed, int endpoint,
+                             int max_packet, int data_toggle, void *data, int len)
+{
+    (void)data_toggle;  // driver tracks the toggle internally
+    uhci_ctrl_state_t *st = (uhci_ctrl_state_t *)hc_state;
+    int low_speed = (speed == usb_speed_low) ? 1 : 0;
+    return uhci_data_transfer(st, dev_addr, low_speed, endpoint, 1, max_packet, data, len, 5000000ULL);
+}
+
+static int uhci_bulk(void *hc_state, int dev_addr, int endpoint, int max_packet,
+                     int data_toggle, void *data, int len, int dir_in)
+{
+    (void)data_toggle;
+    uhci_ctrl_state_t *st = (uhci_ctrl_state_t *)hc_state;
+    return uhci_data_transfer(st, dev_addr, 0, endpoint, dir_in, max_packet, data, len, 200000000ULL);
+}
+
 static void intr_handler(uhci_ctrl_state_t *inst){
     while (!inst->init_complete)
         ;
@@ -332,6 +452,8 @@ int module_init(void *ecam_addr)
     desc->state = instance;
     desc->device_type = usb_device_type_uhci;
     desc->handlers.control = uhci_control_transfer;
+    desc->handlers.interrupt_in = uhci_interrupt_in;
+    desc->handlers.bulk = uhci_bulk;
     desc->lock = 0;
     usb_register_hostcontroller(desc, &instance->handle);
 
