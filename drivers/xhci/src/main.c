@@ -25,6 +25,7 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysTaskMgr/task.h"
+#include "SysInterrupts/interrupts.h"
 #include "pci/pci.h"
 #include "CoreUsb/usb.h"
 
@@ -108,33 +109,80 @@ static int next_event(xhci_ctrl_state_t *s, xhci_trb_t *out) {
     return 1;
 }
 
-// Wait for an event of `type`. For transfer events, `slot` must match (or <0).
-// Returns the completion code, writes the event to *out, or -1 on timeout.
-static int wait_event(xhci_ctrl_state_t *s, int type, int slot, xhci_trb_t *out) {
-    for (volatile uint64_t spin = 0; spin < 300000000ULL; spin++) {
-        xhci_trb_t ev;
-        if (!next_event(s, &ev))
-            continue;
-        int etype = XHCI_TRB_TYPE(ev.control);
-        if (etype == TRB_EVENT_PORT_STATUS)
-            continue;  // handled by the port poll loop directly
-        if (etype == type) {
-            int ev_slot = (ev.control >> 24) & 0xFF;
-            if (slot < 0 || ev_slot == slot) {
+// Drain the event ring, recording the first command/transfer completion into
+// irq_trb/irq_done. Port-status (and any other) events are consumed (ports are
+// handled by the poll task reading PORTSC). Caller must hold event_lock with
+// interrupts off (or be the ISR, which already runs IRQs-off).
+static void xhci_drain_events(xhci_ctrl_state_t *s) {
+    xhci_trb_t ev;
+    while (next_event(s, &ev)) {
+        int t = XHCI_TRB_TYPE(ev.control);
+        if (t == TRB_EVENT_CMD_COMPLETE || t == TRB_EVENT_TRANSFER) {
+            s->irq_trb = ev;
+            s->irq_done = 1;
+        }
+    }
+}
+
+static inline int irqs_on(void) {
+    uint64_t f;
+    __asm__ volatile("pushfq; pop %0" : "=r"(f));
+    return (int)((f >> 9) & 1);
+}
+
+// Wait for the outstanding operation's completion event. Interrupt-accelerated:
+// the MSI ISR drains the ring and sets irq_done; we also drain it ourselves
+// (under event_lock, IRQs off) so it still completes if an interrupt is missed
+// or interrupts are disabled (e.g. from the GDB stub). Yields between polls when
+// interrupts are enabled.
+static int xhci_wait(xhci_ctrl_state_t *s, int type, int slot, xhci_trb_t *out, uint64_t spin_limit) {
+    for (volatile uint64_t spin = 0; spin < spin_limit; spin++) {
+        int cli_state = cli();
+        local_spinlock_lock(&s->event_lock);
+        xhci_drain_events(s);
+        local_spinlock_unlock(&s->event_lock);
+        sti(cli_state);
+
+        if (s->irq_done) {
+            xhci_trb_t ev = s->irq_trb;
+            s->irq_done = 0;
+            int etype = XHCI_TRB_TYPE(ev.control);
+            int eslot = (ev.control >> 24) & 0xFF;
+            if (etype == type && (slot < 0 || eslot == slot)) {
                 if (out)
                     *out = ev;
                 return XHCI_CC(ev.status);
             }
+            // Mismatch shouldn't happen (one op outstanding under s->lock); drop.
         }
-        // Some other event (e.g. transfer for a different slot) -- skip it.
+        if (irqs_on())
+            task_yield();
     }
     return -1;
 }
 
+// MSI interrupt handler: ack the controller and drain the event ring for every
+// xHCI instance (the vector is shared across the small instances list here).
+static void xhci_isr(int vector) {
+    vector = 0;
+    for (xhci_ctrl_state_t *s = instances; s != NULL; s = s->next) {
+        uint32_t sts = rd32(s->op, XHCI_OP_USBSTS);
+        if (sts & XHCI_USBSTS_EINT)
+            wr32(s->op, XHCI_OP_USBSTS, XHCI_USBSTS_EINT);  // W1C
+        uint32_t iman = rd32(s->rt, XHCI_RT_IR0 + XHCI_IR_IMAN);
+        if (iman & XHCI_IMAN_IP)
+            wr32(s->rt, XHCI_RT_IR0 + XHCI_IR_IMAN, iman | XHCI_IMAN_IP);  // W1C IP, keep IE
+        local_spinlock_lock(&s->event_lock);
+        xhci_drain_events(s);
+        local_spinlock_unlock(&s->event_lock);
+    }
+}
+
 static int xhci_command(xhci_ctrl_state_t *s, uint64_t param, uint32_t control, xhci_trb_t *out) {
     ring_push(&s->cmd_ring, param, 0, control);
+    s->irq_done = 0;
     s->db[0] = 0;  // ring command doorbell
-    return wait_event(s, TRB_EVENT_CMD_COMPLETE, -1, out);
+    return xhci_wait(s, TRB_EVENT_CMD_COMPLETE, -1, out, 400000000ULL);
 }
 
 // ---- Context helpers ----
@@ -218,10 +266,11 @@ static int do_control(xhci_ctrl_state_t *s, xhci_slot_t *sl, const usb_setup_pac
     ring_push(&sl->ep[1].ring, 0, 0,
               XHCI_TRB_SET_TYPE(TRB_STATUS) | (status_dir ? (1 << 16) : 0) | (1 << 5) /*IOC*/);
 
+    s->irq_done = 0;
     s->db[sl->slot_id] = 1;  // ring EP0 doorbell (DCI 1)
 
     xhci_trb_t out;
-    int cc = wait_event(s, TRB_EVENT_TRANSFER, sl->slot_id, &out);
+    int cc = xhci_wait(s, TRB_EVENT_TRANSFER, sl->slot_id, &out, 400000000ULL);
     if (cc != XHCI_CC_SUCCESS && cc != XHCI_CC_SHORT_PACKET)
         return -1;
 
@@ -241,22 +290,11 @@ static int do_data(xhci_ctrl_state_t *s, xhci_slot_t *sl, int dci, int ep_type, 
 
     ring_push(&sl->ep[dci].ring, s->bounce_phys, (uint32_t)len,
               XHCI_TRB_SET_TYPE(TRB_NORMAL) | (1 << 5) /*IOC*/ | (1 << 2) /*ISP*/);
+    s->irq_done = 0;
     s->db[sl->slot_id] = dci;
 
     xhci_trb_t out;
-    int cc = -1;
-    for (volatile uint64_t spin = 0; spin < timeout; spin++) {
-        xhci_trb_t ev;
-        if (!next_event(s, &ev))
-            continue;
-        if (XHCI_TRB_TYPE(ev.control) == TRB_EVENT_PORT_STATUS)
-            continue;
-        if (XHCI_TRB_TYPE(ev.control) == TRB_EVENT_TRANSFER && ((ev.control >> 24) & 0xFF) == sl->slot_id) {
-            cc = XHCI_CC(ev.status);
-            out = ev;
-            break;
-        }
-    }
+    int cc = xhci_wait(s, TRB_EVENT_TRANSFER, sl->slot_id, &out, timeout);
     if (cc != XHCI_CC_SUCCESS && cc != XHCI_CC_SHORT_PACKET) {
         if (dir_in)
             return 0;  // no data this poll
@@ -455,16 +493,25 @@ static void xhci_port_connected(xhci_ctrl_state_t *s, int port) {
     }
     int xspeed = (rd32(s->op, XHCI_OP_PORTSC(port)) >> XHCI_PORTSC_SPEED_SHIFT) & XHCI_PORTSC_SPEED_MASK;
 
+    // Submit Enable Slot + Address Device(BSR=1) under s->lock so they don't race
+    // with a concurrent transfer for an already-enumerated device on the irq_done
+    // single-outstanding-op flag. Released before usb_port_connected, which
+    // re-enters xhci_control (which also takes s->lock) during enumeration.
+    local_spinlock_lock(&s->lock);
+
     // Enable a slot.
     xhci_trb_t out;
     int cc = xhci_command(s, 0, XHCI_TRB_SET_TYPE(TRB_ENABLE_SLOT), &out);
     if (cc != XHCI_CC_SUCCESS) {
+        local_spinlock_unlock(&s->lock);
         DEBUG_PRINT("[xHCI] Enable Slot failed\r\n");
         return;
     }
     int slot_id = (out.control >> 24) & 0xFF;
-    if (slot_id <= 0 || slot_id > XHCI_MAX_SLOTS)
+    if (slot_id <= 0 || slot_id > XHCI_MAX_SLOTS) {
+        local_spinlock_unlock(&s->lock);
         return;
+    }
 
     xhci_slot_t *sl = &s->slots[slot_id];
     memset(sl, 0, sizeof(*sl));
@@ -481,11 +528,13 @@ static void xhci_port_connected(xhci_ctrl_state_t *s, int port) {
 
     // Address Device with BSR=1: EP0 usable, device still at address 0.
     if (xhci_address_device(s, sl, 1) != 0) {
+        local_spinlock_unlock(&s->lock);
         DEBUG_PRINT("[xHCI] Address Device (BSR=1) failed\r\n");
         return;
     }
 
     s->enumerating_slot = slot_id;
+    local_spinlock_unlock(&s->lock);
 
     usb_speed_t uspeed = (xspeed == 2) ? usb_speed_low
                          : (xspeed == 3) ? usb_speed_high
@@ -581,8 +630,23 @@ int module_init(void *ecam_addr) {
     // Bounce buffer for transfers.
     s->bounce_virt = alloc_page(&s->bounce_phys);
 
-    // Run.
-    wr32(s->op, XHCI_OP_USBCMD, XHCI_USBCMD_RS);
+    // MSI: allocate a vector, register the ISR, program the device's MSI cap.
+    int int_cnt = 0;
+    int msi_val = pci_getmsiinfo(device, &int_cnt);
+    int msi_vector = 0;
+    interrupt_allocate(1, interrupt_flags_exclusive, &msi_vector);
+    interrupt_registerhandler(msi_vector, xhci_isr);
+    s->irq_vector = msi_vector;
+    uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
+    uint32_t msi_msg = (uint32_t)msi_register_data(msi_vector);
+    pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
+
+    // Enable interrupter 0 (IMAN.IE); moderate to avoid an event-interrupt storm.
+    wr32(s->rt, XHCI_RT_IR0 + XHCI_IR_IMOD, 4000);  // ~1ms interval
+    wr32(s->rt, XHCI_RT_IR0 + XHCI_IR_IMAN, XHCI_IMAN_IE);
+
+    // Run, with controller-level interrupt enable (USBCMD.INTE).
+    wr32(s->op, XHCI_OP_USBCMD, XHCI_USBCMD_RS | XHCI_USBCMD_INTE);
 
     // Register with CoreUsb.
     usb_hci_desc_t *desc = malloc(sizeof(usb_hci_desc_t));
