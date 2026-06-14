@@ -60,6 +60,7 @@ int network_register(network_device_desc_t *desc, void **network_handle)
         def->type = devType;
         def->device = *desc;
         def->idx = devIDs[def->type]++;
+        def->ip = NET_DEFAULT_IPV4;
         for (int i = 0; i < 6; i++)
             def->mac[i] = mac[i];
 
@@ -92,14 +93,17 @@ int network_rx_packet(void *interface_handle, void *packet, int len)
     return 0;
 }
 
-//Switch to allocation pattern? Read up on network stack designs
+// Broadcast an L3 payload at L2 with the given on-wire ethertype. Used by
+// broadcast protocols (e.g. ARP requests); unicast L3 transmission goes through
+// the per-protocol helpers (ipv4_tx). The richer tx path -- per-device queues, a
+// tx thread, and outbound ARP resolution with packet hold/retry -- is a deferred
+// design decision (see notes/servers/CoreNetwork.md).
 int network_tx_packet(interface_def_t *interface, void *packet, int len, uint16_t protocol_type)
 {
-    //TODO: build a transmission frame around the packet based on the interface type and submit to the driver for transmission
-    interface = NULL;
-    packet = NULL;
-    len = 0;
-    protocol_type = 0;
+    static const uint8_t broadcast_mac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
-    return 0;
+    if (interface->type != network_device_type_ethernet)
+        return -1;
+
+    return ethernet_tx(interface, broadcast_mac, protocol_type, packet, len);
 }
