@@ -15,6 +15,7 @@ int main(void) {
     test_checksum();
     test_sha256();
     test_hmac();
+    test_time();
 
     printf("-------------------------\n");
     printf("%d checks, %d failed\n", g_checks_run, g_checks_failed);
