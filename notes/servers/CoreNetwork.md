@@ -14,8 +14,8 @@ transmit path exists to make the stack observably alive:
   ethernet/IPv4 ARP, learns the sender, and replies to requests addressed to the
   interface's IP.
 - **IPv4** (`ip.c`): header-checksum verify (over `ihl*4`), version/ihl sanity,
-  opportunistic ARP learning from any valid datagram, protocol demux. `ipv4_tx()`
-  builds a header (ttl 64, df=0, computed checksum) and sends via `ethernet_tx`.
+  length validation, protocol demux. `ipv4_tx()` builds a header (ttl 64, df=0,
+  computed checksum) and sends via `ethernet_tx`.
 - **ICMP** (`icmp.c`): echo-request → echo-reply (the classic "is it alive?"
   path). Message length is taken from the IPv4 `total_len`, **not** the `len`
   argument from the driver (see the length caveat below).
@@ -23,6 +23,29 @@ transmit path exists to make the stack observably alive:
   (`net_checksum16`, plus a partial-accumulate API for future pseudo-headers),
   computed in native byte order — see the header for why that validates on a peer
   of either endianness.
+
+### Runtime validation (2026-06, QEMU slirp)
+
+Validated end-to-end and bidirectionally against QEMU's slirp peer via a
+temporary boot self-test (`network_debug_selftest`, gated behind a `CALL:` in
+`servicescript.txt`) plus a `filter-dump` packet capture. The capture showed the
+full exchange with all checksums clean (tcpdump `-vv` flagged none):
+
+```
+52:54:00:12:34:56 > ff:ff:ff:ff:ff:ff  ARP Request who-has 10.0.2.2 tell 10.0.2.15
+52:55:0a:00:02:02 > 52:54:00:12:34:56  ARP Reply 10.0.2.2 is-at 52:55:0a:00:02:02   (learned)
+10.0.2.15 > 10.0.2.2  ICMP echo request id 4660 seq 1                               (our tx)
+10.0.2.2 > 10.0.2.15  ICMP echo reply   id 4660 seq 1                               (accepted by peer)
+```
+
+This exercises ethernet framing, ARP request build + reply parse + cache update,
+IPv4 header build + checksum, ICMP echo build + checksum, and inbound IPv4/ICMP
+parsing. The inbound-echo-*reply* path (replying to a ping addressed to us) was
+not directly driven (slirp does not easily route host→guest ICMP), but every
+primitive it uses is proven by the above. Two findings came out of this run (both
+in `notes/AUDIT.md`): a now-fixed **virtio-net 10-vs-12-byte header bug** that was
+shifting every tx frame left by 2 bytes, and a pre-existing **KVM boot hang**
+(boots only under `-accel tcg`; reproduces on master).
 
 ### How to exercise it
 Default interface IP is `10.0.2.15` (`NET_DEFAULT_IPV4`), the address QEMU's

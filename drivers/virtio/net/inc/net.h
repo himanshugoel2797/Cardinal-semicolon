@@ -38,6 +38,13 @@ typedef struct {
     uint16_t gso_sz;
     uint16_t csum_start;
     uint16_t csum_offset;
+    // Present whenever VIRTIO_F_VERSION_1 (modern) or VIRTIO_NET_F_MRG_RXBUF is
+    // negotiated -- which virtio_common always does for a modern device (1af4:1041,
+    // QEMU's virtio-net-pci). Without this field the header is 10 bytes instead of
+    // 12, so the device consumes the first 2 bytes of every tx frame as header
+    // (and the driver mis-locates the rx frame by 2 bytes). Confirmed via packet
+    // capture: tx frames arrived shifted left by 2 bytes.
+    uint16_t num_buffers;
 } PACKED virtio_net_cmd_hdr_t;
 
 typedef struct {

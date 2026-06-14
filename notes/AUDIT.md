@@ -480,6 +480,31 @@ minimal tx path are now implemented (echo/ARP reply work) — see
 `notes/servers/CoreNetwork.md`; TCP and the socket/port API remain TODO and are
 documented there as deferred design decisions. Matches the README status notes.
 
+### [FIXED] virtio-net header is 10 bytes but the modern device needs 12
+`drivers/virtio/net/inc/net.h` `virtio_net_cmd_hdr_t` was the 10-byte legacy
+header. `virtio_common` negotiates `VIRTIO_F_VERSION_1` for the modern device
+(1af4:1041, QEMU's `virtio-net-pci`), which mandates the 12-byte header with a
+trailing `num_buffers`. With the 10-byte struct the device consumed the first 2
+bytes of every **tx** frame as header (and the driver mis-located the **rx**
+frame by 2 bytes). *(Fixed: added `uint16_t num_buffers`. Confirmed by packet
+capture — tx frames previously arrived shifted left by 2 bytes, e.g. broadcast
+`ff:ff:ff:ff:ff:ff` seen as `ff:ff:ff:ff:52:54`; after the fix ARP + ICMP echo
+complete a full exchange with the slirp peer.)* Caveat: a pure-legacy device
+without `VERSION_1`/`MRG_RXBUF` uses a 10-byte header — if such a device is ever
+targeted, the header size must become feature-dependent.
+
+### [VERIFIED] boot hangs under KVM the instant servicescript is scheduled
+Under `qemu -accel kvm` (q35), the boot reaches `[SysTaskMgr] Process Started:
+servicescript` / `[SysTimer] Allocated timer: apic_local` and then hangs — **no
+servers load** (no `[Kernel] Load module:./Core*` lines). Under `-accel tcg` the
+same image boots fully (all servers load, `servicescript` runs to
+`end_task_syscall` and exits). Reproduces on **master** with `-smp 1` and
+`-smp 2`, so it is pre-existing and unrelated to the network/robustness work.
+Net effect: the scheduler does not run the first non-idle task under KVM. Use TCG
+for runtime testing until diagnosed. Likely a KVM-vs-TCG difference in
+APIC-timer/scheduler-entry behaviour (the first preemption tick never delivering,
+or the idle task monopolising the core); not yet root-caused.
+
 ---
 
 ## Toolchain / build notes (addressed in the revival PRs)
