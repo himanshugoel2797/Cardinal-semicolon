@@ -58,6 +58,39 @@ redesign:
 - **Toggle/halt handling is minimal** (no CLEAR_FEATURE(HALT) recovery on STALL;
   per-endpoint toggle reset only at init). Fine for the tested paths.
 
+## Interrupts
+
+- **xHCI is interrupt-driven** (`drivers/xhci`): MSI vector + ISR that acks the
+  controller (`USBSTS.EINT`, `IMAN.IP`) and drains the event ring into a
+  single-outstanding-op completion slot. Command/transfer waits go through
+  `xhci_wait`, which the ISR satisfies but which *also* self-pumps the event ring
+  under a lock with interrupts off — so it still completes if an interrupt is
+  missed, and (critically) works when called with interrupts disabled, e.g. from
+  the GDB exception handler. Validated under KVM (kbd enumerates + keys flow).
+- **UHCI stays polled** (`drivers/uhci`), deliberately: the PIIX/ICH9 UHCI
+  function has no MSI capability, and its legacy INTx# routes through a PCI link
+  whose IOAPIC GSI is only discoverable via ACPI `_PRT` — which this kernel does
+  not yet parse (`interrupt_mapinterrupt` maps a *known* GSI). Transfer
+  completion doesn't need an interrupt anyway: the HC writes TD status to DMA
+  memory, which the transfer path polls directly. A cooperative poll task
+  (`task_yield`) handles port connect + enumeration. Wiring UHCI INTx is gated on
+  ACPI interrupt-routing support, not on this driver.
+
+## USB-serial async GDB break-in
+
+`drivers/usb_serial` (FTDI) routes the SysGdb stub over a USB-serial dongle so
+the OS can be debugged with GDB even on hardware with no native serial port. A
+monitor task polls the adapter's bulk-IN endpoint; any byte from GDB — the RSP
+handshake on connect, or a lone `0x03` (Ctrl-C) sent to halt a running target —
+drops into the stub via `int3`. After GDB resumes (`continue`/`step`/`detach`)
+the monitor keeps polling, so a *later* Ctrl-C breaks in again (the stub re-sends
+the stop reply via `g_resumed`). This is USB-serial's analogue of the COM2 UART
+RX interrupt: USB bulk has no "byte arrived" IRQ, so the break is poll-detected.
+In-stub USB transfers run with interrupts off, where `xhci_wait` self-pumps —
+that's what makes debugging over xHCI USB-serial deadlock-free. Validated under
+KVM: attach, register read, and a lone `0x03` re-break all over `usb-serial` on
+`qemu-xhci`.
+
 ## Controllers
 
 Both **UHCI** (`drivers/uhci`) and **xHCI** (`drivers/xhci`) implement the
