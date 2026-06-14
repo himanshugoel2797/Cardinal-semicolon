@@ -7,8 +7,9 @@
 #define CARDINALSEMI_SYSGDB_H
 
 // Drop into the GDB stub and wait for a debugger (raises a breakpoint). Useful
-// from a boot script to debug early boot.
-void gdb_stub_wait(void);
+// from a boot script to debug early boot. Returns 0 (so it works as a `CALL:`
+// boot-script target).
+int gdb_stub_wait(void);
 
 // Replace the GDB serial channel (default COM2). A USB-serial driver calls this
 // to route GDB over a USB-serial adapter. Both callbacks are blocking byte I/O.
