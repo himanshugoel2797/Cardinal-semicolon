@@ -140,6 +140,16 @@ typedef struct {
                         int max_packet, int data_toggle, void *data, int len);
     int (*bulk)(void *hc_state, int dev_addr, int endpoint, int max_packet,
                 int data_toggle, void *data, int len, int dir_in);
+
+    // Optional (may be NULL): controllers that need per-device setup before EP0
+    // works behind a hub (xHCI) implement these; UHCI leaves them NULL.
+    //  - prepare_downstream: prepare a slot for a device on `parent_port` of the
+    //    hub at `parent_addr`, so the following control transfers (at the default
+    //    address) reach it. Returns 0 on success.
+    //  - mark_hub: tell the controller a device is a hub with `nports` ports
+    //    (needed so it routes packets to devices behind it).
+    int (*prepare_downstream)(void *hc_state, int parent_addr, int parent_port, usb_speed_t speed);
+    int (*mark_hub)(void *hc_state, int dev_addr, int nports);
 } usb_hci_handlers_t;
 
 typedef struct {
@@ -208,6 +218,11 @@ int usb_dev_find_endpoint(usb_enum_device_t *dev, int type, int dir_in, int *max
 // devices protocol 1 = keyboard, 2 = mouse.
 int usb_dev_interface_protocol(usb_enum_device_t *dev);
 int usb_dev_interface_number(usb_enum_device_t *dev);
+// For a hub driver: declare this device a hub with `nports` ports (lets the
+// controller route to devices behind it; no-op on controllers that don't need
+// it). Call before enumerating downstream devices.
+int usb_dev_mark_hub(usb_enum_device_t *hub, int nports);
+
 // For a hub driver: enumerate a device on one of the hub's downstream ports.
 int usb_dev_enumerate_downstream(usb_enum_device_t *hub, int port, usb_speed_t speed);
 

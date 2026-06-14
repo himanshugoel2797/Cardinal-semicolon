@@ -72,7 +72,11 @@ way. xHCI notes:
   first transfer.
 - Polled (no interrupts) like UHCI; single interrupter, single event-ring
   segment; 64-byte-or-32-byte contexts read from HCCPARAMS.
-- **Hub-on-xHCI is not yet supported**: a device behind a hub needs the slot
-  context's route string + parent-hub-slot/port fields, which the first-cut
-  Address Device path doesn't populate (it only sets the root port). Hubs work
-  on UHCI. Adding route-string support to `xhci_address_device` is the fix.
+- **Hubs work on xHCI** (validated: a keyboard behind a hub enumerates and its
+  keys arrive). The HC interface gained two optional handlers
+  (`prepare_downstream`, `mark_hub`); xHCI implements them — `mark_hub` sets the
+  slot's Hub bit + port count (Configure Endpoint), and `prepare_downstream`
+  Enable-Slots + Address-Devices a downstream device with the route string
+  computed from the parent hub's slot. UHCI leaves them NULL (it is
+  topology-transparent). Not yet handled: the TT (split-transaction) fields for a
+  low/full-speed device behind a high-speed hub — fine for QEMU's setup.
