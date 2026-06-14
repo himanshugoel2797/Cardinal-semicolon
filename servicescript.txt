@@ -9,6 +9,8 @@ LOAD:./CoreNetwork.celf
 LOAD:./CoreUsb.celf
 LOAD:./CoreDriver.celf
 CALL:coredisplay_postinit
+#TEMP: network bring-up self-test (remove together with network_debug_selftest)
+CALL:network_debug_selftest
 #USER:./mana.celf
 CALL:task_release_aps
 CALL:end_task_syscall
