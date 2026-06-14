@@ -30,14 +30,14 @@
 
 struct vmem
 {
-    uint64_t ptable[256];
+    uintptr_t pml4_phys; //physical address of this address space's PML4 page
+    uint64_t *pml4;      //physmap pointer to that 512-entry PML4 page
     int flags;
     int lock;
 };
 
 struct lcl_data
 {
-    uintptr_t ktable;
     vmem_t *cur_vmem;
 };
 
@@ -130,24 +130,22 @@ int vmem_init()
     pat |= ((uint64_t)0x1) << 24; //PAT3 WC
     wrmsr(PAT_MSR, pat);
 
-    uintptr_t ktable_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
-    if (ktable_phys == PHYSMEM_NO_ALLOC)
+    //The master kernel PML4. Its upper 256 entries (the kernel half) ARE the
+    //shared kernel address space: every process's PML4 copies them once at
+    //creation, and because they point at shared lower-level tables, later
+    //kernel-map changes are visible in every address space with no per-core
+    //resync. A core's cr3 points here whenever it is not running a task.
+    uintptr_t kpml4_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
+    if (kpml4_phys == PHYSMEM_NO_ALLOC)
         PANIC("Failed to allocate kernel pagetable!");
-    uint64_t *ktable = (uint64_t *)vmem_phystovirt(ktable_phys, KiB(4), vmem_flags_cachewriteback);
-    memset(ktable, 0, KiB(4));
+    kmem.pml4_phys = kpml4_phys;
+    kmem.pml4 = (uint64_t *)vmem_phystovirt(kpml4_phys, KiB(4), vmem_flags_cachewriteback);
+    memset(kmem.pml4, 0, KiB(4));
+    kmem.flags = vmem_flags_kernel;
+    kmem.lock = 0;
 
     if (lcl == NULL)
-    {
-        //mp_tls_alloc(8);
         lcl = (TLS struct lcl_data *)mp_tls_get(mp_tls_alloc(sizeof(struct lcl_data)));
-    }
-    lcl->ktable = ktable_phys;
-    {
-        kmem.flags = vmem_flags_kernel;
-        kmem.lock = 0;
-        memset(kmem.ptable, 0, sizeof(uint64_t) * 256);
-    }
-
     lcl->cur_vmem = NULL;
 
     uint64_t cur_ptable = 0;
@@ -165,12 +163,14 @@ int vmem_init()
     vmem_map(NULL, KERN_PHYSMAP_BASE_UC, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_uncached, 0);
 
     //Pre-create the top-level (PML4) entry covering the kernel vmalloc region.
-    //Each AP snapshots the kernel half of the page table once, in vmem_mp_init;
-    //a kernel mapping that creates a *new* PML4 entry after that snapshot is
-    //invisible to that AP (the kernel half is never refreshed on a running core).
-    //By establishing the vmalloc PML4 entry here, before any AP boots, every core
-    //inherits it, and later vmalloc-backed kernel mappings land under the shared
-    //PDPT and stay coherent across cores.
+    //The shared-kernel-PML4 model requires every kernel PML4 *entry* to exist
+    //before any address space is created: a process's PML4 copies the kernel
+    //entries once at creation, so a kernel mapping that creates a *new* PML4 entry
+    //afterwards would be invisible to already-created address spaces. Lower-level
+    //tables are shared, so anything under an existing PML4 entry stays coherent;
+    //only brand-new PML4 entries are a problem. The physmap and kernel-top entries
+    //above already cover their ranges; this reserves the vmalloc PML4 entry too,
+    //so all runtime kernel mappings land under an already-shared PDPT.
     {
         intptr_t pre = vmem_vmalloc(KiB(4));
         uintptr_t prep = pagealloc_alloc(-1, -1, physmem_alloc_flags_data, KiB(4));
@@ -179,7 +179,7 @@ int vmem_init()
         vmem_map(NULL, pre, (intptr_t)prep, KiB(4), vmem_flags_kernel | vmem_flags_rw, 0);
     }
 
-    __asm__ volatile("mov %0, %%cr3" ::"r"(ktable_phys)
+    __asm__ volatile("mov %0, %%cr3" ::"r"(kpml4_phys)
                      :);
 
     return 0;
@@ -187,9 +187,6 @@ int vmem_init()
 
 int vmem_mp_init()
 {
-    TLS void *(*mp_tls_get)(int) = (TLS void *(*)(int))elf_resolvefunction("mp_tls_get");
-    int (*mp_tls_alloc)(int) = (int (*)(int))elf_resolvefunction("mp_tls_alloc");
-
     //Enable No Execute bit
     wrmsr(EFER_MSR, rdmsr(EFER_MSR) | (1 << 11));
 
@@ -222,20 +219,13 @@ int vmem_mp_init()
     pat |= ((uint64_t)0x1) << 24; //PAT3 WC
     wrmsr(PAT_MSR, pat);
 
-    uintptr_t ktable_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
-    if (ktable_phys == PHYSMEM_NO_ALLOC)
-        PANIC("Failed to allocate kernel pagetable!");
-    uint64_t *ktable = (uint64_t *)vmem_phystovirt(ktable_phys, KiB(4), vmem_flags_cachewriteback);
-    memset(ktable, 0, KiB(4));
-
-    lcl->ktable = ktable_phys;
+    //No per-core kernel page table any more: every core runs on the shared kernel
+    //PML4 (kmem) until it schedules a task with its own address space, at which
+    //point vmem_setactive points cr3 at that task's PML4 (whose kernel half is a
+    //copy of kmem's). The kernel half is identical everywhere, so there is nothing
+    //per-core to snapshot here.
     lcl->cur_vmem = NULL;
-
-    local_spinlock_lock(&kmem.lock);
-    memcpy(ktable + 256, kmem.ptable, sizeof(uint64_t) * 256);
-    local_spinlock_unlock(&kmem.lock);
-
-    __asm__ volatile("mov %0, %%cr3" ::"r"(ktable_phys)
+    __asm__ volatile("mov %0, %%cr3" ::"r"(kmem.pml4_phys)
                      :);
 
     return 0;
@@ -398,26 +388,24 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
     int cli_state = cli();
     if (virt < 0)
     {
-        //Add to kernel map
+        //Add to the shared kernel map. Writes land directly in the master kernel
+        //PML4's upper half and the shared lower-level tables, so the mapping is
+        //immediately visible in every address space -- no per-core resync.
         local_spinlock_lock(&kmem.lock);
-        ptable = (uint64_t *)kmem.ptable - 256;
+        ptable = kmem.pml4;
     }
     else
     {
         //Add to user map
         local_spinlock_lock(&vm->lock);
-        ptable = vm->ptable;
+        ptable = vm->pml4;
     }
 
     int rVal = vmem_map_st(ptable, ptable, virt, phys, size, perms, flags, 0);
     if (virt >= 0)
         local_spinlock_unlock(&vm->lock);
     else
-    {
-        uint64_t *p_table = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
-        memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&kmem.lock);
-    }
     sti(cli_state);
     return rVal;
 }
@@ -430,26 +418,23 @@ int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size)
     int cli_state = cli();
     if (virt < 0)
     {
-        //Add to kernel map
+        //Remove from the shared kernel map (see vmem_map). The stale TLB entries
+        //this leaves on other cores are handled by vmem_flush's shootdown.
         local_spinlock_lock(&kmem.lock);
-        ptable = (uint64_t *)kmem.ptable - 256;
+        ptable = kmem.pml4;
     }
     else
     {
         //Add to user map
         local_spinlock_lock(&vm->lock);
-        ptable = vm->ptable;
+        ptable = vm->pml4;
     }
 
     int rVal = vmem_unmap_st(ptable, ptable, virt, size, 0);
     if (virt >= 0)
         local_spinlock_unlock(&vm->lock);
     else
-    {
-        uint64_t *p_table = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
-        memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
         local_spinlock_unlock(&kmem.lock);
-    }
     sti(cli_state);
 
     return rVal;
@@ -461,9 +446,29 @@ int vmem_create(vmem_t **vm_r)
     if (vm == NULL)
         return -1;
 
+    //Each address space owns a full hardware PML4 page: cr3 points straight at it.
+    uintptr_t pml4_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
+    if (pml4_phys == PHYSMEM_NO_ALLOC)
+    {
+        free(vm);
+        return -1;
+    }
+    vm->pml4_phys = pml4_phys;
+    vm->pml4 = (uint64_t *)vmem_phystovirt(pml4_phys, KiB(4), vmem_flags_cachewriteback);
     vm->flags = vmem_flags_user;
     vm->lock = 0;
-    memset(vm->ptable, 0, 256 * sizeof(uint64_t));
+    memset(vm->pml4, 0, KiB(4));
+
+    //Inherit the shared kernel half. These PML4 entries point at shared
+    //lower-level tables, so subsequent kernel-map changes are visible here with no
+    //resync (only a brand-new kernel PML4 entry would be missed -- hence all
+    //kernel PML4 entries are pre-created in vmem_init).
+    int cli_state = cli();
+    local_spinlock_lock(&kmem.lock);
+    memcpy(vm->pml4 + 256, kmem.pml4 + 256, 256 * sizeof(uint64_t));
+    local_spinlock_unlock(&kmem.lock);
+    sti(cli_state);
+
     *vm_r = vm;
 
     return 0;
@@ -475,50 +480,22 @@ void vmem_destroy(vmem_t *vm_r)
     {
         int cli_state = cli();
         local_spinlock_lock(&vm_r->lock);
+        //Free only this address space's PML4 page. Its kernel-half entries point
+        //at shared tables that must NOT be freed; the user-half lower tables are
+        //released by vmem_unmap during task teardown.
+        pagealloc_free(vm_r->pml4_phys, KiB(4));
         free(vm_r);
         sti(cli_state);
     }
 }
 
-static void vmem_savestate()
-{
-    //Runs both standalone (task context) and from the preemption-timer ISR via
-    //vmem_setactive. cli()/sti() nest correctly: when already in the ISR (IF=0)
-    //cli() returns 0 and sti(0) leaves interrupts off.
-    int cli_state = cli();
-    if (lcl->cur_vmem != NULL)
-    {
-        vmem_t *vmem = lcl->cur_vmem;
-        local_spinlock_lock(&vmem->lock);
-        //copy state from ktable
-        uint64_t *p_table = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
-        memcpy(vmem->ptable, p_table, 256 * sizeof(uint64_t));
-        local_spinlock_unlock(&vmem->lock);
-    }
-
-    {
-        local_spinlock_lock(&kmem.lock);
-        //copy state from ktable
-        uint64_t *p_table = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
-        memcpy(kmem.ptable, p_table + 256, 256 * sizeof(uint64_t));
-        local_spinlock_unlock(&kmem.lock);
-    }
-    sti(cli_state);
-}
-
 int vmem_setactive(vmem_t *vm)
 {
-    vmem_savestate();
-
-    //copy state to ktable
+    //With a shared kernel PML4 and each address space owning its own PML4 page,
+    //activating one is just a cr3 load -- no page-table state to copy in or out.
     int cli_state = cli();
-    local_spinlock_lock(&vm->lock);
-    uint64_t *p_table = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
-    memcpy(p_table, vm->ptable, 256 * sizeof(uint64_t));
-    local_spinlock_unlock(&vm->lock);
-
     lcl->cur_vmem = vm;
-    __asm__ volatile("mov %0, %%cr3" ::"r"(lcl->ktable)
+    __asm__ volatile("mov %0, %%cr3" ::"r"(vm->pml4_phys)
                      :);
     sti(cli_state);
 
@@ -527,7 +504,6 @@ int vmem_setactive(vmem_t *vm)
 
 int vmem_getactive(vmem_t **vm)
 {
-    vmem_savestate();
     *vm = lcl->cur_vmem;
     return 0;
 }
@@ -545,13 +521,11 @@ int vmem_getactive(vmem_t **vm)
 //  - User mappings (virt >= 0) live in per-task page tables that are only ever
 //    active on one core at a time, and a task switch reloads cr3 (flushing
 //    non-global entries), so a *local* invalidate is sufficient -- no IPI.
-//  - The kernel half of the page table is still synced between cores coarsely,
-//    by memcpy of kmem.ptable in vmem_savestate/setactive. The shootdown handler
-//    refreshes the receiving core's kernel half from kmem.ptable before flushing,
-//    so a newly *created* kernel mapping also becomes visible there. Fully
-//    race-free concurrent kernel-map mutation additionally wants a kernel PML4
-//    that is physically shared across cores (so savestate cannot write a stale
-//    half back to the master); that rework is tracked separately.
+//  - The kernel PML4 is now physically shared across cores (see vmem_create), so
+//    a newly *created* kernel mapping is already visible everywhere with no
+//    resync -- the shootdown only has to invalidate stale TLB entries left by an
+//    *unmap*/remap, not propagate page-table state. The handler therefore just
+//    flushes and acks.
 //  - Contract: call vmem_flush with interrupts enabled and without holding
 //    kmem.lock -- the handler takes kmem.lock, and the initiator must remain
 //    able to service an inbound shootdown while it waits.
@@ -568,34 +542,32 @@ static void (*tlb_sendipi)(int, int, ipi_delivery_mode_t) = NULL;
 static void tlb_local_flush(intptr_t virt, size_t sz)
 {
     if (sz > GiB(1))
-        __asm__ volatile("mov %0, %%cr3" ::"r"(lcl->ktable)
+    {
+        //Reload cr3 (whatever address space is active) to flush everything.
+        uint64_t cr3;
+        __asm__ volatile("mov %%cr3, %0"
+                         : "=r"(cr3)::);
+        __asm__ volatile("mov %0, %%cr3" ::"r"(cr3)
                          :);
+    }
     else
         for (size_t n = 0; n < sz; n += KiB(4), virt += KiB(4))
             __asm__ volatile("invlpg (%0)" ::"r"(virt)
                              : "memory");
 }
 
-//IPI handler (runs in interrupt context on a *receiving* core). Refresh this
-//core's kernel-half page-table copy from the master, then flush, then ack.
+//IPI handler (runs in interrupt context on a *receiving* core). The kernel PML4
+//is shared, so there is no per-core page-table copy to refresh -- just flush the
+//stale TLB entries for the range and ack.
 static void tlb_shootdown_handler(int irq)
 {
     (void)irq;
-    intptr_t v = tlb_virt;
-    size_t s = tlb_size;
-
-    local_spinlock_lock(&kmem.lock);
-    uint64_t *p_table = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
-    memcpy(p_table + 256, kmem.ptable, 256 * sizeof(uint64_t));
-    local_spinlock_unlock(&kmem.lock);
-
-    tlb_local_flush(v, s);
+    tlb_local_flush(tlb_virt, tlb_size);
     __atomic_store_n(&tlb_ack, 1, __ATOMIC_SEQ_CST);
 }
 
 int vmem_flush(intptr_t virt, size_t sz)
 {
-    vmem_savestate();
     tlb_local_flush(virt, sz);
 
     //Only kernel (shared) mappings need a cross-core shootdown, and only once
@@ -698,15 +670,13 @@ int vmem_virttophys(vmem_t *vm, intptr_t virt, intptr_t *phys)
 {
     if (virt < 0)
     {
-        //kernel address
-        uint64_t *n_lv_d = (uint64_t *)vmem_phystovirt(lcl->ktable, KiB(4), vmem_flags_cachewriteback);
-        return vmem_virttophys_st(n_lv_d, (uint64_t)virt, phys, 0);
+        //kernel address -- walk the shared master kernel PML4
+        return vmem_virttophys_st(kmem.pml4, (uint64_t)virt, phys, 0);
     }
     else if (vm != NULL)
     {
         //user address
-        uint64_t *n_lv_d = vm->ptable;
-        return vmem_virttophys_st(n_lv_d, (uint64_t)virt, phys, 0);
+        return vmem_virttophys_st(vm->pml4, (uint64_t)virt, phys, 0);
     }
     return -2;
 }

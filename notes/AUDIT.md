@@ -385,26 +385,37 @@ rely on it for real delays.
 - `common/src/time.c` `gmtime` partial, `strftime` is a no-op.
 - SMP timer/IPI TODOs (`SysTimer/src/main.c:39`) — load-bearing once APs schedule.
 
-### [PARTIAL] Cross-core TLB shootdown
-`vmem_flush` (`SysVirtualMemory/.../vmem.c`) used to do only a *local* `invlpg`/`cr3`
-reload, so a kernel-mapping change on one core left other cores with stale TLB entries —
-a use-after-free vector once a freed frame is reused. `vmem_flush` now broadcasts a
-shootdown IPI to the other cores for **kernel** ranges (`virt < 0`) and waits for each to
-ack, so the invalidation is globally complete before the caller frees/reuses the frame;
-the receiving handler also refreshes that core's kernel-half page-table copy from the
-master before flushing. Set up by `vmem_smp_init` (`CALL:vmem_smp_init` in
-`loadscript.txt`, after `mp_init`); no-op on a single core; user ranges stay local
-(per-task tables, only ever active on one core, refreshed by the cr3 reload on switch).
-Verified: the IPI round-trip completes (initiator → AP handler → ack) with no hang/fault.
+### [DONE] Shared kernel PML4 + cross-core TLB shootdown
+**Shared kernel PML4 (`SysVirtualMemory/.../vmem.c`).** The kernel half of the address
+space is no longer copied per-core. There is one **master kernel PML4** (`kmem.pml4`)
+whose upper 256 entries are the kernel address space; every process's PML4 (its own
+hardware page, allocated in `vmem_create`) copies those 256 entries *once* at creation.
+Because the entries point at **shared** lower-level tables, a runtime kernel-map change
+is instantly visible in every address space with no resync — provided no *new* top-level
+kernel PML4 entry is created after boot, which is why `vmem_init` pre-creates every
+kernel PML4 entry (physmap, kernel-top, vmalloc). This deleted the per-core `lcl->ktable`,
+the three 256-entry `memcpy`s per context switch, and `vmem_savestate` entirely:
+`vmem_setactive` is now just a `cr3` load (cr3 points straight at the task's PML4), and a
+core with no task runs on `kmem.pml4` directly.
 
-Remaining: the kernel half of the page table is still **per-core**, synced coarsely by
-memcpy of `kmem.ptable` in `vmem_savestate`/`vmem_setactive` — and `vmem_savestate`
-writes a core's local kernel half *back* to the master, so two cores mutating kernel
-maps concurrently can still clobber each other at the table level (the shootdown only
-fixes the TLB/visibility layer). Fully race-free concurrent kernel-map mutation wants a
-kernel PML4 that is physically **shared** across cores. Currently *no* code path mutates
-kernel maps at runtime (drivers use the pre-existing physmap), so this is latent; the
-shootdown is the primitive future kernel-map churn will need.
+**Cross-core TLB shootdown.** `vmem_flush` used to do only a *local* `invlpg`/`cr3`
+reload, so an *unmap* of a kernel mapping on one core left others with stale TLB entries —
+a use-after-free vector once the freed frame is reused. It now broadcasts a shootdown IPI
+to the other cores for **kernel** ranges (`virt < 0`) and waits for each to ack, so the
+invalidation is globally complete before the caller frees/reuses the frame. With the
+shared PML4 there is no per-core page-table state to refresh, so the handler just flushes
+and acks. Set up by `vmem_smp_init` (`CALL:vmem_smp_init` in `loadscript.txt`, after
+`mp_init`); no-op on a single core; user ranges stay local (per-task tables, only ever
+active on one core, flushed by the cr3 reload on switch). Verified: IPI round-trip
+completes (initiator → AP handler → ack), and 6/6 SMP boots are fault-free with every
+context switch now doing a bare cr3 load against per-task shared-kernel PML4s.
+
+Remaining (latent): a kernel map that needed a brand-new *top-level* PML4 entry at
+runtime would not propagate to already-created address spaces — but nothing creates one
+(all kernel PML4 entries are pre-created at init, and the vmalloc region has 512 GiB
+under its single pre-created entry). If kernel vmalloc ever outgrows that, add the new
+PML4 entry to every live address space (or reserve the full kernel PML4 entry range up
+front).
 
 ---
 
