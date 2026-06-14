@@ -76,8 +76,12 @@ int storage_blockdev_write(void *handle, uint64_t lba, uint32_t count, const voi
     return dev->write(dev->state, lba, count, buf);
 }
 
+// TEMP: cardfs exploration self-test (servers/CoreStorage/src/cardfs.c).
+void cardfs_start_selftest(void);
+
 int module_init() {
     list_init(&blockdev_list);
     DEBUG_PRINT("[CoreStorage] block device registry up\r\n");
+    cardfs_start_selftest();
     return 0;
 }
