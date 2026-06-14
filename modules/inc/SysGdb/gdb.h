@@ -11,8 +11,30 @@
 // boot-script target).
 int gdb_stub_wait(void);
 
-// Replace the GDB serial channel (default COM2). A USB-serial driver calls this
-// to route GDB over a USB-serial adapter. Both callbacks are blocking byte I/O.
-void gdb_set_channel(int (*getc_fn)(void), void (*putc_fn)(int));
+// A pluggable byte transport for the GDB channel. The stub defaults to COM2; a
+// driver (e.g. USB-serial) can supply its own without knowing anything about the
+// GDB protocol. `getc`/`putc` are blocking byte I/O. `poll` is optional: a
+// non-blocking check used for async Ctrl-C break-in on transports that have no
+// receive interrupt -- it should pump the hardware and return >0 if one or more
+// bytes arrived, or 0 otherwise. Leave `poll` NULL when the transport delivers
+// break-in by its own means (e.g. a UART RX IRQ). `state` is passed back
+// verbatim to each callback.
+typedef struct {
+    int  (*getc)(void *state);
+    void (*putc)(void *state, int c);
+    int  (*poll)(void *state);
+    void *state;
+} gdb_transport_t;
+
+// Install a transport as the active GDB channel, replacing the default COM2. The
+// descriptor is copied, so the caller need not keep it alive.
+void gdb_register_transport(const gdb_transport_t *transport);
+
+// Poll the active transport for async break-in (a connecting GDB or a Ctrl-C
+// sent to halt a running target) and, if a byte arrived, break into the stub.
+// A no-op when the active transport has no `poll`. Returns 0. A transport with
+// no receive IRQ drives this from a polling loop; the break-in decision and the
+// entire RSP protocol stay owned by SysGdb -- the caller needs no GDB knowledge.
+int gdb_poll_breakin(void);
 
 #endif

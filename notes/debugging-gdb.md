@@ -62,8 +62,12 @@ far end to the host running GDB (e.g. a second USB-serial + null modem), and
   (vector 1); on a trap it talks RSP over a pluggable channel (default COM2). It
   reads/writes the trapped frame via SysInterrupts `get/setregisterstate`, so
   steps and register writes take effect on `iret`.
-- `gdb_set_channel(getc, putc)` swaps the channel; `drivers/usb_serial` calls it
-  to route over FTDI.
+- A transport is a `gdb_transport_t { getc, putc, poll, state }`;
+  `gdb_register_transport()` installs one (default COM2). `drivers/usb_serial`
+  registers an FTDI transport and runs a small pump task that calls
+  `gdb_poll_breakin()`. The driver provides only byte I/O -- the RSP protocol and
+  the async break-in decision stay entirely inside SysGdb, so transport drivers
+  carry no GDB knowledge.
 
 ## Limitations / future work
 

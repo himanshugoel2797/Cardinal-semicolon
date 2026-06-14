@@ -5,15 +5,17 @@
  * https://opensource.org/licenses/MIT
  *
  * USB-serial (FTDI) driver. Brings up an FTDI-based USB-serial adapter (QEMU's
- * `usb-serial`, VID 0x0403) and routes the GDB stub (SysGdb) over it, so the OS
- * can be debugged with GDB through a USB-serial dongle -- including on real
- * hardware that has no native serial port.
+ * `usb-serial`, VID 0x0403) and exposes it as a plain blocking byte channel.
  *
  * FTDI: two bulk endpoints; every bulk-IN packet is prefixed with 2 status bytes
- * (modem/line status) which are stripped. To start a GDB session over the
- * adapter, trigger a breakpoint (gdb_stub_wait() / int3, or a GDB breakpoint);
- * the stub then talks RSP over this channel to a GDB connected to the dongle's
- * far end.
+ * (modem/line status) which are stripped.
+ *
+ * The adapter is offered to SysGdb via its transport-registration API
+ * (gdb_register_transport): this driver provides only getc/putc/poll and carries
+ * no GDB protocol knowledge -- SysGdb owns the RSP protocol and the async
+ * break-in decision. (The link to SysGdb is a load-order dependency, not a
+ * functional one; a future generic serial-registration server would remove even
+ * that, letting the adapter come up with no debugger present.)
  */
 
 #include <stdint.h>
@@ -42,13 +44,12 @@ typedef struct {
     int rhead, rtail;
 } ftdi_dev_t;
 
-// Single instance is enough for the GDB channel use case.
+// Single instance is enough for the current single-adapter use case.
 static ftdi_dev_t the_ftdi;
 
 // Pull one bulk-IN packet from the device; push its data bytes (after the 2
 // FTDI status bytes) into the RX ring. Returns the number of data bytes added.
-static int ftdi_fill(void) {
-    ftdi_dev_t *f = &the_ftdi;
+static int ftdi_fill(ftdi_dev_t *f) {
     uint8_t buf[64];
     int n = f->in_mps > (int)sizeof(buf) ? (int)sizeof(buf) : f->in_mps;
     int r = usb_dev_bulk(f->dev, f->in_ep, f->in_mps, buf, n, 1);
@@ -64,19 +65,26 @@ static int ftdi_fill(void) {
     return added;
 }
 
-static int ftdi_getc(void) {
-    ftdi_dev_t *f = &the_ftdi;
+// gdb_transport_t callbacks. `state` is the ftdi_dev_t*.
+static int ftdi_getc(void *state) {
+    ftdi_dev_t *f = (ftdi_dev_t *)state;
     while (f->rtail == f->rhead)
-        ftdi_fill();  // block until a data byte arrives
+        ftdi_fill(f);  // block until a data byte arrives
     uint8_t c = f->ring[f->rtail];
     f->rtail = (f->rtail + 1) % (int)sizeof(f->ring);
     return c;
 }
 
-static void ftdi_putc(int c) {
-    ftdi_dev_t *f = &the_ftdi;
+static void ftdi_putc(void *state, int c) {
+    ftdi_dev_t *f = (ftdi_dev_t *)state;
     uint8_t b = (uint8_t)c;
     usb_dev_bulk(f->dev, f->out_ep, f->out_mps, &b, 1, 0);
+}
+
+// Non-blocking poll for async break-in: pump one bulk-IN packet, report whether
+// any data bytes arrived. SysGdb decides what to do with that.
+static int ftdi_poll(void *state) {
+    return ftdi_fill((ftdi_dev_t *)state);
 }
 
 static void ftdi_ctrl(usb_enum_device_t *dev, uint8_t req, uint16_t val, uint16_t idx) {
@@ -84,28 +92,17 @@ static void ftdi_ctrl(usb_enum_device_t *dev, uint8_t req, uint16_t val, uint16_
     usb_dev_control(dev, &s, NULL, 0);
 }
 
-// Attach + async-break monitor. While no debugger is connected the system runs
-// normally and this task polls the adapter for incoming GDB traffic. Any byte
-// from GDB -- the initial RSP handshake on connect, or a lone 0x03 (Ctrl-C) sent
-// to halt a running target -- drops us into the stub (int3) over this channel.
-//
-// This is USB-serial's stand-in for the COM2 UART RX interrupt: USB bulk-IN has
-// no "byte arrived" IRQ, so we poll. After GDB resumes (continue/step/detach)
-// the stub returns here and we keep polling, so a later Ctrl-C breaks in again;
-// the stub reads g_resumed and re-sends the stop reply GDB expects.
-//
-// The received byte that triggered entry stays in the RX ring; the stub's
-// recv_packet discards anything before '$', so a stray Ctrl-C is harmless. We
-// only hold the USB lock inside the per-poll bulk transfer (released before
-// gdb_stub_wait), and in-stub transfers run with interrupts off where xhci_wait
-// self-pumps the event ring, so the session does not deadlock on the USB lock.
-static void usb_serial_monitor(void *arg) {
+// USB bulk-IN has no "byte arrived" IRQ, so a consumer that needs async break-in
+// (SysGdb's Ctrl-C) has to poll. This task is that pump: it just hands control to
+// gdb_poll_breakin(), which pumps our transport and owns the entire break-in
+// decision. The driver itself stays GDB-agnostic. We only hold the USB lock
+// inside the per-poll bulk transfer, and in-stub transfers run with interrupts
+// off where xhci_wait self-pumps the event ring, so the session does not
+// deadlock on the USB lock.
+static void usb_serial_pump(void *arg) {
     arg = NULL;
     while (true) {
-        if (ftdi_fill() > 0) {
-            DEBUG_PRINT("[usb_serial] GDB activity detected; entering debugger\r\n");
-            gdb_stub_wait();  // int3 -> SysGdb stub, talking over this adapter
-        }
+        gdb_poll_breakin();
         task_yield();
     }
 }
@@ -138,12 +135,20 @@ static int usb_serial_probe(usb_enum_device_t *dev) {
     ftdi_ctrl(dev, FTDI_REQ_SET_MODEM_CTRL, 0x0303, 1);  // DTR+RTS on
     ftdi_ctrl(dev, FTDI_REQ_SET_BAUDRATE, 0x001A, 0);
 
-    // Route the GDB stub over this adapter and start the attach monitor.
-    gdb_set_channel(ftdi_getc, ftdi_putc);
-    DEBUG_PRINT("[usb_serial] FTDI up; GDB available over USB-serial (connect GDB to attach)\r\n");
+    // Offer this adapter to SysGdb as a byte transport and start the pump that
+    // lets GDB's async Ctrl-C break in (USB bulk has no RX IRQ). SysGdb owns all
+    // GDB protocol; we only provide byte I/O.
+    gdb_transport_t transport = {
+        .getc = ftdi_getc,
+        .putc = ftdi_putc,
+        .poll = ftdi_poll,
+        .state = &the_ftdi,
+    };
+    gdb_register_transport(&transport);
+    DEBUG_PRINT("[usb_serial] FTDI up; offered as GDB transport (connect GDB to attach)\r\n");
     cs_id t = 0;
-    if (create_task_kernel("usb_serial_gdb_mon", task_permissions_kernel, &t) == CS_OK)
-        start_task_kernel(t, usb_serial_monitor, NULL);
+    if (create_task_kernel("usb_serial_pump", task_permissions_kernel, &t) == CS_OK)
+        start_task_kernel(t, usb_serial_pump, NULL);
     return 0;
 }
 
