@@ -204,5 +204,9 @@ usb_speed_t usb_dev_speed(usb_enum_device_t *dev);
 // (dir_in!=0 for IN) in the active configuration. Returns the endpoint address
 // (incl. dir bit) or -1; writes max packet size to *max_packet if non-NULL.
 int usb_dev_find_endpoint(usb_enum_device_t *dev, int type, int dir_in, int *max_packet);
+// First interface's bInterfaceProtocol/bInterfaceNumber (or -1). For HID boot
+// devices protocol 1 = keyboard, 2 = mouse.
+int usb_dev_interface_protocol(usb_enum_device_t *dev);
+int usb_dev_interface_number(usb_enum_device_t *dev);
 
 #endif
