@@ -11,6 +11,9 @@
 
 #include "net_priv.h"
 
+#define ARP_HW_TYPE_ETHERNET (1)
+#define ARP_PROTO_TYPE_IPV4 (0x0800)
+
 #define ARP_REQUEST 0x0001
 #define ARP_REPLY 0x0002
 
@@ -26,6 +29,13 @@ typedef struct {
     uint32_t dst_ip;
 } PACKED arp_t;
 
-int arp_rx(interface_def_t *interface, void *packet, int len);
+int arp_rx(interface_def_t *interface, const uint8_t *src_mac, void *packet, int len);
+
+// Insert or refresh an IPv4 (network-order) -> MAC mapping in the ARP cache.
+void arp_cache_update(uint32_t ip, const uint8_t *mac);
+
+// Look up the MAC for an IPv4 address (network order). Writes 6 bytes into
+// `mac_out` and returns true on hit, false on miss.
+bool arp_cache_lookup(uint32_t ip, uint8_t *mac_out);
 
 #endif

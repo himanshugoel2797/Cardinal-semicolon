@@ -30,7 +30,7 @@ typedef struct {
     uint32_t src_ip;
     uint32_t dst_ip;
     uint8_t body[0];
-} ipv4_t;
+} PACKED ipv4_t;
 
 typedef struct {
     uint32_t version_traffic_flow;
@@ -40,9 +40,16 @@ typedef struct {
     uint8_t src_ip [16];
     uint8_t dst_ip [16];
     uint8_t body[0];
-} ipv6_t;
+} PACKED ipv6_t;
 
-int ipv4_rx(interface_def_t *interface, void *packet, int len);
-int ipv6_rx(interface_def_t *interface, void *packet, int len);
+int ipv4_rx(interface_def_t *interface, const uint8_t *src_mac, void *packet, int len);
+int ipv6_rx(interface_def_t *interface, const uint8_t *src_mac, void *packet, int len);
+
+// Build an IPv4 packet carrying `payload` (`payload_len` bytes of an upper-layer
+// protocol such as ICMP) and transmit it to `dst_ip`/`dst_mac`. The header
+// checksum is computed here; the caller is responsible for any upper-layer
+// checksum inside `payload`. Returns 0 on success, negative on failure.
+int ipv4_tx(interface_def_t *interface, uint32_t dst_ip, const uint8_t *dst_mac,
+            uint8_t protocol, const void *payload, int payload_len);
 
 #endif
