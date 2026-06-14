@@ -64,6 +64,15 @@ static gdb_transport_t cur_transport = {
 static inline int chan_getc(void) { return cur_transport.getc(cur_transport.state); }
 static inline void chan_putc(int c) { cur_transport.putc(cur_transport.state, c); }
 
+// The built-in COM2 transport, kept so a transport can be torn down (e.g. a
+// USB-serial adapter unplugged) and the channel reverts to COM2.
+static const gdb_transport_t com2_transport = {
+    .getc = com2_getc,
+    .putc = com2_putc,
+    .poll = NULL,
+    .state = NULL,
+};
+
 // A driver takes over the GDB channel at runtime. Copied so the caller need not
 // keep the descriptor alive.
 void gdb_register_transport(const gdb_transport_t *t) {
@@ -71,6 +80,17 @@ void gdb_register_transport(const gdb_transport_t *t) {
         return;
     cur_transport = *t;
     DEBUG_PRINT("[SysGdb] GDB channel switched to a registered transport\r\n");
+}
+
+// Revert the GDB channel to the built-in COM2 transport. `t`, when non-NULL,
+// only restores the default if it is still the active transport (so a stale
+// driver unplug cannot clobber a newer transport). Pass NULL to force it.
+void gdb_unregister_transport(const gdb_transport_t *t) {
+    if (t != NULL &&
+        (cur_transport.getc != t->getc || cur_transport.state != t->state))
+        return;  // a different transport is active; leave it alone
+    cur_transport = com2_transport;
+    DEBUG_PRINT("[SysGdb] GDB channel reverted to COM2\r\n");
 }
 
 // ---- RSP helpers ----

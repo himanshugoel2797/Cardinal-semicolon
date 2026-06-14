@@ -28,6 +28,12 @@ typedef struct {
 
 int storage_register_blockdev(storage_blockdev_t *desc, void **handle);
 
+// Remove a previously-registered block device (e.g. on USB unplug). `handle` is
+// what storage_register_blockdev wrote. Returns 0 on success, <0 if not found.
+// NOTE: any filesystem provider that mounted this device is not yet notified --
+// providers gain an unmount hook when the FS-provider API grows one.
+int storage_unregister_blockdev(void *handle);
+
 // Enumerate / address registered block devices by index.
 int storage_blockdev_count(void);
 void *storage_blockdev_get(int idx);

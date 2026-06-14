@@ -30,6 +30,11 @@ typedef struct {
 // descriptor is copied, so the caller need not keep it alive.
 void gdb_register_transport(const gdb_transport_t *transport);
 
+// Revert to the built-in COM2 channel (e.g. when a USB-serial transport is
+// unplugged). If `transport` is non-NULL the revert only happens when it is
+// still the active transport; pass NULL to force it.
+void gdb_unregister_transport(const gdb_transport_t *transport);
+
 // Poll the active transport for async break-in (a connecting GDB or a Ctrl-C
 // sent to halt a running target) and, if a byte arrived, break into the stub.
 // A no-op when the active transport has no `poll`. Returns 0. A transport with

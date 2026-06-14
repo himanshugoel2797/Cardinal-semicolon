@@ -34,10 +34,13 @@ typedef struct {
     int in_mps, out_mps;
     uint32_t tag;
     bool in_use;
+    cs_id task;
+    volatile bool stop;     // remove() requests the task to exit
+    volatile bool stopped;  // task acknowledges it has exited
     uint32_t block_size;
     uint64_t block_count;
     int io_lock;  // serialise block I/O (BBB is one command at a time)
-    void *storage_handle;
+    void *storage_handle;  // non-NULL once registered with CoreStorage
 } stor_dev_t;
 
 #define MAX_STOR 4
@@ -146,7 +149,7 @@ static void stor_test_task(void *arg) {
     // as block device 0 and fail opaquely. Bail out instead.
     if (s->block_count == 0) {
         DEBUG_PRINT("[usb_storage] no usable capacity; not registering block device\r\n");
-        return;
+        goto park;  // stay alive (stop-aware) so remove() can reclaim cleanly
     }
 
     // Register as a CoreStorage block device.
@@ -170,8 +173,12 @@ static void stor_test_task(void *arg) {
     }
 
     DEBUG_PRINT("[usb_storage] self-test done\r\n");
-    while (true)
+
+park:
+    while (!s->stop)
         task_yield();
+    s->stopped = true;  // hand off: remove() may now reclaim the device
+    end_task_kernel(task_current());
 }
 
 // CoreStorage block read/write callbacks. SCSI READ(10)/WRITE(10), chunked to
@@ -253,20 +260,43 @@ static int stor_probe(usb_enum_device_t *dev) {
     s->in_mps = in_mps > 0 ? in_mps : 64;
     s->out_mps = out_mps > 0 ? out_mps : 64;
     s->tag = 0;
+    s->stop = false;
+    s->stopped = false;
+    s->storage_handle = NULL;
     s->in_use = true;
 
     DEBUG_PRINT("[usb_storage] claimed mass-storage device\r\n");
 
-    cs_id task = 0;
-    if (create_task_kernel("usb_storage_test", task_permissions_kernel, &task) != CS_OK)
+    s->task = 0;
+    if (create_task_kernel("usb_storage_test", task_permissions_kernel, &s->task) != CS_OK) {
+        s->in_use = false;
         return -1;
-    start_task_kernel(task, stor_test_task, s);
+    }
+    start_task_kernel(s->task, stor_test_task, s);
     return 0;
+}
+
+static void stor_remove(usb_enum_device_t *dev) {
+    for (int i = 0; i < MAX_STOR; i++) {
+        stor_dev_t *s = &stor_devs[i];
+        if (!s->in_use || s->dev != dev)
+            continue;
+        // Stop the task and wait for it to exit before reclaiming the device.
+        s->stop = true;
+        while (!s->stopped)
+            task_yield();
+        if (s->storage_handle != NULL) {
+            storage_unregister_blockdev(s->storage_handle);
+            s->storage_handle = NULL;
+        }
+        s->in_use = false;
+        DEBUG_PRINT("[usb_storage] device removed\r\n");
+    }
 }
 
 int module_init() {
     memset(stor_devs, 0, sizeof(stor_devs));
-    usb_register_class_driver(USB_CLASS_MASS_STORAGE, stor_probe);
+    usb_register_class_driver(USB_CLASS_MASS_STORAGE, stor_probe, stor_remove);
     DEBUG_PRINT("[usb_storage] registered mass-storage class driver\r\n");
     return 0;
 }

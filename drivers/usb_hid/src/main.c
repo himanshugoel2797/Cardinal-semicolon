@@ -41,6 +41,9 @@ typedef struct {
     int proto;
     int iface;
     bool in_use;
+    cs_id task;
+    volatile bool stop;     // remove() requests the poll task to exit
+    volatile bool stopped;  // poll task acknowledges it has exited
     uint8_t last[8];
 
     // Event queue feeding CoreInput (keyboard only). SPSC: HID poll task pushes,
@@ -167,7 +170,7 @@ static void hid_decode_mouse(uint8_t *rpt, int len) {
 static void hid_poll_task(void *arg) {
     hid_dev_t *h = (hid_dev_t *)arg;
     DEBUG_PRINT("[usb_hid] polling started\r\n");
-    while (true) {
+    while (!h->stop) {
         uint8_t rpt[8];
         memset(rpt, 0, sizeof(rpt));
         int n = h->max_packet;
@@ -188,6 +191,8 @@ static void hid_poll_task(void *arg) {
         }
         task_yield();
     }
+    h->stopped = true;  // hand off: remove() may now reclaim h->dev
+    end_task_kernel(task_current());
 }
 
 static int hid_probe(usb_enum_device_t *dev) {
@@ -215,6 +220,8 @@ static int hid_probe(usb_enum_device_t *dev) {
     if (h->iface < 0)
         h->iface = 0;
     memset(h->last, 0, sizeof(h->last));
+    h->stop = false;
+    h->stopped = false;
     h->in_use = true;
 
     DEBUG_PRINT(h->proto == HID_PROTO_KEYBOARD ? "[usb_hid] claimed keyboard\r\n"
@@ -244,16 +251,37 @@ static int hid_probe(usb_enum_device_t *dev) {
         DEBUG_PRINT("[usb_hid] registered keyboard with CoreInput\r\n");
     }
 
-    cs_id task = 0;
-    if (create_task_kernel("usb_hid_poll", task_permissions_kernel, &task) != CS_OK)
+    h->task = 0;
+    if (create_task_kernel("usb_hid_poll", task_permissions_kernel, &h->task) != CS_OK) {
+        if (h->proto == HID_PROTO_KEYBOARD)
+            input_device_unregister(&h->input_desc);
+        h->in_use = false;
         return -1;
-    start_task_kernel(task, hid_poll_task, h);
+    }
+    start_task_kernel(h->task, hid_poll_task, h);
     return 0;
+}
+
+static void hid_remove(usb_enum_device_t *dev) {
+    for (int i = 0; i < MAX_HID; i++) {
+        hid_dev_t *h = &hid_devs[i];
+        if (!h->in_use || h->dev != dev)
+            continue;
+        // Stop the poll task and wait until it has actually exited, so it never
+        // touches `dev` after CoreUsb reclaims it.
+        h->stop = true;
+        while (!h->stopped)
+            task_yield();
+        if (h->proto == HID_PROTO_KEYBOARD)
+            input_device_unregister(&h->input_desc);
+        h->in_use = false;
+        DEBUG_PRINT("[usb_hid] device removed\r\n");
+    }
 }
 
 int module_init() {
     memset(hid_devs, 0, sizeof(hid_devs));
-    usb_register_class_driver(USB_CLASS_HID, hid_probe);
+    usb_register_class_driver(USB_CLASS_HID, hid_probe, hid_remove);
     DEBUG_PRINT("[usb_hid] registered HID class driver\r\n");
     return 0;
 }
