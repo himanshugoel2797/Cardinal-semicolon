@@ -189,10 +189,19 @@ static void parse_G_packet(interrupt_register_state_t *st, const char *in) {
     st->rip = rip;
 }
 
-// The RSP command loop. Returns when GDB resumes the target (c or s).
-static void gdb_loop(void) {
+// Set when we resume the target (c/s) so the *next* stop (breakpoint, step, or
+// async Ctrl-C) sends GDB the stop reply it is waiting for.
+static volatile int g_resumed = 0;
+
+// The RSP command loop. `send_stop` => emit an unsolicited stop reply on entry
+// (GDB is waiting for one after a continue/step/Ctrl-C). Returns when GDB
+// resumes the target (c or s).
+static void gdb_loop(int send_stop) {
     interrupt_register_state_t st;
     interrupt_getregisterstate(&st);
+    g_resumed = 0;
+    if (send_stop)
+        send_packet("S05");
 
     while (1) {
         if (recv_packet() < 0)
@@ -231,21 +240,30 @@ static void gdb_loop(void) {
                 uint64_t len = parse_hex(&p);
                 if (*p == ':') p++;
                 uint8_t *dst = (uint8_t *)(uintptr_t)addr;
+                // Clear CR0.WP so software breakpoints can be written into
+                // read-only kernel text (we run with interrupts off, so no
+                // preemption can observe WP cleared).
+                uint64_t cr0;
+                __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+                __asm__ volatile("mov %0, %%cr0" ::"r"(cr0 & ~0x10000ULL));
                 for (uint64_t i = 0; i < len; i++) {
                     int h1 = fromhex(*p++), h2 = fromhex(*p++);
                     if (h1 < 0 || h2 < 0) break;
                     dst[i] = (uint8_t)((h1 << 4) | h2);
                 }
+                __asm__ volatile("mov %0, %%cr0" ::"r"(cr0));
                 send_packet("OK");
                 break;
             }
             case 'c':  // continue [addr]
                 st.rflags &= ~0x100ULL;  // clear TF
                 interrupt_setregisterstate(&st);
+                g_resumed = 1;
                 return;
             case 's':  // single step [addr]
                 st.rflags |= 0x100ULL;  // set TF
                 interrupt_setregisterstate(&st);
+                g_resumed = 1;
                 return;
             case 'H':  // set thread -> OK
                 send_packet("OK");
@@ -254,6 +272,7 @@ static void gdb_loop(void) {
                 st.rflags &= ~0x100ULL;
                 interrupt_setregisterstate(&st);
                 send_packet("OK");
+                g_resumed = 0;
                 return;
             default:
                 send_packet("");  // unsupported -> empty (GDB falls back)
@@ -262,22 +281,49 @@ static void gdb_loop(void) {
     }
 }
 
-// Exception handler (registered for #BP and #DB).
+// Exception handler (registered for #BP and #DB). g_resumed is true iff we got
+// here after a continue/step, in which case GDB is awaiting a stop reply.
 static void gdb_exception(int vector) {
     vector = 0;
-    gdb_loop();
+    gdb_loop(g_resumed);
+}
+
+// COM2 UART RX interrupt: GDB sends 0x03 (Ctrl-C) to halt a running target.
+// When that byte arrives we break into the stub on the interrupted code's frame
+// and always send a stop reply (GDB is waiting for one). Other bytes are
+// ignored (GDB only sends 0x03 while the target runs).
+static void gdb_com2_rx(int vector) {
+    vector = 0;
+    if (inb(COM2 + 5) & 0x01) {  // data ready
+        int c = inb(COM2);
+        if (c == 0x03)
+            gdb_loop(1);
+    }
 }
 
 // Drop into the debugger and wait for GDB (e.g. from a boot script to debug
-// early boot). int3 raises #BP -> gdb_exception -> gdb_loop.
-void gdb_stub_wait(void) {
+// early boot). int3 raises #BP -> gdb_exception -> gdb_loop. Returns 0 so it is
+// usable as a `CALL:` boot-script target (which checks the return value).
+int gdb_stub_wait(void) {
     __asm__ volatile("int3");
+    return 0;
 }
 
 int module_init() {
     com2_init();
     interrupt_registerhandler(1, gdb_exception);  // #DB (single-step / hw bp)
     interrupt_registerhandler(3, gdb_exception);  // #BP (int3 / sw bp)
-    DEBUG_PRINT("[SysGdb] GDB stub armed on COM2 (vectors 1,3)\r\n");
+
+    // Async Ctrl-C break-in: route the COM2 UART RX line (ISA IRQ3 -> vector 35)
+    // and enable the UART received-data interrupt, so GDB's Ctrl-C halts a
+    // running system over COM2 (USB-serial has no IRQ; it uses breakpoints).
+    int irq = 3 + 32;
+    if (interrupt_allocate(1, interrupt_flags_fixed | interrupt_flags_exclusive, &irq) == 0) {
+        interrupt_mapinterrupt(3, irq, false, false);
+        interrupt_registerhandler(irq, gdb_com2_rx);
+        interrupt_setmask(3, false);
+        outb(COM2 + 1, 0x01);  // IER: received-data-available interrupt
+    }
+    DEBUG_PRINT("[SysGdb] GDB stub armed on COM2 (vectors 1,3; async Ctrl-C via IRQ3)\r\n");
     return 0;
 }
