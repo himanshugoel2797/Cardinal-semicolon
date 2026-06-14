@@ -19,8 +19,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <types.h>
+#include <cardinal/local_spinlock.h>
 
 #include "CoreUsb/usb.h"
+#include "CoreStorage/storage.h"
 #include "SysTaskMgr/task.h"
 
 #define CBW_SIGNATURE 0x43425355u  // "USBC"
@@ -32,10 +34,17 @@ typedef struct {
     int in_mps, out_mps;
     uint32_t tag;
     bool in_use;
+    uint32_t block_size;
+    uint64_t block_count;
+    int io_lock;  // serialise block I/O (BBB is one command at a time)
+    void *storage_handle;
 } stor_dev_t;
 
 #define MAX_STOR 4
 static stor_dev_t stor_devs[MAX_STOR];
+
+static int usb_storage_read(void *state, uint64_t lba, uint32_t count, void *buf);
+static int usb_storage_write(void *state, uint64_t lba, uint32_t count, const void *buf);
 
 static void put_be32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24);
@@ -118,6 +127,8 @@ static void stor_test_task(void *arg) {
     if (bbb_command(s, cmd, 10, buf, 8, 1) == 0) {
         uint32_t last_lba = get_be32(&buf[0]);
         uint32_t blk = get_be32(&buf[4]);
+        s->block_size = blk ? blk : 512;
+        s->block_count = (uint64_t)last_lba + 1;
         char b[12];
         DEBUG_PRINT("[usb_storage] capacity: last_lba=");
         DEBUG_PRINT(itoa((int)last_lba, b, 10));
@@ -126,25 +137,88 @@ static void stor_test_task(void *arg) {
         DEBUG_PRINT("\r\n");
     } else {
         DEBUG_PRINT("[usb_storage] READ CAPACITY failed\r\n");
+        s->block_size = 512;
+        s->block_count = 0;
     }
 
-    // READ(10) LBA 0, 1 block.
-    memset(cmd, 0, sizeof(cmd));
-    cmd[0] = 0x28;
-    put_be32(&cmd[2], 0);  // LBA 0
-    cmd[7] = 0;
-    cmd[8] = 1;  // 1 block
+    // Register as a CoreStorage block device.
+    storage_blockdev_t bd;
+    memset(&bd, 0, sizeof(bd));
+    strncpy(bd.name, "USB Mass Storage", 32);
+    bd.state = s;
+    bd.block_size = s->block_size;
+    bd.block_count = s->block_count;
+    bd.read = usb_storage_read;
+    bd.write = usb_storage_write;
+    storage_register_blockdev(&bd, &s->storage_handle);
+
+    // Verify the block path end-to-end: read LBA 0 back through CoreStorage.
     memset(buf, 0, sizeof(buf));
-    if (bbb_command(s, cmd, 10, buf, 512, 1) == 0) {
-        DEBUG_PRINT("[usb_storage] LBA0 first 16 bytes: ");
+    if (storage_blockdev_read(s->storage_handle, 0, 1, buf) == 0) {
+        DEBUG_PRINT("[usb_storage] via CoreStorage, LBA0 first 16 bytes: ");
         dump_hex(buf, 16);
     } else {
-        DEBUG_PRINT("[usb_storage] READ(10) failed\r\n");
+        DEBUG_PRINT("[usb_storage] CoreStorage read failed\r\n");
     }
 
     DEBUG_PRINT("[usb_storage] self-test done\r\n");
     while (true)
         task_yield();
+}
+
+// CoreStorage block read/write callbacks. SCSI READ(10)/WRITE(10), chunked to
+// the per-transfer data limit (BBB data stage <= ~2 KiB), serialised by io_lock
+// so a multi-block (multi-command) op stays atomic.
+#define STOR_MAX_BLOCKS_PER_CMD 4  // 4 * 512 = 2048
+
+static int usb_storage_read(void *state, uint64_t lba, uint32_t count, void *buf) {
+    stor_dev_t *s = (stor_dev_t *)state;
+    uint8_t *out = (uint8_t *)buf;
+    int ret = 0;
+    local_spinlock_lock(&s->io_lock);
+    while (count > 0) {
+        uint32_t chunk = count > STOR_MAX_BLOCKS_PER_CMD ? STOR_MAX_BLOCKS_PER_CMD : count;
+        uint8_t cmd[16];
+        memset(cmd, 0, sizeof(cmd));
+        cmd[0] = 0x28;  // READ(10)
+        put_be32(&cmd[2], (uint32_t)lba);
+        cmd[7] = (uint8_t)(chunk >> 8);
+        cmd[8] = (uint8_t)(chunk & 0xff);
+        if (bbb_command(s, cmd, 10, out, (int)(chunk * s->block_size), 1) != 0) {
+            ret = -1;
+            break;
+        }
+        lba += chunk;
+        count -= chunk;
+        out += chunk * s->block_size;
+    }
+    local_spinlock_unlock(&s->io_lock);
+    return ret;
+}
+
+static int usb_storage_write(void *state, uint64_t lba, uint32_t count, const void *buf) {
+    stor_dev_t *s = (stor_dev_t *)state;
+    const uint8_t *in = (const uint8_t *)buf;
+    int ret = 0;
+    local_spinlock_lock(&s->io_lock);
+    while (count > 0) {
+        uint32_t chunk = count > STOR_MAX_BLOCKS_PER_CMD ? STOR_MAX_BLOCKS_PER_CMD : count;
+        uint8_t cmd[16];
+        memset(cmd, 0, sizeof(cmd));
+        cmd[0] = 0x2A;  // WRITE(10)
+        put_be32(&cmd[2], (uint32_t)lba);
+        cmd[7] = (uint8_t)(chunk >> 8);
+        cmd[8] = (uint8_t)(chunk & 0xff);
+        if (bbb_command(s, cmd, 10, (void *)in, (int)(chunk * s->block_size), 0) != 0) {
+            ret = -1;
+            break;
+        }
+        lba += chunk;
+        count -= chunk;
+        in += chunk * s->block_size;
+    }
+    local_spinlock_unlock(&s->io_lock);
+    return ret;
 }
 
 static int stor_probe(usb_enum_device_t *dev) {
