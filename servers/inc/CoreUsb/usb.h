@@ -208,5 +208,7 @@ int usb_dev_find_endpoint(usb_enum_device_t *dev, int type, int dir_in, int *max
 // devices protocol 1 = keyboard, 2 = mouse.
 int usb_dev_interface_protocol(usb_enum_device_t *dev);
 int usb_dev_interface_number(usb_enum_device_t *dev);
+// For a hub driver: enumerate a device on one of the hub's downstream ports.
+int usb_dev_enumerate_downstream(usb_enum_device_t *hub, int port, usb_speed_t speed);
 
 #endif
