@@ -95,8 +95,8 @@ static void arp_send_reply(interface_def_t *interface, arp_t *request) {
 
 int arp_rx(interface_def_t *interface, const uint8_t *src_mac, void *packet, int len) {
     src_mac = NULL;  // ARP carries its own sender hardware address; ignore the L2 one
-    if (len > 0 && len < (int)sizeof(arp_t))
-        return 0;
+    if (len < (int)sizeof(arp_t))
+        return 0;  // too short to be a complete ARP packet
 
     arp_t *pkt = (arp_t *)packet;
 
