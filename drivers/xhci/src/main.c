@@ -342,7 +342,9 @@ static int xhci_address_device(xhci_ctrl_state_t *s, xhci_slot_t *sl, int bsr) {
     icc[1] = (1u << 0) | (1u << 1);  // add slot + ep0
 
     uint32_t *sc = slot_ctx(s, input);
-    sc[0] = ((uint32_t)1 << 27) | ((uint32_t)sl->speed << 20);  // ctx entries=1, speed
+    // dword0: Route String[19:0], Speed[23:20], Context Entries[31:27].
+    sc[0] = (sl->route & 0xFFFFF) | ((uint32_t)sl->speed << 20) | ((uint32_t)1 << 27);
+    // dword1: Root Hub Port Number[23:16].
     sc[1] = (uint32_t)sl->root_port << 16;
 
     uint32_t *ec = ep_ctx(s, input, 1);
@@ -358,6 +360,82 @@ static int xhci_address_device(xhci_ctrl_state_t *s, xhci_slot_t *sl, int bsr) {
                           XHCI_TRB_SET_TYPE(TRB_ADDRESS_DEVICE) | (bsr ? (1 << 9) : 0) | ((uint32_t)sl->slot_id << 24),
                           &out);
     return (cc == XHCI_CC_SUCCESS) ? 0 : -1;
+}
+
+// Map a CoreUsb usb_speed_t to the xHCI speed id (1=full,2=low,3=high,4=super).
+static int uspeed_to_xspeed(usb_speed_t s) {
+    return (s == usb_speed_low) ? 2 : (s == usb_speed_high) ? 3 : (s == usb_speed_super) ? 4 : 1;
+}
+
+// Prepare a slot for a device on a hub's downstream port: Enable Slot + Address
+// Device(BSR=1) with the route string derived from the parent hub's slot, so the
+// following default-address control transfers reach the new device.
+static int xhci_prepare_downstream(void *hc_state, int parent_addr, int parent_port, usb_speed_t speed) {
+    xhci_ctrl_state_t *s = (xhci_ctrl_state_t *)hc_state;
+    local_spinlock_lock(&s->lock);
+    int ret = -1;
+
+    int parent_slot = s->addr_to_slot[parent_addr & 0xFF];
+    if (parent_slot > 0 && parent_slot <= XHCI_MAX_SLOTS && s->slots[parent_slot].in_use) {
+        xhci_slot_t *psl = &s->slots[parent_slot];
+        xhci_trb_t out;
+        int cc = xhci_command(s, 0, XHCI_TRB_SET_TYPE(TRB_ENABLE_SLOT), &out);
+        if (cc == XHCI_CC_SUCCESS) {
+            int slot_id = (out.control >> 24) & 0xFF;
+            if (slot_id > 0 && slot_id <= XHCI_MAX_SLOTS) {
+                xhci_slot_t *sl = &s->slots[slot_id];
+                memset(sl, 0, sizeof(*sl));
+                sl->slot_id = slot_id;
+                sl->speed = uspeed_to_xspeed(speed);
+                sl->root_port = psl->root_port;
+                sl->route = psl->route | ((uint32_t)(parent_port & 0xF) << (4 * psl->depth));
+                sl->depth = psl->depth + 1;
+                sl->in_use = 1;
+
+                sl->dev_ctx = alloc_page(&sl->dev_ctx_phys);
+                s->dcbaa[slot_id] = sl->dev_ctx_phys;
+                ring_init(&sl->ep[1].ring);
+                sl->ep[1].configured = 1;
+
+                if (xhci_address_device(s, sl, 1) == 0) {
+                    s->enumerating_slot = slot_id;
+                    ret = 0;
+                }
+            }
+        }
+    }
+    local_spinlock_unlock(&s->lock);
+    return ret;
+}
+
+// Mark a device's slot as a hub (Hub bit + Number of Ports) via Configure
+// Endpoint, so the controller routes packets to devices behind it.
+static int xhci_mark_hub(void *hc_state, int dev_addr, int nports) {
+    xhci_ctrl_state_t *s = (xhci_ctrl_state_t *)hc_state;
+    local_spinlock_lock(&s->lock);
+    int ret = -1;
+    int slot_id = s->addr_to_slot[dev_addr & 0xFF];
+    if (slot_id > 0 && slot_id <= XHCI_MAX_SLOTS && s->slots[slot_id].in_use) {
+        xhci_slot_t *sl = &s->slots[slot_id];
+        uintptr_t in_phys;
+        uint8_t *input = alloc_page(&in_phys);
+        if (input != NULL) {
+            uint32_t *icc = (uint32_t *)input;
+            icc[1] = (1u << 0);  // add slot context (A0) only
+            uint32_t *sc = slot_ctx(s, input);
+            uint32_t *dsc = (uint32_t *)sl->dev_ctx;  // current slot context
+            sc[0] = dsc[0] | (1u << 26);  // keep route/speed/ctx-entries, set Hub
+            sc[1] = (dsc[1] & 0x00FFFFFF) | ((uint32_t)(nports & 0xFF) << 24);  // Number of Ports
+            sc[2] = dsc[2];
+            sc[3] = dsc[3];
+            xhci_trb_t out;
+            int cc = xhci_command(s, in_phys,
+                                  XHCI_TRB_SET_TYPE(TRB_CONFIGURE_ENDPOINT) | ((uint32_t)slot_id << 24), &out);
+            ret = (cc == XHCI_CC_SUCCESS) ? 0 : -1;
+        }
+    }
+    local_spinlock_unlock(&s->lock);
+    return ret;
 }
 
 // ---- Port handling / enumeration ----
@@ -515,6 +593,8 @@ int module_init(void *ecam_addr) {
     desc->handlers.control = xhci_control;
     desc->handlers.interrupt_in = xhci_interrupt_in;
     desc->handlers.bulk = xhci_bulk;
+    desc->handlers.prepare_downstream = xhci_prepare_downstream;
+    desc->handlers.mark_hub = xhci_mark_hub;
     usb_register_hostcontroller(desc, &s->handle);
 
     cs_id task = 0;

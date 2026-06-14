@@ -139,6 +139,10 @@ static int hub_probe(usb_enum_device_t *dev) {
     DEBUG_PRINT(itoa(nports, b, 10));
     DEBUG_PRINT(" ports\r\n");
 
+    // Tell the controller this device is a hub (xHCI needs this to route to
+    // downstream devices; no-op on UHCI).
+    usb_dev_mark_hub(dev, nports);
+
     // Power on every port, then let them settle.
     for (int port = 1; port <= nports; port++)
         hub_set_feature(h, port, PORT_POWER);
