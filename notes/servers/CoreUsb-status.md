@@ -78,18 +78,20 @@ redesign:
 
 ## USB-serial async GDB break-in
 
-`drivers/usb_serial` (FTDI) routes the SysGdb stub over a USB-serial dongle so
-the OS can be debugged with GDB even on hardware with no native serial port. A
-monitor task polls the adapter's bulk-IN endpoint; any byte from GDB — the RSP
-handshake on connect, or a lone `0x03` (Ctrl-C) sent to halt a running target —
+`drivers/usb_serial` (FTDI) is a plain byte channel that registers itself as a
+SysGdb transport (`gdb_register_transport`), so the OS can be debugged with GDB
+even on hardware with no native serial port. The driver carries no GDB protocol
+knowledge: it only provides getc/putc/poll. A small pump task calls SysGdb's
+`gdb_poll_breakin()`, which pumps the transport and — on any byte from GDB (the
+RSP handshake on connect, or a lone `0x03`/Ctrl-C to halt a running target) —
 drops into the stub via `int3`. After GDB resumes (`continue`/`step`/`detach`)
-the monitor keeps polling, so a *later* Ctrl-C breaks in again (the stub re-sends
-the stop reply via `g_resumed`). This is USB-serial's analogue of the COM2 UART
-RX interrupt: USB bulk has no "byte arrived" IRQ, so the break is poll-detected.
-In-stub USB transfers run with interrupts off, where `xhci_wait` self-pumps —
-that's what makes debugging over xHCI USB-serial deadlock-free. Validated under
-KVM: attach, register read, and a lone `0x03` re-break all over `usb-serial` on
-`qemu-xhci`.
+the pump keeps polling, so a *later* Ctrl-C breaks in again (the stub re-sends
+the stop reply via its internal `g_resumed`). This is USB-serial's analogue of
+the COM2 UART RX interrupt: USB bulk has no "byte arrived" IRQ, so the break is
+poll-detected. In-stub USB transfers run with interrupts off, where `xhci_wait`
+self-pumps — that's what makes debugging over xHCI USB-serial deadlock-free.
+Validated under KVM: attach, register read, and a lone `0x03` re-break all over
+`usb-serial` on `qemu-xhci`.
 
 ## Controllers
 

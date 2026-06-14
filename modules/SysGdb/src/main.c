@@ -12,8 +12,10 @@
  * memory writes + single-step, so no Zx packets are needed.
  *
  * The channel defaults to COM2 (0x2F8) so the debug console on COM1 is
- * undisturbed; a USB-serial driver can replace it at runtime via
- * gdb_set_channel(), letting the same stub run over a USB-serial adapter.
+ * undisturbed; a driver (e.g. USB-serial) can replace it at runtime via
+ * gdb_register_transport(), letting the same stub run over any byte transport.
+ * The transport only provides byte I/O -- all RSP protocol and the async
+ * break-in decision stay here, so transport drivers carry no GDB knowledge.
  */
 
 #include <stdint.h>
@@ -23,7 +25,9 @@
 
 #include "SysInterrupts/interrupts.h"
 
-// ---- Serial channel (pluggable) ----
+#include "SysGdb/gdb.h"
+
+// ---- Serial channel (pluggable transport; defaults to COM2) ----
 #define COM2 0x2F8
 
 static void com2_init(void) {
@@ -35,24 +39,38 @@ static void com2_init(void) {
     outb(COM2 + 2, 0xC7);  // enable + clear FIFO
     outb(COM2 + 4, 0x0B);  // RTS/DSR set
 }
-static int com2_getc(void) {
+static int com2_getc(void *state) {
+    (void)state;
     while (!(inb(COM2 + 5) & 0x01))
         ;
     return inb(COM2);
 }
-static void com2_putc(int c) {
+static void com2_putc(void *state, int c) {
+    (void)state;
     while (!(inb(COM2 + 5) & 0x20))
         ;
     outb(COM2, (uint8_t)c);
 }
 
-static int (*chan_getc)(void) = com2_getc;
-static void (*chan_putc)(int) = com2_putc;
+// The active transport. COM2 has no `poll`: it delivers async break-in via its
+// UART RX IRQ (gdb_com2_rx) instead.
+static gdb_transport_t cur_transport = {
+    .getc = com2_getc,
+    .putc = com2_putc,
+    .poll = NULL,
+    .state = NULL,
+};
 
-// A USB-serial (or other) driver can take over the GDB channel at runtime.
-void gdb_set_channel(int (*getc_fn)(void), void (*putc_fn)(int)) {
-    chan_getc = getc_fn;
-    chan_putc = putc_fn;
+static inline int chan_getc(void) { return cur_transport.getc(cur_transport.state); }
+static inline void chan_putc(int c) { cur_transport.putc(cur_transport.state, c); }
+
+// A driver takes over the GDB channel at runtime. Copied so the caller need not
+// keep the descriptor alive.
+void gdb_register_transport(const gdb_transport_t *t) {
+    if (t == NULL || t->getc == NULL || t->putc == NULL)
+        return;
+    cur_transport = *t;
+    DEBUG_PRINT("[SysGdb] GDB channel switched to a registered transport\r\n");
 }
 
 // ---- RSP helpers ----
@@ -306,6 +324,20 @@ static void gdb_com2_rx(int vector) {
 // usable as a `CALL:` boot-script target (which checks the return value).
 int gdb_stub_wait(void) {
     __asm__ volatile("int3");
+    return 0;
+}
+
+// Async break-in for transports without a receive IRQ (e.g. USB-serial). The
+// transport driver calls this from a polling loop; SysGdb owns the policy: pump
+// the transport, and if GDB sent anything (the initial handshake on connect, or
+// a lone 0x03 to halt a running target) drop into the stub. The triggering byte
+// stays buffered in the transport -- recv_packet discards anything before '$',
+// so a stray Ctrl-C is harmless. Returns 0.
+int gdb_poll_breakin(void) {
+    if (cur_transport.poll != NULL && cur_transport.poll(cur_transport.state) > 0) {
+        DEBUG_PRINT("[SysGdb] GDB activity on transport; entering debugger\r\n");
+        __asm__ volatile("int3");  // -> gdb_exception -> gdb_loop
+    }
     return 0;
 }
 
