@@ -121,6 +121,7 @@ typedef struct virtio_virtq_cmd_state
     bool finished;
     int q;
     int idx;
+    uint32_t used_len;  // bytes the device wrote into the buffer (from the used ring)
     void (*handler)(struct virtio_virtq_cmd_state *);
 } virtio_virtq_cmd_state_t;
 

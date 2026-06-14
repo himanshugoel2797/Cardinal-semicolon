@@ -22,7 +22,11 @@
 
 int ethernet_rx(interface_def_t *interface, void *packet, int len) {
     //Decode the ethernet frame and pass it up the stack (to the IP layer?)
+    if (len < (int)sizeof(ethernet_frame_t))
+        return 0;  // runt: not even a complete ethernet header
+
     ethernet_frame_t *ether = (ethernet_frame_t*)packet;
+    int payload_len = len - (int)sizeof(ethernet_frame_t);
 
     bool mac_match = true;
     bool broadcast = true;
@@ -37,13 +41,13 @@ int ethernet_rx(interface_def_t *interface, void *packet, int len) {
     if(mac_match || broadcast) {
         if(ether->type == ETHERNET_TYPE_ARP) {
             //Forward to the arp layer
-            arp_rx(interface, ether->src_mac, ether->body, len - sizeof(ethernet_frame_t));
+            arp_rx(interface, ether->src_mac, ether->body, payload_len);
         } else if(ether->type == ETHERNET_TYPE_IPv4) {
             //Forward to the ipv4 layer
-            ipv4_rx(interface, ether->src_mac, ether->body, len - sizeof(ethernet_frame_t));
+            ipv4_rx(interface, ether->src_mac, ether->body, payload_len);
         } else if(ether->type == ETHERNET_TYPE_IPv6) {
             //Forward to the ipv6 layer
-            ipv6_rx(interface, ether->src_mac, ether->body, len - sizeof(ethernet_frame_t));
+            ipv6_rx(interface, ether->src_mac, ether->body, payload_len);
         }
     }
 
