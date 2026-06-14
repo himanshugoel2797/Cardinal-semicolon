@@ -150,6 +150,12 @@ typedef struct {
     //    (needed so it routes packets to devices behind it).
     int (*prepare_downstream)(void *hc_state, int parent_addr, int parent_port, usb_speed_t speed);
     int (*mark_hub)(void *hc_state, int dev_addr, int nports);
+
+    // Optional (may be NULL): tear down controller-internal per-device state when
+    // a device at `dev_addr` disconnects (xHCI: Disable Slot + free its contexts;
+    // UHCI: clear its data-toggle state). Called by CoreUsb from
+    // usb_port_disconnected after the class driver has detached.
+    void (*disconnect)(void *hc_state, int dev_addr);
 } usb_hci_handlers_t;
 
 typedef struct {
@@ -190,13 +196,31 @@ typedef struct usb_enum_device usb_enum_device_t;
 // after enumerating a device whose (first) interface matches `dev_class`. Return
 // 0 if the driver claimed the device.
 typedef int (*usb_class_probe_t)(usb_enum_device_t *dev);
-int usb_register_class_driver(uint8_t dev_class, usb_class_probe_t probe);
+
+// Called when a device the driver claimed disconnects, so the driver can detach
+// (unregister from its server, stop its poll task, release per-device state).
+// The `dev` handle is still valid for the duration of this call; afterwards
+// CoreUsb reclaims the enum slot + bus address. May be NULL.
+typedef void (*usb_class_remove_t)(usb_enum_device_t *dev);
+
+int usb_register_class_driver(uint8_t dev_class, usb_class_probe_t probe,
+                              usb_class_remove_t remove);
 
 // Called by a host-controller driver when a (reset, enabled) port reports a new
 // device. CoreUsb performs address assignment + descriptor reads, then dispatches
 // to a matching class driver. `hc_handle` is what usb_register_hostcontroller
 // returned. Returns 0 on success.
 int usb_port_connected(void *hc_handle, int port, usb_speed_t speed);
+
+// Called by a host-controller driver when a root port reports a device removed.
+// CoreUsb finds the device enumerated on that (hc_handle, port), invokes the
+// class driver's remove callback and the HC's disconnect handler, and reclaims
+// the enum slot + bus address. Safe to call for a port with no device.
+void usb_port_disconnected(void *hc_handle, int port);
+
+// The hub-driver counterpart of usb_dev_enumerate_downstream: tear down whatever
+// was enumerated on the hub's downstream `port`.
+void usb_dev_disconnect_downstream(usb_enum_device_t *hub, int port);
 
 // Transfer helpers usable by a class driver against an enumerated device.
 int usb_dev_control(usb_enum_device_t *dev, const usb_setup_packet_t *setup,

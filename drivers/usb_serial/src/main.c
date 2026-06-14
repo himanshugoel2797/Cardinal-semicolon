@@ -44,6 +44,9 @@ typedef struct {
     int in_ep, out_ep;
     int in_mps, out_mps;
     bool in_use;
+    cs_id task;
+    volatile bool stop;     // remove() requests the pump task to exit
+    volatile bool stopped;  // pump task acknowledges it has exited
     // RX byte FIFO (data bytes only; FTDI status bytes already stripped).
     uint8_t ring[256];
     int rhead, rtail;
@@ -55,6 +58,7 @@ static ftdi_dev_t the_ftdi;
 // SysGdb hooks, resolved by name at runtime so the link is optional (NULL when
 // SysGdb is not loaded). gdb_transport_t is just a type from the header.
 static void (*gdb_register_transport_fn)(const gdb_transport_t *) = NULL;
+static void (*gdb_unregister_transport_fn)(const gdb_transport_t *) = NULL;
 static int (*gdb_poll_breakin_fn)(void) = NULL;
 
 static void resolve_gdb_hooks(void) {
@@ -62,6 +66,8 @@ static void resolve_gdb_hooks(void) {
     Elf64_Sym *s;
     if (symboldb_findfunc("gdb_register_transport", &h, &s) == 0)
         gdb_register_transport_fn = (void (*)(const gdb_transport_t *))s->st_value;
+    if (symboldb_findfunc("gdb_unregister_transport", &h, &s) == 0)
+        gdb_unregister_transport_fn = (void (*)(const gdb_transport_t *))s->st_value;
     if (symboldb_findfunc("gdb_poll_breakin", &h, &s) == 0)
         gdb_poll_breakin_fn = (int (*)(void))s->st_value;
 }
@@ -119,12 +125,14 @@ static void ftdi_ctrl(usb_enum_device_t *dev, uint8_t req, uint16_t val, uint16_
 // off where xhci_wait self-pumps the event ring, so the session does not
 // deadlock on the USB lock.
 static void usb_serial_pump(void *arg) {
-    arg = NULL;
-    while (true) {
+    ftdi_dev_t *f = (ftdi_dev_t *)arg;
+    while (!f->stop) {
         if (gdb_poll_breakin_fn != NULL)
             gdb_poll_breakin_fn();
         task_yield();
     }
+    f->stopped = true;  // hand off: remove() may now reclaim the device
+    end_task_kernel(task_current());
 }
 
 static int usb_serial_probe(usb_enum_device_t *dev) {
@@ -147,6 +155,9 @@ static int usb_serial_probe(usb_enum_device_t *dev) {
     the_ftdi.out_ep = out_ep;
     the_ftdi.in_mps = in_mps > 0 ? in_mps : 64;
     the_ftdi.out_mps = out_mps > 0 ? out_mps : 64;
+    the_ftdi.stop = false;
+    the_ftdi.stopped = false;
+    the_ftdi.task = 0;
     the_ftdi.in_use = true;
 
     // Reset + assert DTR/RTS + set 115200 (divisor 0x001A for the FT232 base
@@ -169,19 +180,39 @@ static int usb_serial_probe(usb_enum_device_t *dev) {
         };
         gdb_register_transport_fn(&transport);
         DEBUG_PRINT("[usb_serial] FTDI up; offered as GDB transport (connect GDB to attach)\r\n");
-        cs_id t = 0;
-        if (create_task_kernel("usb_serial_pump", task_permissions_kernel, &t) == CS_OK)
-            start_task_kernel(t, usb_serial_pump, NULL);
+        if (create_task_kernel("usb_serial_pump", task_permissions_kernel, &the_ftdi.task) == CS_OK)
+            start_task_kernel(the_ftdi.task, usb_serial_pump, &the_ftdi);
     } else {
         DEBUG_PRINT("[usb_serial] FTDI up; SysGdb not loaded, adapter idle\r\n");
     }
     return 0;
 }
 
+static void usb_serial_remove(usb_enum_device_t *dev) {
+    ftdi_dev_t *f = &the_ftdi;
+    if (!f->in_use || f->dev != dev)
+        return;
+    // Stop the pump (if one was started) and wait for it to exit.
+    if (f->task != 0) {
+        f->stop = true;
+        while (!f->stopped)
+            task_yield();
+    }
+    // Revert the GDB channel to COM2 so the stub never talks over a dead adapter.
+    if (gdb_unregister_transport_fn != NULL) {
+        gdb_transport_t transport = {
+            .getc = ftdi_getc, .putc = ftdi_putc, .poll = ftdi_poll, .state = f,
+        };
+        gdb_unregister_transport_fn(&transport);
+    }
+    f->in_use = false;
+    DEBUG_PRINT("[usb_serial] device removed\r\n");
+}
+
 int module_init() {
     memset(&the_ftdi, 0, sizeof(the_ftdi));
     // FTDI is vendor-specific (interface class 0xFF); the probe filters by VID.
-    usb_register_class_driver(0xFF, usb_serial_probe);
+    usb_register_class_driver(0xFF, usb_serial_probe, usb_serial_remove);
     DEBUG_PRINT("[usb_serial] registered FTDI USB-serial class driver\r\n");
     return 0;
 }

@@ -27,9 +27,15 @@ struct usb_enum_device {
     usb_hci_desc_t *hc;
     void *hc_handle;  // the host-controller handle (for downstream hub enumeration)
     int address;
+    // Topology, used to correlate a disconnect event back to this device:
+    //   parent_addr == 0 -> on a root port; else the address of the parent hub.
+    int parent_addr;
+    int port;
     usb_speed_t speed;
     int max_packet0;
     bool in_use;
+    bool disconnecting;   // claimed for teardown; blocks a second teardown + reuse
+    uint8_t probe_class;  // class byte dispatched to (for the matching remove cb)
     usb_device_descriptor_t dev_desc;
     uint8_t config_buf[512];
     int config_len;
@@ -68,6 +74,9 @@ static void free_address(int addr) {
 }
 
 static usb_class_probe_t class_probes[256] = {0};
+static usb_class_remove_t class_removes[256] = {0};
+
+static int enum_on_port(void *hc_handle, int parent_addr, int port, usb_speed_t speed);
 
 // Bounded busy-wait (timer_timestamp_ns is unreliable in this context -- it uses
 // floating point and a possibly-absent counter timer). Not precise; "at least
@@ -77,8 +86,10 @@ static void usb_delay_ns(uint64_t ns) {
         ;
 }
 
-int usb_register_class_driver(uint8_t dev_class, usb_class_probe_t probe) {
+int usb_register_class_driver(uint8_t dev_class, usb_class_probe_t probe,
+                              usb_class_remove_t remove) {
     class_probes[dev_class] = probe;
+    class_removes[dev_class] = remove;
     DEBUG_PRINT("[CoreUsb] Registered class driver\r\n");
     return 0;
 }
@@ -177,7 +188,9 @@ int usb_dev_enumerate_downstream(usb_enum_device_t *hub, int port, usb_speed_t s
             return -1;
         }
     }
-    return usb_port_connected(hub->hc_handle, port, speed);
+    // Record the hub as the parent so a later downstream disconnect resolves to
+    // exactly this device (root port N and hub-downstream port N are distinct).
+    return enum_on_port(hub->hc_handle, hub->address, port, speed);
 }
 
 static usb_enum_device_t *alloc_enum_device(void) {
@@ -199,6 +212,7 @@ static void free_enum_device(usb_enum_device_t *dev) {
     int addr = dev->address;
     if (addr >= 1 && addr <= 127)
         addr_used[addr >> 3] &= (uint8_t)~(1 << (addr & 7));
+    dev->disconnecting = false;
     dev->in_use = false;
     local_spinlock_unlock(&enum_lock);
 }
@@ -210,10 +224,12 @@ static void print_hex16(const char *label, uint16_t v) {
     DEBUG_PRINT(" ");
 }
 
-int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
+// Core enumeration. `parent_addr` is 0 for a device on a root port, or the
+// address of the parent hub for a downstream device -- stored so a later
+// disconnect on (hc_handle, parent_addr, port) finds exactly this device.
+static int enum_on_port(void *hc_handle, int parent_addr, int port, usb_speed_t speed) {
     usb_hci_def_t *def = (usb_hci_def_t *)hc_handle;
     usb_hci_desc_t *hc = &def->device;
-    (void)port;
 
     if (hc->handlers.control == NULL) {
         DEBUG_PRINT("[CoreUsb] HC has no control handler; cannot enumerate\r\n");
@@ -257,6 +273,8 @@ int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
     dev->hc = hc;
     dev->hc_handle = hc_handle;
     dev->address = addr;
+    dev->parent_addr = parent_addr;
+    dev->port = port;
     dev->speed = speed;
     dev->max_packet0 = mps0;
     dev->config_len = 0;
@@ -325,15 +343,54 @@ int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
         off += len;
     }
 
-    if (class_probes[dev_class] != NULL) {
-        DEBUG_PRINT("[CoreUsb] dispatching to class driver\r\n");
-        class_probes[dev_class](dev);
+    if (class_probes[dev_class] != NULL && class_probes[dev_class](dev) == 0) {
+        DEBUG_PRINT("[CoreUsb] dispatched to class driver\r\n");
+        dev->probe_class = dev_class;  // remember which remove() to call on unplug
     } else {
-        // No driver owns this device: release the enum-table slot and bus
+        // No driver claimed this device: release the enum-table slot and bus
         // address so neither is leaked.
-        DEBUG_PRINT("[CoreUsb] no class driver registered for this device\r\n");
+        DEBUG_PRINT("[CoreUsb] no class driver claimed this device\r\n");
         free_enum_device(dev);
     }
 
     return 0;
+}
+
+int usb_port_connected(void *hc_handle, int port, usb_speed_t speed) {
+    return enum_on_port(hc_handle, 0 /*root port, no parent hub*/, port, speed);
+}
+
+// Tear down every device matching (hc_handle, parent_addr, port): run the class
+// driver's remove callback, then the HC's per-device teardown, then reclaim the
+// slot + address. A device is claimed under enum_lock (via `disconnecting`) so a
+// concurrent disconnect or an alloc cannot race the teardown.
+static void disconnect_on_port(void *hc_handle, int parent_addr, int port) {
+    for (int i = 0; i < MAX_ENUM_DEVICES; i++) {
+        local_spinlock_lock(&enum_lock);
+        bool claim = enum_devices[i].in_use && !enum_devices[i].disconnecting &&
+                     enum_devices[i].hc_handle == hc_handle &&
+                     enum_devices[i].parent_addr == parent_addr &&
+                     enum_devices[i].port == port;
+        if (claim)
+            enum_devices[i].disconnecting = true;
+        local_spinlock_unlock(&enum_lock);
+        if (!claim)
+            continue;
+
+        usb_enum_device_t *dev = &enum_devices[i];
+        DEBUG_PRINT("[CoreUsb] device disconnected; tearing down\r\n");
+        if (class_removes[dev->probe_class] != NULL)
+            class_removes[dev->probe_class](dev);
+        if (dev->hc->handlers.disconnect != NULL)
+            dev->hc->handlers.disconnect(dev->hc->state, dev->address);
+        free_enum_device(dev);
+    }
+}
+
+void usb_port_disconnected(void *hc_handle, int port) {
+    disconnect_on_port(hc_handle, 0, port);
+}
+
+void usb_dev_disconnect_downstream(usb_enum_device_t *hub, int port) {
+    disconnect_on_port(hub->hc_handle, hub->address, port);
 }

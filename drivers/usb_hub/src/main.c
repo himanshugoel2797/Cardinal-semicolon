@@ -39,6 +39,9 @@ typedef struct {
     int nports;
     bool port_enum[HUB_MAX_PORTS + 1];  // 1-based
     bool in_use;
+    cs_id task;
+    volatile bool stop;     // remove() requests the poll task to exit
+    volatile bool stopped;  // poll task acknowledges it has exited
 } hub_dev_t;
 
 #define MAX_HUB 4
@@ -75,7 +78,7 @@ static void hub_task(void *arg) {
     hub_dev_t *h = (hub_dev_t *)arg;
     DEBUG_PRINT("[usb_hub] polling ports\r\n");
 
-    while (true) {
+    while (!h->stop) {
         for (int port = 1; port <= h->nports; port++) {
             uint16_t status = 0, change = 0;
             if (hub_get_status(h, port, &status, &change) < 0)
@@ -100,10 +103,13 @@ static void hub_task(void *arg) {
             } else if (!connected && h->port_enum[port]) {
                 h->port_enum[port] = false;
                 DEBUG_PRINT("[usb_hub] downstream device disconnected\r\n");
+                usb_dev_disconnect_downstream(h->dev, port);
             }
         }
         task_yield();
     }
+    h->stopped = true;  // hand off: remove() may now reclaim the hub
+    end_task_kernel(task_current());
 }
 
 static int hub_probe(usb_enum_device_t *dev) {
@@ -132,6 +138,8 @@ static int hub_probe(usb_enum_device_t *dev) {
     memset(h, 0, sizeof(*h));
     h->dev = dev;
     h->nports = nports;
+    h->stop = false;
+    h->stopped = false;
     h->in_use = true;
 
     char b[8];
@@ -148,16 +156,38 @@ static int hub_probe(usb_enum_device_t *dev) {
         hub_set_feature(h, port, PORT_POWER);
     hub_delay(40000000);
 
-    cs_id task = 0;
-    if (create_task_kernel("usb_hub_poll", task_permissions_kernel, &task) != CS_OK)
+    h->task = 0;
+    if (create_task_kernel("usb_hub_poll", task_permissions_kernel, &h->task) != CS_OK) {
+        h->in_use = false;
         return -1;
-    start_task_kernel(task, hub_task, h);
+    }
+    start_task_kernel(h->task, hub_task, h);
     return 0;
+}
+
+static void hub_remove(usb_enum_device_t *dev) {
+    for (int i = 0; i < MAX_HUB; i++) {
+        hub_dev_t *h = &hubs[i];
+        if (!h->in_use || h->dev != dev)
+            continue;
+        // Stop polling, then tear down every device still attached downstream
+        // (recursively, through CoreUsb) before releasing the hub itself.
+        h->stop = true;
+        while (!h->stopped)
+            task_yield();
+        for (int port = 1; port <= h->nports; port++)
+            if (h->port_enum[port]) {
+                h->port_enum[port] = false;
+                usb_dev_disconnect_downstream(h->dev, port);
+            }
+        h->in_use = false;
+        DEBUG_PRINT("[usb_hub] hub removed\r\n");
+    }
 }
 
 int module_init() {
     memset(hubs, 0, sizeof(hubs));
-    usb_register_class_driver(USB_CLASS_HUB, hub_probe);
+    usb_register_class_driver(USB_CLASS_HUB, hub_probe, hub_remove);
     DEBUG_PRINT("[usb_hub] registered hub class driver\r\n");
     return 0;
 }

@@ -88,6 +88,30 @@ int storage_register_fsprovider(storage_fsprovider_t *desc) {
     return 0;
 }
 
+int storage_unregister_blockdev(void *handle) {
+    if (handle == NULL)
+        return -1;
+    local_spinlock_lock(&blockdev_lock);
+    int n = (int)list_len(&blockdev_list);
+    int found = -1;
+    for (int i = 0; i < n; i++)
+        if (list_at(&blockdev_list, (uint64_t)i) == handle) {
+            found = i;
+            break;
+        }
+    if (found >= 0)
+        list_remove(&blockdev_list, (uint64_t)found);
+    local_spinlock_unlock(&blockdev_lock);
+    if (found < 0)
+        return -1;
+
+    DEBUG_PRINT("[CoreStorage] Unregistered block device: ");
+    DEBUG_PRINT(((storage_blockdev_t *)handle)->name);
+    DEBUG_PRINT("\r\n");
+    free(handle);
+    return 0;
+}
+
 int storage_blockdev_count(void) {
     local_spinlock_lock(&blockdev_lock);
     int n = (int)list_len(&blockdev_list);

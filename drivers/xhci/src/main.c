@@ -544,6 +544,39 @@ static void xhci_port_connected(xhci_ctrl_state_t *s, int port) {
     usb_port_connected(s->handle, port, uspeed);
 }
 
+// Free a slot's DMA: the per-endpoint transfer rings and the device context.
+static void xhci_free_slot_mem(xhci_slot_t *sl) {
+    for (int dci = 1; dci < 31; dci++) {
+        if (sl->ep[dci].configured && sl->ep[dci].ring.trbs != NULL) {
+            pagealloc_free(sl->ep[dci].ring.phys, KiB(4));
+            sl->ep[dci].ring.trbs = NULL;
+            sl->ep[dci].configured = 0;
+        }
+    }
+    if (sl->dev_ctx != NULL) {
+        pagealloc_free(sl->dev_ctx_phys, KiB(4));
+        sl->dev_ctx = NULL;
+    }
+}
+
+// CoreUsb disconnect handler: Disable Slot for the device at `dev_addr`, drop its
+// DCBAA entry, free its contexts/rings, and release the slot + address mapping.
+static void xhci_disconnect(void *hc_state, int dev_addr) {
+    xhci_ctrl_state_t *s = (xhci_ctrl_state_t *)hc_state;
+    local_spinlock_lock(&s->lock);
+    int slot_id = s->addr_to_slot[dev_addr & 0xFF];
+    if (slot_id > 0 && slot_id <= XHCI_MAX_SLOTS && s->slots[slot_id].in_use) {
+        xhci_trb_t out;
+        xhci_command(s, 0, XHCI_TRB_SET_TYPE(TRB_DISABLE_SLOT) | ((uint32_t)slot_id << 24), &out);
+        s->dcbaa[slot_id] = 0;
+        xhci_free_slot_mem(&s->slots[slot_id]);
+        memset(&s->slots[slot_id], 0, sizeof(s->slots[slot_id]));
+        DEBUG_PRINT("[xHCI] slot disabled for disconnected device\r\n");
+    }
+    s->addr_to_slot[dev_addr & 0xFF] = 0;
+    local_spinlock_unlock(&s->lock);
+}
+
 static void xhci_poll_task(xhci_ctrl_state_t *s) {
     while (!s->init_complete)
         ;
@@ -558,6 +591,8 @@ static void xhci_poll_task(xhci_ctrl_state_t *s) {
                 xhci_port_connected(s, p);
             } else if (!conn && seen[p]) {
                 seen[p] = false;
+                DEBUG_PRINT("[xHCI] port down; disconnecting\r\n");
+                usb_port_disconnected(s->handle, p);
             }
         }
         task_yield();
@@ -659,6 +694,7 @@ int module_init(void *ecam_addr) {
     desc->handlers.bulk = xhci_bulk;
     desc->handlers.prepare_downstream = xhci_prepare_downstream;
     desc->handlers.mark_hub = xhci_mark_hub;
+    desc->handlers.disconnect = xhci_disconnect;
     usb_register_hostcontroller(desc, &s->handle);
 
     cs_id task = 0;

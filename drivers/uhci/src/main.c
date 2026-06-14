@@ -354,6 +354,16 @@ static int uhci_bulk(void *hc_state, int dev_addr, int endpoint, int max_packet,
     return uhci_data_transfer(st, dev_addr, 0, endpoint, dir_in, max_packet, data, len, 200000000ULL);
 }
 
+// CoreUsb disconnect handler: clear the data-toggle state for the departed
+// device's address so a future device reusing the address starts clean. (UHCI
+// has no per-device hardware state to release beyond this.)
+static void uhci_disconnect(void *hc_state, int dev_addr) {
+    uhci_ctrl_state_t *st = (uhci_ctrl_state_t *)hc_state;
+    int base = (dev_addr & 0x7F) * 16;
+    for (int ep = 0; ep < 16; ep++)
+        st->ep_toggle[base + ep] = 0;
+}
+
 static void intr_handler(uhci_ctrl_state_t *inst){
     while (!inst->init_complete)
         ;
@@ -378,6 +388,7 @@ static void intr_handler(uhci_ctrl_state_t *inst){
             } else if (!connected && inst->port_enum[i]) {
                 inst->port_enum[i] = false;
                 DEBUG_PRINT("[UHCI] Device disconnected\r\n");
+                usb_port_disconnected(inst->handle, i);
             }
         }
 
@@ -463,6 +474,7 @@ int module_init(void *ecam_addr)
     desc->handlers.control = uhci_control_transfer;
     desc->handlers.interrupt_in = uhci_interrupt_in;
     desc->handlers.bulk = uhci_bulk;
+    desc->handlers.disconnect = uhci_disconnect;
     desc->lock = 0;
     usb_register_hostcontroller(desc, &instance->handle);
 
