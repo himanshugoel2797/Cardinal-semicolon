@@ -96,7 +96,20 @@ int gdt_init()
     gdt->gdt = malloc(GDT_ENTRY_COUNT * sizeof(gdt_t));
     gdt->tss = malloc(sizeof(tss_struct_t));
 
-    gdt->tss->ist1 = (uint64_t)malloc(4096) + 4096; //Allocate temporary interrupt stack
+    //Dedicated per-core fault stacks (Interrupt Stack Table). The IDT routes
+    //fatal CPU exceptions here so the handler runs on a known-good stack even
+    //when the faulting context's own stack is corrupt or exhausted -- otherwise
+    //the handler push itself faults and the CPU triple-faults (silent reboot)
+    //before any diagnostic can print.
+    //  IST1: general fatal exceptions (#PF, #GP, #UD, ...).
+    //  IST2: #DF only, so a fault *inside* an IST1 handler still lands on a
+    //        clean, separate stack and can report "DOUBLE FAULT" instead of
+    //        clobbering its own frame.
+#define IST_STACK_LEN 16384
+    gdt->tss->ist1 = (uint64_t)malloc(IST_STACK_LEN) + IST_STACK_LEN;
+    gdt->tss->ist2 = (uint64_t)malloc(IST_STACK_LEN) + IST_STACK_LEN;
+    if (gdt->tss->ist1 == IST_STACK_LEN || gdt->tss->ist2 == IST_STACK_LEN)
+        PANIC("[SysInterrupts] Failed to allocate IST fault stacks.");
 
     gdt_t *gdt_lcl = gdt->gdt;
     gdt_setentry(&gdt_lcl[0], 0, 0, 0, 0);

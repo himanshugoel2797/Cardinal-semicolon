@@ -16,6 +16,10 @@ TLS void* mp_tls_get(int off);
 
 int mp_corecount(void);
 
+//Hand application processors an entry point to run once the scheduler is online.
+//APs parked in mp_signalready() call this function as soon as it is set.
+void mp_set_ap_entry(void (*entry)(void));
+
 int mp_platform_getstatesize(void);
 
 void mp_platform_getstate(void* buf);

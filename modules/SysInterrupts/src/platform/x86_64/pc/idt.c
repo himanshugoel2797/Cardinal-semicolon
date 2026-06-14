@@ -183,12 +183,118 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base)
     }
 }
 
+//Human-readable names for the architecturally-defined CPU exception vectors
+//(0..31). Anything outside the table is a device IRQ or software interrupt.
+static const char *exception_names[32] = {
+    "#DE Divide Error",
+    "#DB Debug",
+    "NMI",
+    "#BP Breakpoint",
+    "#OF Overflow",
+    "#BR BOUND Range Exceeded",
+    "#UD Invalid Opcode",
+    "#NM Device Not Available",
+    "#DF Double Fault",
+    "Coprocessor Segment Overrun",
+    "#TS Invalid TSS",
+    "#NP Segment Not Present",
+    "#SS Stack-Segment Fault",
+    "#GP General Protection Fault",
+    "#PF Page Fault",
+    "(reserved 15)",
+    "#MF x87 FP Exception",
+    "#AC Alignment Check",
+    "#MC Machine Check",
+    "#XM SIMD FP Exception",
+    "#VE Virtualization Exception",
+    "#CP Control Protection Exception",
+    "(reserved 22)", "(reserved 23)", "(reserved 24)", "(reserved 25)",
+    "(reserved 26)", "(reserved 27)", "(reserved 28)", "(reserved 29)",
+    "(reserved 30)", "(reserved 31)"};
+
+static uint64_t read_cr2(void)
+{
+    uint64_t v;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(v));
+    return v;
+}
+
+//Read the local APIC id straight from CPUID leaf 1 (EBX[31:24]). This avoids
+//touching the per-core TLS APIC state, so it is safe to call from a fault on a
+//core whose dispatch state is not yet initialised.
+static uint32_t raw_apic_id(void)
+{
+    uint32_t eax = 1, ebx = 0, ecx = 0, edx = 0;
+    __asm__ volatile("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(eax));
+    return ebx >> 24;
+}
+
+static void dump_u64(const char *label, uint64_t v)
+{
+    char tmp[20];
+    DEBUG_PRINT(label);
+    DEBUG_PRINT(ltoa(v, tmp, 16));
+    DEBUG_PRINT("\r\n");
+}
+
+//Dump the full trap frame for a CPU exception. Uses only `regs` (the on-stack
+//frame) and CPUID, never the per-core TLS dispatch state, so it stays valid
+//even when that state is the thing that is broken.
+static void dump_trap_frame(regs_t *regs)
+{
+    char tmp[20];
+    DEBUG_PRINT("\r\n==== CPU EXCEPTION ====\r\n");
+    DEBUG_PRINT("vector : 0x");
+    DEBUG_PRINT(ltoa(regs->int_no, tmp, 16));
+    DEBUG_PRINT(" ");
+    if (regs->int_no < 32)
+        DEBUG_PRINT(exception_names[regs->int_no]);
+    DEBUG_PRINT("\r\n");
+    dump_u64("apicid : 0x", raw_apic_id());
+    dump_u64("err    : 0x", regs->err_code);
+    if (regs->int_no == 14)
+        dump_u64("cr2    : 0x", read_cr2());
+    dump_u64("rip    : 0x", regs->rip);
+    dump_u64("cs     : 0x", regs->cs);
+    dump_u64("rflags : 0x", regs->rflags);
+    dump_u64("rsp    : 0x", regs->useresp);
+    dump_u64("ss     : 0x", regs->ss);
+    dump_u64("rax    : 0x", regs->rax);
+    dump_u64("rbx    : 0x", regs->rbx);
+    dump_u64("rcx    : 0x", regs->rcx);
+    dump_u64("rdx    : 0x", regs->rdx);
+    dump_u64("rsi    : 0x", regs->rsi);
+    dump_u64("rdi    : 0x", regs->rdi);
+    dump_u64("rbp    : 0x", regs->rbp);
+    dump_u64("r8     : 0x", regs->r8);
+    dump_u64("r9     : 0x", regs->r9);
+    dump_u64("r10    : 0x", regs->r10);
+    dump_u64("r11    : 0x", regs->r11);
+    dump_u64("r12    : 0x", regs->r12);
+    dump_u64("r13    : 0x", regs->r13);
+    dump_u64("r14    : 0x", regs->r14);
+    dump_u64("r15    : 0x", regs->r15);
+    DEBUG_PRINT("=======================\r\n");
+}
+
 void idt_mainhandler(regs_t *regs)
 {
     if ((regs->cs & 3) != 0)
         __asm__ volatile("swapgs");
     //Store the registers in the processor interrupt state
     regs->int_no = (uint8_t)regs->int_no;
+
+    //Defensive guard: if this core took an interrupt before its per-core
+    //dispatch state (idt/reg_state) was initialised, fail with a legible panic
+    //naming the core instead of dereferencing NULL and cascading into a double
+    //fault. This is the failure mode that blocks live AP scheduling.
+    if (idt == NULL || idt->reg_state == NULL)
+    {
+        dump_trap_frame(regs);
+        PANIC("SysInterrupts: interrupt on core with uninitialised dispatch state (idt/reg_state NULL)");
+    }
 
     memcpy(idt->reg_state, regs, sizeof(regs_t));
     idt->reg_ref = regs;
@@ -211,6 +317,15 @@ void idt_mainhandler(regs_t *regs)
 
     if (!handled)
     {
+        if (regs->int_no < 32)
+        {
+            //Unhandled CPU exception: dump the full trap frame (named vector,
+            //CR2 for #PF, error code, all GPRs, core APIC id) before panicking
+            //so the failure is actually diagnosable.
+            dump_trap_frame(regs);
+            PANIC("Unhandled CPU exception");
+        }
+
         char int_num[20] = "";
         DEBUG_PRINT("Unhandled Interrupt: 0x");
         char *msg_ptr = itoa(regs->int_no, int_num, 16);
@@ -219,9 +334,6 @@ void idt_mainhandler(regs_t *regs)
         msg_ptr = ltoa(regs->rip, int_num, 16);
         DEBUG_PRINT(msg_ptr);
         DEBUG_PRINT("\r\n");
-
-        if (regs->int_no < 32)
-            PANIC("Failure!");
     }
 
     idt->reg_ref = NULL;
@@ -240,6 +352,8 @@ void interrupt_setregisterstate(interrupt_register_state_t *state)
 {
     if (state != NULL)
     {
+        if (idt == NULL || idt->reg_ref == NULL)
+            PANIC("interrupt_setregisterstate called outside interrupt context (reg_ref NULL)");
 
         idt->reg_ref->r15 = state->r15;
         idt->reg_ref->r14 = state->r14;
@@ -271,6 +385,8 @@ void interrupt_getregisterstate(interrupt_register_state_t *state)
 {
     if (state != NULL)
     {
+        if (idt == NULL || idt->reg_ref == NULL)
+            PANIC("interrupt_getregisterstate called outside interrupt context (reg_ref NULL)");
 
         state->r15 = idt->reg_ref->r15;
         state->r14 = idt->reg_ref->r14;
@@ -416,7 +532,17 @@ int idt_init()
         idt_lcl[i].type = IDT_TYPE_INTR;
         idt_lcl[i].p = 1;
         idt_lcl[i].dpl = 0;
-        idt_lcl[i].ist = 0;
+        //Route fatal CPU exceptions onto the per-core IST fault stacks set up in
+        //gdt_init: #DF (8) gets its own (IST2) so it survives a fault inside an
+        //IST1 handler; every other architectural exception (0..31) uses IST1.
+        //Device IRQs and software interrupts (>=32) keep the current stack (0),
+        //since they nest on the running task's kernel stack by design.
+        if (i == 8)
+            idt_lcl[i].ist = 2;
+        else if (i < 32)
+            idt_lcl[i].ist = 1;
+        else
+            idt_lcl[i].ist = 0;
         idt_lcl[i].zr0 = 0;
         idt_lcl[i].zr1 = 0;
         idt_lcl[i].zr2 = 0;

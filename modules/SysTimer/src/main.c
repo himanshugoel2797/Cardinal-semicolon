@@ -136,7 +136,10 @@ int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int))
     //Allocate a timer for the desired mode with a rate that can match the desired time
     int idx = 0;
     for (; idx < timer_idx; idx++)
-        if (!timer_defs[idx].in_use && ((timer_defs[idx].features & features) == features))
+        //Local timers are per-core hardware behind a single registration, so they
+        //are not exclusive: every core may request the same entry and configure
+        //its own (TLS-backed) state. Non-local timers stay first-come exclusive.
+        if (((features & timer_features_local) || !timer_defs[idx].in_use) && ((timer_defs[idx].features & features) == features))
         {
 
             if (timer_defs[idx].handlers.set_mode != NULL &&

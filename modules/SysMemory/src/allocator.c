@@ -11,6 +11,8 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include <cardinal/local_spinlock.h>
+
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 
@@ -24,6 +26,10 @@ typedef struct mem_node
 
 static mem_node_t *root = NULL;
 static _Atomic uint32_t node_cnt = 0;
+//Guards the shared free list across cores. cli() only blocks local-core
+//preemption; this lock blocks concurrent malloc/free on other cores. Always
+//taken after cli() so an interrupt on this core cannot deadlock against itself.
+static int alloc_lock = 0;
 
 void *WEAK malloc(size_t sz)
 {
@@ -31,6 +37,7 @@ void *WEAK malloc(size_t sz)
         return NULL;
 
     int cli_state = cli();
+    local_spinlock_lock(&alloc_lock);
     //Align size with 16 bytes, so all allocations are 16-byte aligned
     if (sz % 8)
         sz += 8 - (sz % 8);
@@ -66,6 +73,7 @@ void *WEAK malloc(size_t sz)
         if (phys == PHYSMEM_NO_ALLOC)
         {
             //Out of physical memory: fail the allocation gracefully.
+            local_spinlock_unlock(&alloc_lock);
             sti(cli_state);
             return NULL;
         }
@@ -118,6 +126,7 @@ void *WEAK malloc(size_t sz)
     cur_best_fit->isFree = false;
     void *retAddr = cur_best_fit->data;
 
+    local_spinlock_unlock(&alloc_lock);
     sti(cli_state);
 
     return retAddr;
@@ -145,6 +154,7 @@ void WEAK free(void *sz)
         return;
 
     int cli_state = cli();
+    local_spinlock_lock(&alloc_lock);
 
     //access the node info
     mem_node_t *desc = (mem_node_t *)((intptr_t)sz - sizeof(mem_node_t));
@@ -164,5 +174,6 @@ void WEAK free(void *sz)
     if (node_cnt >= 512)
         mem_compact();
 
+    local_spinlock_unlock(&alloc_lock);
     sti(cli_state);
 }

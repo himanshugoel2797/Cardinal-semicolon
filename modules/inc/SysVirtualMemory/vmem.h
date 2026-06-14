@@ -57,8 +57,6 @@ int vmem_setactive(vmem_t *vm);
 
 int vmem_getactive(vmem_t **vm);
 
-int vmem_flush(intptr_t virt, size_t sz);
-
 int vmem_virttophys(vmem_t *vm, intptr_t virt, intptr_t *phys);
 
 intptr_t vmem_phystovirt(intptr_t phys, size_t sz, int flags);

@@ -29,6 +29,10 @@ typedef enum
     task_state_suspended_monitor_mem_32,
     task_state_sleep,
     task_state_blocked,
+    //Terminal state. The owning core's scheduler frees an exited task one pass
+    //after it switched away from it (see core_desc_t.prev_dead) -- by then the
+    //core has iret'd off that task's kernel stack. A task is only ever scheduled
+    //and freed by its single owning core, so the free is race-free.
     task_state_exited,
 } task_state_t;
 
@@ -88,7 +92,8 @@ typedef struct process_desc
 
     task_state_t state;
     task_permissions_t permissions;
-    
+    int owner_core; //run queue this task lives on (index into run_queues[])
+
     union{
         uint32_t monitor_value;
     };
@@ -116,6 +121,11 @@ typedef struct
 {
     uint8_t *interrupt_stack;
     process_desc_t *cur_task;
+    int core_idx; //sequential registration index; indexes run_queues[]/rq_locks[]
+    //The exited task this core switched away from on its previous scheduler pass.
+    //Freed (same-core) at the top of the next pass, once this core has iret'd off
+    //that task's kernel stack. Same-core ownership makes the free race-free.
+    process_desc_t *prev_dead;
 } core_desc_t;
 
 #endif

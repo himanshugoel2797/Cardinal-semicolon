@@ -112,13 +112,306 @@ size the queue so re-inserts cannot fail.
 ### [LIKELY] Unsynchronised bump allocator on SMP
 `modules/SysVirtualMemory/src/platform/x86_64/pc/vmem.c:76` — `vmem_vmalloc`
 advances `kernel_vmalloc` with no lock; the code's own TODO notes it is not
-atomic to preemption. Race on concurrent callers.
+atomic to preemption. Race on concurrent callers. *(Fixed: a dedicated
+`kernel_vmalloc_lock` (`local_spinlock`) now guards both `vmem_vmalloc` and
+`vmem_vfree`, so the bump pointer is updated atomically across cores. `vmem_vfree`
+keeps its LIFO-only release behaviour — only the most recent allocation can be
+returned — which is inherent to a bump allocator, not a bug.)*
+
+### [FIXED] SMP application-processor (AP) bring-up — race resolved, APs active by default
+> **SUPERSEDED BY DESIGN CHANGE (per-core run queues).** The whole class of
+> cross-core scheduler races below was eliminated structurally rather than patched:
+> the scheduler is now **shared-nothing**. Each core owns a private run queue
+> (`run_queues[]`/`rq_locks[]`, indexed by a sequential `core_idx`); a task is
+> created on, scheduled by, and **freed only by** its single owning core. The
+> cross-core use-after-free that drove this entire investigation is therefore
+> *impossible by construction* — no other core can free a task's stack/reg_state
+> while its owner is mid-`iret` on it, because no other core can reach that task.
+>
+> What that removed: the global `processes` list + `process_lock` (the hot path now
+> takes only this core's `rq_lock`, ≈uncontended); the separate `task_cleanup` task
+> (each core frees its own departed task at the top of its next scheduler pass via
+> `core_desc_t.prev_dead`); the `task_state_reapable` state and the `last_dead`
+> deferred-reap *marking* dance; and the cross-core cleanup that the deferred reap
+> existed to make safe. The one remaining subtlety — not freeing a task on the same
+> pass we switch away from it (we're still on its stack until `iret`) — is now a
+> trivially-correct *same-core* one-pass deferral (`prev_dead`).
+>
+> Distribution: tasks created after the APs come online round-robin across cores
+> (`pick_target_core`); boot-time tasks (servicescript, per-core idle) stay on their
+> creating core. Cross-core task migration is not yet implemented (a follow-up: an
+> explicit "move descriptor between queues" message — the microkernel way).
+> Validated: 6/6 clean TCG SMP boots, APs active, servicescript exit/reap (the old
+> repro) faultless. The historical narrative below documents the original diagnosis
+> and the timing-based fix this design replaced; it is kept for context.
+>
+> **Prior fix (now replaced).** The timing-sensitive SMP race was first fixed with a
+> deferred one-quantum reap (see "ROOT CAUSE FOUND & FIXED" below). `CALL:task_release_aps`
+> is in `servicescript.txt`, so the default boot is multi-core. The historical
+> narrative below is kept because it documents the diagnosis and the supporting
+> infrastructure (IST exception dumps) the work built on.
+>
+> The two **diagnostic** aids used to localise the bug were removed once it was fixed:
+> the per-task `reg_state` **page-guard** (it never recycled its vmalloc virtual range,
+> leaking address space per task — `reg_state` is back on the heap, which the
+> deferred reap makes safe) and the `owner_core` **ownership tripwire** (its hypothesis
+> was disproven; it added a panic in the scheduler hot path). Residual caveat: under a
+> *synthetic* sustained-preemption stress (a kernel task spinning ~5e7 iterations without
+> yielding while APs churn) a single #GP with a garbage selector was seen once — i.e. a
+> rare reg_state corruption may still exist outside the exit/reap window. It did not recur
+> in normal boots; chasing it wants an uncontended host (TCG-only repro) and likely the
+> page-guard temporarily re-enabled to name the writer. Tracked, not yet root-caused.
+
+APs are brought up (TLS/vmem/interrupts/timer per `apscript.txt`) and the machinery to
+release them into the scheduler is fully in place. The mechanism is *single-threaded
+boot, then release*: the kernel module loader (`elf_load`/`elf_resolvefunction`/symbol
+DB/`bootstrap_alloc`) is single-threaded-only, so the APs stay parked in
+`mp_signalready()` (`SysMP/.../mp.c`) for the entire load; a `CALL:task_release_aps`
+line in `servicescript.txt` (just before `CALL:end_task_syscall`) then calls
+`mp_set_ap_entry(task_ap_entry)`, and each AP runs `task_ap_entry`: per-core setup
+(`task_core_setup`/`task_core_arm`, interrupt stack + a per-core idle task) and joins
+scheduling. The scheduler entry is split into per-core and one-time global steps.
+
+**Currently parked by default**: the `CALL:task_release_aps` line is *removed* from
+`servicescript.txt`, so the shipped boot is single-core. Re-add that one line to
+activate. When activated, under **KVM** both cores schedule independently (verified:
+two distinct per-core GS bases take timer interrupts, no faults across many runs).
+
+**The blocker to trusting it on by default is a timing-sensitive SMP race** that, under
+**TCG only**, intermittently corrupts a task structure on the heap. Two distinct
+manifestations were captured (both legible only thanks to the IST work below; before
+it they triple-faulted silently):
+- AP returns from its timer interrupt into a task whose saved `reg_state.rip` is a
+  constant `0xb8`;
+- the scheduler dereferences a `cur_task`/`next` task pointer whose **high 32 bits are
+  clobbered** (`0x00000110` instead of `0xffffffff`; the low 32 are intact) — a
+  classic allocator-metadata-over-live-pointer signature. The constant small values
+  (`0xb8` = 184, `0x110` = 272) are consistent with a freed chunk's `len` field landing
+  on a still-referenced task field, i.e. a use-after-free / double-use of a task buffer.
+
+One real UAF here was found and fixed but is *not* the whole story:
+- **task_cleanup could free an exited task while a core still held it as `cur_task`**
+  (`SysTaskMgr/src/task.c`). On exit (`end_task_kernel`) a task is marked
+  `task_state_exited` and releases `process_lock`; in the gap before it re-yields,
+  `task_cleanup` on another core could free it, leaving the owning core's `cur_task`
+  dangling and corrupting reused memory. Fix: a **two-phase reap** — a new
+  `task_state_reapable` is set by the *owning* core's scheduler once it has switched
+  away from an exited task, and `task_cleanup` only frees `reapable` tasks. This is
+  correct and necessary and removed the common case, but the corruption still
+  reproduces, so at least one more freed-while-referenced path remains.
+
+**This race is a heisenbug.** A stress "churn" task (spawn+exit tasks continuously)
+reproduces it ~1/8 under TCG. But *any* validation probe added to the scheduler hot
+path (e.g. checking each task pointer / saved RIP before use) shifts timing enough to
+hide it entirely (0/10) — so the usual "add a check to catch it" approach is a dead
+end; detection must be passive (fault-on-access), not active polling.
+
+Ruled out so far:
+- **Stack overflow** — a canary at the bottom of the AP's 16 KiB bootstrap stack
+  (`alloc_ap_stack`) stayed intact across runs where the `#PF` still fired, so the AP
+  is not overflowing its bootstrap stack into adjacent heap. (Both bootstrap stacks are
+  16 KiB; not the cause here.)
+
+Refined diagnosis (from the legible IST dumps): the restored task's saved registers
+are **foreign context**, not the task's own — in one build `rax` = the APIC physmap
+vaddr, `rdi` = `0xB0` (the `APIC_EOI` register offset), `rip` = `0xb8` (exactly the
+values live inside `interrupt_sendeoi`); in another, `rsp`/`rbp` point into the AP
+interrupt stack and `rip`/`rcx`/`rdx` hold heap/code pointers. So a task's `reg_state`
+buffer is being **overwritten with interrupt/stack context** — its corrupt content
+just tracks the build's allocation layout (the constant `0xb8` was a coincidence of
+one layout, not a fixed writer).
+
+A poison test pinned the buffer involved: in `task_cleanup`, *poisoning and leaking*
+`reg_state` (instead of `free`-ing it, so it can't be reused) **changed** the fault —
+which means **servicescript's freed-and-reused `reg_state` is implicated**. The
+working theory: servicescript's `reg_state` is freed, the about-to-schedule AP reuses
+that buffer for a new task's `reg_state`, and something still writes servicescript's
+state into the old buffer — corrupting the new task. The two-phase reap closed the
+`cur_task`-dangling path but a second freed-while-referenced `reg_state` path remains
+(likely tied to the AP's *first* schedule racing servicescript's exit/reap).
+
+**Page-guard landed — the heisenbug is now deterministic.** Each task's `reg_state`
+is now allocated as its own dedicated kernel page from the `vmem_vmalloc` region
+(page-allocator + `vmem_map`, zero-filled) and `vmem_unmap`'d on free, with the
+virtual range deliberately *never* recycled (`regstate_guard_alloc`/`_free` in
+`SysTaskMgr/src/task.c`). Surfacing this required fixing a latent bug it depended on:
+**`vmem_unmap` was a complete no-op** — it began with `size = 0;`, so its
+`while (size > 0)` loop never ran and no mapping was ever torn down (the user-stack and
+descriptor unmaps in `task_cleanup` silently leaked). Removed that line; `vmem_destroy`
+only frees the `vmem_t` struct (never walks page tables) so honoring the size cannot
+double-free. A second prerequisite: each AP snapshots the kernel half of the page table
+*once* in `vmem_mp_init` and never refreshes it, so a kernel mapping that creates a
+**new** PML4 entry after that snapshot is invisible to a running AP. `vmem_init` now
+pre-creates the vmalloc region's PML4 entry before any AP boots, so guard mappings stay
+coherent across cores (verified: APs schedule on guarded `reg_state` with no
+false-positive faults).
+
+**What it caught (first post-release run, deterministically):** an instruction-fetch
+`#PF` (`err=0x10`, `rip = cr2 = 0xa0`) on the **AP** (`apicid 0x1`), immediately after
+`releasing APs`, in the same instant the BSP finished `end_task_syscall` and exited
+`servicescript`. The restored task's saved context was foreign interrupt state:
+`rax = 0xffff8080fee00000` (the UC APIC physmap base), `rdi = 0xb0` (`APIC_EOI`),
+`rcx = 0x2c` (vector 44) — i.e. mid-`interrupt_sendeoi` register state — and crucially
+`rbp = 0xffff810000004000`, **an address inside the `reg_state` guard region itself**.
+So a task was scheduled with a `reg_state` whose contents had been overwritten by EOI
+interrupt context (and a guard-region/`reg_state` pointer leaked into its saved `rbp`),
+then `iret`'d into garbage. This **confirms `reg_state` is the corrupted object** and
+ties the corruption precisely to *the AP's first schedule racing the BSP's exit/reap of
+`servicescript`*.
+
+Note the guard did **not** fault on the corrupting *write*: the overwritten
+`reg_state` was still **live/mapped** (no fault reading it during restore), so the wild
+write went into a *valid* buffer — this is a write into a live `reg_state`, not a
+use-after-free of a freed one. To name the exact writer, the next passive technique is
+to keep each `reg_state` page **read-only except during the explicit save window**
+(flip RW around `mp_platform_getstate`), so any other write faults at the offending
+instruction. Caveat: without cross-core TLB shootdown (`vmem_flush` only does local
+`invlpg`; shootdown is an acknowledged TODO) a write from a core with the page cached
+RW in its TLB may not trap — so this may need a shootdown first, or correlating the
+faulting RIP from a disassembly of the scheduler save/restore + `idt_mainhandler` EOI
+path. Heap red-zones in `SysMemory` would generalise the live-buffer case.
+
+**ROOT CAUSE FOUND & FIXED — the scheduler ran on a stack it then let be freed.**
+The corruptor was never a *write to the wrong reg_state*; it was the owning core
+still **executing on an exited task's kernel stack** while another core freed that
+stack out from under it. The periodic timer is vector ≥32, so its IDT entry uses
+`ist=0` (`SysInterrupts/.../idt.c`) — i.e. `idt_mainhandler` and `task_switch_handler`
+run **on the interrupted task's own kernel stack**, and the trap frame the final
+`iret` consumes lives on that stack too. When the current task had exited, the
+scheduler marked it `task_state_reapable` and dropped `process_lock` *before*
+returning through the interrupt epilogue (`interrupt_sendeoi`) and `iret` — all of
+which still execute on that task's stack. The instant `process_lock` was released,
+`task_cleanup` on the other core was free to `free()` the stack / `regstate_guard_free`
+the reg_state / `free` the `process_desc_t`. The reused memory was then scribbled by
+whatever allocation grabbed it, which is exactly both captured signatures: the freed
+stack's `iret` frame overwritten → `iret` into garbage; and a freed `reg_state`/stack
+page reallocated to a *new* task and stomped while two cores briefly touched it (the
+"EOI context in a live reg_state, `rbp` inside the guard region" capture — the guard
+didn't fault because the page was still mapped, just reallocated). `task_yield`'s
+restore path has the same hazard: it builds its `iret` frame on the outgoing task's
+stack after `task_yield_stage2` returns. The two-phase reap closed the
+`cur_task`-dangling sub-case but not this one, because "switched away" in the
+scheduler is not complete until the `iret` retires.
+
+**Fix (timing-independent — `SysTaskMgr/src/task.c`, `task_priv.h`):** *deferred,
+one-quantum reap.* Added `core_desc_t.last_dead` (per core). When the scheduler
+switches away from an exited task it now **stashes** it in `last_dead` (leaving it
+`task_state_exited`, which is neither selectable nor reapable) instead of marking it
+reapable immediately. `task_reap_deferred()`, called at the top of both scheduler
+entry points (`task_switch_handler`, `task_yield_stage2`) under `process_lock`,
+promotes the *previous* pass's `last_dead` to `task_state_reapable`. By the next
+scheduler pass on that core the `iret` has retired and the core is demonstrably
+running on a **different** task's stack, so `task_cleanup` can free the dead task's
+stack/reg_state/struct with no live reference remaining. No hot-path validation probe
+(which the AUDIT notes perturbs the timing and hides the race) — the change is purely
+structural. Every core always idles + takes the periodic tick, so the one-quantum
+hold drains promptly. The two-phase reap and the `vmem_unmap`/PML4 prerequisites above
+remain and compose with this; the `reg_state` page-guard was a diagnostic and has since
+been reverted (see the banner at the top of this section).
+
+*Reproduction & validation:* the pre-fix `#PF` reproduces under **TCG** with the full
+`servicescript` (`cr2 = 0xa0`, a freed-chunk metadata value, dereferenced in the
+scheduler's `vmem_setactive(ntask->mem)` path, on the BSP the instant `servicescript`
+exits right after `releasing APs`). The race is sensitive to the *full* boot timing —
+a stripped servicescript that exits immediately does **not** reproduce it (17/17 clean
+both ways), so it must be tested with the real boot. Post-fix, every boot that reached
+the AP-release window survived with no fault. A clean large-N statistical A/B on this
+dev box is throttled by intermittent host CPU starvation (the guest is TCG-bound; see
+the build-env notes) and should be re-run once the host is uncontended.
+
+Two pieces of hardening landed to make such faults debuggable (previously a fault
+during AP bring-up cascaded silently into a triple-fault reboot):
+- **Full CPU-exception dumps** (`SysInterrupts/.../idt.c`) — any vector <32 now prints
+  the named exception, error code, CR2 (for `#PF`), the whole register frame, and the
+  faulting core's APIC id (read via CPUID so it works even when per-core TLS is bad),
+  then panics. `intr.c`'s dedicated `pagefault_handler` was removed so `#PF` flows
+  through this unified path. NULL guards on `idt`/`reg_state`/`reg_ref` in the dispatch
+  and register-state accessors turn an uninitialised-per-core-state fault into a
+  legible panic instead of a NULL deref.
+- **IST fault stacks** (`SysInterrupts/.../gdt.c` + `idt.c`) — the per-core TSS now
+  carries two dedicated fault stacks; the IDT routes `#DF` to IST2 and every other
+  architectural exception (0..31) to IST1, so a fault whose own stack is corrupt or
+  exhausted still runs its handler on a known-good stack and can print, rather than
+  triple-faulting. Device IRQs (>=32) keep the running task's kernel stack.
+
+Fixed along the way (all valid on single-core too):
+- **AHCI `module_init` hung the boot forever via `task_sleep` under `cli()`**
+  (`drivers/ahci/src/ahci.c` `ahci_obtainownership`) — it called `task_sleep` for the
+  BIOS/OS handoff delay while the driver held `cli()` across init. `task_sleep`
+  (`SysTaskMgr/src/task.c`) only marks the task `task_state_sleep` and relies on the
+  preemption timer to wake it, which can never fire with interrupts off, so the
+  servicescript task was flagged sleeping and never resumed. Because AHCI is the last
+  service loaded, the boot *looked* complete (it stalled right at AHCI's last print) —
+  in fact `coredisplay_postinit`/`end_task_syscall` had never run. Replaced all three
+  `task_sleep` calls in AHCI init (`ahci_obtainownership` ×2, `ahci_initializeport`
+  ×1) with bounded polled spins (appropriate for an interrupts-off init); also wrote
+  back the cleared `PxCMD` bits in `ahci_initializeport`, which the original code
+  computed but never stored. NB: `task_sleep` itself is still broken for the general
+  case (see below).
+- **`malloc`/`free` were not SMP-safe** (`SysMemory/src/allocator.c`) — used only
+  `cli()` (local-core) to guard a shared free list. Now also serialised by an
+  `alloc_lock` spinlock taken after `cli()`.
+- **`kmem.lock`/`vm->lock` were acquired with interrupts enabled**
+  (`SysVirtualMemory/.../vmem.c`) — the preemption-timer ISR also takes these via
+  `vmem_setactive`, so a task preempted while holding one self-deadlocked (latent
+  even single-core; reliable hang on SMP). All runtime acquirers now `cli()` across
+  the critical section.
+- **Per-core TLS was not zeroed** (`SysMP/.../mp.c` `mp_tls_setup`) — `static TLS`
+  pointers (`apic_state`, `lcl`, `core_descs`, `idt`) are written assuming
+  zero-init and gate per-core setup on a NULL check; an AP saw garbage and skipped
+  its own init. Now `memset(0)` on allocation.
+- **Local APIC timer registration was per-core and exclusive**
+  (`SysTimer/.../apic.c`, `SysTimer/src/main.c`) — registered once per core into a
+  fixed-size global table and marked globally `in_use`, so a second core could not
+  request "the local timer". Now registered once, with per-core TLS state, and
+  `timer_request` treats `timer_features_local` timers as non-exclusive.
+- **`task_cleanup` busy-spun `process_lock`** (`SysTaskMgr/src/task.c`) — an
+  infinite non-yielding loop that relied on preemption; on SMP it starved other
+  cores of the scheduler. Now `task_yield()`s each pass.
+
+### [VERIFIED] task_sleep does not actually deschedule
+`modules/SysTaskMgr/src/task.c` `task_sleep` — in the found-task branch it sets
+`state = task_state_sleep` and `sleep_end`, then **returns to the caller without
+yielding**, so the "sleeping" task keeps running. Waking depends on the scheduler's
+`timer_timestamp_ns() >= sleep_end` check, but a caller that holds `cli()` (e.g. a
+driver init) never yields and never gets preempted, so it runs straight through with
+its state mislabelled. The AHCI hang above was a symptom. A correct `task_sleep`
+should set the sleep state and then `task_yield()` so the core actually switches away,
+and the wake path / timestamp source needs verifying. Until then, callers must not
+rely on it for real delays.
 
 ### [INCOMPLETE] Stubs / TODOs (tracked, not bugs)
 - `kernel/src/bootstrap_alloc.c:101` `realloc` → `PANIC("unimplemented")`.
 - `common/src/time.c` `gmtime` partial, `strftime` is a no-op.
-- TLB shootdown missing (`vmem.c:260`), SMP timer/IPI TODOs
-  (`SysTimer/src/main.c:39`, `SysInterrupts/.../apic.c:125`).
+- SMP timer/IPI TODOs (`SysTimer/src/main.c:39`) — load-bearing once APs schedule.
+
+### [DONE] Shared kernel PML4
+The kernel half of the address space is no longer copied per-core. There is one **master
+kernel PML4** (`kmem.pml4` in `SysVirtualMemory/.../vmem.c`) whose upper 256 entries are
+the kernel address space; every process's PML4 (its own hardware page, allocated in
+`vmem_create`) copies those 256 entries *once* at creation. Because the entries point at
+**shared** lower-level tables, a runtime kernel-map change is instantly visible in every
+address space with no resync — provided no *new* top-level kernel PML4 entry is created
+after boot, which is why `vmem_init` pre-creates every kernel PML4 entry (physmap,
+kernel-top, vmalloc). This deleted the per-core `lcl->ktable`, the three 256-entry
+`memcpy`s per context switch, and `vmem_savestate` entirely: `vmem_setactive` is now just
+a `cr3` load (cr3 points straight at the task's PML4), and a core with no task runs on
+`kmem.pml4` directly. Verified: 6/6 SMP boots fault-free, every context switch a bare cr3
+load against per-task shared-kernel PML4s.
+
+A cross-core TLB-shootdown primitive (`vmem_flush` + an IPI vector) was prototyped while
+this was per-core, but was **removed** as dead code: nothing unmaps a kernel range at
+runtime (every `vmem_unmap` is a user range), so it had zero callers, and the shared PML4
+makes kernel-map *creation* visible everywhere without any IPI. Recover it from git
+(commit `422d332`) if runtime kernel-map churn is ever added — that is the only thing that
+would need it (to invalidate stale TLB entries left by a kernel *unmap*).
+
+Remaining (latent): a kernel map that needed a brand-new *top-level* PML4 entry at
+runtime would not propagate to already-created address spaces — but nothing creates one
+(all kernel PML4 entries are pre-created at init, and the vmalloc region has 512 GiB
+under its single pre-created entry). If kernel vmalloc ever outgrows that, add the new
+PML4 entry to every live address space (or reserve the full kernel PML4 entry range up
+front).
 
 ---
 
@@ -140,7 +433,9 @@ correctness-fixes PR.)*
 garbage. Recent EHCI/UHCI/CoreUsb work is mid-flight here.
 
 ### [LIKELY] Unbounded hardware busy-waits (no timeout)
-- `drivers/ahci/src/ahci.c:236` spins on `PxCI` while spamming `DEBUG_PRINT`.
+- `drivers/ahci/src/ahci.c:236` spins on `PxCI` while spamming `DEBUG_PRINT`
+  (the read path; `ahci_resethba`'s `while (GHC & 1)` and the port-init waits are
+  likewise unbounded — bound these like `ahci_obtainownership` now is).
 - `drivers/rtl8169/src/driver.c:86`, `drivers/rtl8139/src/driver.c:56` spin on
   descriptor ownership with no timeout (8169 also drops/retakes the lock around
   the spin, racing the DMA engine).

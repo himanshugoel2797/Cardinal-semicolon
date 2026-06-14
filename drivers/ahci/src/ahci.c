@@ -10,8 +10,6 @@
 #include <cardinal/local_spinlock.h>
 
 #include "SysVirtualMemory/vmem.h"
-#include "SysTaskMgr/task.h"
-#include "SysTimer/timer.h"
 
 #include "ahci.h"
 
@@ -63,9 +61,20 @@ PRIVATE uint32_t ahci_readports(ahci_instance_t *inst)
 PRIVATE void ahci_obtainownership(ahci_instance_t *inst)
 {
     ahci_write32(inst, HBA_BOHC, (1 << 1)); //Obtain ownership of the HBA
-    task_sleep(task_current(), 25 * 1000 * 1000);           //Sleep 25ms
-    if (ahci_read32(inst, HBA_BOHC) & (1 << 4))
-        task_sleep(task_current(), 2000 * 1000 * 1000); //wait 2 seconds for the BIOs to finish up
+
+    //NOTE: this runs from module_init with interrupts disabled (the driver holds
+    //cli() across init), so we must NOT call task_sleep here -- task_sleep marks
+    //the task sleeping and depends on the preemption timer to wake it, which can
+    //never fire with interrupts off, hanging the task forever. Bound the BIOS/OS
+    //handoff with a polled spin that has a hard iteration cap instead.
+    for (volatile uint64_t i = 0; i < 25000000; i++) //~settle delay for the OOC write
+        if (!(ahci_read32(inst, HBA_BOHC) & (1 << 4)))
+            break;
+
+    //If the BIOS still owns the HBA (BOS busy), give it a bounded grace period
+    //rather than blocking indefinitely.
+    for (volatile uint64_t i = 0; (ahci_read32(inst, HBA_BOHC) & (1 << 4)) && i < 200000000; i++)
+        ;
 }
 
 PRIVATE void ahci_reportawareness(ahci_instance_t *inst)
@@ -85,13 +94,15 @@ PRIVATE int ahci_initializeport(ahci_instance_t *inst, int index)
     {
         //Attempt to clear the offending bits
         cmd &= ~(HBA_PxCMD_ST | HBA_PxCMD_FRE);
+        ahci_write32(inst, HBA_PxCMD(index), cmd);
 
-        for (int i = 0; i < 5; i++)
-        {
-            task_sleep(task_current(), 500 * 1000 * 1000); //Sleep 500ms
+        //Bounded polled wait for FR/CR to clear. Like ahci_obtainownership, this
+        //runs from module_init with interrupts disabled, so task_sleep cannot be
+        //used here (it would never be woken -- see notes/AUDIT.md). Cap the spin
+        //instead of blocking forever on a wedged port.
+        for (volatile uint64_t i = 0; i < 500000000; i++)
             if ((ahci_read32(inst, HBA_PxCMD(index)) & (HBA_PxCMD_FR | HBA_PxCMD_CR)) == 0)
                 break;
-        }
         //Failed to bring the device into an idle state, can't continue with init
         if ((ahci_read32(inst, HBA_PxCMD(index)) & (HBA_PxCMD_FR | HBA_PxCMD_CR)) != 0)
             return -1;
