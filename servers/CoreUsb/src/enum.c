@@ -46,10 +46,10 @@ static struct usb_enum_device enum_devices[MAX_ENUM_DEVICES];
 static int enum_lock = 0;
 
 // USB bus addresses 1..127 (0 is the default address). Allocated per device and
-// returned to the pool when enumeration fails or a device's enum slot is freed
-// (full disconnect-driven recycling needs a disconnect path, still TODO -- but
-// at least failed enumerations no longer permanently consume addresses, and the
-// pool can never overflow past 127). enum_lock guards both this and enum_devices.
+// returned to the pool when enumeration fails, when no driver claims a device,
+// and on hot-unplug (usb_port_disconnected -> free_enum_device): full recycling.
+// alloc_address hands out the lowest free address, so a freed one is reused.
+// enum_lock guards both this bitmap and enum_devices.
 static uint8_t addr_used[128 / 8];
 
 static int alloc_address(void) {
@@ -78,12 +78,12 @@ static usb_class_remove_t class_removes[256] = {0};
 
 static int enum_on_port(void *hc_handle, int parent_addr, int port, usb_speed_t speed);
 
-// Bounded busy-wait (timer_timestamp_ns is unreliable in this context -- it uses
-// floating point and a possibly-absent counter timer). Not precise; "at least
-// roughly this long" is all the SET_ADDRESS recovery needs.
+// Real wall-clock delay via the calibrated counter (SysTimer), like AHCI/RTL. An
+// iteration-count spin burns a fixed amount of CPU *work*, so on a CPU-shared
+// task it stretches to many seconds; timer_busywait is TSC-paced and returns
+// after the intended real time regardless of scheduling.
 static void usb_delay_ns(uint64_t ns) {
-    for (volatile uint64_t i = 0; i < ns; i++)
-        ;
+    timer_busywait_ns(ns);
 }
 
 int usb_register_class_driver(uint8_t dev_class, usb_class_probe_t probe,
@@ -263,7 +263,7 @@ static int enum_on_port(void *hc_handle, int parent_addr, int port, usb_speed_t 
         free_address(addr);
         return -1;
     }
-    usb_delay_ns(5 * 1000 * 1000);  // >=2ms for the device to switch address
+    usb_delay_ns(50 * 1000 * 1000);  // SET_ADDRESS recovery (spec >=2ms; xHCI Address Device wants more)
 
     usb_enum_device_t *dev = alloc_enum_device();
     if (dev == NULL) {

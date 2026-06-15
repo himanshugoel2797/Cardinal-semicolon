@@ -26,6 +26,7 @@
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysTaskMgr/task.h"
 #include "SysInterrupts/interrupts.h"
+#include "SysTimer/timer.h"
 #include "pci/pci.h"
 #include "CoreUsb/usb.h"
 
@@ -51,9 +52,9 @@ static uint8_t *alloc_page(uintptr_t *phys_out) {
     return (uint8_t *)vmem_phystovirt((intptr_t)p, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 }
 
-static void delay(uint64_t iters) {
-    for (volatile uint64_t i = 0; i < iters; i++)
-        ;
+// Real wall-clock delay (TSC-paced), like AHCI/RTL/UHCI. Arg is nanoseconds.
+static void delay(uint64_t ns) {
+    timer_busywait_ns(ns);
 }
 
 // ---- TRB ring ----
@@ -135,8 +136,10 @@ static inline int irqs_on(void) {
 // (under event_lock, IRQs off) so it still completes if an interrupt is missed
 // or interrupts are disabled (e.g. from the GDB stub). Yields between polls when
 // interrupts are enabled.
-static int xhci_wait(xhci_ctrl_state_t *s, int type, int slot, xhci_trb_t *out, uint64_t spin_limit) {
-    for (volatile uint64_t spin = 0; spin < spin_limit; spin++) {
+static int xhci_wait(xhci_ctrl_state_t *s, int type, int slot, xhci_trb_t *out, uint64_t timeout_ns) {
+    timer_timeout_t to;
+    timer_timeout_start(&to, timeout_ns);
+    while (1) {
         int cli_state = cli();
         local_spinlock_lock(&s->event_lock);
         xhci_drain_events(s);
@@ -157,6 +160,8 @@ static int xhci_wait(xhci_ctrl_state_t *s, int type, int slot, xhci_trb_t *out, 
         }
         if (irqs_on())
             task_yield();
+        if (timer_timeout_expired(&to))
+            break;
     }
     return -1;
 }
@@ -478,11 +483,13 @@ static int xhci_mark_hub(void *hc_state, int dev_addr, int nports) {
 
 // ---- Port handling / enumeration ----
 static void xhci_port_connected(xhci_ctrl_state_t *s, int port) {
-    // Reset the port.
+    // Reset the port (bounded by a real wall-clock wait for PRC).
     uint32_t psc = rd32(s->op, XHCI_OP_PORTSC(port));
     wr32(s->op, XHCI_OP_PORTSC(port), (psc & ~(XHCI_PORTSC_PED)) | XHCI_PORTSC_PR);
-    for (volatile uint64_t i = 0; i < 50000000; i++)
-        if (rd32(s->op, XHCI_OP_PORTSC(port)) & XHCI_PORTSC_PRC)
+    timer_timeout_t prst;
+    timer_timeout_start(&prst, 100ULL * 1000 * 1000);  // 100ms
+    while (!(rd32(s->op, XHCI_OP_PORTSC(port)) & XHCI_PORTSC_PRC))
+        if (timer_timeout_expired(&prst))
             break;
     // ack change bits
     psc = rd32(s->op, XHCI_OP_PORTSC(port));
@@ -628,14 +635,18 @@ int module_init(void *ecam_addr) {
     uint32_t hcc1 = rd32(s->mmio, XHCI_CAP_HCCPARAMS1);
     s->ctx_size = (hcc1 & (1 << 2)) ? 64 : 32;
 
-    // Reset the controller.
+    // Reset the controller (wall-clock-bounded halt + HCRST waits).
     wr32(s->op, XHCI_OP_USBCMD, 0);
-    for (volatile uint64_t i = 0; i < 50000000; i++)
-        if (rd32(s->op, XHCI_OP_USBSTS) & XHCI_USBSTS_HCH)
+    timer_timeout_t hlt;
+    timer_timeout_start(&hlt, 100ULL * 1000 * 1000);  // 100ms to halt
+    while (!(rd32(s->op, XHCI_OP_USBSTS) & XHCI_USBSTS_HCH))
+        if (timer_timeout_expired(&hlt))
             break;
     wr32(s->op, XHCI_OP_USBCMD, XHCI_USBCMD_HCRST);
-    for (volatile uint64_t i = 0; i < 100000000; i++)
-        if (!(rd32(s->op, XHCI_OP_USBCMD) & XHCI_USBCMD_HCRST) && !(rd32(s->op, XHCI_OP_USBSTS) & XHCI_USBSTS_CNR))
+    timer_timeout_t rst;
+    timer_timeout_start(&rst, 1000ULL * 1000 * 1000);  // 1s for reset + CNR clear
+    while ((rd32(s->op, XHCI_OP_USBCMD) & XHCI_USBCMD_HCRST) || (rd32(s->op, XHCI_OP_USBSTS) & XHCI_USBSTS_CNR))
+        if (timer_timeout_expired(&rst))
             break;
 
     int slots_en = s->max_slots > XHCI_MAX_SLOTS ? XHCI_MAX_SLOTS : s->max_slots;
@@ -706,7 +717,7 @@ int module_init(void *ecam_addr) {
         uint32_t psc = rd32(s->op, XHCI_OP_PORTSC(p));
         wr32(s->op, XHCI_OP_PORTSC(p), psc | XHCI_PORTSC_PP);
     }
-    delay(20000000);
+    delay(100 * 1000 * 1000);  // 100ms port power-good settle (USB 2.0 bPwrOn2PwrGood worst case)
 
     s->init_complete = true;
     DEBUG_PRINT("[xHCI] init complete\r\n");
