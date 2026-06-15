@@ -76,7 +76,12 @@ typedef struct
 
 static TLS tls_idt_t *idt = NULL;
 static char idt_handlers[IDT_ENTRY_COUNT][IDT_ENTRY_HANDLER_SIZE];
-static InterruptHandler interrupt_funcs[IDT_ENTRY_COUNT][IDT_HANDLER_CNT];
+// volatile: the dispatch path reads these slots lock-free (see do_interrupt).
+// volatile forces a real, un-cached, un-reordered load each pass; on x86-64 an
+// aligned pointer-sized load/store is tear-free, so a slot is always observed as
+// either a complete handler or NULL, never a half-written pointer. Writers still
+// serialise under interrupt_alloc_lock so two registrations can't race.
+static InterruptHandler volatile interrupt_funcs[IDT_ENTRY_COUNT][IDT_HANDLER_CNT];
 static bool interrupt_blocked[IDT_ENTRY_COUNT];
 static int interrupt_alloc_lock = 0;
 static bool int_arr_inited = false;
@@ -305,7 +310,8 @@ void idt_mainhandler(regs_t *regs)
 
     // Lock-free dispatch: interrupt_alloc_lock is global; holding it here
     // serialised every core's interrupt handling (incl. the scheduler tick),
-    // starving AP/BSP preemption. Slots are aligned pointers (atomic load).
+    // starving AP/BSP preemption. interrupt_funcs is volatile (aligned, tear-free
+    // pointer loads on x86-64), so we read each slot without the lock.
     for (int i = 0; i < IDT_HANDLER_CNT; i++)
     {
         InterruptHandler h = interrupt_funcs[regs->int_no][i];
