@@ -22,6 +22,8 @@
 // a lying udp->len cannot drive an out-of-bounds read.
 
 static int udp_seg_len(const udp_t *udp, int avail) {
+    if (avail < (int)sizeof(udp_t))  // fewer bytes than the header -> can't even
+        return -1;                   // read udp->len without going out of bounds
     int seg_len = (int)TO_LE_FRM_BE_16(udp->len);
     if (seg_len < (int)sizeof(udp_t))  // shorter than the UDP header -> malformed
         return -1;
