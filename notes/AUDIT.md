@@ -367,19 +367,23 @@ Fixed along the way (all valid on single-core too):
   infinite non-yielding loop that relied on preemption; on SMP it starved other
   cores of the scheduler. Now `task_yield()`s each pass.
 
-### [VERIFIED] task_sleep does not actually deschedule
-`modules/SysTaskMgr/src/task.c` `task_sleep` — in the found-task branch it sets
-`state = task_state_sleep` and `sleep_end`, then **returns to the caller without
-yielding**, so the "sleeping" task keeps running. Waking depends on the scheduler's
-`timer_timestamp_ns() >= sleep_end` check, but a caller that holds `cli()` (e.g. a
-driver init) never yields and never gets preempted, so it runs straight through with
-its state mislabelled. The AHCI hang above was a symptom. A correct `task_sleep`
-should set the sleep state and then `task_yield()` so the core actually switches away,
-and the wake path / timestamp source needs verifying. Until then, callers must not
-rely on it for real delays. Known affected callers fixed so far: AHCI init (bounded
-polled spins) and **UHCI init** (`drivers/uhci/src/main.c` reset/port-reset delays
-now use `uhci_delay_ns`, a wall-clock busy-wait off `timer_timestamp_ns`) — before
-this, UHCI's GRESET/port-reset delays never actually happened.
+### [FIXED] task_sleep does not actually deschedule
+`modules/SysTaskMgr/src/task.c` `task_sleep` — the control flow was inverted: the
+found-task branch set `state = task_state_sleep` and `sleep_end` then **returned
+without yielding** (so the "sleeping" task kept running, merely mislabelled), while
+the *not-found* branch called `task_yield()` (descheduling whatever unrelated task
+happened to be running). The AHCI hang above was a symptom. Fixed: the not-found
+branch now just returns; the found branch yields **only when it put this core's own
+current task to sleep** (`iter == core_descs->cur_task`, captured under `cli()`),
+so a self-sleep actually switches away while sleeping another task only marks it.
+Wake path verified sound — `task_runnable` returns true once
+`timer_timestamp_ns() >= sleep_end`, and `task_yield`/`task_switch_handler` only
+reset `running → pending` so the `sleep` state survives the switch. Validated with a
+temporary self-test (`task_sleep(self, 100ms)` measured 100ms elapsed under
+`-smp 1/2`; previously ~0). Callers still holding `cli()` across init must NOT use it
+(it yields, which is illegal under `cli()`); those paths (AHCI init bounded polled
+spins, **UHCI init** `uhci_delay_ns` wall-clock busy-wait) remain on busy-waits by
+design.
 
 ### [INCOMPLETE] Stubs / TODOs (tracked, not bugs)
 - ~~`kernel/src/bootstrap_alloc.c` `realloc` → `PANIC("unimplemented")`.~~
