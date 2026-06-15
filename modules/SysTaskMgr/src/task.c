@@ -478,17 +478,33 @@ static void reap_exited(int self, process_desc_t *keep)
 
 static bool task_runnable(process_desc_t *t)
 {
+    //Caller holds rq_locks[self]. We briefly take t->lock so that state and the
+    //state-discriminated union member (monitor_tgt / sleep_end share storage)
+    //are read as a consistent pair. Writers on another core mutate both under
+    //t->lock -- task_sleep/task_monitor reach into this queue via
+    //find_task_locked -- so without the lock this is a C11 data race and, worse,
+    //a stale `state` could be paired with the other union member's bytes. Lock
+    //order rq -> task matches find_task_locked, so it cannot deadlock; the
+    //scheduler has already released cur->lock before calling select_next.
+    local_spinlock_lock(&t->lock);
+    bool runnable;
     switch (t->state)
     {
     case task_state_pending:
-        return true;
+        runnable = true;
+        break;
     case task_state_suspended_monitor_mem_32:
-        return (*t->monitor_tgt != t->monitor_value);
+        runnable = (*t->monitor_tgt != t->monitor_value);
+        break;
     case task_state_sleep:
-        return (timer_timestamp_ns() >= t->sleep_end);
+        runnable = (timer_timestamp_ns() >= t->sleep_end);
+        break;
     default:
-        return false;
+        runnable = false;
+        break;
     }
+    local_spinlock_unlock(&t->lock);
+    return runnable;
 }
 
 //Pick the next runnable task from this core's run queue: first the tasks after
