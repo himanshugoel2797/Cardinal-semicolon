@@ -980,17 +980,28 @@ cs_error task_sleep(cs_id id, uint64_t ns)
 {
     int cli_state = cli();
     process_desc_t *iter = find_task_locked(id);
-    if (iter != NULL)
+    if (iter == NULL)
     {
-        iter->sleep_end = timer_timestamp_ns() + ns;
-        iter->state = task_state_sleep;
-
-        local_spinlock_unlock(&iter->lock);
+        //No such task: nothing to put to sleep, and yielding here would be
+        //wrong (it would deschedule whatever unrelated task is running now).
         sti(cli_state);
         return CS_UNKN;
     }
+
+    iter->sleep_end = timer_timestamp_ns() + ns;
+    iter->state = task_state_sleep;
+    //Whether we just put *this core's* running task to sleep. Captured under
+    //cli() before we drop the lock so it can't change under us.
+    bool is_self = (iter == core_descs->cur_task);
+    local_spinlock_unlock(&iter->lock);
     sti(cli_state);
-    task_yield();
+
+    //A task that put itself to sleep must yield so the core actually switches
+    //away; otherwise it keeps running (merely mislabelled task_state_sleep)
+    //until the next preemption tick -- and a caller holding cli() never gets
+    //one. Sleeping another task only marks it; this core keeps running.
+    if (is_self)
+        task_yield();
     return CS_UNKN;
 }
 
