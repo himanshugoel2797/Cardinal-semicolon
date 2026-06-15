@@ -308,10 +308,14 @@ static cs_id alloc_descriptor(process_desc_t *pinfo, descriptor_type_t ntype)
         }
         if (d[i].type == descriptor_type_descriptor_entry)
         {
-            //Restart iteration along sub table
-            i = -1;
-            d = d[i].desc_entry;
+            //Follow the chain pointer (always the last slot) into the sub-table.
+            //This table held i real descriptors (indices 0..i-1), so the
+            //sub-table's ids continue at id + i. Advance id and follow d[i]
+            //BEFORE resetting i -- doing i=-1 first would read d[-1] (OOB) and
+            //add -1 to id.
             id += i;
+            d = d[i].desc_entry;
+            i = -1;  //the loop's i++ makes this 0
             continue;
         }
         if (d[i].type == descriptor_type_unused_entry)
@@ -335,10 +339,12 @@ static descriptor_entry_t *read_descriptor(process_desc_t *pinfo, cs_id id)
     {
         if (d[i].type == descriptor_type_descriptor_entry)
         {
-            //Restart iteration along sub table
-            i = -1;
-            d = d[i].desc_entry;
+            //Follow the chain pointer (always the last slot) into the sub-table.
+            //Advance base_id by the i real descriptors in this table and follow
+            //d[i] BEFORE resetting i -- doing i=-1 first would read d[-1] (OOB).
             base_id += i;
+            d = d[i].desc_entry;
+            i = -1;  //the loop's i++ makes this 0
             continue;
         }
         if ((d[i].type != descriptor_type_unused_entry) && (base_id + i == id))
