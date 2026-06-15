@@ -80,8 +80,23 @@ static int pick_target_core(void)
 // At most one rq_lock is held at a time, and always acquired before ->lock, so
 // this cannot deadlock against a core's scheduler (which locks its own rq_lock,
 // then a task ->lock).
+//
+// PRECONDITION: the caller must have interrupts disabled (cli()). This routine
+// takes rq_locks[i]; if a timer tick fired on this core while we held our own
+// core's rq_lock, task_switch_handler would spin on that same lock with no way
+// to make progress -> per-core self-deadlock. All callers cli() first; the
+// assert below catches any future caller that forgets.
 static process_desc_t *find_task_locked(cs_id id)
 {
+    // cli() returns the prior IF state and disables interrupts. If interrupts
+    // were enabled on entry the precondition is violated; restore and panic.
+    int irqs_were_on = cli();
+    if (irqs_were_on)
+    {
+        sti(irqs_were_on);
+        PANIC("[SysTaskMgr] find_task_locked called with interrupts enabled.");
+    }
+
     int n = registered_cores;
     for (int i = 0; i < n; i++)
     {
