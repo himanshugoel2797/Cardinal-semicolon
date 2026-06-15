@@ -51,6 +51,26 @@ static _Atomic int rr_cursor = 0;        // round-robin assignment cursor
 // current core description
 static TLS core_desc_t *core_descs = NULL;
 
+// The TLS offset of the per-core core_desc_t, allocated ONCE and shared by every
+// core. mp_tls_alloc bumps a single global cursor, so it must be called once per
+// logical TLS slot -- not once per core. Guarding the call on the (per-core, TLS)
+// `core_descs == NULL` would re-run it on every core, handing each core a
+// different offset and burning (cores-1) * sizeof(core_desc_t) of the fixed TLS
+// block. Instead allocate the offset behind this shared latch; each core then
+// resolves the same offset against its own gs base.
+static int core_descs_off = -1;
+static int core_descs_off_lock = 0;
+
+static TLS core_desc_t *tls_core_descs(void)
+{
+    local_spinlock_lock(&core_descs_off_lock);
+    if (core_descs_off < 0)
+        core_descs_off = mp_tls_alloc(sizeof(core_desc_t));
+    int off = core_descs_off;
+    local_spinlock_unlock(&core_descs_off_lock);
+    return (TLS core_desc_t *)mp_tls_get(off);
+}
+
 // Insert a freshly-built task into core `idx`'s run queue.
 static void rq_insert(int idx, process_desc_t *t)
 {
@@ -1149,7 +1169,7 @@ static void task_core_arm()
 static void task_ap_entry(void)
 {
     if (core_descs == NULL)
-        core_descs = (TLS core_desc_t *)mp_tls_get(mp_tls_alloc(sizeof(core_desc_t)));
+        core_descs = tls_core_descs();
     core_descs->interrupt_stack = NULL;
     core_descs->cur_task = NULL;
     core_descs->prev_dead = NULL;
@@ -1177,7 +1197,7 @@ int module_init()
 {
     //Allocate core memory
     if (core_descs == NULL)
-        core_descs = (TLS core_desc_t *)mp_tls_get(mp_tls_alloc(sizeof(core_desc_t)));
+        core_descs = tls_core_descs();
     core_descs->interrupt_stack = NULL;
     core_descs->cur_task = NULL;
     core_descs->prev_dead = NULL;
