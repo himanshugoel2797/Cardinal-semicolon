@@ -436,6 +436,25 @@ static void free_task(int self, process_desc_t *t)
     process_count--;
 }
 
+//Reap tasks that were ended (end_task) while NOT running -- i.e. exited while
+//pending/sleeping in this core's queue. The prev_dead path only frees a task
+//that exits while it is cur_task; an exited pending task is never re-selected
+//(task_runnable is false for it) and would otherwise leak and clog the queue
+//forever. Such a task is on no core's kernel stack (it was not running), so it
+//is safe to free immediately. `keep` is this core's cur_task, handled separately
+//via prev_dead -- never freed here. Caller holds rq_locks[self].
+static void reap_exited(int self, process_desc_t *keep)
+{
+    process_desc_t *t = run_queues[self];
+    while (t != NULL)
+    {
+        process_desc_t *next = t->next;  //free_task unlinks t but leaves next valid
+        if (t != keep && t->state == task_state_exited)
+            free_task(self, t);
+        t = next;
+    }
+}
+
 static bool task_runnable(process_desc_t *t)
 {
     switch (t->state)
@@ -512,6 +531,8 @@ static void task_switch_handler(int irq)
         }
     }
 
+    reap_exited(self, cur);  //free tasks ended while pending/sleeping (not cur)
+
     process_desc_t *ntask = select_next(self, cur);
     if (ntask == NULL)
         PANIC("[SysTaskMgr] Out of Processes!\r\n");
@@ -569,6 +590,8 @@ static void task_yield_stage2(interrupt_register_state_t *mp_state){
             local_spinlock_unlock(&cur->lock);
         }
     }
+
+    reap_exited(self, cur);  //free tasks ended while pending/sleeping (not cur)
 
     process_desc_t *ntask = select_next(self, cur);
     if (ntask == NULL)
