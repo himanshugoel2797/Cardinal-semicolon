@@ -54,18 +54,13 @@ static uint32_t read32(uhci_ctrl_state_t *state, uint16_t addr)
     return inl(state->iobar + addr);
 }
 
-// task_sleep does not deschedule (see notes/AUDIT.md) and timer_timestamp_ns is
-// unreliable here (it uses floating point, which kernel modules build without,
-// and depends on a counter timer that may be absent -- it can return (uint64_t)-1,
-// collapsing a timestamp-based wait to zero), so use a plain bounded busy-spin for
-// the one-time init delays. Not wall-clock precise -- only "at least roughly this
-// long" -- which is all the USB reset/recovery delays need.
+// Real wall-clock delay via the calibrated counter (SysTimer), like AHCI/RTL. An
+// iteration-count spin burns a fixed amount of CPU *work*; on the cooperative
+// poll task it stretches a "15ms" delay to seconds. timer_busywait is TSC-paced,
+// so it returns after the intended real time no matter how the task is scheduled.
 static void uhci_delay_ns(uint64_t ns)
 {
-    // ~a few cycles per iteration; one iteration per nanosecond is comfortably
-    // generous on the emulated targets (over-waiting on init is harmless).
-    for (volatile uint64_t i = 0; i < ns; i++)
-        ;
+    timer_busywait_ns(ns);
 }
 
 static void uhci_reset(uhci_ctrl_state_t *state)
@@ -74,10 +69,12 @@ static void uhci_reset(uhci_ctrl_state_t *state)
     uhci_delay_ns(10 * 1000 * 1000);
     write16(state, USBCMD_REG, 0);  //Exit GRESET 10ms after starting
 
-    //now perform an HCRESET (bounded wait for it to clear)
+    //now perform an HCRESET (bounded wall-clock wait for it to clear)
     write16(state, USBCMD_REG, USBCMD_HCRESET);
-    for (volatile uint64_t i = 0; i < 50000000; i++)
-        if (!(read16(state, USBCMD_REG) & USBCMD_HCRESET))
+    timer_timeout_t hcrst;
+    timer_timeout_start(&hcrst, 100ULL * 1000 * 1000);  // 100ms
+    while (read16(state, USBCMD_REG) & USBCMD_HCRESET)
+        if (timer_timeout_expired(&hcrst))
             break;
     if (read16(state, USBCMD_REG) & USBCMD_HCRESET)
         DEBUG_PRINT("[UHCI] HCRESET timeout\r\n");
@@ -197,10 +194,13 @@ static int uhci_control_transfer(void *hc_state, int dev_addr, usb_speed_t speed
     qh->elp = td_phys_base;
 
     // Poll until the STATUS TD retires, a fatal error latches, or we time out.
-    // Bounded by iteration count (timer_timestamp_ns is unreliable here); the HC
-    // updates TD status via DMA so success exits promptly.
+    // Wall-clock bound (the HC writes TD status via DMA, so success exits
+    // promptly); an iteration cap stretches to seconds on the CPU-shared poll
+    // task. 100ms is ample for a control transfer.
     int result = -1;
-    for (volatile uint64_t spin = 0; spin < 200000000ULL; spin++) {
+    timer_timeout_t to;
+    timer_timeout_start(&to, 100ULL * 1000 * 1000);
+    while (1) {
         int fatal = 0;
         for (int i = 0; i < n; i++)
             if (tds[i].status.status & 0x76)  // STALL/databuf/babble/CRC-timeout/bitstuff (NAK excluded)
@@ -211,6 +211,8 @@ static int uhci_control_transfer(void *hc_state, int dev_addr, usb_speed_t speed
             result = 0;
             break;
         }
+        if (timer_timeout_expired(&to))
+            break;
     }
 
     qh->elp = 1;  // detach the chain
@@ -236,10 +238,10 @@ static int uhci_control_transfer(void *hc_state, int dev_addr, usb_speed_t speed
 
 // Single-endpoint data transfer (interrupt or bulk) using the driver-tracked
 // per-endpoint data toggle. Returns bytes transferred; 0 means "no data" for an
-// IN poll that only saw NAKs within the spin budget; <0 on STALL/error.
+// IN poll that only saw NAKs within the timeout window; <0 on STALL/error.
 static int uhci_data_transfer(uhci_ctrl_state_t *st, int dev_addr, int low_speed,
                               int endpoint, int dir_in, int max_packet,
-                              void *data, int len, uint64_t spin_limit)
+                              void *data, int len, uint64_t timeout_ns)
 {
     if (max_packet <= 0)
         max_packet = 8;
@@ -292,7 +294,9 @@ static int uhci_data_transfer(uhci_ctrl_state_t *st, int dev_addr, int low_speed
     qh->elp = td_phys_base;
 
     int result = -1;  // -1 timeout/NAK, -2 fatal, 0 success
-    for (volatile uint64_t spin = 0; spin < spin_limit; spin++) {
+    timer_timeout_t to;
+    timer_timeout_start(&to, timeout_ns);
+    while (1) {
         int fatal = 0, active = 0;
         for (int i = 0; i < n; i++) {
             uint32_t s = tds[i].status.status;
@@ -309,6 +313,8 @@ static int uhci_data_transfer(uhci_ctrl_state_t *st, int dev_addr, int low_speed
             result = 0;
             break;
         }
+        if (timer_timeout_expired(&to))
+            break;
     }
 
     qh->elp = 1;
@@ -343,7 +349,7 @@ static int uhci_interrupt_in(void *hc_state, int dev_addr, usb_speed_t speed, in
     (void)data_toggle;  // driver tracks the toggle internally
     uhci_ctrl_state_t *st = (uhci_ctrl_state_t *)hc_state;
     int low_speed = (speed == usb_speed_low) ? 1 : 0;
-    return uhci_data_transfer(st, dev_addr, low_speed, endpoint, 1, max_packet, data, len, 5000000ULL);
+    return uhci_data_transfer(st, dev_addr, low_speed, endpoint, 1, max_packet, data, len, 5000000ULL /*5ms*/);
 }
 
 static int uhci_bulk(void *hc_state, int dev_addr, int endpoint, int max_packet,
@@ -351,7 +357,7 @@ static int uhci_bulk(void *hc_state, int dev_addr, int endpoint, int max_packet,
 {
     (void)data_toggle;
     uhci_ctrl_state_t *st = (uhci_ctrl_state_t *)hc_state;
-    return uhci_data_transfer(st, dev_addr, 0, endpoint, dir_in, max_packet, data, len, 200000000ULL);
+    return uhci_data_transfer(st, dev_addr, 0, endpoint, dir_in, max_packet, data, len, 200000000ULL /*200ms*/);
 }
 
 // CoreUsb disconnect handler: clear the data-toggle state for the departed
