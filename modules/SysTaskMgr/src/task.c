@@ -433,7 +433,13 @@ static void free_task(int self, process_desc_t *t)
             }
     }
 
-    //Exclude any in-flight cross-core management call holding this task's lock.
+    //The unlink above ran under rq_locks[self], and every cross-core management
+    //call (task_sleep/task_monitor/...) can only reach this task through
+    //find_task_locked, which must hold rq_locks[self] to find it -- so once we
+    //have unlinked it under that lock, no NEW holder of t->lock can appear. A
+    //holder that found t just before the unlink may still be mid-call; acquiring
+    //t->lock here drains that last in-flight holder. After this point t is on no
+    //queue and unreachable, so it is the final owner of the lock.
     local_spinlock_lock(&t->lock);
 
     if (t->mem != NULL)
@@ -453,7 +459,10 @@ static void free_task(int self, process_desc_t *t)
         t->mem = NULL;
     }
 
-    free(t); //t->lock dies with the struct; nothing else can reach it now
+    //We never unlock t->lock: the struct is freed here and, per the unlink
+    //argument above, no other core can still hold or be waiting on it. The lock
+    //simply dies with the allocation.
+    free(t);
     process_count--;
 }
 
