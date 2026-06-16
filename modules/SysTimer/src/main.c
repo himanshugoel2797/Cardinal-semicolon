@@ -275,6 +275,8 @@ void timer_busywait_ns(uint64_t ns)
         ;
 }
 
+void systimer_register_tests(void);
+
 int module_init()
 {
     // Reserve a per-core TLS slot for the periodic timer_wait() fallback state,
@@ -286,5 +288,9 @@ int module_init()
     memset(timer_defs, 0, sizeof(timer_defs_t) * timer_def_cnt);
 
     int err = timer_platform_init();
-    return err;
+    if (err != 0)
+        return err;
+
+    systimer_register_tests();
+    return 0;
 }
