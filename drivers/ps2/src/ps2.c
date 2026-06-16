@@ -571,8 +571,8 @@ uint8_t PS2_Initialize()
     input_device_register(&kbd_desc);
     input_device_register(&mouse_desc);
 
-    interrupt_registerhandler(kbd_irq, ps2_irq);
-    interrupt_registerhandler(mouse_irq, ps2_irq);
+    interrupt_register_handler(kbd_irq, ps2_irq);
+    interrupt_register_handler(mouse_irq, ps2_irq);
 
     interrupt_setmask(1, false);
     interrupt_setmask(12, false);

@@ -50,10 +50,10 @@ int module_init(void *ecam_addr)
 
     int int_val = 0;
     interrupt_allocate(1, interrupt_flags_none, &int_val);
-    interrupt_registerhandler(int_val, intr_handler);
+    interrupt_register_handler(int_val, intr_handler);
 
-    uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
-    uint32_t msi_msg = msi_register_data(int_val);
+    uintptr_t msi_addr = (uintptr_t)interrupt_msi_register_addr(0);
+    uint32_t msi_msg = interrupt_msi_register_data(int_val);
     pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
 
     //figure out which bar to use

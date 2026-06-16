@@ -5,6 +5,6 @@
 #ifndef CARDINAL_PHYSMEM_H
 #define CARDINAL_PHYSMEM_H
 
-int pagealloc_init();
+int physmem_init();
 
 #endif

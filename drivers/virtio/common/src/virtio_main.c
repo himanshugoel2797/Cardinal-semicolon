@@ -101,10 +101,10 @@ PRIVATE virtio_state_t *virtio_initialize(void *ecam_addr, void (*int_handler)(i
     DEBUG_PRINT(itoa(msi_vector, vector_str, 10));
     DEBUG_PRINT("\r\n");
 
-    interrupt_registerhandler(msi_vector, int_handler);
+    interrupt_register_handler(msi_vector, int_handler);
 
-    uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
-    uint32_t msi_msg = msi_register_data(msi_vector);
+    uintptr_t msi_addr = (uintptr_t)interrupt_msi_register_addr(0);
+    uint32_t msi_msg = interrupt_msi_register_data(msi_vector);
     pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
 
     //Set ack bit
@@ -163,7 +163,7 @@ PRIVATE void *virtio_setupqueue(virtio_state_t *state, int idx, int entcnt)
 
     size_t ts = 16 * entcnt + 6 + 2 * entcnt + 6 + 8 * entcnt;
 
-    uintptr_t virtqueue_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, ts);
+    uintptr_t virtqueue_phys = physmem_alloc(0, 0, physmem_alloc_flags_data, ts);
     if (virtqueue_phys == PHYSMEM_NO_ALLOC)
     {
         DEBUG_PRINT("[VirtIO] Out of memory allocating virtqueue.\r\n");

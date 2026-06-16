@@ -192,7 +192,7 @@ static void hid_poll_task(void *arg) {
         task_yield();
     }
     h->stopped = true;  // hand off: remove() may now reclaim h->dev
-    end_task_kernel(task_current());
+    task_end_kernel(task_current());
 }
 
 static int hid_probe(usb_enum_device_t *dev) {
@@ -252,13 +252,13 @@ static int hid_probe(usb_enum_device_t *dev) {
     }
 
     h->task = 0;
-    if (create_task_kernel("usb_hid_poll", task_permissions_kernel, &h->task) != CS_OK) {
+    if (task_create_kernel("usb_hid_poll", task_permissions_kernel, &h->task) != CS_OK) {
         if (h->proto == HID_PROTO_KEYBOARD)
             input_device_unregister(&h->input_desc);
         h->in_use = false;
         return -1;
     }
-    start_task_kernel(h->task, hid_poll_task, h);
+    task_start_kernel(h->task, hid_poll_task, h);
     return 0;
 }
 

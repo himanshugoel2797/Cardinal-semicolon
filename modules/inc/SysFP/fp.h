@@ -16,7 +16,7 @@ int fp_platform_getalign(void);
 
 void fp_platform_getstate(void* buf);
 
-void fp_platform_setstate(void* buf);
+void fp_platform_setstate(const void* buf);
 
 void fp_platform_getdefaultstate(void* buf);
 

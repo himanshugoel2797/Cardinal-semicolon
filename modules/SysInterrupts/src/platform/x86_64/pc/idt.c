@@ -86,7 +86,7 @@ static bool interrupt_blocked[IDT_ENTRY_COUNT];
 static int interrupt_alloc_lock = 0;
 static bool int_arr_inited = false;
 
-void interrupt_registerhandler(int irq, InterruptHandler handler)
+void interrupt_register_handler(int irq, InterruptHandler handler)
 {
     int state = cli();
     local_spinlock_lock(&interrupt_alloc_lock);
@@ -104,7 +104,7 @@ void interrupt_registerhandler(int irq, InterruptHandler handler)
     PANIC("Interrupt oversubscribed!");
 }
 
-void interrupt_unregisterhandler(int irq, InterruptHandler handler)
+void interrupt_unregister_handler(int irq, InterruptHandler handler)
 {
     int state = cli();
     local_spinlock_lock(&interrupt_alloc_lock);
@@ -118,7 +118,7 @@ void interrupt_unregisterhandler(int irq, InterruptHandler handler)
     sti(state);
 }
 
-int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base)
+cs_error interrupt_allocate(int cnt, interrupt_flags_t flags, int *base)
 {
     if (flags & interrupt_flags_fixed)
     {
@@ -131,7 +131,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base)
             {
                 local_spinlock_unlock(&interrupt_alloc_lock);
                 sti(state);
-                return -1;
+                return CS_UNKN;
             }
         }
 
@@ -141,16 +141,16 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base)
 
         local_spinlock_unlock(&interrupt_alloc_lock);
         sti(state);
-        return 0;
+        return CS_OK;
     }
     else
     {
         //if fixed allocation works, use it
         if (*base != 0)
         {
-            int err = interrupt_allocate(cnt, flags | interrupt_flags_fixed, base);
-            if (err == 0)
-                return 0;
+            cs_error err = interrupt_allocate(cnt, flags | interrupt_flags_fixed, base);
+            if (err == CS_OK)
+                return CS_OK;
         }
 
         //find a block that does work
@@ -170,7 +170,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base)
                 *base = run_off;
                 local_spinlock_unlock(&interrupt_alloc_lock);
                 sti(state);
-                return 0;
+                return CS_OK;
             }
 
             if (interrupt_blocked[i])
@@ -184,7 +184,7 @@ int interrupt_allocate(int cnt, interrupt_flags_t flags, int *base)
 
         local_spinlock_unlock(&interrupt_alloc_lock);
         sti(state);
-        return -1;
+        return CS_UNKN;
     }
 }
 
@@ -356,12 +356,12 @@ void idt_mainhandler(regs_t *regs)
     }
 }
 
-void interrupt_setregisterstate(interrupt_register_state_t *state)
+void interrupt_set_register_state(const interrupt_register_state_t *state)
 {
     if (state != NULL)
     {
         if (idt == NULL || idt->reg_ref == NULL)
-            PANIC("interrupt_setregisterstate called outside interrupt context (reg_ref NULL)");
+            PANIC("interrupt_set_register_state called outside interrupt context (reg_ref NULL)");
 
         idt->reg_ref->r15 = state->r15;
         idt->reg_ref->r14 = state->r14;
@@ -389,12 +389,12 @@ void interrupt_setregisterstate(interrupt_register_state_t *state)
     }
 }
 
-void interrupt_getregisterstate(interrupt_register_state_t *state)
+void interrupt_get_register_state(interrupt_register_state_t *state)
 {
     if (state != NULL)
     {
         if (idt == NULL || idt->reg_ref == NULL)
-            PANIC("interrupt_getregisterstate called outside interrupt context (reg_ref NULL)");
+            PANIC("interrupt_get_register_state called outside interrupt context (reg_ref NULL)");
 
         state->r15 = idt->reg_ref->r15;
         state->r14 = idt->reg_ref->r14;

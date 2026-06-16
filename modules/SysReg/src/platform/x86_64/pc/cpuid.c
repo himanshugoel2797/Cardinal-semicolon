@@ -128,7 +128,7 @@ int add_cpuid()
             cpu_manufacturer = MANUFACT_AMD;
 
         if (registry_addkey_str("HW/PROC", "IDENT_STR", proc_str) !=
-            registry_err_ok)
+            CS_OK)
             return -1;
 
         DEBUG_PRINT("[SysReg] Identification String: ");
@@ -151,26 +151,26 @@ int add_cpuid()
         }
 
         if (registry_addkey_uint("HW/PROC", "STEPPING", stepping) !=
-            registry_err_ok)
+            CS_OK)
             return -1;
 
-        if (registry_addkey_uint("HW/PROC", "MODEL", model) != registry_err_ok)
+        if (registry_addkey_uint("HW/PROC", "MODEL", model) != CS_OK)
             return -1;
 
-        if (registry_addkey_uint("HW/PROC", "FAMILY", family) != registry_err_ok)
+        if (registry_addkey_uint("HW/PROC", "FAMILY", family) != CS_OK)
             return -1;
 
         if (registry_addkey_uint("HW/PROC", "TYPE", processor_type) !=
-            registry_err_ok)
+            CS_OK)
             return -1;
 
         bool tsc_avail = (edx & (1 << 4));
         bool tsc_deadline = (ecx & (1 << 24));
 
-        if (registry_addkey_bool("HW/PROC", "TSC_AVAIL", tsc_avail) != registry_err_ok)
+        if (registry_addkey_bool("HW/PROC", "TSC_AVAIL", tsc_avail) != CS_OK)
             return -1;
 
-        if (registry_addkey_bool("HW/PROC", "TSC_DEADLINE", tsc_deadline) != registry_err_ok)
+        if (registry_addkey_bool("HW/PROC", "TSC_DEADLINE", tsc_deadline) != CS_OK)
             return -1;
 
         {
@@ -197,20 +197,20 @@ int add_cpuid()
                 //if (tsc_rate == 0)
                 //    tsc_rate = (rdmsr(0xc0010064) & 0xff) * 25 * (1000 * 1000);
 
-                if (registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != CS_OK)
                     return -1;
 
                 //Default to 100MHz
                 if (apic_rate == 0)
                     apic_rate = 100;
 
-                if (registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != CS_OK)
                     return -1;
             }
             break;
             case MANUFACT_INTEL:
             {
-                if (registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != CS_OK)
                     return -1;
 
                 if (apic_rate == 0)
@@ -253,14 +253,14 @@ int add_cpuid()
                         apic_rate = 24;
                         break;
                     }
-                if (registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate * 1000 * 1000) != CS_OK)
                     return -1;
             }
             break;
             default:
-                if (registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "TSC_FREQ", tsc_rate) != CS_OK)
                     return -1;
-                if (registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate) != registry_err_ok)
+                if (registry_addkey_uint("HW/PROC", "APIC_FREQ", apic_rate) != CS_OK)
                     return -1;
                 break;
             }
@@ -274,11 +274,11 @@ int add_cpuid()
         uint32_t virt_bits = (eax >> 8) & 0xFF;
 
         if (registry_addkey_uint("HW/PHYS_MEM", "BITS", phys_bits) !=
-            registry_err_ok)
+            CS_OK)
             return -1;
 
         if (registry_addkey_uint("HW/VIRT_MEM", "BITS", virt_bits) !=
-            registry_err_ok)
+            CS_OK)
             return -1;
     }
 
@@ -309,22 +309,22 @@ int add_cpuid()
 
             strncat(dir_str, itoa(cache_idx, idx_str, 16), 255);
 
-            if (registry_createdirectory("HW/CACHE", idx_str) != registry_err_ok)
+            if (registry_createdirectory("HW/CACHE", idx_str) != CS_OK)
                 return -1;
 
             if (registry_addkey_uint(dir_str, "ASSOCIATIVITY", associativity) !=
-                registry_err_ok)
+                CS_OK)
                 return -1;
 
             if (registry_addkey_uint(dir_str, "PARITITIONS", partition_cnt) !=
-                registry_err_ok)
+                CS_OK)
                 return -1;
 
             if (registry_addkey_uint(dir_str, "LINE_SZ", line_size) !=
-                registry_err_ok)
+                CS_OK)
                 return -1;
 
-            if (registry_addkey_uint(dir_str, "SET_CNT", set_cnt) != registry_err_ok)
+            if (registry_addkey_uint(dir_str, "SET_CNT", set_cnt) != CS_OK)
                 return -1;
 
             cache_idx++;
@@ -343,13 +343,13 @@ int add_cpuid()
         //SMEP
         bool smep = (ebx >> 7) & 1;
         if (registry_addkey_bool("HW/PROC", "SMEP", smep) !=
-            registry_err_ok)
+            CS_OK)
             return -1;
 
         //SMAP
         bool smap = (ebx >> 20) & 1;
         if (registry_addkey_bool("HW/PROC", "SMAP", smap) !=
-            registry_err_ok)
+            CS_OK)
             return -1;
     }
 
@@ -359,7 +359,7 @@ int add_cpuid()
         //1GB pages
         bool gibibyte_pages = (edx >> 26) & 1;
         if (registry_addkey_bool("HW/PROC", "HUGEPAGE", gibibyte_pages) !=
-            registry_err_ok)
+            CS_OK)
             return -1;
     }
 
@@ -367,7 +367,7 @@ int add_cpuid()
         CPUID_RequestInfo(0x80000007, 0, &eax, &ebx, &ecx, &edx);
 
         bool tsc_invar = (edx & (1 << 8));
-        if (registry_addkey_bool("HW/PROC", "TSC_INVARIANT", tsc_invar) != registry_err_ok)
+        if (registry_addkey_bool("HW/PROC", "TSC_INVARIANT", tsc_invar) != CS_OK)
             return -1;
     }
 
@@ -377,23 +377,23 @@ int add_cpuid()
         //x2APIC
         bool x2apic = (ecx >> 21) & 1;
         if (registry_addkey_bool("HW/PROC", "X2APIC", x2apic) !=
-            registry_err_ok)
+            CS_OK)
             return -1;
 
         //xsave
         bool xsave = (ecx >> 26) & 1;
         if (registry_addkey_bool("HW/PROC", "XSAVE", xsave) !=
-            registry_err_ok)
+            CS_OK)
             return -1;
     }
 
     {
         CPUID_RequestInfo(0x0d, 0, &eax, &ebx, &ecx, &edx);
 
-        if (registry_addkey_uint("HW/PROC", "XSAVE_SZ", ecx) != registry_err_ok)
+        if (registry_addkey_uint("HW/PROC", "XSAVE_SZ", ecx) != CS_OK)
             return -1;
 
-        if (registry_addkey_uint("HW/PROC", "XSAVE_BITS", (uint64_t)edx << 32 | eax) != registry_err_ok)
+        if (registry_addkey_uint("HW/PROC", "XSAVE_BITS", (uint64_t)edx << 32 | eax) != CS_OK)
             return -1;
     }
 

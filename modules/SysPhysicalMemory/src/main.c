@@ -10,7 +10,7 @@
 #include <stdlib.h>
 
 int module_init() {
-    pagealloc_init();
+    physmem_init();
     return 0;
 }
 
@@ -19,7 +19,7 @@ int pmem_initial_test() {
 
     for(int i = 0; i < 16; i++) {
         char tmp_buf[10];
-        DEBUG_PRINT(itoa((int)pagealloc_alloc(0, 0, 0, KiB(4)), tmp_buf, 16));
+        DEBUG_PRINT(itoa((int)physmem_alloc(0, 0, 0, KiB(4)), tmp_buf, 16));
         DEBUG_PRINT("\r\n");
     }
 

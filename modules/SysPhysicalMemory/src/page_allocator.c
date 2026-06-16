@@ -120,7 +120,7 @@ static void insert_queue_front(uint64_t val) {
     }
 }
 
-void pagealloc_free(uintptr_t addr, uint64_t size) {
+void physmem_free(uintptr_t addr, size_t size) {
 
     if (addr % BTM_LEVEL != 0)
         PANIC("Misaligned address");
@@ -155,8 +155,8 @@ void pagealloc_free(uintptr_t addr, uint64_t size) {
     }
 }
 
-uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
-                          uint64_t size) {
+uintptr_t physmem_alloc(int domain, int color, physmem_alloc_flags_t flags,
+                          size_t size) {
 
     domain = 0;
     color = 0;
@@ -224,12 +224,12 @@ uintptr_t pagealloc_alloc(int domain, int color, physmem_alloc_flags_t flags,
     return PHYSMEM_NO_ALLOC;
 }
 
-int pagealloc_init() {
+int physmem_init() {
     //TODO: use registry to allocate memory for the queue, ensuring enough is available
     // initialize allocator as normal
     mem_size = 0;
     if (registry_readkey_uint("HW/BOOTINFO", "MEMSIZE", &mem_size) !=
-            registry_err_ok)
+            CS_OK)
         PANIC("Failed to read registry.");
 
     // Compute the number of bits
@@ -247,7 +247,7 @@ int pagealloc_init() {
     {
         uint64_t entry_cnt = 0;
         if (registry_readkey_uint("HW/PHYS_MEM", "ENTRY_COUNT", &entry_cnt) !=
-                registry_err_ok)
+                CS_OK)
             PANIC("Failed to read registry.");
 
         for (uint64_t i = 0; i < entry_cnt; i++) {
@@ -258,10 +258,10 @@ int pagealloc_init() {
             uint64_t addr = 0;
             uint64_t len = 0;
 
-            if (registry_readkey_uint(key_str, "ADDR", &addr) != registry_err_ok)
+            if (registry_readkey_uint(key_str, "ADDR", &addr) != CS_OK)
                 PANIC("Failed to read registry.");
 
-            if (registry_readkey_uint(key_str, "LEN", &len) != registry_err_ok)
+            if (registry_readkey_uint(key_str, "LEN", &len) != CS_OK)
                 PANIC("Failed to read registry.");
 
 
@@ -283,10 +283,10 @@ int pagealloc_init() {
 #endif
 
             //if(addr <= initrd_addr && addr + len >= initrd_addr + initrd_len) {
-            //    if(initrd_addr > addr) pagealloc_free(addr, initrd_addr - addr);
-            //    if(initrd_addr + initrd_len < addr + len) pagealloc_free(initrd_addr + initrd_len, (addr + len) - (initrd_addr + initrd_len));
+            //    if(initrd_addr > addr) physmem_free(addr, initrd_addr - addr);
+            //    if(initrd_addr + initrd_len < addr + len) physmem_free(initrd_addr + initrd_len, (addr + len) - (initrd_addr + initrd_len));
             //}else
-            pagealloc_free(addr, len);
+            physmem_free(addr, len);
 
         }
     }

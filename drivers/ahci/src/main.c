@@ -93,8 +93,8 @@ int module_init(void *ecam_addr)
         DEBUG_PRINT("\r\n");
     }
 
-    uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
-    uint32_t msi_msg = msi_register_data(int_val);
+    uintptr_t msi_addr = (uintptr_t)interrupt_msi_register_addr(0);
+    uint32_t msi_msg = interrupt_msi_register_data(int_val);
     pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
 
     //figure out which bar to use
@@ -133,7 +133,7 @@ int module_init(void *ecam_addr)
     //allocate dma memory
     //32 * (CMD_BUF_SIZE + FIS_SIZE + sizeof(ahci_cmdtable_t))
     size_t dma_sz = port_cnt * (CMD_BUF_SIZE + FIS_SIZE + sizeof(ahci_cmdtable_t));
-    instance->port_dma.phys_addr = (uint64_t)pagealloc_alloc(0, 0, physmem_alloc_flags_zero | physmem_alloc_flags_data, dma_sz);
+    instance->port_dma.phys_addr = (uint64_t)physmem_alloc(0, 0, physmem_alloc_flags_zero | physmem_alloc_flags_data, dma_sz);
     if (instance->port_dma.phys_addr == PHYSMEM_NO_ALLOC)
     {
         DEBUG_PRINT("[AHCI] Out of memory allocating port DMA region.\r\n");
@@ -165,11 +165,11 @@ int module_init(void *ecam_addr)
     sti(cli_state);
 
     //Enable interrupts
-    interrupt_registerhandler(int_val, tmp_handler);
+    interrupt_register_handler(int_val, tmp_handler);
     ahci_write32(instance, HBA_GHC, ahci_read32(instance, HBA_GHC) | (1 << 1));
 
     {
-        //uint64_t paddr = (uint64_t)pagealloc_alloc(0, 0, physmem_alloc_flags_zero | physmem_alloc_flags_data, KiB(32));
+        //uint64_t paddr = (uint64_t)physmem_alloc(0, 0, physmem_alloc_flags_zero | physmem_alloc_flags_data, KiB(32));
         //uint64_t vaddr = (uint64_t)vmem_phystovirt(paddr, KiB(32), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
         //vmem_map(NULL, (intptr_t)vaddr, (intptr_t)paddr, KiB(32), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw, 0);

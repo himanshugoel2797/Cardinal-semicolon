@@ -130,7 +130,7 @@ static void vmem_percore_arch_init(void)
     wrmsr(PAT_MSR, pat);
 }
 
-int vmem_init()
+cs_error vmem_init()
 {
     TLS void *(*mp_tls_get)(int) = (TLS void *(*)(int))elf_resolvefunction("mp_tls_get");
     int (*mp_tls_alloc)(int) = (int (*)(int))elf_resolvefunction("mp_tls_alloc");
@@ -142,7 +142,7 @@ int vmem_init()
     //creation, and because they point at shared lower-level tables, later
     //kernel-map changes are visible in every address space with no per-core
     //resync. A core's cr3 points here whenever it is not running a task.
-    uintptr_t kpml4_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
+    uintptr_t kpml4_phys = physmem_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
     if (kpml4_phys == PHYSMEM_NO_ALLOC)
         PANIC("Failed to allocate kernel pagetable!");
     kmem.pml4_phys = kpml4_phys;
@@ -175,7 +175,7 @@ int vmem_init()
     //so all runtime kernel mappings land under an already-shared PDPT.
     {
         intptr_t pre = vmem_vmalloc(KiB(4));
-        uintptr_t prep = pagealloc_alloc(-1, -1, physmem_alloc_flags_data, KiB(4));
+        uintptr_t prep = physmem_alloc(-1, -1, physmem_alloc_flags_data, KiB(4));
         if (prep == PHYSMEM_NO_ALLOC)
             PANIC("Failed to reserve kernel vmalloc region!");
         vmem_map(NULL, pre, (intptr_t)prep, KiB(4), vmem_flags_kernel | vmem_flags_rw, 0);
@@ -187,7 +187,7 @@ int vmem_init()
     return 0;
 }
 
-int vmem_mp_init()
+cs_error vmem_mp_init()
 {
     vmem_percore_arch_init();
 
@@ -203,7 +203,7 @@ int vmem_mp_init()
     return 0;
 }
 
-static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, int flags, int lv)
+static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phys, size_t size, vmem_flags_t perms, vmem_flags_t flags, int lv)
 {
     uint64_t mask = masks[lv];
     uint64_t shamt = shamts[lv];
@@ -240,10 +240,10 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
         while (size > 0)
         {
             if (idx >= 512)
-                return vmem_err_continue; //vmem_map_st(p_vm, p_vm, virt, phys, size, perms, flags, 0);
+                return CS_CONTINUE; //vmem_map_st(p_vm, p_vm, virt, phys, size, perms, flags, 0);
 
             if (vm[idx] & PRESENT)
-                return vmem_err_alreadymapped;
+                return CS_ALREADYMAPPED;
 
             vm[idx] = (phys & ADDR_MASK) | c_flags;
 
@@ -262,7 +262,7 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
 
             if (n_lv == 0)
             {
-                n_lv = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
+                n_lv = physmem_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
                 if (n_lv == PHYSMEM_NO_ALLOC)
                     PANIC("Pagetable allocation failure!");
 
@@ -271,12 +271,12 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
             }
 
             if (vm[idx] & LARGEPAGE)
-                return vmem_err_alreadymapped;
+                return CS_ALREADYMAPPED;
 
             uint64_t *n_lv_d = (uint64_t *)vmem_phystovirt(n_lv, KiB(4), vmem_flags_cachewriteback);
 
             int ret = vmem_map_st(p_vm, n_lv_d, virt, phys, size, perms, flags, lv + 1);
-            if (ret != vmem_err_continue)
+            if (ret != CS_CONTINUE)
                 return ret;
 
             uint64_t l_idx = (virt & masks[lv + 1]) >> shamts[lv + 1];
@@ -288,7 +288,7 @@ static int vmem_map_st(uint64_t *p_vm, uint64_t *vm, intptr_t virt, intptr_t phy
 
             idx++;
             if (idx >= 512)
-                return vmem_err_continue;
+                return CS_CONTINUE;
         }
 
         return 0;
@@ -323,7 +323,7 @@ static int vmem_unmap_st(uint64_t *p_vt, uint64_t *vm, intptr_t virt, size_t siz
                     return err;
 
                 //free the lower level when done
-                pagealloc_free(lv_ent & ADDR_MASK, KiB(4));
+                physmem_free(lv_ent & ADDR_MASK, KiB(4));
             }
             else if (size < sz && (~lv_ent & LARGEPAGE))
             {
@@ -344,13 +344,13 @@ static int vmem_unmap_st(uint64_t *p_vt, uint64_t *vm, intptr_t virt, size_t siz
             virt += sz;
         }
         else
-            return vmem_err_nomapping;
+            return CS_NOMAPPING;
     }
 
     return 0;
 }
 
-int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, int flags)
+cs_error vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, vmem_flags_t perms, vmem_flags_t flags)
 {
     uint64_t *ptable = 0;
 
@@ -382,7 +382,7 @@ int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, i
     return rVal;
 }
 
-int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size)
+cs_error vmem_unmap(vmem_t *vm, intptr_t virt, size_t size)
 {
     uint64_t *ptable = 0;
 
@@ -421,7 +421,7 @@ int vmem_create(vmem_t **vm_r)
         return -1;
 
     //Each address space owns a full hardware PML4 page: cr3 points straight at it.
-    uintptr_t pml4_phys = pagealloc_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
+    uintptr_t pml4_phys = physmem_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
     if (pml4_phys == PHYSMEM_NO_ALLOC)
     {
         free(vm);
@@ -457,7 +457,7 @@ void vmem_destroy(vmem_t *vm_r)
         //Free only this address space's PML4 page. Its kernel-half entries point
         //at shared tables that must NOT be freed; the user-half lower tables are
         //released by vmem_unmap during task teardown.
-        pagealloc_free(vm_r->pml4_phys, KiB(4));
+        physmem_free(vm_r->pml4_phys, KiB(4));
         free(vm_r);
         sti(cli_state);
     }
@@ -512,7 +512,7 @@ static int vmem_virttophys_st(uint64_t *pg, uint64_t virt, intptr_t *phys, int l
         return -1;
 }
 
-int vmem_virttophys(vmem_t *vm, intptr_t virt, intptr_t *phys)
+cs_error vmem_virttophys(vmem_t *vm, intptr_t virt, intptr_t *phys)
 {
     if (virt < 0)
     {
@@ -527,7 +527,7 @@ int vmem_virttophys(vmem_t *vm, intptr_t virt, intptr_t *phys)
     return -2;
 }
 
-intptr_t vmem_phystovirt(intptr_t phys, size_t sz, int flags)
+intptr_t vmem_phystovirt(intptr_t phys, size_t sz, vmem_flags_t flags)
 {
 
     if (flags & vmem_flags_cachewriteback)

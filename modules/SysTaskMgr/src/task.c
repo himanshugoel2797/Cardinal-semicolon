@@ -135,7 +135,7 @@ static process_desc_t *find_task_locked(cs_id id)
     return NULL;
 }
 
-static cs_error create_task_core(char *name, task_permissions_t perms, cs_id *id, int target_core)
+static cs_error create_task_core(const char *name, task_permissions_t perms, cs_id *id, int target_core)
 {
     cs_id alloc_id = cur_id++;
 
@@ -208,7 +208,7 @@ static cs_error create_task_core(char *name, task_permissions_t perms, cs_id *id
     return CS_OK;
 }
 
-cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
+cs_error task_create_kernel(const char *name, task_permissions_t perms, cs_id *id)
 {
     return create_task_core(name, perms, id, -1);
 }
@@ -216,12 +216,12 @@ cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id)
 static void NORETURN kernel_entry_handler(void *handler, void *arg)
 {
     ((void(*)(void*))handler)(arg);
-    end_task_kernel(task_current());
+    task_end_kernel(task_current());
     while(true)
         task_yield();
 }
 
-cs_error start_task_kernel(cs_id id, void *handler, void *arg)
+cs_error task_start_kernel(cs_id id, void *handler, void *arg)
 {
     if (handler != NULL)
     {
@@ -239,7 +239,7 @@ cs_error start_task_kernel(cs_id id, void *handler, void *arg)
                 iter->user_stack = (uint8_t *)0x100000000;
                 iter->user_stack += USER_STACK_LEN - sizeof(struct cardinal_program_setup_params);
 
-                uintptr_t pmem = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, USER_STACK_LEN);
+                uintptr_t pmem = physmem_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, USER_STACK_LEN);
                 if (pmem == PHYSMEM_NO_ALLOC)
                     PANIC("[SysTaskMgr] Out of memory allocating user stack.");
                 iter->user_stack_phys = pmem;
@@ -274,7 +274,7 @@ cs_error start_task_kernel(cs_id id, void *handler, void *arg)
     return CS_UNKN;
 }
 
-cs_error end_task_kernel(cs_id id)
+cs_error task_end_kernel(cs_id id)
 {
     int cli_state = cli();
     process_desc_t *iter = find_task_locked(id);
@@ -295,20 +295,20 @@ cs_error end_task_kernel(cs_id id)
     return CS_UNKN;
 }
 
-cs_error create_task_syscall(char *name, cs_id *id)
+cs_error task_create_syscall(char *name, cs_id *id)
 {
-    return create_task_kernel(name, task_permissions_none, id);
+    return task_create_kernel(name, task_permissions_none, id);
 }
 
-cs_error start_task_syscall(cs_id id, void (*handler)(void *arg), void *arg)
+cs_error task_start_syscall(cs_id id, void (*handler)(void *arg), void *arg)
 {
-    return start_task_kernel(id, handler, arg);
+    return task_start_kernel(id, handler, arg);
 }
 
-cs_error end_task_syscall()
+cs_error task_end_syscall()
 {
     int cli_state = cli();
-    cs_error retVal = end_task_kernel(task_current());
+    cs_error retVal = task_end_kernel(task_current());
     sti(cli_state);
 
     if (retVal == CS_OK)
@@ -470,7 +470,7 @@ static void free_task(int self, process_desc_t *t)
         if (t->user_stack != NULL)
         {
             vmem_unmap(t->mem, 0x100000000, USER_STACK_LEN);
-            pagealloc_free(t->user_stack_phys, USER_STACK_LEN);
+            physmem_free(t->user_stack_phys, USER_STACK_LEN);
         }
         vmem_destroy(t->mem);
         free(t->fpu_state_unaligned);
@@ -638,7 +638,7 @@ static void task_yield_stage2(interrupt_register_state_t *mp_state){
 
         if (cur->state == task_state_exited)
         {
-            //Yielding out of an exited task (e.g. the tail of end_task_syscall).
+            //Yielding out of an exited task (e.g. the tail of task_end_syscall).
             //task_yield restores registers and irets off this same kernel stack
             //after we return, so we cannot free it yet. Defer to the next pass;
             //skip the save -- it is dead.
@@ -888,7 +888,7 @@ cs_error task_map(cs_id id, const char *name, intptr_t vaddr, size_t sz, task_ma
                 map_perms |= vmem_flags_user;
 
             //Allocate physical memory and map it into the process
-            uintptr_t pmem = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_instr | physmem_alloc_flags_zero, sz);
+            uintptr_t pmem = physmem_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_instr | physmem_alloc_flags_zero, sz);
             if (pmem == PHYSMEM_NO_ALLOC)
                 PANIC("[SysTaskMgr] Out of memory allocating process image.");
             d->map_entry->paddr = pmem;
@@ -960,7 +960,7 @@ cs_error task_unmap(cs_id id, cs_id shmem_id)
             if (d->map_entry->is_owner)
             {
                 //free physical memory
-                pagealloc_free(d->map_entry->paddr, d->map_entry->sz);
+                physmem_free(d->map_entry->paddr, d->map_entry->sz);
             }
 
             free(d->map_entry);
@@ -1060,18 +1060,15 @@ void semaphore_init(semaphore_t *sema)
     sema->spinlock = 0;
 }
 
-int semaphore_signal(semaphore_t *sema)
+void semaphore_signal(semaphore_t *sema)
 {
-    int rVal = 0;
     local_spinlock_lock(&sema->spinlock);
-    rVal = sema->count++;
+    sema->count++;
     local_spinlock_unlock(&sema->spinlock);
-    return rVal;
 }
 
-int semaphore_wait(semaphore_t *sema)
+void semaphore_wait(semaphore_t *sema)
 {
-    int rVal = 0;
     local_spinlock_lock(&sema->spinlock);
     while (sema->count == 0){
         int state = cli();
@@ -1081,9 +1078,8 @@ int semaphore_wait(semaphore_t *sema)
         sti(state);
         local_spinlock_lock(&sema->spinlock);
     }
-    rVal = --sema->count;
+    --sema->count;
     local_spinlock_unlock(&sema->spinlock);
-    return rVal;
 }
 
 int servicescript_execute();
@@ -1147,7 +1143,7 @@ static void task_core_setup()
     cs_id idle_id = 0;
     if (create_task_core("idle", task_permissions_kernel, &idle_id, idx) != CS_OK)
         PANIC("[SysTaskMgr] Failed to create idle task.");
-    if (start_task_kernel(idle_id, idle_task, NULL) != CS_OK)
+    if (task_start_kernel(idle_id, idle_task, NULL) != CS_OK)
         PANIC("[SysTaskMgr] Failed to start idle task.");
 }
 
@@ -1183,13 +1179,13 @@ static void task_ap_entry(void)
 void task_startnew_user(void *elf, size_t elf_len)
 {
     cs_id elf_id = 0;
-    cs_error elf_err = create_task_kernel("elf_test", task_permissions_none, &elf_id);
+    cs_error elf_err = task_create_kernel("elf_test", task_permissions_none, &elf_id);
     if (elf_err != CS_OK)
         PANIC("[SysTaskMgr] Failed to create elf_test task.");
 
     void (*entry_pt)(void *) = NULL;
     user_elf_load(elf_id, elf, elf_len, &entry_pt);
-    elf_err = start_task_kernel(elf_id, entry_pt, NULL);
+    elf_err = task_start_kernel(elf_id, entry_pt, NULL);
 }
 
 int module_init()
@@ -1209,9 +1205,9 @@ int module_init()
     //One-time global tasks. Created during single-core boot, so they land on the
     //BSP's run queue (see pick_target_core).
     cs_id ss_id = 0;
-    if (create_task_kernel("servicescript", task_permissions_kernel, &ss_id) != CS_OK)
+    if (task_create_kernel("servicescript", task_permissions_kernel, &ss_id) != CS_OK)
         PANIC("[SysTaskMgr] Failed to create servicescript task.");
-    if (start_task_kernel(ss_id, servicescript_handler, NULL) != CS_OK)
+    if (task_start_kernel(ss_id, servicescript_handler, NULL) != CS_OK)
         PANIC("[SysTaskMgr] Failed to start servicescript task.");
 
     syscall_sethandler(1, (void *)nanosleep_syscall);
@@ -1220,9 +1216,9 @@ int module_init()
     syscall_sethandler(3, (void *)task_updatemap);
     syscall_sethandler(4, (void *)task_unmap);
 
-    syscall_sethandler(5, (void *)create_task_syscall);
-    syscall_sethandler(6, (void *)start_task_syscall);
-    syscall_sethandler(7, (void *)end_task_syscall);
+    syscall_sethandler(5, (void *)task_create_syscall);
+    syscall_sethandler(6, (void *)task_start_syscall);
+    syscall_sethandler(7, (void *)task_end_syscall);
 
     syscall_sethandler(8, (void *)openspecialset_syscall); //Request a special set of syscalls to be enabled for this process
 

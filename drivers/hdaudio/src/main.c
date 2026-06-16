@@ -472,7 +472,7 @@ int module_init(void *ecam_addr)
 
     int int_val = 0;
     interrupt_allocate(1, interrupt_flags_none, &int_val);
-    interrupt_registerhandler(int_val, tmp_handler);
+    interrupt_register_handler(int_val, tmp_handler);
     {
         DEBUG_PRINT("[HDAudio] Allocated Interrupt Vector: ");
         char tmpbuf[10];
@@ -480,8 +480,8 @@ int module_init(void *ecam_addr)
         DEBUG_PRINT("\r\n");
     }
 
-    uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
-    uint32_t msi_msg = msi_register_data(int_val);
+    uintptr_t msi_addr = (uintptr_t)interrupt_msi_register_addr(0);
+    uint32_t msi_msg = interrupt_msi_register_data(int_val);
     pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
 
     //figure out which bar to use
@@ -535,7 +535,7 @@ int module_init(void *ecam_addr)
     instance->cmds = malloc(instance->corb.entcnt * sizeof(hdaudio_cmd_entry_t));
     memset(instance->cmds, 0, sizeof(hdaudio_cmd_entry_t) * instance->corb.entcnt);
 
-    uintptr_t corb_rirb_buffer_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, (instance->corb.entcnt + 2 * instance->rirb.entcnt) * sizeof(uint32_t));
+    uintptr_t corb_rirb_buffer_phys = physmem_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, (instance->corb.entcnt + 2 * instance->rirb.entcnt) * sizeof(uint32_t));
     if (corb_rirb_buffer_phys == PHYSMEM_NO_ALLOC)
     {
         DEBUG_PRINT("[HDAudio] Out of memory allocating CORB/RIRB buffer.\r\n");

@@ -39,11 +39,11 @@ typedef enum
     task_map_perm_uncached = 1 << 5,
 } task_map_perms_t;
 
-cs_error create_task_kernel(char *name, task_permissions_t perms, cs_id *id);
+cs_error task_create_kernel(const char *name, task_permissions_t perms, cs_id *id);
 
-cs_error start_task_kernel(cs_id id, void *handler, void *arg);
+cs_error task_start_kernel(cs_id id, void *handler, void *arg);
 
-cs_error end_task_kernel(cs_id id);
+cs_error task_end_kernel(cs_id id);
 
 void task_yield();
 
@@ -67,8 +67,8 @@ cs_error task_freedescriptor(cs_id id, cs_id descriptor);
 
 void semaphore_init(semaphore_t *sema);
 
-int semaphore_signal(semaphore_t *sema);
+void semaphore_signal(semaphore_t *sema);
 
-int semaphore_wait(semaphore_t *sema);
+void semaphore_wait(semaphore_t *sema);
 
 #endif

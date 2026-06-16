@@ -40,8 +40,8 @@ int intr_init()
     interrupt_allocate(1, interrupt_flags_exclusive, &irq0);
     interrupt_allocate(1, interrupt_flags_exclusive, &irq1);
 
-    interrupt_registerhandler(irq0, spurious_irq_handler);
-    interrupt_registerhandler(irq1, spurious_irq_handler);
+    interrupt_register_handler(irq0, spurious_irq_handler);
+    interrupt_register_handler(irq1, spurious_irq_handler);
     //CPU exceptions (vectors < 32, incl. #PF) are no longer given a dedicated
     //handler: they fall through SysInterrupts' generic unhandled-exception path,
     //which dumps the full trap frame (named vector, CR2, error code, GPRs, core
@@ -83,12 +83,12 @@ int intr_mp_init()
     return 0;
 }
 
-uint32_t msi_register_addr(int cpu_idx)
+uint32_t interrupt_msi_register_addr(int cpu_idx)
 {
     return 0xFEE00000 | (cpu_idx & 0xff) << 12 | (1 << 3) | (0 << 2); //fixed destination mode
 }
 
-uint64_t msi_register_data(int vec)
+uint64_t interrupt_msi_register_data(int vec)
 {
     return (vec & 0xff);
 }

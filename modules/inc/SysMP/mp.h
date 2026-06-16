@@ -7,8 +7,9 @@
 #define CARDINAL_SYSMP_H
 
 #include <types.h>
+#include <cardinal/cs_error.h>
 
-int mp_tls_setup();
+cs_error mp_tls_setup();
 
 int mp_tls_alloc(int bytes);
 
@@ -24,7 +25,7 @@ int mp_platform_getstatesize(void);
 
 void mp_platform_getstate(void* buf);
 
-void mp_platform_setstate(void* buf);
+void mp_platform_setstate(const void* buf);
 
 void mp_platform_getdefaultstate(void *buf, void *stackpointer, void *instr_ptr, void *args0, void *args1);
 

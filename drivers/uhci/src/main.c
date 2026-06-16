@@ -441,7 +441,7 @@ int module_init(void *ecam_addr)
     //Frame list: 1024 entries (4 KiB)
     //Each frame contains transfer descriptors
     //Persistent queue head serves control/bulk/interrupt transfers
-    uintptr_t framelist_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
+    uintptr_t framelist_phys = physmem_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
     if (framelist_phys == PHYSMEM_NO_ALLOC)
     {
         DEBUG_PRINT("[UHCI] Out of memory allocating frame list.\r\n");
@@ -455,7 +455,7 @@ int module_init(void *ecam_addr)
         instance->port_enum[i] = false;
 
     //Allocate the control-transfer DMA scratch (QH + TD pool + buffers).
-    uintptr_t dma_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
+    uintptr_t dma_phys = physmem_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
     if (dma_phys == PHYSMEM_NO_ALLOC)
     {
         DEBUG_PRINT("[UHCI] Out of memory allocating DMA scratch.\r\n");
@@ -489,8 +489,8 @@ int module_init(void *ecam_addr)
 
     //Start polling process (also handles connect detection + enumeration)
     cs_id int_task = 0;
-    create_task_kernel("uhci_int_poll", task_permissions_kernel, &int_task);
-    start_task_kernel(int_task, (void (*)(void *))intr_handler, instance);
+    task_create_kernel("uhci_int_poll", task_permissions_kernel, &int_task);
+    task_start_kernel(int_task, (void (*)(void *))intr_handler, instance);
     instance->intr_task = int_task;
 
     instance->init_complete = true;

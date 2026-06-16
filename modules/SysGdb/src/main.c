@@ -236,7 +236,7 @@ static volatile int g_resumed = 0;
 // resumes the target (c or s).
 static void gdb_loop(int send_stop) {
     interrupt_register_state_t st;
-    interrupt_getregisterstate(&st);
+    interrupt_get_register_state(&st);
     g_resumed = 0;
     if (send_stop)
         send_packet("S05");
@@ -257,7 +257,7 @@ static void gdb_loop(int send_stop) {
                 break;
             case 'G':  // write registers
                 parse_G_packet(&st, args);
-                interrupt_setregisterstate(&st);
+                interrupt_set_register_state(&st);
                 send_packet("OK");
                 break;
             case 'm': {  // read memory: m addr,len
@@ -295,12 +295,12 @@ static void gdb_loop(int send_stop) {
             }
             case 'c':  // continue [addr]
                 st.rflags &= ~0x100ULL;  // clear TF
-                interrupt_setregisterstate(&st);
+                interrupt_set_register_state(&st);
                 g_resumed = 1;
                 return;
             case 's':  // single step [addr]
                 st.rflags |= 0x100ULL;  // set TF
-                interrupt_setregisterstate(&st);
+                interrupt_set_register_state(&st);
                 g_resumed = 1;
                 return;
             case 'H':  // set thread -> OK
@@ -308,7 +308,7 @@ static void gdb_loop(int send_stop) {
                 break;
             case 'D':  // detach
                 st.rflags &= ~0x100ULL;
-                interrupt_setregisterstate(&st);
+                interrupt_set_register_state(&st);
                 send_packet("OK");
                 g_resumed = 0;
                 return;
@@ -363,8 +363,8 @@ int gdb_poll_breakin(void) {
 
 int module_init() {
     com2_init();
-    interrupt_registerhandler(1, gdb_exception);  // #DB (single-step / hw bp)
-    interrupt_registerhandler(3, gdb_exception);  // #BP (int3 / sw bp)
+    interrupt_register_handler(1, gdb_exception);  // #DB (single-step / hw bp)
+    interrupt_register_handler(3, gdb_exception);  // #BP (int3 / sw bp)
 
     // Async Ctrl-C break-in: route the COM2 UART RX line (ISA IRQ3 -> vector 35)
     // and enable the UART received-data interrupt, so GDB's Ctrl-C halts a
@@ -372,7 +372,7 @@ int module_init() {
     int irq = 3 + 32;
     if (interrupt_allocate(1, interrupt_flags_fixed | interrupt_flags_exclusive, &irq) == 0) {
         interrupt_mapinterrupt(3, irq, false, false);
-        interrupt_registerhandler(irq, gdb_com2_rx);
+        interrupt_register_handler(irq, gdb_com2_rx);
         interrupt_setmask(3, false);
         outb(COM2 + 1, 0x01);  // IER: received-data-available interrupt
     }

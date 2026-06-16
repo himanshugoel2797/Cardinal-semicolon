@@ -45,7 +45,7 @@ static int registry_getkvs(const char *path, kvs_t **k NONNULL)
     if (strlen(path) == 0)
     {
         *k = cur_kvs;
-        return registry_err_ok;
+        return CS_OK;
     }
 
     local_spinlock_lock(&kern_lock);
@@ -58,7 +58,7 @@ static int registry_getkvs(const char *path, kvs_t **k NONNULL)
         if (n_part - path > MAX_REGISTRY_KEYLEN)
         {
             local_spinlock_unlock(&kern_lock);
-            return registry_err_dne;
+            return CS_DNE;
         }
 
         memset(kvs_key, 0, key_len);
@@ -68,7 +68,7 @@ static int registry_getkvs(const char *path, kvs_t **k NONNULL)
         {
             *k = cur_kvs;
             local_spinlock_unlock(&kern_lock);
-            return registry_err_dne;
+            return CS_DNE;
         }
 
         if (kvs_get_child(cur_kvs, &cur_kvs) != kvs_ok)
@@ -82,23 +82,23 @@ static int registry_getkvs(const char *path, kvs_t **k NONNULL)
     } while (*n_part != 0);
     local_spinlock_unlock(&kern_lock);
 
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_createdirectory(const char *path, const char *dirname)
+cs_error registry_createdirectory(const char *path, const char *dirname)
 {
     kvs_t *parent_kvs = NULL;
     kvs_t *n_kvs = NULL;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (dirname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     // Get the parent kvs
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     DEBUG_PRINT("[SysReg] CreateDirectory: ");
@@ -114,7 +114,7 @@ int registry_createdirectory(const char *path, const char *dirname)
     if (err == kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_exists;
+        return CS_EXISTS;
     }
 
     // Create and add the new directory
@@ -122,32 +122,32 @@ int registry_createdirectory(const char *path, const char *dirname)
     if (err != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
 
     err = kvs_add_child(parent_kvs, dirname, n_kvs);
     if (err != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
 
     local_spinlock_unlock(&kern_lock);
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_addkey_uint(const char *path, const char *keyname, uint64_t val)
+cs_error registry_addkey_uint(const char *path, const char *keyname, uint64_t val)
 {
     kvs_t *parent_kvs = NULL;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     DEBUG_PRINT("[SysReg] AddKeyUInt: ");
@@ -160,23 +160,23 @@ int registry_addkey_uint(const char *path, const char *keyname, uint64_t val)
     err = kvs_add_uint(parent_kvs, keyname, val);
     local_spinlock_unlock(&kern_lock);
     if (err != kvs_ok)
-        return registry_err_failure;
+        return CS_FAILURE;
 
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_addkey_ptr(const char *path, const char *keyname, uintptr_t val)
+cs_error registry_addkey_ptr(const char *path, const char *keyname, uintptr_t val)
 {
     kvs_t *parent_kvs = NULL;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     DEBUG_PRINT("[SysReg] AddKeyPtr: ");
@@ -189,23 +189,23 @@ int registry_addkey_ptr(const char *path, const char *keyname, uintptr_t val)
     err = kvs_add_ptr(parent_kvs, keyname, (void *)val);
     local_spinlock_unlock(&kern_lock);
     if (err != kvs_ok)
-        return registry_err_failure;
+        return CS_FAILURE;
 
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_addkey_int(const char *path, const char *keyname, int64_t val)
+cs_error registry_addkey_int(const char *path, const char *keyname, int64_t val)
 {
     kvs_t *parent_kvs = NULL;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     DEBUG_PRINT("[SysReg] AddKeyInt: ");
@@ -218,32 +218,32 @@ int registry_addkey_int(const char *path, const char *keyname, int64_t val)
     err = kvs_add_sint(parent_kvs, keyname, val);
     local_spinlock_unlock(&kern_lock);
     if (err != kvs_ok)
-        return registry_err_failure;
+        return CS_FAILURE;
 
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_addkey_str(const char *path, const char *keyname,
-                        const char *val)
+cs_error registry_addkey_str(const char *path, const char *keyname,
+                             const char *val)
 {
     kvs_t *parent_kvs = NULL;
     char *strstore = NULL;
     size_t storelen = 0;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     storelen = MIN((size_t)MAX_REGISTRY_STRLEN, strlen(val));
     strstore = malloc(storelen);
     if (strstore == NULL)
-        return registry_err_failure;
+        return CS_FAILURE;
 
     strncpy(strstore, val, storelen);
 
@@ -257,23 +257,23 @@ int registry_addkey_str(const char *path, const char *keyname,
     err = kvs_add_str(parent_kvs, keyname, strstore);
     local_spinlock_unlock(&kern_lock);
     if (err != kvs_ok)
-        return registry_err_failure;
+        return CS_FAILURE;
 
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_addkey_bool(const char *path, const char *keyname, bool val)
+cs_error registry_addkey_bool(const char *path, const char *keyname, bool val)
 {
     kvs_t *parent_kvs = NULL;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     DEBUG_PRINT("[SysReg] AddKeyBool: ");
@@ -286,147 +286,147 @@ int registry_addkey_bool(const char *path, const char *keyname, bool val)
     err = kvs_add_bool(parent_kvs, keyname, val);
     local_spinlock_unlock(&kern_lock);
     if (err != kvs_ok)
-        return registry_err_failure;
+        return CS_FAILURE;
 
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_readkey_uint(const char *path, const char *keyname,
-                          uint64_t *val)
+cs_error registry_readkey_uint(const char *path, const char *keyname,
+                               uint64_t *val)
 {
     kvs_t *parent_kvs = NULL;
     kvs_t *key_kvs = NULL;
     kvs_val_type valtype = kvs_val_uninit;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     local_spinlock_lock(&kern_lock);
     if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_dne;
+        return CS_DNE;
     }
 
     if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
 
     if (valtype != kvs_val_uint)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_typematchfailure;
+        return CS_TYPEMISMATCH;
     }
 
     if (val != NULL && kvs_get_uint(key_kvs, val) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
     local_spinlock_unlock(&kern_lock);
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_readkey_ptr(const char *path, const char *keyname,
-                         uintptr_t *val)
+cs_error registry_readkey_ptr(const char *path, const char *keyname,
+                              uintptr_t *val)
 {
     kvs_t *parent_kvs = NULL;
     kvs_t *key_kvs = NULL;
     kvs_val_type valtype = kvs_val_uninit;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     local_spinlock_lock(&kern_lock);
     if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_dne;
+        return CS_DNE;
     }
 
     if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
 
     if (valtype != kvs_val_ptr)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_typematchfailure;
+        return CS_TYPEMISMATCH;
     }
 
     if (val != NULL && kvs_get_ptr(key_kvs, val) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
     local_spinlock_unlock(&kern_lock);
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_readkey_int(const char *path, const char *keyname, int64_t *val)
+cs_error registry_readkey_int(const char *path, const char *keyname, int64_t *val)
 {
     kvs_t *parent_kvs = NULL;
     kvs_t *key_kvs = NULL;
     kvs_val_type valtype = kvs_val_uninit;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     local_spinlock_lock(&kern_lock);
     if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_dne;
+        return CS_DNE;
     }
 
     if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
 
     if (valtype != kvs_val_sint)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_typematchfailure;
+        return CS_TYPEMISMATCH;
     }
 
     if (val != NULL && kvs_get_sint(key_kvs, val) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
     local_spinlock_unlock(&kern_lock);
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_readkey_str(const char *path, const char *keyname, char *val,
-                         size_t *val_len)
+cs_error registry_readkey_str(const char *path, const char *keyname, char *val,
+                              size_t *val_len)
 {
     kvs_t *parent_kvs = NULL;
     kvs_t *key_kvs = NULL;
@@ -434,38 +434,38 @@ int registry_readkey_str(const char *path, const char *keyname, char *val,
     char *strval = NULL;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     local_spinlock_lock(&kern_lock);
     if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_dne;
+        return CS_DNE;
     }
 
     if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
 
     if (valtype != kvs_val_str)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_typematchfailure;
+        return CS_TYPEMISMATCH;
     }
 
     if (val != NULL && kvs_get_str(key_kvs, &strval) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
 
     if (val != NULL && val_len != NULL)
@@ -474,154 +474,154 @@ int registry_readkey_str(const char *path, const char *keyname, char *val,
         *val_len = strlen(strval);
     }
     local_spinlock_unlock(&kern_lock);
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_readkey_bool(const char *path, const char *keyname, bool *val)
+cs_error registry_readkey_bool(const char *path, const char *keyname, bool *val)
 {
     kvs_t *parent_kvs = NULL;
     kvs_t *key_kvs = NULL;
     kvs_val_type valtype = kvs_val_uninit;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     local_spinlock_lock(&kern_lock);
     if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_dne;
+        return CS_DNE;
     }
 
     if (kvs_get_type(key_kvs, &valtype) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
 
     if (valtype != kvs_val_bool)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_typematchfailure;
+        return CS_TYPEMISMATCH;
     }
 
     if (val != NULL && kvs_get_bool(key_kvs, val) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_failure;
+        return CS_FAILURE;
     }
     local_spinlock_unlock(&kern_lock);
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_removekey(const char *path, const char *keyname)
+cs_error registry_removekey(const char *path, const char *keyname)
 {
 
     kvs_t *parent_kvs = NULL;
     kvs_t *key_kvs = NULL;
 
     if (path == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     if (keyname == NULL)
-        return registry_err_invalidargs;
+        return CS_INVALIDARG;
 
     int err = registry_getkvs(path, &parent_kvs);
-    if (err != registry_err_ok)
+    if (err != CS_OK)
         return err;
 
     local_spinlock_lock(&kern_lock);
     if (kvs_find(parent_kvs, keyname, &key_kvs) != kvs_ok)
     {
         local_spinlock_unlock(&kern_lock);
-        return registry_err_dne;
+        return CS_DNE;
     }
 
     kvs_remove(parent_kvs, key_kvs);
     local_spinlock_unlock(&kern_lock);
 
-    return registry_err_ok;
+    return CS_OK;
 }
 
-int registry_removedirectory(const char *path, const char *dirname)
+cs_error registry_removedirectory(const char *path, const char *dirname)
 {
     return registry_removekey(path, dirname);
 }
 
-int registry_getdirectory(const char *path, dir_t *dir)
+cs_error registry_getdirectory(const char *path, dir_t *dir)
 {
     return registry_getkvs(path, (kvs_t **)dir);
 }
 
-int registry_next(dir_t *dir)
+cs_error registry_next(dir_t *dir)
 {
     int err = kvs_next((kvs_t **)dir);
-    if (err != registry_err_ok)
-        return registry_err_dne;
-    return registry_err_ok;
+    if (err != CS_OK)
+        return CS_DNE;
+    return CS_OK;
 }
 
-int registry_readlocal_key(dir_t dir, char *keyname)
+cs_error registry_readlocal_key(dir_t dir, char *keyname)
 {
     int err = kvs_get_key((kvs_t *)dir, keyname);
-    if (err != registry_err_ok)
-        return registry_err_dne;
-    return registry_err_ok;
+    if (err != CS_OK)
+        return CS_DNE;
+    return CS_OK;
 }
 
-int registry_readlocal_uint(dir_t dir, uint64_t *val)
+cs_error registry_readlocal_uint(dir_t dir, uint64_t *val)
 {
     int err = kvs_get_uint((kvs_t *)dir, val);
-    if (err != registry_err_ok)
-        return registry_err_dne;
-    return registry_err_ok;
+    if (err != CS_OK)
+        return CS_DNE;
+    return CS_OK;
 }
 
-int registry_readlocal_ptr(dir_t dir, void **val)
+cs_error registry_readlocal_ptr(dir_t dir, void **val)
 {
     int err = kvs_get_ptr((kvs_t *)dir, (uintptr_t *)val);
-    if (err != registry_err_ok)
-        return registry_err_dne;
-    return registry_err_ok;
+    if (err != CS_OK)
+        return CS_DNE;
+    return CS_OK;
 }
 
-int registry_readlocal_int(dir_t dir, int64_t *val)
+cs_error registry_readlocal_int(dir_t dir, int64_t *val)
 {
     int err = kvs_get_sint((kvs_t *)dir, val);
-    if (err != registry_err_ok)
-        return registry_err_dne;
-    return registry_err_ok;
+    if (err != CS_OK)
+        return CS_DNE;
+    return CS_OK;
 }
 
-int registry_readlocal_str(dir_t dir, char **val)
+cs_error registry_readlocal_str(dir_t dir, char **val)
 {
     int err = kvs_get_str((kvs_t *)dir, val);
-    if (err != registry_err_ok)
-        return registry_err_dne;
-    return registry_err_ok;
+    if (err != CS_OK)
+        return CS_DNE;
+    return CS_OK;
 }
 
-int registry_readlocal_bool(dir_t dir, bool *val)
+cs_error registry_readlocal_bool(dir_t dir, bool *val)
 {
     int err = kvs_get_bool((kvs_t *)dir, val);
-    if (err != registry_err_ok)
-        return registry_err_dne;
-    return registry_err_ok;
+    if (err != CS_OK)
+        return CS_DNE;
+    return CS_OK;
 }
 
-int registry_readlocal_dir(dir_t dir, dir_t *val)
+cs_error registry_readlocal_dir(dir_t dir, dir_t *val)
 {
     int err = kvs_get_child((kvs_t *)dir, (kvs_t **)val);
-    if (err != registry_err_ok)
-        return registry_err_dne;
-    return registry_err_ok;
+    if (err != CS_OK)
+        return CS_DNE;
+    return CS_OK;
 }
 
 #define REG_INIT_FAIL_STR "Failed to initialize registry."
@@ -631,25 +631,25 @@ int module_init()
     if (kvs_create(&kern_registry) != kvs_ok)
         PANIC(REG_INIT_FAIL_STR);
 
-    if (registry_createdirectory("", "HW") != registry_err_ok)
+    if (registry_createdirectory("", "HW") != CS_OK)
         PANIC(REG_INIT_FAIL_STR);
 
-    if (registry_createdirectory("HW", "BOOTINFO") != registry_err_ok)
+    if (registry_createdirectory("HW", "BOOTINFO") != CS_OK)
         PANIC(REG_INIT_FAIL_STR);
 
-    if (registry_createdirectory("HW", "PROC") != registry_err_ok)
+    if (registry_createdirectory("HW", "PROC") != CS_OK)
         PANIC(REG_INIT_FAIL_STR);
 
-    if (registry_createdirectory("HW", "PHYS_MEM") != registry_err_ok)
+    if (registry_createdirectory("HW", "PHYS_MEM") != CS_OK)
         PANIC(REG_INIT_FAIL_STR);
 
-    if (registry_createdirectory("HW", "VIRT_MEM") != registry_err_ok)
+    if (registry_createdirectory("HW", "VIRT_MEM") != CS_OK)
         PANIC(REG_INIT_FAIL_STR);
 
-    if (registry_createdirectory("HW", "CACHE") != registry_err_ok)
+    if (registry_createdirectory("HW", "CACHE") != CS_OK)
         PANIC(REG_INIT_FAIL_STR);
 
-    if (registry_createdirectory("HW/CACHE", "TLB") != registry_err_ok)
+    if (registry_createdirectory("HW/CACHE", "TLB") != CS_OK)
         PANIC(REG_INIT_FAIL_STR);
 
     // TODO: move the following directory into platform

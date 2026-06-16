@@ -100,7 +100,7 @@ int apic_init() {
     apic_base_reg |= (1 << 11); //Enable the apic
     {
         bool x2apic_sup = false;
-        if(registry_readkey_bool("HW/PROC", "X2APIC", &x2apic_sup) != registry_err_ok)
+        if(registry_readkey_bool("HW/PROC", "X2APIC", &x2apic_sup) != CS_OK)
             return -1;
 
         apic->x2apic_mode = x2apic_sup;
@@ -127,7 +127,7 @@ int apic_init() {
     return 0;
 }
 
-int interrupt_get_cpuidx(void) {
+int interrupt_get_cpu_idx(void) {
     return apic->id;
 }
 
@@ -200,7 +200,7 @@ int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap) {
     if(!ap) {
         intrpt_num = 50;   //Allocate a low priority interrupt
         interrupt_allocate(1, interrupt_flags_exclusive, &intrpt_num);
-        interrupt_registerhandler(intrpt_num, handler);
+        interrupt_register_handler(intrpt_num, handler);
     }
 
     uint64_t v = apic_read(APIC_TIMER);
@@ -214,7 +214,7 @@ int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap) {
         v |= (1 << 17); //Set Periodic mode
 
         uint64_t apic_freq = 0;
-        if(registry_readkey_uint("HW/PROC", "APIC_FREQ", &apic_freq) != registry_err_ok)
+        if(registry_readkey_uint("HW/PROC", "APIC_FREQ", &apic_freq) != CS_OK)
             apic_freq = 0;
 
         //CPUID/MSR did not report a usable bus frequency (e.g. QEMU/KVM): fall

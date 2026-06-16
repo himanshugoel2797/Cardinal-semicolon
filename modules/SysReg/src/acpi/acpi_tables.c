@@ -93,13 +93,13 @@ static int save_lapic(uint32_t idx, MADT_EntryLAPIC *lapic)
     char key_str[256] = "HW/LAPIC/";
     char *key_idx = strncat(key_str, itoa(idx, idx_str, 16), 255);
 
-    if (registry_createdirectory("HW/LAPIC", idx_str) != registry_err_ok)
+    if (registry_createdirectory("HW/LAPIC", idx_str) != CS_OK)
         return -26;
 
-    if (registry_addkey_uint(key_idx, "PROCESSOR ID", lapic->processor_id) != registry_err_ok)
+    if (registry_addkey_uint(key_idx, "PROCESSOR ID", lapic->processor_id) != CS_OK)
         return -27;
 
-    if (registry_addkey_uint(key_idx, "APIC ID", lapic->apic_id) != registry_err_ok)
+    if (registry_addkey_uint(key_idx, "APIC ID", lapic->apic_id) != CS_OK)
         return -28;
 
     return 0;
@@ -111,16 +111,16 @@ static int save_ioapic(uint32_t idx, MADT_EntryIOAPIC *ioapic)
     char key_str[256] = "HW/IOAPIC/";
     char *key_idx = strncat(key_str, itoa(idx, idx_str, 16), 255);
 
-    if (registry_createdirectory("HW/IOAPIC", idx_str) != registry_err_ok)
+    if (registry_createdirectory("HW/IOAPIC", idx_str) != CS_OK)
         return -22;
 
-    if (registry_addkey_uint(key_idx, "ID", ioapic->io_apic_id) != registry_err_ok)
+    if (registry_addkey_uint(key_idx, "ID", ioapic->io_apic_id) != CS_OK)
         return -23;
 
-    if (registry_addkey_uint(key_idx, "BASE_ADDR", ioapic->io_apic_base_addr) != registry_err_ok)
+    if (registry_addkey_uint(key_idx, "BASE_ADDR", ioapic->io_apic_base_addr) != CS_OK)
         return -24;
 
-    if (registry_addkey_uint(key_idx, "GLOBAL_INTR_BASE", ioapic->global_sys_int_base) != registry_err_ok)
+    if (registry_addkey_uint(key_idx, "GLOBAL_INTR_BASE", ioapic->global_sys_int_base) != CS_OK)
         return -25;
 
     return 0;
@@ -138,7 +138,7 @@ static int save_isaovr(uint32_t ioapic_cnt, MADT_EntryISAOVR *isaovr)
             char *key_idx = strncat(key_str, itoa(i, idx_str, 16), 255);
 
             uint64_t intr_base = 0;
-            if (registry_readkey_uint(key_idx, "GLOBAL_INTR_BASE", &intr_base) != registry_err_ok)
+            if (registry_readkey_uint(key_idx, "GLOBAL_INTR_BASE", &intr_base) != CS_OK)
                 return -15;
 
             if (isaovr->global_sys_int >= intr_base && (isaovr->global_sys_int - intr_base) <= prev_closest_idx)
@@ -152,28 +152,28 @@ static int save_isaovr(uint32_t ioapic_cnt, MADT_EntryISAOVR *isaovr)
     char *key_idx = strncat(key_str, itoa(prev_closest_idx, idx_str, 16), 255);
 
     int err = registry_createdirectory(key_idx, "OVERRIDE");
-    if (err != registry_err_ok && err != registry_err_exists)
+    if (err != CS_OK && err != CS_EXISTS)
         return -16;
 
     key_idx = strncat(key_str, "/OVERRIDE", 255);
     itoa(isaovr->global_sys_int, idx2_str, 16);
 
-    if (registry_createdirectory(key_idx, idx2_str) != registry_err_ok)
+    if (registry_createdirectory(key_idx, idx2_str) != CS_OK)
         return -17;
 
     key_idx = strncat(key_str, "/", 255);
     key_idx = strncat(key_str, idx2_str, 255);
 
-    if (registry_addkey_uint(key_idx, "IRQ", isaovr->irq_src) != registry_err_ok)
+    if (registry_addkey_uint(key_idx, "IRQ", isaovr->irq_src) != CS_OK)
         return -18;
 
-    if (registry_addkey_uint(key_idx, "BUS", isaovr->bus_src) != registry_err_ok)
+    if (registry_addkey_uint(key_idx, "BUS", isaovr->bus_src) != CS_OK)
         return -19;
 
-    if (registry_addkey_bool(key_idx, "ACTIVE_LOW", isaovr->flags & 2) != registry_err_ok)
+    if (registry_addkey_bool(key_idx, "ACTIVE_LOW", isaovr->flags & 2) != CS_OK)
         return -20;
 
-    if (registry_addkey_bool(key_idx, "LEVEL_TRIGGER", isaovr->flags & 8) != registry_err_ok)
+    if (registry_addkey_bool(key_idx, "LEVEL_TRIGGER", isaovr->flags & 8) != CS_OK)
         return -21;
 
     return 0;
@@ -206,14 +206,14 @@ int acpi_init()
 {
     vmem_phystovirt_ptr = elf_resolvefunction("vmem_phystovirt");
 
-    if (registry_createdirectory("HW", "ACPI") != registry_err_ok)
+    if (registry_createdirectory("HW", "ACPI") != CS_OK)
         return -1;
 
     {
-        if (registry_createdirectory("HW", "LAPIC") != registry_err_ok)
+        if (registry_createdirectory("HW", "LAPIC") != CS_OK)
             return -2;
 
-        if (registry_createdirectory("HW", "IOAPIC") != registry_err_ok)
+        if (registry_createdirectory("HW", "IOAPIC") != CS_OK)
             return -3;
 
         MADT *madt = ACPITables_FindTable(MADT_SIG);
@@ -269,24 +269,24 @@ int acpi_init()
                 i += 8;
         }
 
-        if (registry_addkey_uint("HW/IOAPIC", "COUNT", ioapic_cnt) != registry_err_ok)
+        if (registry_addkey_uint("HW/IOAPIC", "COUNT", ioapic_cnt) != CS_OK)
             return -5;
 
-        if (registry_addkey_uint("HW/LAPIC", "COUNT", lapic_cnt) != registry_err_ok)
+        if (registry_addkey_uint("HW/LAPIC", "COUNT", lapic_cnt) != CS_OK)
             return -6;
     }
 
     {
         FADT *fadt = ACPITables_FindTable(FADT_SIG);
 
-        if (registry_createdirectory("HW", "FADT") != registry_err_ok)
+        if (registry_createdirectory("HW", "FADT") != CS_OK)
             return -7;
 
         if (fadt->h.Revision > 1) {
-            if (registry_addkey_bool("HW/FADT", "8042", (fadt->BootArchitectureFlags & 2) >> 1) != registry_err_ok)
+            if (registry_addkey_bool("HW/FADT", "8042", (fadt->BootArchitectureFlags & 2) >> 1) != CS_OK)
                 return -8;
         } else {
-            if (registry_addkey_bool("HW/FADT", "8042", true) != registry_err_ok)
+            if (registry_addkey_bool("HW/FADT", "8042", true) != CS_OK)
                 return -8;
         }
     }
@@ -296,28 +296,28 @@ int acpi_init()
 
         if (hpet != NULL)
         {
-            if (registry_createdirectory("HW", "HPET") != registry_err_ok)
+            if (registry_createdirectory("HW", "HPET") != CS_OK)
                 return -9;
 
-            if (registry_addkey_uint("HW/HPET", "REVISION", hpet->RevisionID) != registry_err_ok)
+            if (registry_addkey_uint("HW/HPET", "REVISION", hpet->RevisionID) != CS_OK)
                 return -10;
 
-            if (registry_addkey_uint("HW/HPET", "COMPARATOR_COUNT", hpet->ComparatorCount) != registry_err_ok)
+            if (registry_addkey_uint("HW/HPET", "COMPARATOR_COUNT", hpet->ComparatorCount) != CS_OK)
                 return -11;
 
-            if (registry_addkey_bool("HW/HPET", "COUNTER_64BIT", hpet->CounterIs64Bit) != registry_err_ok)
+            if (registry_addkey_bool("HW/HPET", "COUNTER_64BIT", hpet->CounterIs64Bit) != CS_OK)
                 return -12;
 
-            if (registry_addkey_bool("HW/HPET", "LEGACY_REPLACEMENT", hpet->LegacyReplacement) != registry_err_ok)
+            if (registry_addkey_bool("HW/HPET", "LEGACY_REPLACEMENT", hpet->LegacyReplacement) != CS_OK)
                 return -13;
 
-            if (registry_addkey_uint("HW/HPET", "VENDOR", hpet->VendorID) != registry_err_ok)
+            if (registry_addkey_uint("HW/HPET", "VENDOR", hpet->VendorID) != CS_OK)
                 return -14;
 
-            if (registry_addkey_uint("HW/HPET", "ADDRESS", hpet->Address.address) != registry_err_ok)
+            if (registry_addkey_uint("HW/HPET", "ADDRESS", hpet->Address.address) != CS_OK)
                 return -15;
 
-            if (registry_addkey_uint("HW/HPET", "MINIMUM_TICK", hpet->MinimumTick) != registry_err_ok)
+            if (registry_addkey_uint("HW/HPET", "MINIMUM_TICK", hpet->MinimumTick) != CS_OK)
                 return -16;
         }
     }

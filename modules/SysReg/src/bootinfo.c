@@ -14,27 +14,27 @@ PRIVATE int add_bootinfo() {
     CardinalBootInfo *bInfo = GetBootInfo();
 
     if (registry_addkey_uint("HW/BOOTINFO", "MEMSIZE", bInfo->MemorySize) !=
-            registry_err_ok)
+            CS_OK)
         return -1;
 
     if (registry_addkey_uint("HW/BOOTINFO", "RSDPADDR", bInfo->RSDPAddress) !=
-            registry_err_ok)
+            CS_OK)
         return -2;
 
     {
-        if (registry_createdirectory("HW/BOOTINFO", "INITRD") != registry_err_ok)
+        if (registry_createdirectory("HW/BOOTINFO", "INITRD") != CS_OK)
             return -3;
 
         if (registry_addkey_uint("HW/BOOTINFO/INITRD", "VIRT_ADDR",
-                                 bInfo->InitrdStartAddress) != registry_err_ok)
+                                 bInfo->InitrdStartAddress) != CS_OK)
             return -4;
 
         if (registry_addkey_uint("HW/BOOTINFO/INITRD", "PHYS_ADDR",
-                                 bInfo->InitrdPhysStartAddress) != registry_err_ok)
+                                 bInfo->InitrdPhysStartAddress) != CS_OK)
             return -4;
 
         if (registry_addkey_uint("HW/BOOTINFO/INITRD", "LEN",
-                                 bInfo->InitrdLength) != registry_err_ok)
+                                 bInfo->InitrdLength) != CS_OK)
             return -5;
     }
 
@@ -51,47 +51,47 @@ PRIVATE int add_bootinfo() {
             char key_str[256] = "HW/PHYS_MEM/";
             char *key_idx = strncat(key_str, itoa(j, idx_str, 16), 255);
 
-            if (registry_createdirectory("HW/PHYS_MEM", idx_str) != registry_err_ok)
+            if (registry_createdirectory("HW/PHYS_MEM", idx_str) != CS_OK)
                 return -6;
 
             if (registry_addkey_uint(key_idx, "ADDR",
                                      bInfo->CardinalMemoryMap[i].addr) !=
-                    registry_err_ok)
+                    CS_OK)
                 return -7;
 
             if (registry_addkey_uint(key_idx, "LEN",
                                      bInfo->CardinalMemoryMap[i].len) !=
-                    registry_err_ok)
+                    CS_OK)
                 return -8;
 
             j++;
         }
 
         if (registry_addkey_uint("HW/PHYS_MEM", "ENTRY_COUNT", j) !=
-                registry_err_ok)
+                CS_OK)
             return -9;
     }
 
     // Boot time framebuffer
     {
         if (registry_createdirectory("HW/BOOTINFO", "FRAMEBUFFER") !=
-                registry_err_ok)
+                CS_OK)
             return -10;
 
         if (registry_addkey_uint("HW/BOOTINFO/FRAMEBUFFER", "PHYS_ADDR",
-                                 bInfo->FramebufferAddress) != registry_err_ok)
+                                 bInfo->FramebufferAddress) != CS_OK)
             return -11;
 
         if (registry_addkey_uint("HW/BOOTINFO/FRAMEBUFFER", "PITCH",
-                                 bInfo->FramebufferPitch) != registry_err_ok)
+                                 bInfo->FramebufferPitch) != CS_OK)
             return -12;
 
         if (registry_addkey_uint("HW/BOOTINFO/FRAMEBUFFER", "WIDTH",
-                                 bInfo->FramebufferWidth) != registry_err_ok)
+                                 bInfo->FramebufferWidth) != CS_OK)
             return -13;
 
         if (registry_addkey_uint("HW/BOOTINFO/FRAMEBUFFER", "HEIGHT",
-                                 bInfo->FramebufferHeight) != registry_err_ok)
+                                 bInfo->FramebufferHeight) != CS_OK)
             return -14;
 
         if (registry_addkey_uint("HW/BOOTINFO/FRAMEBUFFER", "RED_MASK",

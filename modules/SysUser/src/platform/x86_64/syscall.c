@@ -156,26 +156,26 @@ PRIVATE NAKED NORETURN void user_transition(void UNUSED(*stack_base))
         "sysretq\r\n");
 }
 
-int syscall_sethandler(int idx, void *func)
+cs_error syscall_sethandler(int idx, void *func)
 {
     if (idx < SYSCALL_COUNT)
     {
         syscall_funcs[idx] = func;
-        return 0;
+        return CS_OK;
     }
 
-    return -1;
+    return CS_UNKN;
 }
 
-int syscall_set_syscallset(int idx, void **set)
+cs_error syscall_set_syscallset(int idx, void **set)
 {
     if (idx < SYSCALL_SET_COUNT)
     {
         syscall_state->syscall_set_table[idx] = set;
-        return 0;
+        return CS_OK;
     }
-    
-    return -1;
+
+    return CS_UNKN;
 }
 
 void** syscall_get_syscallset(int idx)
@@ -194,9 +194,9 @@ void syscall_getfullstate(void *dst)
         st->syscall_set_table[i] = syscall_state->syscall_set_table[i];
 }
 
-void syscall_setfullstate(void *state)
+void syscall_setfullstate(const void *state)
 {
-    syscall_state_t *st = (syscall_state_t *)state;
+    const syscall_state_t *st = (const syscall_state_t *)state;
     syscall_state->kernel_stack = st->kernel_stack;
     COPY_REGISTER_STATE(syscall_state->registers, st->registers);
     for (int i = 0; i < SYSCALL_SET_COUNT; i++)

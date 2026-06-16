@@ -199,7 +199,7 @@ uint64_t timer_timestamp()
             if (timer_defs[idx].handlers.read != NULL)
                 return timer_defs[idx].handlers.read(&timer_defs[idx].handlers);
 
-    return (uint64_t)-1;
+    return TIMER_NO_COUNTER;
 }
 
 // Persistent counter rate in ticks/sec (0 if no readable persistent counter).
@@ -223,7 +223,7 @@ uint64_t timer_timestamp_ns()
             {
                 uint64_t rate = timer_defs[idx].handlers.rate;
                 if (rate == 0)
-                    return (uint64_t)-1;
+                    return TIMER_NO_COUNTER;
                 // Integer ns = ticks/rate*1e9 + (ticks%rate)*1e9/rate. Kernel
                 // modules build -mno-sse, so no floating point here; the split
                 // avoids overflow (ticks*1e9 would wrap a few seconds after boot).
@@ -231,7 +231,7 @@ uint64_t timer_timestamp_ns()
                 return (ticks / rate) * 1000000000ULL + ((ticks % rate) * 1000000000ULL) / rate;
             }
 
-    return (uint64_t)-1;
+    return TIMER_NO_COUNTER;
 }
 
 // Bounded busy-wait timeouts backed by the persistent counter (see timer.h).

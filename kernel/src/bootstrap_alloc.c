@@ -137,7 +137,7 @@ void *WEAK realloc(void *ptr, size_t size)
 
 int kernel_free_avl_bootstrap()
 {
-    void (*pagealloc_free_hndl)(uintptr_t, uint64_t) = (void (*)(uintptr_t, uint64_t))elf_resolvefunction("pagealloc_free");
+    void (*physmem_free_hndl)(uintptr_t, uint64_t) = (void (*)(uintptr_t, uint64_t))elf_resolvefunction("physmem_free");
     int (*vmem_virttophys_hndl)(void *, intptr_t, intptr_t *) = (int (*)(void *, intptr_t, intptr_t *))elf_resolvefunction("vmem_virttophys");
 
     local_spinlock_lock(&bootstrap_alloc_lock);
@@ -151,7 +151,7 @@ int kernel_free_avl_bootstrap()
     intptr_t phys_addr = 0;
     vmem_virttophys_hndl(NULL, (intptr_t)&bootstrap_alloc_area[cur_ptr], &phys_addr);
 
-    pagealloc_free_hndl((uintptr_t)phys_addr, rem_sz);
+    physmem_free_hndl((uintptr_t)phys_addr, rem_sz);
     return 0;
 }
 

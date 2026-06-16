@@ -16,4 +16,4 @@ LOAD:./CoreDriver.celf
 CALL:coredisplay_postinit
 #USER:./mana.celf
 CALL:task_release_aps
-CALL:end_task_syscall
+CALL:task_end_syscall
