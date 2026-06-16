@@ -5,7 +5,10 @@
  * https://opensource.org/licenses/MIT
  */
 
+void coreaudio_register_tests(void);
+
 int module_init() {
 
+    coreaudio_register_tests();
     return 0;
 }
