@@ -31,7 +31,13 @@ static void test_register_minimal(test_ctx_t *ctx)
     display_unregister(&desc);
 }
 
-// display_unregister of a previously-registered descriptor succeeds.
+// display_unregister of a previously-registered descriptor succeeds and is
+// observable in two ways:
+//   (a) a second unregister of the same descriptor returns 1 (not found),
+//       proving the entry was actually removed from the list;
+//   (b) re-registering the same descriptor pointer succeeds (returns 0),
+//       proving it is no longer in the list and can be re-added.
+// The test cleans up by unregistering the re-registered entry.
 static void test_unregister_minimal(test_ctx_t *ctx)
 {
     display_desc_t desc;
@@ -42,6 +48,17 @@ static void test_unregister_minimal(test_ctx_t *ctx)
 
     rc = display_unregister(&desc);
     TEST_CHECK_EQ_U(ctx, rc, 0);
+
+    // (a) Second unregister must return 1 (not found) — entry is gone.
+    int rc2 = display_unregister(&desc);
+    TEST_CHECK_EQ_U(ctx, rc2, 1);
+
+    // (b) Re-register must succeed — no stale entry blocks insertion.
+    int rc3 = display_register(&desc);
+    TEST_CHECK_EQ_U(ctx, rc3, 0);
+
+    // Clean up.
+    display_unregister(&desc);
 }
 
 void coredisplay_register_tests(void)
