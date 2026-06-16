@@ -43,16 +43,18 @@ calls `usb_port_connected` when a port comes up; the hub driver calls
 These are the throwaway/first-cut interfaces the project asked to keep easy to
 redesign:
 
-- **Class drivers print to the debug console** instead of delivering up the
-  stack. HID should feed **CoreInput** (its `read` pull-model wants an event
-  queue), and mass storage should register a **block device with CoreStorage**
-  (which ties into `notes/servers/CoreStorage/filesystem-direction.md`). The
-  control/interrupt/bulk transfer logic underneath is real and reusable.
+- **Class drivers are wired up the stack**: HID keyboard registers with
+  **CoreInput** via `input_device_register`, and mass storage registers a
+  **block device with CoreStorage** (the cardfs vertical slice exercises this
+  end-to-end — see `notes/servers/CoreStorage/cardfs-exploration.md`). The
+  control/interrupt/bulk transfer logic underneath is real and reusable. (Earlier
+  cuts only printed to the debug console.)
 - **The CoreUsb transfer API is synchronous/blocking** (one transfer at a time
   per controller under a lock) and uses **bounded busy-spin** delays/timeouts
-  (because `task_sleep` doesn't deschedule and `timer_timestamp_ns` is unreliable
-  here — see `notes/AUDIT.md`). An async/event-driven, non-busy-waiting API is the
-  right longer-term shape.
+  (the transfer paths run with interrupts off / under a lock, so they can't call
+  the now-working `task_sleep`; they busy-spin on the TSC-calibrated `SysTimer`
+  waits instead — see `notes/AUDIT.md`). An async/event-driven, non-busy-waiting
+  API is the right longer-term shape.
 - **`usb_device_t` still has no class/type field**; enumerated devices are
   dispatched directly to a class probe rather than registered as `usb_device_t`s.
 - **Toggle/halt handling is minimal** (no CLEAR_FEATURE(HALT) recovery on STALL;
@@ -105,8 +107,10 @@ way. xHCI notes:
   default address, the control handler intercepts SET_ADDRESS → Address
   Device(BSR=0), and non-control endpoints are Configure-Endpoint'd lazily on
   first transfer.
-- Polled (no interrupts) like UHCI; single interrupter, single event-ring
-  segment; 64-byte-or-32-byte contexts read from HCCPARAMS.
+- MSI interrupt-driven (see the **Interrupts** section above), with the ISR-or-
+  self-pump fallback so it still completes with interrupts off; single
+  interrupter, single event-ring segment; 64-byte-or-32-byte contexts read from
+  HCCPARAMS.
 - **Hubs work on xHCI** (validated: a keyboard behind a hub enumerates and its
   keys arrive). The HC interface gained two optional handlers
   (`prepare_downstream`, `mark_hub`); xHCI implements them — `mark_hub` sets the

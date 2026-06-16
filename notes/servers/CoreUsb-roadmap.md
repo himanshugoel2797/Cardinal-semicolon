@@ -1,5 +1,13 @@
 # USB stack — status and roadmap
 
+> **SUPERSEDED — this is the original planning note, kept for historical context.**
+> The USB stack described here as "missing" has since been implemented and
+> validated end-to-end (UHCI + xHCI host controllers, enumeration, control/
+> interrupt/bulk transfers, and the hub/HID/mass-storage class drivers). For the
+> current, accurate state see **`notes/servers/CoreUsb-status.md`**. The "Current
+> state" and "Missing entirely" descriptions below reflect the pre-implementation
+> tree and are no longer true.
+
 Goal (per project direction): a working USB device stack — **hub, HID keyboard,
 HID mouse, mass storage**. This note captures the current state and a
 review-friendly path, so the work can proceed incrementally rather than as one
