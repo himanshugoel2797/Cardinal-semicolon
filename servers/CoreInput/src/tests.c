@@ -44,7 +44,7 @@ static void test_register_mock(test_ctx_t *ctx)
     TEST_CHECK_EQ_U(ctx, rc, 0);
 
     // Clean up so the registration does not leak into the live device list.
-    input_device_unregister(&desc);
+    TEST_CHECK_EQ_U(ctx, input_device_unregister(&desc), 0);
 }
 
 static void test_unregister_mock(test_ctx_t *ctx)
