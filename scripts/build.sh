@@ -36,7 +36,14 @@ cmake -S . -B build -G "$GEN" \
   -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
   -DCMAKE_SYSTEM_NAME=Generic \
   -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_ASM_COMPILER=clang
+  -DCMAKE_ASM_COMPILER=clang \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+# Surface the target build's compilation database at the repo root so clangd/LSP
+# resolves the freestanding flags (--target=x86_64-elf, -nostdinc, the -I/-isystem
+# paths and the ISA_TYPES_H define) instead of erroring on missing headers. The
+# symlink target is .gitignored.
+ln -sf build/compile_commands.json "$(dirname "$0")/../compile_commands.json"
 
 log "Building target"
 cmake --build build
