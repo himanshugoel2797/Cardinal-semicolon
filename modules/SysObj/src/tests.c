@@ -101,7 +101,9 @@ static void test_key_str(test_ctx_t *ctx) {
     TEST_CHECK_EQ_U(ctx, obj_addkey_str(TEST_PATH, "s", src), CS_OK);
 
     char buf[64];
-    memset(buf, 0, sizeof(buf));
+    // Pre-fill with non-zero so a read path that fails to write the NUL
+    // terminator is actually caught (zero-filling would mask it).
+    memset(buf, 0xFF, sizeof(buf));
     size_t len = sizeof(buf);
     TEST_CHECK_EQ_U(ctx, obj_readkey_str(TEST_PATH, "s", buf, &len), CS_OK);
     // Exact length proves the stored string is NUL-terminated (a bare strlen on

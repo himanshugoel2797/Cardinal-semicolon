@@ -411,8 +411,18 @@ cs_error obj_readkey_str(const char *path, const char *keyname, char *val,
 
     if (val != NULL && val_len != NULL)
     {
-        strncpy(val, strval, *val_len);
-        *val_len = strlen(strval);
+        // common's strncpy stops at the source NUL and neither copies it nor
+        // pads, so terminate the caller's buffer explicitly. Copy at most
+        // cap-1 bytes and report the full source length.
+        size_t cap = *val_len;
+        size_t srclen = strlen(strval);
+        if (cap > 0)
+        {
+            size_t copy = MIN(srclen, cap - 1);
+            strncpy(val, strval, copy);
+            val[copy] = '\0';
+        }
+        *val_len = srclen;
     }
     local_spinlock_unlock(&kern_lock);
     return CS_OK;
