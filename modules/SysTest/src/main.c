@@ -47,6 +47,9 @@ typedef struct {
     volatile uint32_t count;
     int spinlock;
 } systest_sem_t;
+// Tripwire: if SysTaskMgr's semaphore_t grows/shrinks, the resolved semaphore_*
+// ops would read/write past this mirror. Keep the layouts in lockstep.
+_Static_assert(sizeof(systest_sem_t) == 8, "systest_sem_t must match SysTaskMgr semaphore_t");
 
 typedef uint64_t systest_id_t;
 #define SYSTEST_PERM_KERNEL 1 // task_permissions_kernel
@@ -55,6 +58,7 @@ typedef struct {
     cs_error (*task_create)(const char *, int, systest_id_t *);
     cs_error (*task_create_oncore)(const char *, int, int, systest_id_t *);
     cs_error (*task_start)(systest_id_t, void *, void *);
+    cs_error (*task_end)(systest_id_t); // optional: reap an orphaned (created-but-unstarted) task
     void (*sem_init)(systest_sem_t *);
     void (*sem_signal)(systest_sem_t *);
     void (*sem_wait)(systest_sem_t *);
@@ -75,6 +79,7 @@ static void resolve_ops(void) {
         (cs_error(*)(const char *, int, int, systest_id_t *))elf_resolvefunction("task_create_kernel_oncore");
     g_ops.task_start =
         (cs_error(*)(systest_id_t, void *, void *))elf_resolvefunction("task_start_kernel");
+    g_ops.task_end = (cs_error(*)(systest_id_t))elf_resolvefunction("task_end_kernel");
     g_ops.sem_init = (void (*)(systest_sem_t *))elf_resolvefunction("semaphore_init");
     g_ops.sem_signal = (void (*)(systest_sem_t *))elf_resolvefunction("semaphore_signal");
     g_ops.sem_wait = (void (*)(systest_sem_t *))elf_resolvefunction("semaphore_wait");
@@ -90,9 +95,19 @@ static void resolve_ops(void) {
 
 // ---- small output helpers ---------------------------------------------------
 
+// Unsigned decimal print. (Not ltoa(): that takes a signed long long, so a value
+// with bit 63 set would render as negative.)
 static void print_uint(uint64_t v) {
     char buf[24];
-    DEBUG_PRINT(ltoa(v, buf, 10));
+    int i = (int)sizeof(buf);
+    buf[--i] = '\0';
+    if (v == 0)
+        buf[--i] = '0';
+    while (v > 0 && i > 0) {
+        buf[--i] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    DEBUG_PRINT(&buf[i]);
 }
 
 // ---- public assertion plumbing ---------------------------------------------
@@ -198,13 +213,23 @@ static void run_task(test_entry_t *e) {
     task_arg_t arg = {.fn = e->def.fn, .ctx = &ctx, .done = &sem};
 
     systest_id_t id = 0;
-    if (g_ops.task_create("systest_task", SYSTEST_PERM_KERNEL, &id) != CS_OK ||
-            g_ops.task_start(id, (void *)test_task_trampoline, &arg) != CS_OK) {
+    if (g_ops.task_create("systest_task", SYSTEST_PERM_KERNEL, &id) != CS_OK) {
         ctx.checks++;
         ctx.fails++;
-        DEBUG_PRINT("    # FAIL: could not spawn test task\r\n");
+        DEBUG_PRINT("    # FAIL: could not create test task\r\n");
+    } else if (g_ops.task_start(id, (void *)test_task_trampoline, &arg) != CS_OK) {
+        // Created but not started: reap the orphan so it isn't stranded in a
+        // run queue forever (it never ran, so it will never signal the sem).
+        if (g_ops.task_end)
+            g_ops.task_end(id);
+        ctx.checks++;
+        ctx.fails++;
+        DEBUG_PRINT("    # FAIL: could not start test task\r\n");
     } else {
-        g_ops.sem_wait(&sem); // blocks (deschedules) until the task signals
+        // sem_wait blocks (deschedules) until the task signals. The arg/ctx/sem
+        // live on this frame and stay valid because we do not return until then;
+        // a genuinely wedged task is backstopped by the outer harness timeout.
+        g_ops.sem_wait(&sem);
     }
     e->checks = ctx.checks;
     e->fails = ctx.fails;
@@ -261,11 +286,20 @@ static void run_percpu(test_entry_t *e) {
         args[c].done = &sem;
 
         systest_id_t id = 0;
-        if (g_ops.task_create_oncore("systest_percpu", SYSTEST_PERM_KERNEL, c, &id) != CS_OK ||
-                g_ops.task_start(id, (void *)test_task_trampoline, &args[c]) != CS_OK) {
+        if (g_ops.task_create_oncore("systest_percpu", SYSTEST_PERM_KERNEL, c, &id) != CS_OK) {
             ctxs[c].checks++;
             ctxs[c].fails++;
-            DEBUG_PRINT("    # FAIL: could not spawn per-CPU task on core ");
+            DEBUG_PRINT("    # FAIL: could not create per-CPU task on core ");
+            print_uint((uint64_t)c);
+            DEBUG_PRINT("\r\n");
+            continue;
+        }
+        if (g_ops.task_start(id, (void *)test_task_trampoline, &args[c]) != CS_OK) {
+            if (g_ops.task_end) // reap the created-but-unstarted orphan
+                g_ops.task_end(id);
+            ctxs[c].checks++;
+            ctxs[c].fails++;
+            DEBUG_PRINT("    # FAIL: could not start per-CPU task on core ");
             print_uint((uint64_t)c);
             DEBUG_PRINT("\r\n");
             continue;
