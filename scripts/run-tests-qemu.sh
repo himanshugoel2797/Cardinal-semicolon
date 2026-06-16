@@ -64,7 +64,6 @@ timeout --foreground "$TIMEOUT" \
     -display none \
     $EXTRA
 qemu_code=$?
-set -e 2>/dev/null || true
 
 echo "----- serial log -----"
 cat "$LOG"
