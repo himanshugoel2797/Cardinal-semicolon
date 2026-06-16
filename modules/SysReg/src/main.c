@@ -581,6 +581,8 @@ cs_error registry_readlocal_dir(dir_t dir, dir_t *val)
 
 #define REG_INIT_FAIL_STR "Failed to initialize registry."
 
+void sysreg_register_tests(void);
+
 int module_init()
 {
     if (kvs_create(&kern_registry) != kvs_ok)
@@ -616,6 +618,8 @@ int module_init()
 
     // TODO: eventually also load any registry info saved in the initrd,
     // contains info such as primary partition information
+
+    sysreg_register_tests();
 
     return 0;
 }
