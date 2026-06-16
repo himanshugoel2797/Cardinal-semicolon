@@ -481,7 +481,7 @@ static void xhci_port_connected(xhci_ctrl_state_t *s, int port) {
     uint32_t psc = rd32(s->op, XHCI_OP_PORTSC(port));
     wr32(s->op, XHCI_OP_PORTSC(port), (psc & ~(XHCI_PORTSC_PED)) | XHCI_PORTSC_PR);
     timer_timeout_t prst;
-    timer_timeout_start(&prst, 100ULL * 1000 * 1000);  // 100ms
+    timer_timeout_start(&prst, MS(100));  // 100ms
     while (!(rd32(s->op, XHCI_OP_PORTSC(port)) & XHCI_PORTSC_PRC))
         if (timer_timeout_expired(&prst))
             break;
@@ -632,13 +632,13 @@ int module_init(void *ecam_addr) {
     // Reset the controller (wall-clock-bounded halt + HCRST waits).
     wr32(s->op, XHCI_OP_USBCMD, 0);
     timer_timeout_t hlt;
-    timer_timeout_start(&hlt, 100ULL * 1000 * 1000);  // 100ms to halt
+    timer_timeout_start(&hlt, MS(100));  // 100ms to halt
     while (!(rd32(s->op, XHCI_OP_USBSTS) & XHCI_USBSTS_HCH))
         if (timer_timeout_expired(&hlt))
             break;
     wr32(s->op, XHCI_OP_USBCMD, XHCI_USBCMD_HCRST);
     timer_timeout_t rst;
-    timer_timeout_start(&rst, 1000ULL * 1000 * 1000);  // 1s for reset + CNR clear
+    timer_timeout_start(&rst, SEC(1));  // 1s for reset + CNR clear
     while ((rd32(s->op, XHCI_OP_USBCMD) & XHCI_USBCMD_HCRST) || (rd32(s->op, XHCI_OP_USBSTS) & XHCI_USBSTS_CNR))
         if (timer_timeout_expired(&rst))
             break;
@@ -705,7 +705,7 @@ int module_init(void *ecam_addr) {
         uint32_t psc = rd32(s->op, XHCI_OP_PORTSC(p));
         wr32(s->op, XHCI_OP_PORTSC(p), psc | XHCI_PORTSC_PP);
     }
-    timer_busywait_ns(100 * 1000 * 1000);  // 100ms port power-good settle (USB 2.0 bPwrOn2PwrGood worst case)
+    timer_busywait_ns(MS(100));  // 100ms port power-good settle (USB 2.0 bPwrOn2PwrGood worst case)
 
     s->init_complete = true;
     DEBUG_PRINT("[xHCI] init complete\r\n");

@@ -54,7 +54,7 @@ int mp_init() {
             interrupt_sendipi(apic_id, 0x0, ipi_delivery_mode_init);
 
             //Use the timer api to wait for 10ms
-            timer_wait(10 * 1000 * 1000);
+            timer_wait(MS(10));
 
             interrupt_sendipi(apic_id, 0x0f, ipi_delivery_mode_startup);
 

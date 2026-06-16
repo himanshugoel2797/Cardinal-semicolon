@@ -45,7 +45,7 @@ uint64_t timer_counter_rate();
 // Pure polling -- safe to use with interrupts disabled (e.g. from a driver's
 // module_init), unlike task_sleep. Usage:
 //     timer_timeout_t to;
-//     timer_timeout_start(&to, 500 * 1000 * 1000);   // 500ms
+//     timer_timeout_start(&to, MS(500));   // 500ms (see MS/US/SEC in types.h)
 //     while (!device_ready())
 //         if (timer_timeout_expired(&to)) { /* timed out */ break; }
 typedef struct

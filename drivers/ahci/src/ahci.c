@@ -53,7 +53,7 @@ PRIVATE void ahci_resethba(ahci_instance_t *inst)
     //timeout rather than blocking forever; a wedged reset is left for the caller's
     //later TFD/readiness checks to catch.
     timer_timeout_t to;
-    timer_timeout_start(&to, 1000ULL * 1000 * 1000);  //1s
+    timer_timeout_start(&to, SEC(1));  //1s
     while ((ahci_read32(inst, HBA_GHC) & 1) && !timer_timeout_expired(&to))
         ;
 }
@@ -73,14 +73,14 @@ PRIVATE void ahci_obtainownership(ahci_instance_t *inst)
     //never fire with interrupts off, hanging the task forever. The timer_timeout
     //helper is pure counter polling (no scheduler dependency), so it is safe here.
     timer_timeout_t settle;
-    timer_timeout_start(&settle, 100ULL * 1000 * 1000);  //100ms settle for the OOC write
+    timer_timeout_start(&settle, MS(100));  //100ms settle for the OOC write
     while ((ahci_read32(inst, HBA_BOHC) & (1 << 4)) && !timer_timeout_expired(&settle))
         ;
 
     //If the BIOS still owns the HBA (BOS busy), give it a bounded grace period
     //rather than blocking indefinitely.
     timer_timeout_t grace;
-    timer_timeout_start(&grace, 1000ULL * 1000 * 1000);  //1s
+    timer_timeout_start(&grace, SEC(1));  //1s
     while ((ahci_read32(inst, HBA_BOHC) & (1 << 4)) && !timer_timeout_expired(&grace))
         ;
 }
@@ -109,7 +109,7 @@ PRIVATE int ahci_initializeport(ahci_instance_t *inst, int index)
         //used here (it would never be woken -- see notes/AUDIT.md). timer_timeout
         //is pure counter polling, so it gives a real timeout that is safe here.
         timer_timeout_t to;
-        timer_timeout_start(&to, 1000ULL * 1000 * 1000);  //1s
+        timer_timeout_start(&to, SEC(1));  //1s
         while ((ahci_read32(inst, HBA_PxCMD(index)) & (HBA_PxCMD_FR | HBA_PxCMD_CR)) != 0 && !timer_timeout_expired(&to))
             ;
         //Failed to bring the device into an idle state, can't continue with init
@@ -256,7 +256,7 @@ PRIVATE int ahci_readdev(ahci_instance_t *inst, int index, uint64_t loc, void *a
     //Wait for the command to complete, bounded by a real wall-clock timeout so a
     //stuck device cannot hang the caller forever.
     timer_timeout_t to;
-    timer_timeout_start(&to, 1000ULL * 1000 * 1000);  //1s
+    timer_timeout_start(&to, SEC(1));  //1s
     while ((ahci_read32(inst, HBA_PxCI(index)) & (1 << slot)) && !timer_timeout_expired(&to))
         ;
     if (ahci_read32(inst, HBA_PxCI(index)) & (1 << slot))

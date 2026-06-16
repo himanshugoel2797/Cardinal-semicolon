@@ -86,9 +86,9 @@ static void hub_task(void *arg) {
                 DEBUG_PRINT("[usb_hub] downstream device connected; resetting\r\n");
                 hub_clear_feature(h, port, C_PORT_CONNECTION);
                 hub_set_feature(h, port, PORT_RESET);
-                timer_busywait_ns(50 * 1000 * 1000);  // ~reset duration (USB spec: 50ms)
+                timer_busywait_ns(MS(50));  // ~reset duration (USB spec: 50ms)
                 hub_clear_feature(h, port, C_PORT_RESET);
-                timer_busywait_ns(20 * 1000 * 1000);  // recovery (20ms debounce)
+                timer_busywait_ns(MS(20));  // recovery (20ms debounce)
 
                 if (hub_get_status(h, port, &status, &change) < 0)
                     continue;
@@ -150,7 +150,7 @@ static int hub_probe(usb_enum_device_t *dev) {
     // Power on every port, then let them settle.
     for (int port = 1; port <= nports; port++)
         hub_set_feature(h, port, PORT_POWER);
-    timer_busywait_ns(100 * 1000 * 1000);  // power-on settle (USB hub spec: bPwrOn2PwrGood * 2ms, max 100ms)
+    timer_busywait_ns(MS(100));  // power-on settle (USB hub spec: bPwrOn2PwrGood * 2ms, max 100ms)
 
     h->task = 0;
     if (task_create_kernel("usb_hub_poll", task_permissions_kernel, &h->task) != CS_OK) {

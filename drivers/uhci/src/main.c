@@ -57,13 +57,13 @@ static uint32_t read32(uhci_ctrl_state_t *state, uint16_t addr)
 static void uhci_reset(uhci_ctrl_state_t *state)
 {
     write16(state, USBCMD_REG, USBCMD_GRESET);
-    timer_busywait_ns(10 * 1000 * 1000);
+    timer_busywait_ns(MS(10));
     write16(state, USBCMD_REG, 0);  //Exit GRESET 10ms after starting
 
     //now perform an HCRESET (bounded wall-clock wait for it to clear)
     write16(state, USBCMD_REG, USBCMD_HCRESET);
     timer_timeout_t hcrst;
-    timer_timeout_start(&hcrst, 100ULL * 1000 * 1000);  // 100ms
+    timer_timeout_start(&hcrst, MS(100));  // 100ms
     while (read16(state, USBCMD_REG) & USBCMD_HCRESET)
         if (timer_timeout_expired(&hcrst))
             break;
@@ -79,11 +79,11 @@ static void uhci_enableport(uhci_ctrl_state_t *state, int idx)
     
     //Reset port (>=10ms asserted), de-assert, then a recovery delay before enable.
     write16(state, PORTSCn_REG(idx), PORTSC_PORTRESET);
-    timer_busywait_ns(15 * 1000 * 1000);
+    timer_busywait_ns(MS(15));
     write16(state, PORTSCn_REG(idx), 0);
-    timer_busywait_ns(20 * 1000 * 1000);
+    timer_busywait_ns(MS(20));
     write16(state, PORTSCn_REG(idx), PORTSC_PORTEN | PORTSC_PORTENCHG);
-    timer_busywait_ns(20 * 1000 * 1000);
+    timer_busywait_ns(MS(20));
 }
 
 // Synchronous control transfer on endpoint 0, used by CoreUsb for enumeration
@@ -190,7 +190,7 @@ static int uhci_control_transfer(void *hc_state, int dev_addr, usb_speed_t speed
     // task. 100ms is ample for a control transfer.
     int result = -1;
     timer_timeout_t to;
-    timer_timeout_start(&to, 100ULL * 1000 * 1000);
+    timer_timeout_start(&to, MS(100));
     while (1) {
         int fatal = 0;
         for (int i = 0; i < n; i++)
