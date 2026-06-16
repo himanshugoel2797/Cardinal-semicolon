@@ -369,6 +369,22 @@ int test_run_suite(const char *suite) {
     return (int)fails;
 }
 
+// ---- GDB-over-CSMUX break-in pump -------------------------------------------
+// In harness mode the GDB stub is tunneled over CSMUX ch2; there is no UART RX
+// IRQ to drive async break-in, so a low-priority task polls gdb_poll_breakin so a
+// debugger can attach and halt a running guest. Resolved at runtime (SysGdb).
+static int (*g_gdb_poll)(void) = NULL;
+
+static void gdb_pump_task(void *a) {
+    (void)a;
+    for (;;) {
+        if (g_gdb_poll != NULL)
+            g_gdb_poll();
+        if (g_ops.task_yield != NULL)
+            g_ops.task_yield();
+    }
+}
+
 // ---- death-test phase helpers ----------------------------------------------
 
 static int count_death_tests(void) {
@@ -466,11 +482,20 @@ int test_run_all(void) {
 
     // In harness mode COM1 carries framed CSMUX and COM2 is unwired, so route the
     // GDB stub over CSMUX channel 2 (if SysGdb is loaded) -- keeps the debugger
-    // usable over the single multiplexed link across reboots.
+    // usable over the single multiplexed link across reboots. Also start a
+    // break-in pump task so a debugger can attach asynchronously (the COM2 RX IRQ
+    // that normally drives break-in is not in play over the muxed link).
     if (harness) {
         void (*gdb_use_csmux)(void) = (void (*)(void))elf_resolvefunction("gdb_use_csmux");
-        if (gdb_use_csmux != NULL)
+        if (gdb_use_csmux != NULL) {
             gdb_use_csmux();
+            g_gdb_poll = (int (*)(void))elf_resolvefunction("gdb_poll_breakin");
+            if (g_gdb_poll != NULL && g_ops.resolved_tasks && g_ops.task_yield != NULL) {
+                systest_id_t pid = 0;
+                if (g_ops.task_create("gdb_pump", SYSTEST_PERM_KERNEL, &pid) == CS_OK)
+                    g_ops.task_start(pid, (void *)gdb_pump_task, NULL);
+            }
+        }
     }
 
     // Normal (non-death) tests: run on boot 0 (or any non-harness run). On a
