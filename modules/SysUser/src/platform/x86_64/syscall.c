@@ -158,7 +158,7 @@ PRIVATE NAKED NORETURN void user_transition(void UNUSED(*stack_base))
 
 cs_error syscall_sethandler(int idx, void *func)
 {
-    if (idx < SYSCALL_COUNT)
+    if (idx >= 0 && idx < SYSCALL_COUNT)
     {
         syscall_funcs[idx] = func;
         return CS_OK;
@@ -169,7 +169,7 @@ cs_error syscall_sethandler(int idx, void *func)
 
 cs_error syscall_set_syscallset(int idx, void **set)
 {
-    if (idx < SYSCALL_SET_COUNT)
+    if (idx >= 0 && idx < SYSCALL_SET_COUNT)
     {
         syscall_state->syscall_set_table[idx] = set;
         return CS_OK;
@@ -180,7 +180,7 @@ cs_error syscall_set_syscallset(int idx, void **set)
 
 void** syscall_get_syscallset(int idx)
 {
-    if (idx < SYSCALL_SET_COUNT)
+    if (idx >= 0 && idx < SYSCALL_SET_COUNT)
         return syscall_state->syscall_set_table[idx];
     return NULL;
 }
