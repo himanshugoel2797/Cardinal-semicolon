@@ -33,19 +33,33 @@ static void test_timestamp_monotonic(test_ctx_t *ctx)
                    "timer_timestamp_ns() must be monotonic");
 }
 
-// A started timeout must eventually report expired (the loop must terminate).
+// A started timeout must terminate AND actually wait roughly the requested
+// duration -- i.e. it must not fire immediately (the original "expired after the
+// loop" check was trivially true). We verify the elapsed time over the whole
+// wait rather than snapshotting expired() right after start: under TCG the TSC
+// advances in large jumps between two reads, so a single-read "not expired yet"
+// check is inherently racy, whereas the total elapsed time is stable.
 static void test_timeout_terminates(test_ctx_t *ctx)
 {
+    const uint64_t req = MS(10);
+    uint64_t t0 = timer_timestamp_ns();
+
     timer_timeout_t t;
-    timer_timeout_start(&t, US(500));
-    // Must NOT be expired immediately after start (deadline is in the future).
-    TEST_CHECK_MSG(ctx, !timer_timeout_expired(&t),
-                   "timeout must not be expired immediately after start");
+    timer_timeout_start(&t, req);
     while (!timer_timeout_expired(&t))
         ;
-    // Now it must be expired: a real NOT->expired transition occurred.
+
+    uint64_t t1 = timer_timestamp_ns();
+    // The loop terminated and now reports expired.
     TEST_CHECK_MSG(ctx, timer_timeout_expired(&t),
                    "timeout must be expired after busy-wait loop exits");
+    // It must have waited close to the requested duration; a deadline that
+    // truncated to "now" would exit with ~0 elapsed. Allow half the request as
+    // slack for rounding and counter granularity. Only meaningful with a
+    // calibrated counter.
+    if (timer_timestamp_ns() != TIMER_NO_COUNTER)
+        TEST_CHECK_MSG(ctx, (t1 - t0) >= req / 2,
+                       "timeout fired far earlier than the requested duration");
 }
 
 // A short busy-wait must complete without hanging or faulting, and must
