@@ -48,7 +48,11 @@ void sysmp_register_tests(void) {
         return;
 
     // Allocate one TLS slot up front; the per-core test reads it on each core.
+    // mp_tls_get(0) returns the address_space(256) null pointer, so if we land
+    // at offset 0 (SysMP is loaded early) burn it and grab the next slot.
     s_tls_off = mp_tls_alloc(sizeof(uintptr_t));
+    if (s_tls_off == 0)
+        s_tls_off = mp_tls_alloc(sizeof(uintptr_t));
 
     test_def_t corecount = {
         .suite = "SysMP", .name = "corecount_ge1", .fn = test_corecount,
