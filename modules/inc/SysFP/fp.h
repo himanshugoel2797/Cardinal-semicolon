@@ -6,6 +6,10 @@
 #ifndef CARDINAL_SYSFP_H
 #define CARDINAL_SYSFP_H
 
+// Per-core FP init, called on each AP via apscript.txt (cf. vmem_mp_init /
+// timer_mp_init). Returns 0 on success.
+int fp_mp_init(void);
+
 int fp_platform_getstatesize(void);
 
 int fp_platform_getalign(void);

@@ -10,11 +10,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <dir_t.h>
+
 #define MAX_OBJ_DEPTH (20)
 #define MAX_OBJ_KEYLEN (200)
 #define MAX_OBJ_STRLEN (4096)
-
-typedef void* dir_t;
 
 typedef enum {
     obj_err_ok = 0,

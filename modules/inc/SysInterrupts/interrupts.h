@@ -7,6 +7,7 @@
 #define CARDINAL_INTERRUPTS_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef void (*InterruptHandler)(int);
 

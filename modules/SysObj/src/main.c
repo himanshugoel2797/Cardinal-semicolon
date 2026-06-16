@@ -803,6 +803,16 @@ int obj_readlocal_uint(dir_t dir, uint64_t *val)
     return obj_err_ok;
 }
 
+int obj_readlocal_bool(dir_t dir, bool *val)
+{
+    local_spinlock_lock(&kern_lock);
+    int err = kvs_get_bool((kvs_t *)dir, val);
+    local_spinlock_unlock(&kern_lock);
+    if (err != obj_err_ok)
+        return obj_err_dne;
+    return obj_err_ok;
+}
+
 int obj_readlocal_ptr(dir_t dir, void **val)
 {
     local_spinlock_lock(&kern_lock);

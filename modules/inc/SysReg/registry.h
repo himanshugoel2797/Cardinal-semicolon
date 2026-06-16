@@ -9,11 +9,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <dir_t.h>
+
 #define MAX_REGISTRY_DEPTH (20)
 #define MAX_REGISTRY_KEYLEN (200)
 #define MAX_REGISTRY_STRLEN (4096)
-
-typedef void* dir_t;
 
 typedef enum {
     registry_err_ok = 0,

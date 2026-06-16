@@ -3,8 +3,8 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-#ifndef CARDINALSEMI_SYSGDB_H
-#define CARDINALSEMI_SYSGDB_H
+#ifndef CARDINAL_SYSGDB_H
+#define CARDINAL_SYSGDB_H
 
 // Drop into the GDB stub and wait for a debugger (raises a breakpoint). Useful
 // from a boot script to debug early boot. Returns 0 (so it works as a `CALL:`
