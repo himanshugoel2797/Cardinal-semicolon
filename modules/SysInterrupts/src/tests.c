@@ -69,6 +69,64 @@ static void test_cpu_idx_percpu(test_ctx_t *ctx) {
                    "each core reports a distinct APIC id");
 }
 
+// Set by the handler registered in test_routing_task when the self-IPI it sends
+// is actually delivered to this core and dispatched. volatile so the bounded
+// wait loop below re-reads it from memory every pass rather than caching it in a
+// register (the write happens in interrupt context, asynchronously to the loop).
+static volatile int g_routing_fired;
+
+static void routing_handler(int irq) {
+    (void)irq;
+    g_routing_fired = 1;
+}
+
+// End-to-end routing: allocate a vector, register a handler, send a self-IPI to
+// this very core, and prove the handler ran. This is the only test that
+// exercises the *dispatch* path (idt_mainhandler -> interrupt_funcs[vec]),
+// closing the "nothing verifies a signal reaches a registered handler" gap.
+//
+// SAFETY -- why this is a TEST_RUN_TASK and not INLINE:
+//  * Delivery requires interrupts to be ENABLED so the core can actually take
+//    the self-IPI. An INLINE test runs in the runner thread with no guarantee
+//    about IF, and must never wait-on-interrupt; a TEST_RUN_TASK runs as a
+//    scheduled kernel task, which by construction runs with interrupts enabled
+//    (the scheduler itself depends on timer interrupts), making delivery safe.
+//  * The handler does NOT need to issue an EOI: idt_mainhandler sends the EOI
+//    itself for every vector >= 32 (see idt.c), so there is no half-acked IPI
+//    that could wedge the local APIC.
+//  * The wait is BOUNDED. If delivery somehow never happens we fall out of the
+//    loop and fail the assertion -- we never spin forever, so a regression here
+//    fails the test instead of hanging CI.
+//  * Self-IPI uses fixed delivery mode (ipi_delivery_mode_fixed) to this core's
+//    own APIC id (interrupt_get_cpu_idx() returns the APIC id, which is exactly
+//    the destination field interrupt_sendipi writes), i.e. a normal fixed
+//    interrupt at the chosen vector -- not an INIT/STARTUP IPI.
+static void test_routing_task(test_ctx_t *ctx) {
+    int vec = 0;
+    cs_error err = interrupt_allocate(1, interrupt_flags_exclusive, &vec);
+    TEST_CHECK_EQ_U(ctx, err, CS_OK);
+    TEST_CHECK(ctx, vec >= 32);
+    if (err != CS_OK || vec < 32)
+        return;
+
+    g_routing_fired = 0;
+    interrupt_register_handler(vec, routing_handler);
+
+    int self = interrupt_get_cpu_idx();
+    interrupt_sendipi(self, vec, ipi_delivery_mode_fixed);
+
+    // Bounded wait: the IPI is delivered asynchronously once we are interruptible.
+    // ~10M iterations is generous on any emulated/real core yet still finite, so
+    // a broken dispatch path fails the assert below instead of hanging forever.
+    for (int spins = 0; spins < 10000000 && !g_routing_fired; spins++)
+        __asm__ volatile("pause");
+
+    TEST_CHECK_MSG(ctx, g_routing_fired,
+                   "self-IPI was routed to the registered handler");
+
+    interrupt_unregister_handler(vec, routing_handler);
+}
+
 static void test_register_unregister(test_ctx_t *ctx) {
     int base = 0;
     cs_error err = interrupt_allocate(1, interrupt_flags_exclusive, &base);
@@ -130,4 +188,13 @@ void sysinterrupts_register_tests(void) {
         .flags = TEST_FLAG_NONE,
     };
     test_register(&register_unregister);
+
+    test_def_t routing = {
+        .suite = "SysInterrupts",
+        .name = "routing_self_ipi",
+        .fn = test_routing_task,
+        .run = TEST_RUN_TASK,
+        .flags = TEST_FLAG_NONE,
+    };
+    test_register(&routing);
 }
