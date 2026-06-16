@@ -37,7 +37,7 @@ static void test_phys_virt_roundtrip(test_ctx_t *ctx) {
     if (phys == PHYSMEM_NO_ALLOC)
         return;
 
-    intptr_t virt = vmem_phystovirt((intptr_t)phys, 4096, vmem_flags_rw);
+    intptr_t virt = vmem_phystovirt((intptr_t)phys, 4096, vmem_flags_cachewriteback);
     TEST_CHECK(ctx, virt != 0);
 
     if (virt != 0) {
