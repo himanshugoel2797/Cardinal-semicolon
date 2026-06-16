@@ -205,10 +205,12 @@ to attach to `CoreDisplay`). Debug output is `DEBUG_PRINT(...)` over COM1.
   Haswell `intel_gfx` largely absent). Check it before assuming something is
   broken vs. intentionally unfinished.
 - **Boot timing knobs that bit recent work** (all detailed in `notes/AUDIT.md` /
-  `notes/debugging-gdb.md`): `task_sleep`/`timer_timestamp_ns` are unreliable for
-  delays in this tree — drivers use bounded busy-spins instead; the
-  boot-script files (`loadscript.txt`/`servicescript.txt`) use **CRLF** line
-  endings — keep them CRLF or the parser panics with "Unknown Command".
+  `notes/debugging-gdb.md`): `task_sleep` itself is now fixed and reliable for
+  normal delays (it actually deschedules — see AUDIT), but it can't be used by
+  code already holding `cli()` (e.g. AHCI/UHCI init), which still busy-spins via
+  the TSC-calibrated `SysTimer` waits; the boot-script files
+  (`loadscript.txt`/`servicescript.txt`) use **CRLF** line endings — keep them
+  CRLF or the parser panics with "Unknown Command".
 
 ## Debugging
 

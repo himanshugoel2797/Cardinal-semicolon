@@ -170,10 +170,12 @@ line in `servicescript.txt` (just before `CALL:end_task_syscall`) then calls
 (`task_core_setup`/`task_core_arm`, interrupt stack + a per-core idle task) and joins
 scheduling. The scheduler entry is split into per-core and one-time global steps.
 
-**Currently parked by default**: the `CALL:task_release_aps` line is *removed* from
-`servicescript.txt`, so the shipped boot is single-core. Re-add that one line to
-activate. When activated, under **KVM** both cores schedule independently (verified:
-two distinct per-core GS bases take timer interrupts, no faults across many runs).
+**Historically parked by default** (pre-redesign state described by this narrative):
+the `CALL:task_release_aps` line had been *removed* from `servicescript.txt`, making
+that boot single-core. It is now present in `servicescript.txt` (see the superseding
+note above), so the shipped boot is **multi-core** by default. Under **KVM** both
+cores schedule independently (verified: two distinct per-core GS bases take timer
+interrupts, no faults across many runs).
 
 **The blocker to trusting it on by default is a timing-sensitive SMP race** that, under
 **TCG only**, intermittently corrupts a task structure on the heap. Two distinct
@@ -504,17 +506,18 @@ complete a full exchange with the slirp peer.)* Caveat: a pure-legacy device
 without `VERSION_1`/`MRG_RXBUF` uses a 10-byte header — if such a device is ever
 targeted, the header size must become feature-dependent.
 
-### [VERIFIED] boot hangs under KVM the instant servicescript is scheduled
-Under `qemu -accel kvm` (q35), the boot reaches `[SysTaskMgr] Process Started:
-servicescript` / `[SysTimer] Allocated timer: apic_local` and then hangs — **no
-servers load** (no `[Kernel] Load module:./Core*` lines). Under `-accel tcg` the
-same image boots fully (all servers load, `servicescript` runs to
-`end_task_syscall` and exits). Reproduces on **master** with `-smp 1` and
-`-smp 2`, so it is pre-existing and unrelated to the network/robustness work.
-Net effect: the scheduler does not run the first non-idle task under KVM. Use TCG
-for runtime testing until diagnosed. Likely a KVM-vs-TCG difference in
-APIC-timer/scheduler-entry behaviour (the first preemption tick never delivering,
-or the idle task monopolising the core); not yet root-caused.
+### [FIXED] boot hangs under KVM the instant servicescript is scheduled
+*(Fixed: the root cause was an APIC-timer/scheduler-entry ordering bug — the first
+preemption tick was never delivered under KVM, so the scheduler never ran the first
+non-idle task. With the ordering fix the full boot now completes under `-accel kvm`
+(fast) as well as `-accel tcg`; all servers load and `servicescript` runs to
+`end_task_syscall`. KVM is now the default for runtime smoke tests.)*
+
+Historical symptom: under `qemu -accel kvm` (q35), the boot reached `[SysTaskMgr]
+Process Started: servicescript` / `[SysTimer] Allocated timer: apic_local` and then
+hung — **no servers loaded** (no `[Kernel] Load module:./Core*` lines) — while the
+same image booted fully under `-accel tcg`. Reproduced on **master** with `-smp 1`
+and `-smp 2`.
 
 ---
 

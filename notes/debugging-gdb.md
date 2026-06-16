@@ -73,10 +73,12 @@ far end to the host running GDB (e.g. a second USB-serial + null modem), and
 
 - Single-core: entering the stub freezes the core (interrupts off). Other cores
   keep running; a full-machine stop would need a halt IPI.
-- **Async Ctrl-C works over COM2 only** (it relies on the UART RX IRQ). USB-serial
-  has no interrupt source here (the USB controllers are polled), so over
-  USB-serial you attach via a breakpoint / the one-shot monitor and interrupt via
-  breakpoints; re-attach after `detach` needs a reboot.
+- **Async Ctrl-C works over both COM2 and USB-serial.** Over COM2 it relies on the
+  UART RX IRQ; USB bulk has no "byte arrived" IRQ, so over USB-serial a small pump
+  task polls `gdb_poll_breakin()` and drops into the stub on any byte (the RSP
+  handshake or a lone `0x03`/Ctrl-C). The pump keeps polling after `continue`/
+  `step`/`detach`, so a later Ctrl-C breaks in again and re-attach after `detach`
+  works without a reboot (see `notes/servers/CoreUsb-status.md`).
 - `m`/`M` read/write memory directly; a fault on a bad address is not yet
   recovered (GDB normally only touches valid addresses).
 - Only software breakpoints (no hardware watchpoints).

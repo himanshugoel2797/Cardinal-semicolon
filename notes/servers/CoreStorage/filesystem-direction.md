@@ -27,11 +27,16 @@ is the relational layer.
 
 ## Status
 
-- `servers/CoreStorage/src/main.c` — `module_init` is an empty stub.
+- `servers/CoreStorage/src/main.c` — `module_init` now brings up a block-device
+  registry and an fs-provider registry (`storage_register_blockdev` /
+  `storage_register_fsprovider`), probing each registered provider against block
+  devices. (No longer an empty stub.)
+- `drivers/cardfs/src/main.c` — first-cut object store, registers as a CoreStorage
+  fs provider; see `cardfs-exploration.md`.
 - `drivers/tarfs/src/main.c` — `module_init` is an empty stub (the initrd tar
   reader the kernel uses at boot is separate, in `kernel/`).
-- No on-disk format is implemented yet; `Main.md` is the spec to implement
-  against, reconciled with the kvs model.
+- No final on-disk format is implemented yet (cardfs is a flat-map exploration);
+  `Main.md` is the spec to implement against, reconciled with the kvs model.
 
 ## Open design questions (decide before implementing — consequential)
 
