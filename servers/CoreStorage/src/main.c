@@ -162,9 +162,12 @@ int storage_blockdev_write(void *handle, uint64_t lba, uint32_t count, const voi
     return dev->write(dev->state, lba, count, buf);
 }
 
+void corestorage_register_tests(void);
+
 int module_init() {
     list_init(&blockdev_list);
     list_init(&fsprovider_list);
     DEBUG_PRINT("[CoreStorage] block device + fs-provider registry up\r\n");
+    corestorage_register_tests();
     return 0;
 }
