@@ -90,6 +90,14 @@ int usb_register_class_driver(uint8_t dev_class, usb_class_probe_t probe,
     return 0;
 }
 
+// Test-only accessors into the otherwise-private class-probe table. See usb.h.
+usb_class_probe_t usb_class_driver_probe(uint8_t dev_class) {
+    return class_probes[dev_class];
+}
+usb_class_remove_t usb_class_driver_remove(uint8_t dev_class) {
+    return class_removes[dev_class];
+}
+
 // ---- transfer helpers exposed to class drivers ----
 int usb_dev_control(usb_enum_device_t *dev, const usb_setup_packet_t *setup,
                     void *data, int data_len) {
