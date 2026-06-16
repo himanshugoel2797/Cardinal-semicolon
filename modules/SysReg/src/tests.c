@@ -53,7 +53,7 @@ static void test_key_int(test_ctx_t *ctx)
     registry_removekey(TEST_ROOT, "i");
 }
 
-// bool add + read roundtrip.
+// bool add + read roundtrip — covers both true and false values.
 static void test_key_bool(test_ctx_t *ctx)
 {
     TEST_CHECK_EQ_U(ctx, registry_addkey_bool(TEST_ROOT, "b", true), CS_OK);
@@ -63,20 +63,34 @@ static void test_key_bool(test_ctx_t *ctx)
     TEST_CHECK(ctx, v == true);
 
     registry_removekey(TEST_ROOT, "b");
+
+    // Also verify the false case: add false, read back false.
+    TEST_CHECK_EQ_U(ctx, registry_addkey_bool(TEST_ROOT, "b", false), CS_OK);
+
+    v = true;
+    TEST_CHECK_EQ_U(ctx, registry_readkey_bool(TEST_ROOT, "b", &v), CS_OK);
+    TEST_CHECK(ctx, v == false);
+
+    registry_removekey(TEST_ROOT, "b");
 }
 
-// str add + read roundtrip.
+// str add + read roundtrip — checks NUL-termination and exact length.
 static void test_key_str(test_ctx_t *ctx)
 {
     const char *expect = "hello-registry";
     TEST_CHECK_EQ_U(ctx, registry_addkey_str(TEST_ROOT, "s", expect), CS_OK);
 
     char buf[64];
+    // Pre-fill with non-zero to catch missing NUL writes.
+    memset(buf, 0xFF, sizeof(buf));
     size_t len = sizeof(buf);
     TEST_CHECK_EQ_U(ctx, registry_readkey_str(TEST_ROOT, "s", buf, &len), CS_OK);
+    // Length returned must equal strlen(expect) exactly.
     TEST_CHECK_EQ_U(ctx, len, strlen(expect));
-    TEST_CHECK_MSG(ctx, strncmp(buf, expect, strlen(expect)) == 0,
-                   "string value roundtrip");
+    // Full content must match.
+    TEST_CHECK_MSG(ctx, strncmp(buf, expect, len) == 0, "string value roundtrip");
+    // Buffer must be NUL-terminated at the right offset.
+    TEST_CHECK_MSG(ctx, buf[len] == '\0', "string NUL-terminated");
 
     registry_removekey(TEST_ROOT, "s");
 }
@@ -107,8 +121,8 @@ static void test_type_mismatch(test_ctx_t *ctx)
 }
 
 // Update a uint key in place. The public API has no writekey verb and re-adding
-// an existing key fails, so an update is remove-then-add; verify the new value
-// is observed afterwards.
+// an existing key fails (CS_FAILURE), so an update is remove-then-add; verify
+// the new value is observed afterwards and that duplicate-add is rejected.
 static void test_writekey_uint_update(test_ctx_t *ctx)
 {
     TEST_CHECK_EQ_U(ctx, registry_addkey_uint(TEST_ROOT, "w", 1), CS_OK);
@@ -117,6 +131,16 @@ static void test_writekey_uint_update(test_ctx_t *ctx)
     TEST_CHECK_EQ_U(ctx, registry_readkey_uint(TEST_ROOT, "w", &v), CS_OK);
     TEST_CHECK_EQ_U(ctx, v, 1);
 
+    // Re-adding an existing key must fail with CS_FAILURE (kvs_error_exists
+    // propagated through registry_addkey_uint).
+    TEST_CHECK_EQ_U(ctx, registry_addkey_uint(TEST_ROOT, "w", 99), CS_FAILURE);
+
+    // Value must be unchanged after the failed re-add.
+    v = 0;
+    TEST_CHECK_EQ_U(ctx, registry_readkey_uint(TEST_ROOT, "w", &v), CS_OK);
+    TEST_CHECK_EQ_U(ctx, v, 1);
+
+    // Proper update: remove then re-add.
     TEST_CHECK_EQ_U(ctx, registry_removekey(TEST_ROOT, "w"), CS_OK);
     TEST_CHECK_EQ_U(ctx, registry_addkey_uint(TEST_ROOT, "w", 2), CS_OK);
 
@@ -139,13 +163,14 @@ static void test_removekey(test_ctx_t *ctx)
     TEST_CHECK_EQ_U(ctx, registry_removekey(TEST_ROOT, "rm"), CS_DNE);
 }
 
-// getdirectory + registry_next iteration must visit the keys we just added.
+// getdirectory + registry_next iteration must visit exactly the keys we added,
+// with the correct stored values.
 static void test_iteration(test_ctx_t *ctx)
 {
-    // Use a dedicated subdirectory so the iteration set is deterministic.
-    cs_error derr = registry_createdirectory(TEST_ROOT, "iter");
-    TEST_CHECK_MSG(ctx, derr == CS_OK || derr == CS_EXISTS,
-                   "createdirectory /TestSysReg/iter");
+    // Ensure a completely fresh subdirectory so no stale keys from a prior run
+    // can inflate the count.  Ignore CS_DNE on the remove (first run).
+    registry_removedirectory(TEST_ROOT, "iter");
+    TEST_CHECK_EQ_U(ctx, registry_createdirectory(TEST_ROOT, "iter"), CS_OK);
 
     TEST_CHECK_EQ_U(ctx, registry_addkey_uint(TEST_ROOT "/iter", "a", 1), CS_OK);
     TEST_CHECK_EQ_U(ctx, registry_addkey_uint(TEST_ROOT "/iter", "bb", 2), CS_OK);
@@ -163,23 +188,34 @@ static void test_iteration(test_ctx_t *ctx)
         name[0] = '\0';
         if (registry_readlocal_key(dir, name) != CS_OK)
             continue;
-        if (strcmp(name, "a") == 0)
+
+        uint64_t val = 0;
+        if (strcmp(name, "a") == 0) {
+            TEST_CHECK_EQ_U(ctx, registry_readlocal_uint(dir, &val), CS_OK);
+            TEST_CHECK_EQ_U(ctx, val, 1);
             saw_a = true;
-        else if (strcmp(name, "bb") == 0)
+        } else if (strcmp(name, "bb") == 0) {
+            TEST_CHECK_EQ_U(ctx, registry_readlocal_uint(dir, &val), CS_OK);
+            TEST_CHECK_EQ_U(ctx, val, 2);
             saw_bb = true;
-        else if (strcmp(name, "ccc") == 0)
+        } else if (strcmp(name, "ccc") == 0) {
+            TEST_CHECK_EQ_U(ctx, registry_readlocal_uint(dir, &val), CS_OK);
+            TEST_CHECK_EQ_U(ctx, val, 3);
             saw_ccc = true;
+        }
         count++;
     }
 
     TEST_CHECK_MSG(ctx, saw_a, "iteration saw key a");
     TEST_CHECK_MSG(ctx, saw_bb, "iteration saw key bb");
     TEST_CHECK_MSG(ctx, saw_ccc, "iteration saw key ccc");
-    TEST_CHECK_MSG(ctx, count >= 3, "iteration visited at least 3 keys");
+    // Exactly 3 keys must have been visited — no stale entries.
+    TEST_CHECK_EQ_U(ctx, (uint64_t)count, 3);
 
     registry_removekey(TEST_ROOT "/iter", "a");
     registry_removekey(TEST_ROOT "/iter", "bb");
     registry_removekey(TEST_ROOT "/iter", "ccc");
+    registry_removedirectory(TEST_ROOT, "iter");
 }
 
 void sysreg_register_tests(void)
