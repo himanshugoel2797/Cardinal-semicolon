@@ -122,7 +122,7 @@ PRIVATE virtio_state_t *virtio_initialize(void *ecam_addr, void (*int_handler)(i
     }
     else
     {
-        DEBUG_PRINT("[VirtioGpu] Legacy Virtio device!\r\n");
+        DEBUG_PRINT("[Virtio] Legacy Virtio device!\r\n");
     }
 
     return n_state;
@@ -212,8 +212,7 @@ PRIVATE void virtio_addresponse(virtio_state_t *state, int idx, void *buf, int l
     state->cmds[idx][cur_desc_idx].idx = cur_desc_idx;
     state->cmds[idx][cur_desc_idx].handler = resp_handler;
 
-    //Fill a descriptor with the cmd and update the available ring
-    //Fill a descriptor with the response and update the available ring
+    //Fill a write-only response descriptor and update the available ring
     intptr_t resp_phys = 0;
     vmem_virttophys(NULL, (intptr_t)buf, &resp_phys);
 
@@ -257,8 +256,7 @@ PRIVATE void virtio_postcmd_noresp(virtio_state_t *state, int idx, void *cmd, in
     state->cmds[idx][cur_desc_idx].idx = cur_desc_idx;
     state->cmds[idx][cur_desc_idx].handler = resp_handler;
 
-    //Fill a descriptor with the cmd and update the available ring
-    //Fill a descriptor with the response and update the available ring
+    //Fill a device-readable cmd descriptor (no response) and update the available ring
     intptr_t cmd_phys = 0;
     vmem_virttophys(NULL, (intptr_t)cmd, &cmd_phys);
 

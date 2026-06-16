@@ -16,7 +16,7 @@
 #define IP_PROTOCOL_UDP (17)
 
 typedef struct {
-    uint8_t ihl : 4;        //Only accept value = 5
+    uint8_t ihl : 4;        //Header length in 32-bit words; >=5 accepted (5 = no options)
     uint8_t version : 4;    //Value: 4
     uint8_t ecn : 2;        //Congestion Notification - Not supported
     uint8_t dscp : 6;       //TODO:

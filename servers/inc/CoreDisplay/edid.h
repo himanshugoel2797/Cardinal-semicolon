@@ -18,11 +18,6 @@ typedef enum
     edid_port_type_displayport,
 } edid_port_type_t;
 
-typedef enum
-{
-    edid_established_modes_none = 0,
-} edid_established_modes_t;
-
 typedef struct
 {
     uint8_t v_polarity;
@@ -56,7 +51,7 @@ typedef struct
     edid_port_type_t port_type;
     uint8_t bit_depth;
     uint8_t gamma; // divide by 100 and add 1
-    edid_established_modes_t established_modes;
+    uint32_t established_modes;  // EDID established-timings bitmap (bytes 35-37)
     uint8_t standard_timing_count;
     edid_standard_timings_t standard_timings[8];
     char display_name[13];

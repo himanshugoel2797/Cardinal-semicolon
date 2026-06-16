@@ -820,11 +820,10 @@ cs_error task_monitor(cs_id id, uint32_t *tgt, uint32_t cur_val)
 
 cs_error task_map(cs_id id, const char *name, intptr_t vaddr, size_t sz, task_map_flags_t flags, task_map_perms_t owner_perms, task_map_perms_t child_perms, int child_count, cs_id *shmem_id)
 {
-    name = NULL;
     if (shmem_id == NULL)
         return CS_UNKN;
 
-    if (name == NULL && (flags & task_map_shared) != 0)
+    if (name == NULL && (flags & task_map_shared) != 0)  //shared mappings require a name
         return CS_UNKN;
 
     if ((flags & task_map_oneway) != 0 && (flags & task_map_shared) == 0) //oneway mapping is only valid with shared memory

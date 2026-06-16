@@ -24,6 +24,11 @@ typedef struct {
     // responsible for its own serialisation.
     int (*read)(void *state, uint64_t lba, uint32_t count, void *buf);
     int (*write)(void *state, uint64_t lba, uint32_t count, const void *buf);
+
+    // CoreStorage-internal (drivers must not set this): becomes non-zero once a
+    // filesystem provider has claimed/mounted this device, so it is never offered
+    // to a second provider. Zeroed on registration.
+    int claimed;
 } storage_blockdev_t;
 
 int storage_register_blockdev(storage_blockdev_t *desc, void **handle);

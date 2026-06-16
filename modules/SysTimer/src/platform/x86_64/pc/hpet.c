@@ -273,8 +273,9 @@ PRIVATE int hpet_init() {
         }
     }
 
-    //Enable the counter
-    base_addr->Configuration.GlobalEnable = 0;
+    //Enable the counter (was setup with GlobalEnable=0; the registered
+    //hpet_main/hpet_sub timers don't advance until the main counter runs)
+    base_addr->Configuration.GlobalEnable = 1;
 
     return 0;
 }

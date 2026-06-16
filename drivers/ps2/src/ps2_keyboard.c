@@ -99,7 +99,7 @@ uint8_t PS2Keyboard_Initialize()
     WAIT_DATA_AVL;
     inb(DATA_PORT);
 
-    outb(DATA_PORT, 0xF8); //Enable make/break/typematic/repeat codes for all keys
+    outb(DATA_PORT, 0xF8); //Set all keys make/break (0xF8): emit both press and release codes (no typematic)
     WAIT_CMD_SENT;
     WAIT_DATA_AVL;
     inb(DATA_PORT);

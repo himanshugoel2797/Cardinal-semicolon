@@ -43,7 +43,7 @@ int ipv4_rx(interface_def_t *interface, const uint8_t *src_mac, void *packet, in
         //TODO: Forward to TCP layer (see notes/servers/CoreNetwork.md)
     } else if (ip_pack->protocol == IP_PROTOCOL_UDP) {
         //Forward to UDP layer
-        udp_ipv4_rx(interface, ip_pack, payload_len);
+        udp_ipv4_rx(interface, ip_pack, hdr_len, payload_len);
     } else {
         //TODO: Queue this packet into the raw queue, for potential user mode processing
     }

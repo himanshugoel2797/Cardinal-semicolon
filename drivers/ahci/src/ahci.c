@@ -118,7 +118,7 @@ PRIVATE int ahci_initializeport(ahci_instance_t *inst, int index)
     }
 
     if (ahci_read32(inst, HBA_PxSACT(index)) != 0)
-        PANIC("Expected 1!");
+        PANIC("Expected 0!");
 
     //Command buffer is 1024 bytes
     ahci_write32(inst, HBA_PxCLB(index), dma_base + (index * CMD_BUF_SIZE));
@@ -128,7 +128,7 @@ PRIVATE int ahci_initializeport(ahci_instance_t *inst, int index)
     ahci_write32(inst, HBA_PxFB(index), dma_base + 32 * CMD_BUF_SIZE + (index * FIS_SIZE));
     ahci_write32(inst, HBA_PxFBU(index), 0);
 
-    //Setup the first command table entry
+    //Initialize all 32 command header slots
     ahci_cmd_t *cmd_entry = (ahci_cmd_t *)(dma_vaddr + (index * CMD_BUF_SIZE));
     for (int i = 0; i < 32; i++)
     {

@@ -438,9 +438,9 @@ int module_init(void *ecam_addr)
     instance->iobar = bar;
     { char b[20]; DEBUG_PRINT("[UHCI] iobar="); DEBUG_PRINT(itoa((int)bar, b, 16)); DEBUG_PRINT("\r\n"); }
 
-    //Frame list: 4x1024 entries
+    //Frame list: 1024 entries (4 KiB)
     //Each frame contains transfer descriptors
-    //Queue Heads are for bulk transfers
+    //Persistent queue head serves control/bulk/interrupt transfers
     uintptr_t framelist_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
     if (framelist_phys == PHYSMEM_NO_ALLOC)
     {

@@ -8,10 +8,10 @@
  * driver for bInterfaceClass==HID; on probe it selects the boot protocol and
  * spawns a task that polls the interrupt IN endpoint and decodes reports.
  *
- * Test interface (intentionally simple, to be reviewed/redesigned): decoded
- * input is currently printed to the debug console rather than delivered to
- * CoreInput. CoreInput uses a pull/read-callback model that wants an event
- * queue; wiring that up is the next step (see notes/servers/CoreUsb-roadmap.md).
+ * Keyboards register with CoreInput via input_device_register and feed it
+ * decoded key events. Mouse motion needs float axes that kernel modules can't
+ * use (-mno-sse), so the mouse is decoded to the debug console only for now.
+ * Decoded reports are also echoed to the debug console for bring-up visibility.
  */
 
 #include <stdint.h>
