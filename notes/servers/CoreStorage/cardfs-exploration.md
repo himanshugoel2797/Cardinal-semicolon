@@ -45,9 +45,10 @@ stone. Deliberately absent, to add when the real design lands:
 - **No tags / relations / capabilities** — it's a flat key→blob map, not yet the
   relational/tag model. The "relational" layer is the next thing to prototype
   (e.g. a tag index object pointing at object ids, kvs-style).
-- **No B-tree** — linear table scan; fine for tens of objects, not thousands.
-  B-trees are now free to use (no licensing/patent constraint), so the real
-  design's B-tree content/index structures can be adopted directly.
+- **Linear table scan, no index** — fine for tens of objects, not thousands.
+  A B-tree index is the planned fix; B-trees are now free to use (no
+  licensing/patent constraint), so the real design's B-tree content/index
+  structures can be adopted directly.
 - **No userspace API** — cardfs registers as a CoreStorage fs provider
   (`storage_register_fsprovider`) and its probe mounts an existing volume, but it
   is not yet wired to a `SysObj`/syscall surface.
