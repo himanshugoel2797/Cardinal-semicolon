@@ -141,6 +141,166 @@ static void test_read_write_roundtrip(test_ctx_t *ctx) {
     TEST_CHECK(ctx, storage_blockdev_read(handle, MOCK_BLOCK_COUNT, 1, in) < 0);
     TEST_CHECK(ctx, storage_blockdev_write(handle, MOCK_BLOCK_COUNT, 1, out) < 0);
 
+    // Inspect the backing store directly: only LBA 1's region must have changed,
+    // LBA 0's region must still be all-zeros. This checks isolation at the buffer
+    // level, independent of the read path (which the LBA-0 read above relied on).
+    // `zeros` is the all-zero reference declared above.
+    TEST_CHECK_MSG(ctx, memcmp(mock_backing + 0, zeros, MOCK_BLOCK_SIZE) == 0,
+                   "backing LBA 0 region was modified by write to LBA 1");
+    TEST_CHECK_MSG(ctx, memcmp(mock_backing + MOCK_BLOCK_SIZE, out, MOCK_BLOCK_SIZE) == 0,
+                   "backing LBA 1 region does not hold the written data");
+
+    storage_unregister_blockdev(handle);
+}
+
+// storage_blockdev_get enumerates registered devices by index. Register a
+// device, then confirm it is reachable by index and that the handle it returns
+// is the same one register handed back (and exposes the registered descriptor).
+static void test_blockdev_get_by_index(test_ctx_t *ctx) {
+    int before = storage_blockdev_count();
+
+    storage_blockdev_t desc;
+    make_mock_desc(&desc);
+
+    void *handle = NULL;
+    int rc = storage_register_blockdev(&desc, &handle);
+    TEST_CHECK_EQ_U(ctx, rc, 0);
+    TEST_CHECK(ctx, handle != NULL);
+
+    // The new device is the last in the list (index == prior count).
+    void *by_idx = storage_blockdev_get(before);
+    TEST_CHECK_EQ_PTR(ctx, by_idx, handle);
+
+    const storage_blockdev_t *info = storage_blockdev_info(by_idx);
+    TEST_CHECK(ctx, info != NULL);
+    if (info != NULL)
+        TEST_CHECK(ctx, strcmp(info->name, "mock0") == 0);
+
+    // Out-of-range indices return NULL rather than reading past the list.
+    TEST_CHECK_EQ_PTR(ctx, storage_blockdev_get(-1), NULL);
+    TEST_CHECK_EQ_PTR(ctx, storage_blockdev_get(storage_blockdev_count()), NULL);
+
+    storage_unregister_blockdev(handle);
+}
+
+// --- Filesystem-provider probe/claim plumbing ---------------------------------
+//
+// A provider registers a probe callback; CoreStorage offers it every block
+// device (those present at provider-registration time, and each one registered
+// afterwards). The provider returns 0 to claim a device. These statics let the
+// probe record that it ran and on which device, so the test can assert the
+// probe/claim path actually fired.
+
+static int probe_call_count;
+static void *probe_last_dev;
+
+// fs providers cannot be unregistered (the registry has no removal API), so a
+// provider registered by one test stays live for later tests. To keep the
+// claim/decline tests isolated, each provider only acts on a device with a
+// matching marker name and ignores everything else -- so a stale provider from
+// an earlier test can never claim a later test's device out from under it.
+#define CLAIM_DEV_NAME "claimme"
+#define DECLINE_DEV_NAME "declineme"
+
+static const storage_blockdev_t *probe_info(void *blockdev_handle) {
+    return storage_blockdev_info(blockdev_handle);
+}
+
+// Claims a device named CLAIM_DEV_NAME (returns 0); ignores all others.
+static int mock_probe_claim(void *blockdev_handle) {
+    const storage_blockdev_t *info = probe_info(blockdev_handle);
+    if (info == NULL || strcmp(info->name, CLAIM_DEV_NAME) != 0)
+        return -1;  // not ours -- decline
+    probe_call_count++;
+    probe_last_dev = blockdev_handle;
+    return 0;
+}
+
+// Recognises DECLINE_DEV_NAME (so we can assert the probe ran) but always
+// declines it (returns <0), leaving the device unclaimed.
+static int mock_probe_decline(void *blockdev_handle) {
+    const storage_blockdev_t *info = probe_info(blockdev_handle);
+    if (info == NULL || strcmp(info->name, DECLINE_DEV_NAME) != 0)
+        return -1;
+    probe_call_count++;
+    probe_last_dev = blockdev_handle;
+    return -1;
+}
+
+// A block device registered *after* a claiming provider must be offered to that
+// provider's probe, and claiming it must set the device's `claimed` flag.
+static void test_fsprovider_probe_claim(test_ctx_t *ctx) {
+    probe_call_count = 0;
+    probe_last_dev = NULL;
+
+    storage_fsprovider_t prov;
+    memset(&prov, 0, sizeof(prov));
+    strncpy(prov.name, "mockfs", sizeof(prov.name) - 1);
+    prov.probe = mock_probe_claim;
+
+    int rc = storage_register_fsprovider(&prov);
+    TEST_CHECK_EQ_U(ctx, rc, 0);
+
+    // Now register a fresh block device named so this provider claims it; its
+    // probe should run on it.
+    storage_blockdev_t desc;
+    make_mock_desc(&desc);
+    memset(desc.name, 0, sizeof(desc.name));
+    strncpy(desc.name, CLAIM_DEV_NAME, sizeof(desc.name) - 1);
+
+    void *handle = NULL;
+    rc = storage_register_blockdev(&desc, &handle);
+    TEST_CHECK_EQ_U(ctx, rc, 0);
+    TEST_CHECK(ctx, handle != NULL);
+
+    TEST_CHECK_MSG(ctx, probe_call_count >= 1,
+                   "fs provider probe was never invoked for a newly registered device");
+    TEST_CHECK_EQ_PTR(ctx, probe_last_dev, handle);
+
+    // Claiming (probe returned 0) must mark the device claimed.
+    const storage_blockdev_t *info = storage_blockdev_info(handle);
+    TEST_CHECK(ctx, info != NULL);
+    if (info != NULL)
+        TEST_CHECK_MSG(ctx, info->claimed != 0,
+                       "device was not marked claimed after probe returned 0");
+
+    storage_unregister_blockdev(handle);
+}
+
+// A declining provider (probe returns <0) must still have its probe invoked, but
+// the device must remain unclaimed.
+static void test_fsprovider_probe_decline(test_ctx_t *ctx) {
+    probe_call_count = 0;
+    probe_last_dev = NULL;
+
+    storage_fsprovider_t prov;
+    memset(&prov, 0, sizeof(prov));
+    strncpy(prov.name, "declinefs", sizeof(prov.name) - 1);
+    prov.probe = mock_probe_decline;
+
+    int rc = storage_register_fsprovider(&prov);
+    TEST_CHECK_EQ_U(ctx, rc, 0);
+
+    storage_blockdev_t desc;
+    make_mock_desc(&desc);
+    memset(desc.name, 0, sizeof(desc.name));
+    strncpy(desc.name, DECLINE_DEV_NAME, sizeof(desc.name) - 1);
+
+    void *handle = NULL;
+    rc = storage_register_blockdev(&desc, &handle);
+    TEST_CHECK_EQ_U(ctx, rc, 0);
+    TEST_CHECK(ctx, handle != NULL);
+
+    TEST_CHECK_MSG(ctx, probe_call_count >= 1,
+                   "declining fs provider probe was never invoked");
+    TEST_CHECK_EQ_PTR(ctx, probe_last_dev, handle);
+
+    const storage_blockdev_t *info = storage_blockdev_info(handle);
+    TEST_CHECK(ctx, info != NULL);
+    if (info != NULL)
+        TEST_CHECK_MSG(ctx, info->claimed == 0,
+                       "device was marked claimed even though probe declined it");
+
     storage_unregister_blockdev(handle);
 }
 
@@ -173,6 +333,36 @@ void corestorage_register_tests(void) {
             .suite = "CoreStorage",
             .name = "read_write_roundtrip",
             .fn = test_read_write_roundtrip,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "CoreStorage",
+            .name = "blockdev_get_by_index",
+            .fn = test_blockdev_get_by_index,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "CoreStorage",
+            .name = "fsprovider_probe_claim",
+            .fn = test_fsprovider_probe_claim,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "CoreStorage",
+            .name = "fsprovider_probe_decline",
+            .fn = test_fsprovider_probe_decline,
             .run = TEST_RUN_INLINE,
             .flags = TEST_FLAG_NONE,
         };
