@@ -16,27 +16,47 @@
 #include "SysTest/test.h"
 #include "SysFP/fp.h"
 
-// INLINE: the FP-state buffer size must be a sane, positive value.
+// The default-state buffer is an FXSAVE/XSAVE legacy area. Per the SDM and the
+// SysFP platform initializer, the default control words are:
+//   FCW   (FPU control word) -- 16 bits at byte offset 0   == 0x33F
+//   MXCSR (SSE control/status) -- 32 bits at byte offset 24 == 0x1F80
+#define FP_DEFAULT_FCW   0x033Fu
+#define FP_DEFAULT_MXCSR 0x1F80u
+#define FP_MXCSR_OFFSET  24
+
+// The FXSAVE area is always at least 512 bytes; XSAVE is larger still.
+#define FP_MIN_STATESIZE 512
+
+// INLINE: the FP-state buffer must be at least the minimum the FXSAVE/XSAVE
+// instructions require (>= 512 bytes), not merely positive.
 static void test_statesize_positive(test_ctx_t *ctx) {
     int size = fp_platform_getstatesize();
-    TEST_CHECK(ctx, size > 0);
+    TEST_CHECK_MSG(ctx, size >= FP_MIN_STATESIZE,
+                   "FP state size is at least the 512-byte FXSAVE minimum");
 }
 
-// INLINE: the required FP-state alignment must be a sane, positive value.
+// INLINE: the FXSAVE/XSAVE area alignment must be a power of two and one of the
+// two valid values (16 for FXSAVE, 64 for XSAVE).
 static void test_align_positive(test_ctx_t *ctx) {
     int align = fp_platform_getalign();
     TEST_CHECK(ctx, align > 0);
+    // Power of two.
+    TEST_CHECK_MSG(ctx, (align & (align - 1)) == 0,
+                   "FP state alignment is a power of two");
+    // Exactly the FXSAVE (16) or XSAVE (64) requirement.
+    TEST_CHECK_MSG(ctx, align == 16 || align == 64,
+                   "FP state alignment is 16 (FXSAVE) or 64 (XSAVE)");
 }
 
-// INLINE: smoke-test the default-state initializer on a correctly aligned
-// buffer. Over-allocate by the alignment, round the pointer up, and confirm
-// the call returns without faulting. Does not touch live FP state.
+// INLINE: run the default-state initializer on a correctly aligned buffer and
+// verify it produced the architectural default control words. Over-allocate by
+// the alignment, round the pointer up. Does not touch live FP state.
 static void test_getdefaultstate_smoke(test_ctx_t *ctx) {
     int size = fp_platform_getstatesize();
     int align = fp_platform_getalign();
-    TEST_CHECK(ctx, size > 0);
+    TEST_CHECK(ctx, size >= FP_MIN_STATESIZE);
     TEST_CHECK(ctx, align > 0);
-    if (size <= 0 || align <= 0)
+    if (size < FP_MIN_STATESIZE || align <= 0)
         return;
 
     uint8_t *raw = (uint8_t *)malloc((size_t)size + (size_t)align);
@@ -48,7 +68,25 @@ static void test_getdefaultstate_smoke(test_ctx_t *ctx) {
     uintptr_t aligned = (addr + (uintptr_t)align - 1) & ~((uintptr_t)align - 1);
     TEST_CHECK(ctx, (aligned % (uintptr_t)align) == 0);
 
+    // Poison the control-word slots first so we know the initializer wrote them.
+    uint8_t *buf = (uint8_t *)aligned;
+    buf[0] = 0xFF;
+    buf[1] = 0xFF;
+    for (int i = 0; i < 4; i++)
+        buf[FP_MXCSR_OFFSET + i] = 0xFF;
+
     fp_platform_getdefaultstate((void *)aligned);
+
+    // FCW: 16-bit LE field at offset 0.
+    uint32_t fcw = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8);
+    TEST_CHECK_EQ_U(ctx, fcw, FP_DEFAULT_FCW);
+
+    // MXCSR: 32-bit LE field at offset 24.
+    uint32_t mxcsr = (uint32_t)buf[FP_MXCSR_OFFSET] |
+                     ((uint32_t)buf[FP_MXCSR_OFFSET + 1] << 8) |
+                     ((uint32_t)buf[FP_MXCSR_OFFSET + 2] << 16) |
+                     ((uint32_t)buf[FP_MXCSR_OFFSET + 3] << 24);
+    TEST_CHECK_EQ_U(ctx, mxcsr, FP_DEFAULT_MXCSR);
 
     free(raw);
 }
