@@ -34,6 +34,16 @@ void NORETURN test_platform_exit(int code) {
 void NORETURN system_reset(void) {
     __asm__ volatile("cli");
 
+    // Drain the COM1 transmitter before resetting so the last serial output
+    // (notably the death-test "DIED" frame) is fully clocked out and reaches the
+    // host harness BEFORE the reboot's HELLO -- otherwise the harness could see
+    // the reboot first and mis-grade a specific-vector death. Wait for LSR.TEMT
+    // (transmitter empty: both holding and shift register drained), bounded.
+    for (int i = 0; i < 10000000; i++) {
+        if (inb(0x3F8 + 5) & 0x40)
+            break;
+    }
+
     // 0xCF9: set RST_CPU|SYS_RST. Write 0x02 (assert) then 0x06 (full reset).
     outb(0xCF9, 0x02);
     outb(0xCF9, 0x06);
