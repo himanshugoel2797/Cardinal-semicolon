@@ -31,13 +31,14 @@ static _Atomic uint32_t node_cnt = 0;
 //taken after cli() so an interrupt on this core cannot deadlock against itself.
 static int alloc_lock = 0;
 
-void *WEAK malloc(size_t sz)
+//Lock-free allocation core. Callers MUST already hold alloc_lock (taken after
+//cli()). Factored out so realloc can malloc/free while holding the lock once,
+//without recursively re-acquiring alloc_lock.
+static void *malloc_unlocked(size_t sz)
 {
     if (sz == 0)
         return NULL;
 
-    int cli_state = cli();
-    local_spinlock_lock(&alloc_lock);
     //Align size with 16 bytes, so all allocations are 16-byte aligned
     if (sz % 8)
         sz += 8 - (sz % 8);
@@ -73,8 +74,6 @@ void *WEAK malloc(size_t sz)
         if (phys == PHYSMEM_NO_ALLOC)
         {
             //Out of physical memory: fail the allocation gracefully.
-            local_spinlock_unlock(&alloc_lock);
-            sti(cli_state);
             return NULL;
         }
 
@@ -124,7 +123,18 @@ void *WEAK malloc(size_t sz)
     }
 
     cur_best_fit->isFree = false;
-    void *retAddr = cur_best_fit->data;
+    return cur_best_fit->data;
+}
+
+void *WEAK malloc(size_t sz)
+{
+    if (sz == 0)
+        return NULL;
+
+    int cli_state = cli();
+    local_spinlock_lock(&alloc_lock);
+
+    void *retAddr = malloc_unlocked(sz);
 
     local_spinlock_unlock(&alloc_lock);
     sti(cli_state);
@@ -147,14 +157,11 @@ void print_free_addr()
     DEBUG_PRINT("\r\n");
 }
 
-void WEAK free(void *sz)
+//Lock-free deallocation core. Callers MUST already hold alloc_lock.
+static void free_unlocked(void *sz)
 {
-
     if (sz == NULL)
         return;
-
-    int cli_state = cli();
-    local_spinlock_lock(&alloc_lock);
 
     //access the node info
     mem_node_t *desc = (mem_node_t *)((intptr_t)sz - sizeof(mem_node_t));
@@ -173,7 +180,73 @@ void WEAK free(void *sz)
     //TODO: implement returning remaining memory to system
     if (node_cnt >= 512)
         mem_compact();
+}
+
+void WEAK free(void *sz)
+{
+    if (sz == NULL)
+        return;
+
+    int cli_state = cli();
+    local_spinlock_lock(&alloc_lock);
+
+    free_unlocked(sz);
 
     local_spinlock_unlock(&alloc_lock);
     sti(cli_state);
+}
+
+void *WEAK realloc(void *ptr, size_t size)
+{
+    //Match standard / bootstrap realloc semantics.
+    if (ptr == NULL)
+        return malloc(size);
+
+    int cli_state = cli();
+    local_spinlock_lock(&alloc_lock);
+
+    if (size == 0)
+    {
+        free_unlocked(ptr);
+        local_spinlock_unlock(&alloc_lock);
+        sti(cli_state);
+        return NULL;
+    }
+
+    //Round up exactly like malloc_unlocked so the in-place comparison matches
+    //the size the original allocation was actually rounded to.
+    size_t req = size;
+    if (req % 8)
+        req += 8 - (req % 8);
+
+    //Recover the existing block's size from its node metadata.
+    mem_node_t *desc = (mem_node_t *)((intptr_t)ptr - sizeof(mem_node_t));
+    size_t old_len = desc->len;
+
+    //If the existing block already satisfies the request, keep it in place.
+    //(No splitting on shrink: the allocator only ever tracks whole-node sizes,
+    //so leaving the slack avoids fragmenting the node list.)
+    if (old_len >= req)
+    {
+        local_spinlock_unlock(&alloc_lock);
+        sti(cli_state);
+        return ptr;
+    }
+
+    //Otherwise allocate a new block, copy the old contents, free the old.
+    void *n = malloc_unlocked(size);
+    if (n == NULL)
+    {
+        //Allocation failed: leave the old block intact, per C realloc semantics.
+        local_spinlock_unlock(&alloc_lock);
+        sti(cli_state);
+        return NULL;
+    }
+
+    memcpy(n, ptr, old_len);
+    free_unlocked(ptr);
+
+    local_spinlock_unlock(&alloc_lock);
+    sti(cli_state);
+    return n;
 }

@@ -9,6 +9,8 @@
 
 void *malloc(size_t size);
 
+void *realloc(void *ptr, size_t size);
+
 void free(void *ptr);
 
 char *itoa(int val, char *dst, int base);
