@@ -13,24 +13,13 @@
 #include "net_priv.h"
 #include "CoreNetwork/driver.h"
 
-static list_t dev_list;
+list_t dev_list;
 static int dev_list_lock = 0;
 
-static list_t interface_list;
+list_t interface_list;
 static int interface_list_lock = 0;
 
-static int devIDs[network_device_type_count];
-
-PRIVATE int network_init(void)
-{
-    list_init(&dev_list);
-    list_init(&interface_list);
-
-    for (int i = 0; i < network_device_type_count; i++)
-        devIDs[i] = 0;
-
-    return 0;
-}
+int devIDs[network_device_type_count];
 
 int network_register(network_device_desc_t *desc, void **network_handle)
 {

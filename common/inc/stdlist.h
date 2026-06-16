@@ -62,4 +62,10 @@ list_rot_prev(list_t *a);
 uint64_t
 list_history(list_t *a);
 
+// Walk the list and remove the first node whose value pointer equals val.
+// Returns 1 if a match was found and removed, 0 if not found.
+// Does NOT acquire any lock; the caller must hold the appropriate lock.
+int
+list_remove_value(list_t *l, void *val);
+
 #endif

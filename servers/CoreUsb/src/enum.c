@@ -52,6 +52,10 @@ static int enum_lock = 0;
 // enum_lock guards both this bitmap and enum_devices.
 static uint8_t addr_used[128 / 8];
 
+static inline void addr_bitmap_clear(int addr) {
+    addr_used[addr >> 3] &= (uint8_t)~(1 << (addr & 7));
+}
+
 static int alloc_address(void) {
     local_spinlock_lock(&enum_lock);
     int addr = -1;
@@ -69,7 +73,7 @@ static void free_address(int addr) {
     if (addr < 1 || addr > 127)
         return;
     local_spinlock_lock(&enum_lock);
-    addr_used[addr >> 3] &= (uint8_t)~(1 << (addr & 7));
+    addr_bitmap_clear(addr);
     local_spinlock_unlock(&enum_lock);
 }
 
@@ -77,14 +81,6 @@ static usb_class_probe_t class_probes[256] = {0};
 static usb_class_remove_t class_removes[256] = {0};
 
 static int enum_on_port(void *hc_handle, int parent_addr, int port, usb_speed_t speed);
-
-// Real wall-clock delay via the calibrated counter (SysTimer), like AHCI/RTL. An
-// iteration-count spin burns a fixed amount of CPU *work*, so on a CPU-shared
-// task it stretches to many seconds; timer_busywait is TSC-paced and returns
-// after the intended real time regardless of scheduling.
-static void usb_delay_ns(uint64_t ns) {
-    timer_busywait_ns(ns);
-}
 
 int usb_register_class_driver(uint8_t dev_class, usb_class_probe_t probe,
                               usb_class_remove_t remove) {
@@ -211,7 +207,7 @@ static void free_enum_device(usb_enum_device_t *dev) {
     local_spinlock_lock(&enum_lock);
     int addr = dev->address;
     if (addr >= 1 && addr <= 127)
-        addr_used[addr >> 3] &= (uint8_t)~(1 << (addr & 7));
+        addr_bitmap_clear(addr);
     dev->disconnecting = false;
     dev->in_use = false;
     local_spinlock_unlock(&enum_lock);
@@ -263,7 +259,12 @@ static int enum_on_port(void *hc_handle, int parent_addr, int port, usb_speed_t 
         free_address(addr);
         return -1;
     }
-    usb_delay_ns(50 * 1000 * 1000);  // SET_ADDRESS recovery (spec >=2ms; xHCI Address Device wants more)
+    // Real wall-clock delay via the calibrated counter (SysTimer), like AHCI/RTL.
+    // An iteration-count spin burns a fixed amount of CPU *work*, so on a CPU-shared
+    // task it stretches to many seconds; timer_busywait is TSC-paced and returns
+    // after the intended real time regardless of scheduling.
+    // SET_ADDRESS recovery: spec requires >=2ms; xHCI Address Device command wants more.
+    timer_busywait_ns(50 * 1000 * 1000);
 
     usb_enum_device_t *dev = alloc_enum_device();
     if (dev == NULL) {
@@ -328,20 +329,10 @@ static int enum_on_port(void *hc_handle, int parent_addr, int port, usb_speed_t 
     }
 
     // 6) Find the first interface descriptor; dispatch to its class driver.
-    int off = 0;
     uint8_t dev_class = dev->dev_desc.bDeviceClass;
-    while (off + 2 <= dev->config_len) {
-        uint8_t len = dev->config_buf[off];
-        uint8_t dtype = dev->config_buf[off + 1];
-        if (len == 0)
-            break;
-        if (dtype == USB_DESC_INTERFACE && off + (int)sizeof(usb_interface_descriptor_t) <= dev->config_len) {
-            usb_interface_descriptor_t *iface = (usb_interface_descriptor_t *)&dev->config_buf[off];
-            dev_class = iface->bInterfaceClass;
-            break;
-        }
-        off += len;
-    }
+    usb_interface_descriptor_t *iface = first_interface(dev);
+    if (iface)
+        dev_class = iface->bInterfaceClass;
 
     if (class_probes[dev_class] != NULL && class_probes[dev_class](dev) == 0) {
         DEBUG_PRINT("[CoreUsb] dispatched to class driver\r\n");

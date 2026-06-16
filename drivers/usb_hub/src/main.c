@@ -18,6 +18,7 @@
 
 #include "CoreUsb/usb.h"
 #include "SysTaskMgr/task.h"
+#include "SysTimer/timer.h"
 
 #define HUB_DESC_TYPE 0x29
 
@@ -46,11 +47,6 @@ typedef struct {
 
 #define MAX_HUB 4
 static hub_dev_t hubs[MAX_HUB];
-
-static void hub_delay(uint64_t iters) {
-    for (volatile uint64_t i = 0; i < iters; i++)
-        ;
-}
 
 static int hub_get_status(hub_dev_t *h, int port, uint16_t *status, uint16_t *change) {
     uint8_t buf[4];
@@ -90,9 +86,9 @@ static void hub_task(void *arg) {
                 DEBUG_PRINT("[usb_hub] downstream device connected; resetting\r\n");
                 hub_clear_feature(h, port, C_PORT_CONNECTION);
                 hub_set_feature(h, port, PORT_RESET);
-                hub_delay(40000000);  // ~reset duration
+                timer_busywait_ns(50 * 1000 * 1000);  // ~reset duration (USB spec: 50ms)
                 hub_clear_feature(h, port, C_PORT_RESET);
-                hub_delay(20000000);  // recovery
+                timer_busywait_ns(20 * 1000 * 1000);  // recovery (20ms debounce)
 
                 if (hub_get_status(h, port, &status, &change) < 0)
                     continue;
@@ -154,7 +150,7 @@ static int hub_probe(usb_enum_device_t *dev) {
     // Power on every port, then let them settle.
     for (int port = 1; port <= nports; port++)
         hub_set_feature(h, port, PORT_POWER);
-    hub_delay(40000000);
+    timer_busywait_ns(100 * 1000 * 1000);  // power-on settle (USB hub spec: bPwrOn2PwrGood * 2ms, max 100ms)
 
     h->task = 0;
     if (task_create_kernel("usb_hub_poll", task_permissions_kernel, &h->task) != CS_OK) {

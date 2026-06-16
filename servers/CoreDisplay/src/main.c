@@ -44,20 +44,9 @@ int display_unregister(display_desc_t *desc)
         return -1;
 
     local_spinlock_lock(&display_list_lock);
-    int len = (int)list_len(&display_list);
-
-    for (int i = 0; i < len; i++)
-    {
-        if ((uintptr_t)list_at(&display_list, (uint64_t)i) == (uintptr_t)desc)
-        {
-            list_remove(&display_list, (uint64_t)i);
-            local_spinlock_unlock(&display_list_lock);
-            return 0;
-        }
-    }
-
+    int found = list_remove_value(&display_list, desc);
     local_spinlock_unlock(&display_list_lock);
-    return 1;
+    return found ? 0 : 1;
 }
 
 //get info/handlers

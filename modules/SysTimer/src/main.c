@@ -191,47 +191,47 @@ int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int))
     return 0;
 }
 
+// Return the index of the first timer that is a readable, persistent counter,
+// or -1 if none is available.
+static int find_persistent_counter(void)
+{
+    for (int i = 0; i < timer_idx; i++)
+        if ((timer_defs[i].features & (timer_features_read | timer_features_persistent | timer_features_counter)) == (timer_features_read | timer_features_persistent | timer_features_counter))
+            if (timer_defs[i].handlers.read != NULL)
+                return i;
+    return -1;
+}
+
 uint64_t timer_timestamp()
 {
-    int idx = 0;
-    for (; idx < timer_idx; idx++)
-        if ((timer_defs[idx].features & (timer_features_read | timer_features_persistent | timer_features_counter)) == (timer_features_read | timer_features_persistent | timer_features_counter))
-            if (timer_defs[idx].handlers.read != NULL)
-                return timer_defs[idx].handlers.read(&timer_defs[idx].handlers);
-
-    return TIMER_NO_COUNTER;
+    int idx = find_persistent_counter();
+    if (idx < 0)
+        return TIMER_NO_COUNTER;
+    return timer_defs[idx].handlers.read(&timer_defs[idx].handlers);
 }
 
 // Persistent counter rate in ticks/sec (0 if no readable persistent counter).
 uint64_t timer_counter_rate()
 {
-    int idx = 0;
-    for (; idx < timer_idx; idx++)
-        if ((timer_defs[idx].features & (timer_features_read | timer_features_persistent | timer_features_counter)) == (timer_features_read | timer_features_persistent | timer_features_counter))
-            if (timer_defs[idx].handlers.read != NULL)
-                return timer_defs[idx].handlers.rate;
-
-    return 0;
+    int idx = find_persistent_counter();
+    if (idx < 0)
+        return 0;
+    return timer_defs[idx].handlers.rate;
 }
 
 uint64_t timer_timestamp_ns()
 {
-    int idx = 0;
-    for (; idx < timer_idx; idx++)
-        if ((timer_defs[idx].features & (timer_features_read | timer_features_persistent | timer_features_counter)) == (timer_features_read | timer_features_persistent | timer_features_counter))
-            if (timer_defs[idx].handlers.read != NULL)
-            {
-                uint64_t rate = timer_defs[idx].handlers.rate;
-                if (rate == 0)
-                    return TIMER_NO_COUNTER;
-                // Integer ns = ticks/rate*1e9 + (ticks%rate)*1e9/rate. Kernel
-                // modules build -mno-sse, so no floating point here; the split
-                // avoids overflow (ticks*1e9 would wrap a few seconds after boot).
-                uint64_t ticks = timer_defs[idx].handlers.read(&timer_defs[idx].handlers);
-                return (ticks / rate) * 1000000000ULL + ((ticks % rate) * 1000000000ULL) / rate;
-            }
-
-    return TIMER_NO_COUNTER;
+    int idx = find_persistent_counter();
+    if (idx < 0)
+        return TIMER_NO_COUNTER;
+    uint64_t rate = timer_defs[idx].handlers.rate;
+    if (rate == 0)
+        return TIMER_NO_COUNTER;
+    // Integer ns = ticks/rate*1e9 + (ticks%rate)*1e9/rate. Kernel
+    // modules build -mno-sse, so no floating point here; the split
+    // avoids overflow (ticks*1e9 would wrap a few seconds after boot).
+    uint64_t ticks = timer_defs[idx].handlers.read(&timer_defs[idx].handlers);
+    return (ticks / rate) * 1000000000ULL + ((ticks % rate) * 1000000000ULL) / rate;
 }
 
 // Bounded busy-wait timeouts backed by the persistent counter (see timer.h).
@@ -275,11 +275,6 @@ void timer_busywait_ns(uint64_t ns)
         ;
 }
 
-static int timer_init()
-{
-    return 0;
-}
-
 int module_init()
 {
     // Reserve a per-core TLS slot for the periodic timer_wait() fallback state,
@@ -290,14 +285,6 @@ int module_init()
     timer_defs = malloc(sizeof(timer_defs_t) * timer_def_cnt);
     memset(timer_defs, 0, sizeof(timer_defs_t) * timer_def_cnt);
 
-    int err = 0;
-
-    err = timer_platform_init();
-    if (err != 0)
-        return err;
-
-    //callibrate timers as needed
-    err = timer_init();
-
+    int err = timer_platform_init();
     return err;
 }

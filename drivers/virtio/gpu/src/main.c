@@ -7,7 +7,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <cardinal/local_spinlock.h>
 
 #include "virtio.h"
 #include "virtio_gpu.h"
@@ -19,49 +18,38 @@
 #include "SysTaskMgr/task.h"
 
 static virtio_gpu_driver_state_t device;
-static _Atomic int virtio_signalled = 0;
-static _Atomic int virtio_inited = 0;
-static int virtio_queue_avl = 0;
+static virtio_poll_state_t gpu_poll_state;
 
 static void intrpt_handler(int idx)
 {
     idx = 0;
-    virtio_signalled = true;
-    //local_spinlock_unlock(&virtio_signalled);
+    virtio_poll_signal(&gpu_poll_state);
+}
+
+static void gpu_poll_cb(void *ctx)
+{
+    ctx = NULL;
+
+    for (int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++)
+    {
+        virtio_accept_used(device.common_state, i);
+    }
+
+    virtio_gpu_config_t *cfg = (virtio_gpu_config_t *)device.common_state->dev_cfg;
+
+    if (cfg->events_read & VIRTIO_GPU_EVENT_DISPLAY)
+    {
+        DEBUG_PRINT("Display resized\r\n");
+        cfg->events_clear = VIRTIO_GPU_EVENT_DISPLAY;
+        virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
+        virtio_notify(device.common_state, 0);
+    }
 }
 
 static void virtio_task_handler(void *arg)
 {
     arg = NULL;
-
-    while (!virtio_inited)
-        ;
-
-    while (true)
-    {
-        while (virtio_signalled)
-        {
-            local_spinlock_lock(&virtio_queue_avl);
-
-            virtio_signalled = false;
-            for (int i = 0; i < VIRTIO_GPU_VIRTQ_COUNT; i++)
-            {
-                virtio_accept_used(device.common_state, i);
-            }
-
-            virtio_gpu_config_t *cfg = (virtio_gpu_config_t *)device.common_state->dev_cfg;
-
-            if (cfg->events_read & VIRTIO_GPU_EVENT_DISPLAY)
-            {
-                DEBUG_PRINT("Display resized\r\n");
-                cfg->events_clear = VIRTIO_GPU_EVENT_DISPLAY;
-                virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
-                virtio_notify(device.common_state, 0);
-            }
-
-            local_spinlock_unlock(&virtio_queue_avl);
-        }
-    }
+    virtio_run_poll_loop(&gpu_poll_state, gpu_poll_cb, NULL);
 }
 
 void virtio_gpu_submitcmd(int q, void *cmd, int cmd_len, void *resp, int resp_len, void (*resp_handler)(virtio_virtq_cmd_state_t *))
@@ -493,7 +481,7 @@ int module_init(void *ecam)
     virtio_gpu_getdisplayinfo(virtio_gpu_displayinit_handler);
     virtio_notify(device.common_state, 0);
 
-    virtio_inited = true;
+    gpu_poll_state.inited = true;
 
     while (device.scanouts[0].resource_id == 0)
         ;

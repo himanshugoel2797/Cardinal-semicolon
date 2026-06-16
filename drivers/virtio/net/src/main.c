@@ -7,7 +7,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <cardinal/local_spinlock.h>
 
 #include "virtio.h"
 #include "net.h"
@@ -19,42 +18,31 @@
 #include "CoreNetwork/driver.h"
 
 static virtio_net_driver_state_t device;
-static _Atomic int virtio_signalled = 0;
-static _Atomic int virtio_inited = 0;
-static int virtio_queue_avl = 0;
+static virtio_poll_state_t net_poll_state;
 
 static void intrpt_handler(int idx)
 {
     idx = 0;
-    virtio_signalled = true;
-    //local_spinlock_unlock(&virtio_signalled);
+    virtio_poll_signal(&net_poll_state);
+}
+
+static void net_poll_cb(void *ctx)
+{
+    ctx = NULL;
+
+    DEBUG_PRINT("VirtioNet Interrupt!\r\n");
+
+    //acknowledge transmitted packets
+    virtio_accept_used(device.common_state, VIRTIO_NET_Q_TX);
+
+    //forward received packets
+    virtio_accept_used(device.common_state, VIRTIO_NET_Q_RX);
 }
 
 static void virtio_task_handler(void *arg)
 {
     arg = NULL;
-
-    while (!virtio_inited)
-        ;
-
-    while (true)
-    {
-        while (virtio_signalled)
-        {
-            local_spinlock_lock(&virtio_queue_avl);
-            virtio_signalled = false;
-
-            DEBUG_PRINT("VirtioNet Interrupt!\r\n");
-
-            //acknowledge transmitted packets
-            virtio_accept_used(device.common_state, VIRTIO_NET_Q_TX);
-
-            //forward received packets
-            virtio_accept_used(device.common_state, VIRTIO_NET_Q_RX);
-
-            local_spinlock_unlock(&virtio_queue_avl);
-        }
-    }
+    virtio_run_poll_loop(&net_poll_state, net_poll_cb, NULL);
 }
 
 static void virtio_net_resphandler(virtio_virtq_cmd_state_t *cmd)
@@ -203,7 +191,7 @@ int module_init(void *ecam)
     virtio_notify(device.common_state, VIRTIO_NET_Q_RX);
     virtio_notify(device.common_state, VIRTIO_NET_Q_TX);
 
-    virtio_inited = true;
+    net_poll_state.inited = true;
 
     /*arp_t packet_a;
     arp_t *packet = (arp_t*)&packet_a;

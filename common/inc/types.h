@@ -39,6 +39,9 @@ extern "C"
 #define GiB(x) (uint64_t)(MiB(1) * 1024ull * x)
 #define TiB(x) (uint64_t)(GiB(1) * 1024ull * x)
 
+// Round `val` up to a multiple of `mult`; `mult` MUST be a power of two.
+#define ALIGN_UP(val, mult) (((val) + ((mult) - 1)) & ~((__typeof__(val))(mult) - 1))
+
 #define ALIGNED(x) __attribute__((aligned(x)))
 #define UNUSED __attribute__((__unused__))
 #define NONNULL

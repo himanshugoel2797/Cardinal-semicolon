@@ -37,9 +37,6 @@ static uint64_t data_multiple;
 static uint64_t instr_multiple;
 static uint64_t pagetable_multiple;
 
-static uint64_t roundUp_po2(uint64_t val, uint64_t mult) {
-    return (val + (mult - 1)) & ~(mult - 1);
-}
 static int32_t partition_pgs(uint64_t *data, int32_t lo, int32_t hi,
                              int32_t sz) {
     int32_t piv_loc = (lo + hi) / 2;
@@ -171,7 +168,7 @@ uintptr_t physmem_alloc(int domain, int color, physmem_alloc_flags_t flags,
     // Coloring only matters for single page allocations of cache age size
 
     // allocations are multiples of BTM_LEVEL pages
-    size = roundUp_po2(size, BTM_LEVEL);
+    size = ALIGN_UP(size, BTM_LEVEL);
     int32_t pg_cnt = size / BTM_LEVEL;
 
     // dequeue and enqueue until a unit large enough for this allocation is found
@@ -233,7 +230,7 @@ int physmem_init() {
         PANIC("Failed to read registry.");
 
     // Compute the number of bits
-    int32_t btm_sz = roundUp_po2(mem_size, BTM_LEVEL) / BTM_LEVEL;
+    int32_t btm_sz = ALIGN_UP(mem_size, BTM_LEVEL) / BTM_LEVEL;
     //TODO: queue size becomes large with memory size increase, figure out how to keep it manageable
     //TODO: also fix memsize calculation so it reflects usable memory size, rather than address space size
 
@@ -269,7 +266,7 @@ int physmem_init() {
             if (len % BTM_LEVEL != 0)
                 len -= len % BTM_LEVEL;
 
-            addr = roundUp_po2(addr, BTM_LEVEL);
+            addr = ALIGN_UP(addr, BTM_LEVEL);
 
 #ifdef PHYSMEM_DEBUG_VERBOSE_MID
             {

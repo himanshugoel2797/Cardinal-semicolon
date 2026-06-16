@@ -54,19 +54,10 @@ static uint32_t read32(uhci_ctrl_state_t *state, uint16_t addr)
     return inl(state->iobar + addr);
 }
 
-// Real wall-clock delay via the calibrated counter (SysTimer), like AHCI/RTL. An
-// iteration-count spin burns a fixed amount of CPU *work*; on the cooperative
-// poll task it stretches a "15ms" delay to seconds. timer_busywait is TSC-paced,
-// so it returns after the intended real time no matter how the task is scheduled.
-static void uhci_delay_ns(uint64_t ns)
-{
-    timer_busywait_ns(ns);
-}
-
 static void uhci_reset(uhci_ctrl_state_t *state)
 {
     write16(state, USBCMD_REG, USBCMD_GRESET);
-    uhci_delay_ns(10 * 1000 * 1000);
+    timer_busywait_ns(10 * 1000 * 1000);
     write16(state, USBCMD_REG, 0);  //Exit GRESET 10ms after starting
 
     //now perform an HCRESET (bounded wall-clock wait for it to clear)
@@ -88,11 +79,11 @@ static void uhci_enableport(uhci_ctrl_state_t *state, int idx)
     
     //Reset port (>=10ms asserted), de-assert, then a recovery delay before enable.
     write16(state, PORTSCn_REG(idx), PORTSC_PORTRESET);
-    uhci_delay_ns(15 * 1000 * 1000);
+    timer_busywait_ns(15 * 1000 * 1000);
     write16(state, PORTSCn_REG(idx), 0);
-    uhci_delay_ns(20 * 1000 * 1000);
+    timer_busywait_ns(20 * 1000 * 1000);
     write16(state, PORTSCn_REG(idx), PORTSC_PORTEN | PORTSC_PORTENCHG);
-    uhci_delay_ns(20 * 1000 * 1000);
+    timer_busywait_ns(20 * 1000 * 1000);
 }
 
 // Synchronous control transfer on endpoint 0, used by CoreUsb for enumeration

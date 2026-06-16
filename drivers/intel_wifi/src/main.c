@@ -12,8 +12,7 @@
 
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
-#include "SysInterrupts/interrupts.h"
-#include "pci/pci.h"
+#include "pci/pci_irq.h"
 
 #include "if_iwmreg.h"
 
@@ -80,26 +79,15 @@ int module_init(void *ecam_addr) {
     g_state = dev_state;
 
     //interrupt setup
-    int int_cnt = 0;
-    int msi_val = pci_getmsiinfo(device, &int_cnt);
+    int int_val = pci_setup_msi(device, interrupt_flags_none);
 
-    if(msi_val < 0)
+    if(int_val < 0)
         DEBUG_PRINT("NO MSI\r\n");
 
-    int int_val = 0;
-    interrupt_allocate(1, interrupt_flags_none, &int_val);
     interrupt_register_handler(int_val, intr_handler);
 
-    uintptr_t msi_addr = (uintptr_t)interrupt_msi_register_addr(0);
-    uint32_t msi_msg = interrupt_msi_register_data(int_val);
-    pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
-
     //figure out which bar to use
-    uint64_t bar = 0;
-    if((device->bar[0] & 0x6) == 0x4) //Is 64-bit
-        bar = (device->bar[0] & 0xFFFFFFF0) + ((uint64_t)device->bar[1] << 32);
-    else if((device->bar[0] & 0x6) == 0x0) //Is 32-bit
-        bar = (device->bar[0] & 0xFFFFFFF0);
+    uint64_t bar = pci_first_mmio_bar(device);
     dev_state->bar_phys = (uintptr_t)bar;
     dev_state->bar = (uint8_t*)vmem_phystovirt((intptr_t)bar, KiB(4), vmem_flags_rw | vmem_flags_uncached | vmem_flags_kernel);
 
@@ -117,13 +105,11 @@ int module_init(void *ecam_addr) {
     size_t tx_cmd_rings_sz = IWM_MVM_MAX_QUEUES * ACTIVE_TX_RING_COUNT * sizeof(struct iwm_device_cmd); //256-byte aligned
     size_t rx_bufs_sz = RX_RING_COUNT * RBUF_SZ;
 
-#define ROUNDUP(x, y) (((x - 1) | (y - 1)) + 1)
-
-    tx_sched_rings_sz = ROUNDUP(tx_sched_rings_sz, 4096);
-    rx_rings_sz = ROUNDUP(rx_rings_sz, 4096);
-    tx_rings_sz = ROUNDUP(tx_rings_sz, 4096);
-    tx_cmd_rings_sz = ROUNDUP(tx_cmd_rings_sz, 4096);
-    rx_bufs_sz = ROUNDUP(rx_bufs_sz, 4096);
+    tx_sched_rings_sz = ALIGN_UP(tx_sched_rings_sz, 4096);
+    rx_rings_sz = ALIGN_UP(rx_rings_sz, 4096);
+    tx_rings_sz = ALIGN_UP(tx_rings_sz, 4096);
+    tx_cmd_rings_sz = ALIGN_UP(tx_cmd_rings_sz, 4096);
+    rx_bufs_sz = ALIGN_UP(rx_bufs_sz, 4096);
 
     //Allocate memory
     dev_state->tx_sched_mem.paddr = physmem_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, tx_sched_rings_sz);

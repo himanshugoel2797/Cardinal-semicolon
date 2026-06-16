@@ -62,7 +62,7 @@ int module_init(void *ecam_addr)
     local_spinlock_unlock(&instance_lock);
     sti(cli_state);
 
-    uint64_t bar = (device->bar[0] & 0xFFFFFFF0);
+    uint64_t bar = pci_first_mmio_bar(device);
     instance->phys_membar = bar;
     instance->membar = (uint8_t*)vmem_phystovirt((intptr_t)instance->phys_membar, KiB(16), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     instance->capreg = (ehci_cap_registers_t*)instance->membar;

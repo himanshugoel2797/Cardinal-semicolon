@@ -13,6 +13,7 @@
 #include "SysReg/registry.h"
 
 #include "elf.h"
+#include "tls_util.h"
 
 #define ICW4_8086 0x01    /* 8086/88 (MCS-80/85) mode */
 #define ICW1_ICW4 0x01    /* ICW4 (not) needed */
@@ -87,12 +88,8 @@ int pic_fini() {
 
 int apic_init() {
 
-    if(apic == NULL) {
-        int (*mp_tls_alloc)(int) = elf_resolvefunction("mp_tls_alloc");
-        TLS void* (*mp_tls_get)(int) = elf_resolvefunction("mp_tls_get");
-
-        apic = (TLS tls_apic_t*)mp_tls_get(mp_tls_alloc(sizeof(tls_apic_t)));
-    }
+    if (apic == NULL)
+        apic = (TLS tls_apic_t *)intr_tls_alloc(sizeof(tls_apic_t));
 
 
     uint64_t apic_base_reg = rdmsr(IA32_APIC_BASE);

@@ -8,6 +8,7 @@
 
 #include <types.h>
 #include <stddef.h>
+#include <cardinal/local_spinlock.h>
 
 #include "pci/pci.h"
 
@@ -161,5 +162,57 @@ PRIVATE void virtio_postcmd_noresp(virtio_state_t *state, int idx, void *cmd, in
 PRIVATE void virtio_postcmd(virtio_state_t *state, int idx, void *cmd, int len, void *resp, int response_len, void (*resp_handler)(virtio_virtq_cmd_state_t *));
 
 PRIVATE void virtio_accept_used(virtio_state_t *state, int idx);
+
+/* ---------------------------------------------------------------------------
+ * Shared ISR + poll-loop scaffolding
+ *
+ * Each virtio device driver that needs an interrupt-driven polling task should:
+ *   1. Declare a static virtio_poll_state_t (one per driver instance).
+ *   2. In its ISR (signature void(*)(int)), call virtio_poll_signal().
+ *   3. In its kernel task entry, call virtio_run_poll_loop() with a callback
+ *      that performs the device-specific work inside the queue lock.
+ *
+ * This keeps the three duplicated globals and the loop frame in one place
+ * while letting each driver module own its own state instance (required because
+ * gpu and net are separate .celf modules loaded independently).
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    _Atomic int signalled;
+    _Atomic int inited;
+    int         queue_avl;  /* local_spinlock — 0 = unlocked */
+} virtio_poll_state_t;
+
+/* Called from the driver's ISR (void(*)(int)) to mark a pending event. */
+static inline void virtio_poll_signal(virtio_poll_state_t *ps)
+{
+    ps->signalled = true;
+}
+
+/*
+ * Task-loop body.  Blocks until ps->inited is set, then spins waiting for
+ * ps->signalled, takes ps->queue_avl, clears the signal, invokes poll_cb(ctx)
+ * for the device-specific work, then releases the lock.  Never returns.
+ *
+ * poll_cb must NOT touch ps->signalled or ps->queue_avl directly.
+ */
+static inline void virtio_run_poll_loop(virtio_poll_state_t *ps,
+                                        void (*poll_cb)(void *ctx),
+                                        void *ctx)
+{
+    while (!ps->inited)
+        ;
+
+    while (true)
+    {
+        while (ps->signalled)
+        {
+            local_spinlock_lock(&ps->queue_avl);
+            ps->signalled = false;
+            poll_cb(ctx);
+            local_spinlock_unlock(&ps->queue_avl);
+        }
+    }
+}
 
 #endif
