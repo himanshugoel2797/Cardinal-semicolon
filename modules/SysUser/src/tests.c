@@ -57,6 +57,49 @@ static void test_sethandler_valid(test_ctx_t *ctx)
     TEST_CHECK_MSG(ctx, set0[1] == orig, "original handler not restored");
 }
 
+static void test_set_syscallset_negative(test_ctx_t *ctx)
+{
+    // A negative syscall-set index is out of range and must be rejected
+    // without an out-of-bounds write into the dispatch table.
+    TEST_CHECK(ctx, syscall_set_syscallset(-1, NULL) != CS_OK);
+}
+
+static void test_set_syscallset_overflow(test_ctx_t *ctx)
+{
+    // An index at SYSCALL_SET_COUNT is one past the end and must be rejected.
+    TEST_CHECK(ctx, syscall_set_syscallset(SYSCALL_SET_COUNT, NULL) != CS_OK);
+}
+
+static void test_get_syscallset_negative(test_ctx_t *ctx)
+{
+    // A negative index must be rejected -- returns NULL, no OOB read.
+    TEST_CHECK_EQ_PTR(ctx, syscall_get_syscallset(-1), NULL);
+}
+
+static void test_get_syscallset_overflow(test_ctx_t *ctx)
+{
+    // An index at SYSCALL_SET_COUNT is one past the end -- returns NULL.
+    TEST_CHECK_EQ_PTR(ctx, syscall_get_syscallset(SYSCALL_SET_COUNT), NULL);
+}
+
+static void test_syscallset_roundtrip(test_ctx_t *ctx)
+{
+    // The syscall_set_table is module-lifetime global state shared with the live
+    // syscall path; set 0 holds syscall_funcs. Exercise the round-trip on the
+    // last slot (defaults to NULL) and restore it so no live dispatch is harmed.
+    int idx = SYSCALL_SET_COUNT - 1;
+    void **orig = syscall_get_syscallset(idx);
+
+    // A valid in-range store must succeed and be observable via get.
+    void *sentinel = (void *)&test_syscallset_roundtrip;
+    TEST_CHECK_EQ_U(ctx, syscall_set_syscallset(idx, (void **)sentinel), CS_OK);
+    TEST_CHECK_EQ_PTR(ctx, syscall_get_syscallset(idx), sentinel);
+
+    // Restore the original entry so the test leaves no destructive side-effect.
+    TEST_CHECK_EQ_U(ctx, syscall_set_syscallset(idx, orig), CS_OK);
+    TEST_CHECK_EQ_PTR(ctx, syscall_get_syscallset(idx), orig);
+}
+
 void sysuser_register_tests(void)
 {
     if (!test_mode_active())
@@ -97,6 +140,56 @@ void sysuser_register_tests(void)
             .suite = "SysUser",
             .name = "sethandler_accepts_valid",
             .fn = test_sethandler_valid,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "SysUser",
+            .name = "set_syscallset_rejects_negative",
+            .fn = test_set_syscallset_negative,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "SysUser",
+            .name = "set_syscallset_rejects_overflow",
+            .fn = test_set_syscallset_overflow,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "SysUser",
+            .name = "get_syscallset_rejects_negative",
+            .fn = test_get_syscallset_negative,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "SysUser",
+            .name = "get_syscallset_rejects_overflow",
+            .fn = test_get_syscallset_overflow,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "SysUser",
+            .name = "syscallset_roundtrip",
+            .fn = test_syscallset_roundtrip,
             .run = TEST_RUN_INLINE,
             .flags = TEST_FLAG_NONE,
         };
