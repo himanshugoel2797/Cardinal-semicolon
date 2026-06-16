@@ -15,7 +15,7 @@ static void dummy_handler(int irq) {
 }
 
 static void test_allocate(test_ctx_t *ctx) {
-    int base = -1;
+    int base = 0;
     cs_error err = interrupt_allocate(4, interrupt_flags_none, &base);
     TEST_CHECK_EQ_U(ctx, err, CS_OK);
     TEST_CHECK(ctx, base >= 0);
@@ -30,7 +30,7 @@ static void test_cpu_idx_percpu(test_ctx_t *ctx) {
 }
 
 static void test_register_unregister(test_ctx_t *ctx) {
-    int base = -1;
+    int base = 0;
     cs_error err = interrupt_allocate(1, interrupt_flags_none, &base);
     TEST_CHECK_EQ_U(ctx, err, CS_OK);
     TEST_CHECK(ctx, base >= 0);
