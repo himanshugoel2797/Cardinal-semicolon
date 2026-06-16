@@ -70,3 +70,61 @@ jobs:
             build/kernel/kernel.bin
             build/ISO/isodir/boot/*.celf
           if-no-files-found: error
+
+  test:
+    name: in-OS tests (SysTest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}   # login shell so the conda env stays activated
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up toolchain (conda env)
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-file: scripts/devenv/environment.yml
+          activate-environment: cardinal-dev
+          use-mamba: true
+
+      # ISO build + QEMU need system packages that are not in the conda env.
+      - name: Install QEMU + GRUB + ISO tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 grub-pc-bin grub-efi-amd64-bin mtools xorriso
+
+      - name: Build host tools (sign_exec)
+        run: |
+          cmake -S utils -B utils_build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build utils_build
+
+      - name: Build kernel + modules
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_SYSTEM_NAME=Generic \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_ASM_COMPILER=clang
+          cmake --build build
+
+      - name: Build test ISO
+        run: |
+          cmake --build build --target image
+          cmake --build build --target test-image
+          test -f build/ISO/os-test.iso
+
+      # No /dev/kvm on GitHub runners, so force TCG and allow a generous timeout
+      # (a full TCG boot of the whole service stack is slow).
+      - name: Run in-OS test suite
+        run: ACCEL=tcg TIMEOUT=300 ./scripts/run-tests-qemu.sh
+
+      - name: Upload serial log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: systest-serial-log
+          path: build/systest-serial.log
+          if-no-files-found: warn

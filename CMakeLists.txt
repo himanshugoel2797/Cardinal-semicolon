@@ -76,3 +76,36 @@ ADD_SUBDIRECTORY("${CMAKE_CURRENT_SOURCE_DIR}/kernel")
 
 #Build Desktop Environment (mana)
 ADD_SUBDIRECTORY("${CMAKE_CURRENT_SOURCE_DIR}/mana")
+
+# Make the ISO targets depend on every signed-module (.celf) target.
+#
+# Each module's `.celf` custom target stages its output into the initrd
+# directory (PLATFORM_CELF_DIR); the `image` target tars that directory, then
+# deletes the loose .celf files (so they live only inside the initrd, not also
+# loose in the ISO). Because those .celf targets are ALL custom targets they are
+# always rebuilt, so depending on them re-stages every module before each tar.
+# Without this, building `image` in isolation -- e.g. a second `cmake --build
+# build --target image`, or `--target image` after the loose .celf files were
+# already deleted by a prior run -- re-tars a directory missing its modules,
+# producing a partial initrd that panics the kernel at boot ("Failed to find
+# module"). See notes/testing.md.
+FUNCTION(COLLECT_CELF_TARGETS dir out_var)
+    GET_PROPERTY(subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+    GET_PROPERTY(targets DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+    SET(result "")
+    FOREACH(t ${targets})
+        IF(t MATCHES "\\.celf$")
+            LIST(APPEND result ${t})
+        ENDIF()
+    ENDFOREACH()
+    FOREACH(sd ${subdirs})
+        COLLECT_CELF_TARGETS("${sd}" sub)
+        LIST(APPEND result ${sub})
+    ENDFOREACH()
+    SET(${out_var} "${result}" PARENT_SCOPE)
+ENDFUNCTION()
+
+COLLECT_CELF_TARGETS("${CMAKE_CURRENT_SOURCE_DIR}" ALL_CELF_TARGETS)
+IF(ALL_CELF_TARGETS)
+    ADD_DEPENDENCIES(image ${ALL_CELF_TARGETS})
+ENDIF()

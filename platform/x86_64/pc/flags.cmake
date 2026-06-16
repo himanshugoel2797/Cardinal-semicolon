@@ -39,6 +39,15 @@ COMMAND grub-mkstandalone -O x86_64-efi -o "ISO/isodir/EFI/BOOT/BOOTX64.EFI" "bo
 COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os.iso" "ISO/isodir"
 DEPENDS kernel.bin)
 
+# Same initrd/kernel as `image`, but swaps in the test GRUB config (which boots
+# with the "cardinal.test" cmdline) and emits a separate os-test.iso. Boot it via
+# scripts/run-tests-qemu.sh to run the in-OS SysTest suite headless.
+add_custom_target(test-image
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub_test.cfg" "ISO/isodir/boot/grub/grub.cfg"
+COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-test.iso" "ISO/isodir"
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
+DEPENDS image)
+
 add_custom_target(disk.img
     COMMAND qemu-img create -f raw disk.img 128M)
 

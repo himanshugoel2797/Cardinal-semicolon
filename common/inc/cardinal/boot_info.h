@@ -60,6 +60,8 @@ typedef struct {
     //! component of a pixel.
     uint8_t FramebufferBlueMaskSize; //!< The bit count of the blue component of a
     //! pixel.
+    char Cmdline[256]; //!< The kernel command line passed by the bootloader
+    //! (NUL-terminated; empty if none). E.g. "cardinal.test".
 } CardinalBootInfo;
 
 #ifdef __cplusplus

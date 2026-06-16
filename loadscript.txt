@@ -1,4 +1,5 @@
 LOAD:./SysDebug.celf
+LOAD:./SysTest.celf
 LOAD:./SysReg.celf
 CALL:preinit_acpi
 LOAD:./SysPhysicalMemory.celf
