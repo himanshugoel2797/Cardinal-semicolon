@@ -90,8 +90,13 @@ static void test_info_roundtrip(test_ctx_t *ctx) {
 }
 
 // A write through the handle lands in the backing buffer and reads back byte
-// for byte.
+// for byte. The test also verifies that the unwritten block (LBA 0) is
+// untouched, catching broken offset/length in the production dispatch.
 static void test_read_write_roundtrip(test_ctx_t *ctx) {
+    // Zero the backing buffer explicitly so the untouched-region check is
+    // reliable even if a previous test run left debris.
+    memset(mock_backing, 0, sizeof(mock_backing));
+
     storage_blockdev_t desc;
     make_mock_desc(&desc);
 
@@ -103,18 +108,34 @@ static void test_read_write_roundtrip(test_ctx_t *ctx) {
         return;
     }
 
+    // Non-trivial sequential pattern: byte i gets value (i * 3 + 0x5A) & 0xFF.
+    // This catches copy-by-word bugs that would pass an all-zeros or all-same
+    // pattern, while staying in the 0x00-0xFF range for easy visual inspection.
     uint8_t out[MOCK_BLOCK_SIZE];
     for (uint32_t i = 0; i < MOCK_BLOCK_SIZE; i++)
-        out[i] = (uint8_t)(i ^ 0xA5);
+        out[i] = (uint8_t)((i * 3u + 0x5Au) & 0xFFu);
 
+    // Write to LBA 1 (non-zero offset); LBA 0 must remain untouched.
     rc = storage_blockdev_write(handle, 1, 1, out);
     TEST_CHECK_EQ_U(ctx, rc, 0);
 
+    // Read back LBA 1 and confirm byte-exact match.
     uint8_t in[MOCK_BLOCK_SIZE];
-    memset(in, 0, sizeof(in));
+    memset(in, 0xCC, sizeof(in));
     rc = storage_blockdev_read(handle, 1, 1, in);
     TEST_CHECK_EQ_U(ctx, rc, 0);
-    TEST_CHECK(ctx, memcmp(out, in, MOCK_BLOCK_SIZE) == 0);
+    TEST_CHECK_MSG(ctx, memcmp(out, in, MOCK_BLOCK_SIZE) == 0,
+                   "read-back of LBA 1 does not match written data");
+
+    // LBA 0 must still be all-zeros — a broken offset would clobber it.
+    uint8_t lba0[MOCK_BLOCK_SIZE];
+    memset(lba0, 0xCC, sizeof(lba0));
+    rc = storage_blockdev_read(handle, 0, 1, lba0);
+    TEST_CHECK_EQ_U(ctx, rc, 0);
+    uint8_t zeros[MOCK_BLOCK_SIZE];
+    memset(zeros, 0, sizeof(zeros));
+    TEST_CHECK_MSG(ctx, memcmp(lba0, zeros, MOCK_BLOCK_SIZE) == 0,
+                   "unwritten LBA 0 was modified by write to LBA 1");
 
     // Out-of-range I/O is rejected.
     TEST_CHECK(ctx, storage_blockdev_read(handle, MOCK_BLOCK_COUNT, 1, in) < 0);
