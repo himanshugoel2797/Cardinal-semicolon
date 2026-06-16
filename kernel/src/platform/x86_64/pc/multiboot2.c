@@ -149,9 +149,13 @@ void ParseAndSaveBootInformation(void *boot_info, uint32_t magic) {
             bootInfo.InitrdLength = (uint64_t)(module->mod_end - module->mod_start);
         }
         break;
-        case MULTIBOOT_TAG_TYPE_CMDLINE:
+        case MULTIBOOT_TAG_TYPE_CMDLINE: {
             DEBUG_PRINT("CMDLINE Found!\r\n");
-            break;
+            struct multiboot_tag_string *cmd = (struct multiboot_tag_string *)&hdr_8[i];
+            // bootInfo was memset to 0, so Cmdline starts NUL-terminated/empty.
+            strncpy(bootInfo.Cmdline, cmd->string, sizeof(bootInfo.Cmdline) - 1);
+        }
+        break;
         case MULTIBOOT_TAG_TYPE_BOOT_LOADER_NAME:
             DEBUG_PRINT("Boot Loader Name Found!\r\n");
             break;

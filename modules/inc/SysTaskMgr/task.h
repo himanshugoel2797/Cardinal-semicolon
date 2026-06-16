@@ -41,6 +41,13 @@ typedef enum
 
 cs_error task_create_kernel(const char *name, task_permissions_t perms, cs_id *id);
 
+// Create a kernel task pinned to a specific core (its sequential run-queue index
+// 0..task_corecount()-1, not the APIC id). Out-of-range core => round-robin.
+cs_error task_create_kernel_oncore(const char *name, task_permissions_t perms, int core, cs_id *id);
+
+// Number of cores that have joined the scheduler so far.
+int task_corecount(void);
+
 cs_error task_start_kernel(cs_id id, void *handler, void *arg);
 
 cs_error task_end_kernel(cs_id id);

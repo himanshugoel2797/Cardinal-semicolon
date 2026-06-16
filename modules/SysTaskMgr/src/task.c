@@ -213,6 +213,24 @@ cs_error task_create_kernel(const char *name, task_permissions_t perms, cs_id *i
     return create_task_core(name, perms, id, -1);
 }
 
+//Create a kernel task pinned to a specific core (its sequential run-queue index,
+//0..task_corecount()-1 -- NOT the sparse APIC id). Used by SysTest to fan a
+//per-CPU test onto every online core. An out-of-range core falls back to the
+//normal round-robin placement.
+cs_error task_create_kernel_oncore(const char *name, task_permissions_t perms, int core, cs_id *id)
+{
+    if (core < 0 || core >= registered_cores)
+        core = -1;
+    return create_task_core(name, perms, id, core);
+}
+
+//Number of cores that have joined the scheduler so far (each owns run-queue
+//index 0..task_corecount()-1). Grows as APs come online after task_release_aps.
+int task_corecount(void)
+{
+    return registered_cores;
+}
+
 static void NORETURN kernel_entry_handler(void *handler, void *arg)
 {
     ((void(*)(void*))handler)(arg);
