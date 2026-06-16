@@ -5,6 +5,9 @@
  * https://opensource.org/licenses/MIT
  */
 
+void sysmp_register_tests(void);
+
 int module_init() {
+    sysmp_register_tests();
     return 0;
 }
