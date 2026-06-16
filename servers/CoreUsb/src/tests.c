@@ -13,7 +13,7 @@
 // Registering a host controller with a minimal (null-handler) descriptor should
 // succeed and hand back a non-NULL handle.
 static void test_register_hostcontroller(test_ctx_t *ctx) {
-    usb_hci_desc_t desc;
+    static usb_hci_desc_t desc;
     memset(&desc, 0, sizeof(desc));
     strncpy(desc.name, "test", sizeof(desc.name) - 1);
     desc.device_type = usb_device_type_uhci;
