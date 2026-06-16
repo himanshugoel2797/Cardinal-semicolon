@@ -91,6 +91,48 @@ static void test_getdefaultstate_smoke(test_ctx_t *ctx) {
     free(raw);
 }
 
+// PERCPU: mirror SMP bring-up by re-running the per-AP FP init on every online
+// core, then assert the platform FP-state descriptors (size/alignment) are sane
+// and identical on every core. The descriptors are derived from CPUID/XSAVE
+// feature state that must be uniform across the package, so any core reporting a
+// different size/align would be a real SMP-consistency bug.
+//
+// The first core to run latches the reference values into static volatile slots;
+// every later core compares against them. Reads/writes of the (naturally
+// aligned, word-sized) slots are atomic on x86_64, and TEST_RUN_PERCPU runs one
+// pinned task per core sequentially enough that the latch is visible -- but we
+// still gate the latch on a "captured" flag so only the first core writes.
+static volatile int g_fp_ref_captured = 0;
+static volatile int g_fp_ref_size = 0;
+static volatile int g_fp_ref_align = 0;
+
+static void test_mp_init_consistency(test_ctx_t *ctx) {
+    // Re-run per-AP FP init on this core, as the SMP bring-up does via
+    // apscript.txt. Must succeed (returns 0).
+    int rc = fp_mp_init();
+    TEST_CHECK_EQ_U(ctx, (uint64_t)rc, 0);
+
+    int size = fp_platform_getstatesize();
+    int align = fp_platform_getalign();
+
+    // Sanity: same invariants the INLINE tests assert, re-verified per core.
+    TEST_CHECK_MSG(ctx, size >= FP_MIN_STATESIZE,
+                   "per-core FP state size is at least the 512-byte minimum");
+    TEST_CHECK_MSG(ctx, align == 16 || align == 64,
+                   "per-core FP state alignment is 16 (FXSAVE) or 64 (XSAVE)");
+
+    if (!g_fp_ref_captured) {
+        // First core: latch the reference values.
+        g_fp_ref_size = size;
+        g_fp_ref_align = align;
+        g_fp_ref_captured = 1;
+    } else {
+        // Later cores: must agree with the first core's values.
+        TEST_CHECK_EQ_U(ctx, (uint64_t)size, (uint64_t)g_fp_ref_size);
+        TEST_CHECK_EQ_U(ctx, (uint64_t)align, (uint64_t)g_fp_ref_align);
+    }
+}
+
 void sysfp_register_tests(void) {
     if (!test_mode_active())
         return;
@@ -115,4 +157,11 @@ void sysfp_register_tests(void) {
         .run = TEST_RUN_INLINE, .flags = TEST_FLAG_NONE,
     };
     test_register(&defstate);
+
+    test_def_t mpinit = {
+        .suite = "SysFP", .name = "mp_init_consistency",
+        .fn = test_mp_init_consistency,
+        .run = TEST_RUN_PERCPU, .flags = TEST_FLAG_NONE,
+    };
+    test_register(&mpinit);
 }
