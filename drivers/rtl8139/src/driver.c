@@ -62,7 +62,7 @@ int rtl8139_tx(void *state, void *packet, int len, network_device_tx_flags_t gso
     if ((device->memar[TX_STS_REG(device->free_tx_buf_idx)] & 0xfff) != 0)
     {
         timer_timeout_t to;
-        timer_timeout_start(&to, 100ULL * 1000 * 1000);  //100ms (a TX completes in us)
+        timer_timeout_start(&to, MS(100));  //100ms (a TX completes in us)
         while ((device->memar[TX_STS_REG(device->free_tx_buf_idx)] & (TX_STS_OWN | TX_STS_TOK)) != (TX_STS_OWN | TX_STS_TOK))
         {
             if (timer_timeout_expired(&to))
@@ -103,7 +103,7 @@ int rtl8139_init(rtl8139_state_t *state)
     state->memar[CMD_REG] = CMD_RST_VAL;
     {
         timer_timeout_t to;
-        timer_timeout_start(&to, 100ULL * 1000 * 1000);  //100ms
+        timer_timeout_start(&to, MS(100));  //100ms
         while (state->memar[CMD_REG] & CMD_RST_VAL)
         {
             if (timer_timeout_expired(&to))

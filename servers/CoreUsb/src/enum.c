@@ -264,7 +264,7 @@ static int enum_on_port(void *hc_handle, int parent_addr, int port, usb_speed_t 
     // task it stretches to many seconds; timer_busywait is TSC-paced and returns
     // after the intended real time regardless of scheduling.
     // SET_ADDRESS recovery: spec requires >=2ms; xHCI Address Device command wants more.
-    timer_busywait_ns(50 * 1000 * 1000);
+    timer_busywait_ns(MS(50));
 
     usb_enum_device_t *dev = alloc_enum_device();
     if (dev == NULL) {

@@ -39,6 +39,13 @@ extern "C"
 #define GiB(x) (uint64_t)(MiB(1) * 1024ull * x)
 #define TiB(x) (uint64_t)(GiB(1) * 1024ull * x)
 
+// Durations expressed in NANOSECONDS, for the ns-based timer APIs
+// (timer_busywait_ns / timer_wait / timer_timeout_start / task_sleep).
+// Named SEC rather than S because S is the stringify macro above.
+#define US(x) ((x) * 1000ull)
+#define MS(x) (US(1) * 1000ull * (x))
+#define SEC(x) (MS(1) * 1000ull * (x))
+
 // Round `val` up to a multiple of `mult`; `mult` MUST be a power of two.
 #define ALIGN_UP(val, mult) (((val) + ((mult) - 1)) & ~((__typeof__(val))(mult) - 1))
 

@@ -88,7 +88,7 @@ int rtl8169_tx(void *state, void *packet, int len, network_device_tx_flags_t gso
     //previous send (no interrupt is required), so this is a tight poll. On
     //timeout drop the packet, releasing the lock first since it is held here.
     timer_timeout_t to;
-    timer_timeout_start(&to, 100ULL * 1000 * 1000);  //100ms (a TX completes in us)
+    timer_timeout_start(&to, MS(100));  //100ms (a TX completes in us)
     while (device->tx_descs[device->free_tx_buf_idx].status.own != 0){
         if (timer_timeout_expired(&to)){
             local_spinlock_unlock(&device->lock);
@@ -130,7 +130,7 @@ int rtl8169_init(rtl8169_state_t *state)
     state->memar[CMD_REG] = CMD_RST_VAL;
     {
         timer_timeout_t to;
-        timer_timeout_start(&to, 100ULL * 1000 * 1000);  //100ms
+        timer_timeout_start(&to, MS(100));  //100ms
         while (state->memar[CMD_REG] & CMD_RST_VAL)
         {
             if (timer_timeout_expired(&to))
