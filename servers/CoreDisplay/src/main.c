@@ -68,6 +68,8 @@ int coredisplay_postinit()
     return 0;
 }
 
+void coredisplay_register_tests(void);
+
 int module_init()
 {
     local_spinlock_lock(&display_list_lock);
@@ -75,6 +77,8 @@ int module_init()
         return -1;
 
     local_spinlock_unlock(&display_list_lock);
+
+    coredisplay_register_tests();
 
     return 0;
 }
