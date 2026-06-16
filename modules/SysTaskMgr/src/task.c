@@ -905,6 +905,11 @@ cs_error task_map(cs_id id, const char *name, intptr_t vaddr, size_t sz, task_ma
 
 cs_error task_updatemap(cs_id id, cs_id shmem_id, task_map_perms_t perms)
 {
+    bool do_shootdown = false;
+    intptr_t fl_vaddr = 0;
+    size_t fl_sz = 0;
+    int fl_apic = -1;
+
     int cli_state = cli();
     process_desc_t *iter = find_task_locked(id);
     if (iter != NULL)
@@ -937,17 +942,38 @@ cs_error task_updatemap(cs_id id, cs_id shmem_id, task_map_perms_t perms)
             else
                 map_perms |= vmem_flags_user;
 
-            vmem_unmap(iter->mem, d->map_entry->vaddr, d->map_entry->sz);
-            vmem_map(iter->mem, d->map_entry->vaddr, (intptr_t)d->map_entry->paddr, d->map_entry->sz, map_perms, 0);
+            //Remap with the (possibly reduced) permissions. The local core is
+            //flushed by vmem_unmap; a foreign core that still caches the old, more
+            //permissive entry is handled by the cross-core shootdown below, after
+            //iter->lock is dropped. Capture the range + active core under the lock.
+            fl_vaddr = d->map_entry->vaddr;
+            fl_sz = d->map_entry->sz;
+            vmem_unmap(iter->mem, fl_vaddr, fl_sz);
+            vmem_map(iter->mem, fl_vaddr, (intptr_t)d->map_entry->paddr, fl_sz, map_perms, 0);
+            fl_apic = vmem_active_apic(iter->mem);
+            do_shootdown = true;
         }
         local_spinlock_unlock(&iter->lock);
     }
     sti(cli_state);
+
+    //Interrupts on, no lock held (see vmem_shootdown). Ensures the reduced
+    //permissions are enforced on every core, not just the one that edited.
+    if (do_shootdown)
+        vmem_shootdown(fl_vaddr, fl_sz, fl_apic);
+
     return CS_OK;
 }
 
 cs_error task_unmap(cs_id id, cs_id shmem_id)
 {
+    bool do_shootdown = false;
+    bool free_phys = false;
+    intptr_t fl_vaddr = 0;
+    size_t fl_sz = 0;
+    int fl_apic = -1;
+    uintptr_t fl_paddr = 0;
+
     int cli_state = cli();
     process_desc_t *iter = find_task_locked(id);
     if (iter != NULL)
@@ -955,12 +981,21 @@ cs_error task_unmap(cs_id id, cs_id shmem_id)
         descriptor_entry_t *d = read_descriptor(iter, shmem_id);
         if (d->type == descriptor_type_map_entry)
         {
-            //Unmap memory region
-            vmem_unmap(iter->mem, d->map_entry->vaddr, d->map_entry->sz);
+            //Unmap (this also flushes the local core's TLB) and capture what the
+            //cross-core shootdown and the physical free -- both deferred until
+            //after we drop iter->lock -- will need. The shootdown must complete
+            //before the frame is returned for reuse, and vmem_active_apic must be
+            //read while the address space is still pinned by iter->lock.
+            fl_vaddr = d->map_entry->vaddr;
+            fl_sz = d->map_entry->sz;
+            vmem_unmap(iter->mem, fl_vaddr, fl_sz);
+            fl_apic = vmem_active_apic(iter->mem);
+            do_shootdown = true;
+
             if (d->map_entry->is_owner)
             {
-                //free physical memory
-                physmem_free(d->map_entry->paddr, d->map_entry->sz);
+                free_phys = true;
+                fl_paddr = d->map_entry->paddr;
             }
 
             free(d->map_entry);
@@ -970,6 +1005,16 @@ cs_error task_unmap(cs_id id, cs_id shmem_id)
         local_spinlock_unlock(&iter->lock);
     }
     sti(cli_state);
+
+    //vmem_shootdown busy-waits for the target core to ack from interrupt context,
+    //so it must run with interrupts on and no lock held; it must also precede the
+    //physmem_free so no core can touch the frame through a stale TLB entry once it
+    //is reusable.
+    if (do_shootdown)
+        vmem_shootdown(fl_vaddr, fl_sz, fl_apic);
+    if (free_phys)
+        physmem_free(fl_paddr, fl_sz);
+
     return CS_OK;
 }
 

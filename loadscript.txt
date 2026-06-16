@@ -17,6 +17,7 @@ LOAD:./SysTimer.celf
 CALL:mp_init
 CALL:sysdebug_install_lfb
 CALL:mem_init
+CALL:vmem_smp_init
 CALL:kernel_free_avl_bootstrap
 CALL:fp_mp_init
 LOAD:./SysObj.celf
