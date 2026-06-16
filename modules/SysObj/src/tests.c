@@ -237,6 +237,83 @@ static void test_removedirectory(test_ctx_t *ctx) {
     TEST_CHECK_EQ_U(ctx, obj_getdirectory(TEST_PATH, &dir), CS_DNE);
 }
 
+// Walk the parent directory's entries and return the handle for the entry whose
+// key matches `name`, or NULL if not present. obj_lock/obj_removekey operate on
+// the *entry itself*, and a scalar key cannot be reached via obj_getdirectory
+// (kvs_walk_path dereferences each component as a child and would PANIC on a
+// non-directory), so iteration is the only way to obtain a key's handle.
+static dir_t find_entry(const char *path, const char *name) {
+    dir_t dir = NULL;
+    if (obj_getdirectory(path, &dir) != CS_OK)
+        return NULL;
+
+    dir_t cur = dir;
+    while (obj_next(&cur) == CS_OK) {
+        char key[256];
+        memset(key, 0, sizeof(key));
+        if (obj_readlocal_key(cur, key) == CS_OK && strcmp(key, name) == 0)
+            return cur;
+    }
+    return NULL;
+}
+
+// Lock contract around removal: obj_removekey/obj_removedirectory check whether
+// the *target entry* is locked and, if so, silently skip the removal while still
+// returning CS_OK. This pins that contract: a removal on a locked entry is a
+// no-op (entry still present), and removal only takes effect once unlocked.
+static void test_remove_locked_suppressed(test_ctx_t *ctx) {
+    if (!make_scratch(ctx))
+        return;
+
+    // --- Scalar key: lock suppresses obj_removekey ---
+    TEST_CHECK_EQ_U(ctx, obj_addkey_uint(TEST_PATH, "k", 42), CS_OK);
+
+    dir_t key = find_entry(TEST_PATH, "k");
+    TEST_CHECK(ctx, key != NULL);
+    if (key != NULL)
+        TEST_CHECK_EQ_U(ctx, obj_lock(key), CS_OK);
+
+    // Production returns CS_OK but performs NO removal while the entry is locked.
+    TEST_CHECK_EQ_U(ctx, obj_removekey(TEST_PATH, "k"), CS_OK);
+
+    // The key must still be present: the lock suppressed the removal.
+    uint64_t v = 0;
+    TEST_CHECK_MSG(ctx, obj_readkey_uint(TEST_PATH, "k", &v) == CS_OK,
+                   "removekey on a locked key must be a no-op");
+    TEST_CHECK_EQ_U(ctx, v, 42);
+
+    // Unlock, then removal must actually take effect.
+    if (key != NULL)
+        TEST_CHECK_EQ_U(ctx, obj_unlock(key), CS_OK);
+    TEST_CHECK_EQ_U(ctx, obj_removekey(TEST_PATH, "k"), CS_OK);
+    TEST_CHECK_MSG(ctx, obj_readkey_uint(TEST_PATH, "k", &v) == CS_DNE,
+                   "removekey after unlock must remove the key");
+
+    // --- Subdirectory: lock suppresses obj_removedirectory ---
+    // (obj_removedirectory is obj_removekey, so the same lock check applies.)
+    TEST_CHECK_EQ_U(ctx, obj_createdirectory(TEST_PATH, "sub"), CS_OK);
+
+    dir_t sub = find_entry(TEST_PATH, "sub");
+    TEST_CHECK(ctx, sub != NULL);
+    if (sub != NULL)
+        TEST_CHECK_EQ_U(ctx, obj_lock(sub), CS_OK);
+
+    TEST_CHECK_EQ_U(ctx, obj_removedirectory(TEST_PATH, "sub"), CS_OK);
+
+    // Re-creating must report CS_EXISTS, proving the locked dir was not removed.
+    TEST_CHECK_MSG(ctx, obj_createdirectory(TEST_PATH, "sub") == CS_EXISTS,
+                   "removedirectory on a locked dir must be a no-op");
+
+    // Unlock, then removal must actually take effect (re-create now succeeds).
+    if (sub != NULL)
+        TEST_CHECK_EQ_U(ctx, obj_unlock(sub), CS_OK);
+    TEST_CHECK_EQ_U(ctx, obj_removedirectory(TEST_PATH, "sub"), CS_OK);
+    TEST_CHECK_MSG(ctx, obj_createdirectory(TEST_PATH, "sub") == CS_OK,
+                   "removedirectory after unlock must remove the dir");
+
+    drop_scratch(ctx);
+}
+
 #define REGISTER(nm, func)                                          \
     do {                                                            \
         test_def_t t = {                                            \
@@ -261,4 +338,5 @@ void sysobj_register_tests(void) {
     REGISTER("iteration", test_iteration);
     REGISTER("removekey", test_removekey);
     REGISTER("removedirectory", test_removedirectory);
+    REGISTER("remove_locked_suppressed", test_remove_locked_suppressed);
 }
