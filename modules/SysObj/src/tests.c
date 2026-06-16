@@ -177,13 +177,10 @@ static void test_iteration(test_ctx_t *ctx) {
     dir_t dir = NULL;
     TEST_CHECK_EQ_U(ctx, obj_getdirectory(TEST_PATH, &dir), CS_OK);
 
-    // Descend into the directory's first child entry, then walk siblings.
-    dir_t cur = NULL;
-    TEST_CHECK_EQ_U(ctx, obj_readlocal_dir(dir, &cur), CS_OK);
-
     bool seen_a = false, seen_b = false, seen_c = false;
     int count = 0;
-    while (cur != NULL) {
+    dir_t cur = dir;
+    while (obj_next(&cur) == CS_OK) {
         char key[256];
         memset(key, 0, sizeof(key));
         if (obj_readlocal_key(cur, key) == CS_OK) {
@@ -192,8 +189,6 @@ static void test_iteration(test_ctx_t *ctx) {
             if (strcmp(key, "b") == 0) seen_b = true;
             if (strcmp(key, "c") == 0) seen_c = true;
         }
-        if (obj_next(&cur) != CS_OK)
-            break;
     }
 
     TEST_CHECK_EQ_U(ctx, count, 3);
