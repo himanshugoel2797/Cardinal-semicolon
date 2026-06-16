@@ -149,6 +149,8 @@ class Harness:
         self.log = open(args.log, "wb")
         self.serial = None         # connected serial socket
         self.monitor = None        # connected monitor socket
+        self.gdb_listener = None   # TCP listener for GDB (ch2 tunnel)
+        self.gdb_client = None     # connected GDB socket, if any
 
     # ---- logging ----
     def emit(self, text):
@@ -169,6 +171,47 @@ class Harness:
                 self.monitor.sendall((cmd + "\n").encode())
             except OSError:
                 pass
+
+    # ---- GDB tunnel (ch2 <-> TCP) ----
+    def gdb_accept(self):
+        try:
+            conn, _ = self.gdb_listener.accept()
+        except OSError:
+            return
+        if self.gdb_client is not None:
+            try:
+                self.gdb_client.close()
+            except OSError:
+                pass
+        conn.setblocking(False)
+        self.gdb_client = conn
+        self.emit("    [gdb] debugger connected on the ch2 tunnel\n")
+
+    def gdb_drop(self):
+        if self.gdb_client is not None:
+            try:
+                self.gdb_client.close()
+            except OSError:
+                pass
+            self.gdb_client = None
+            self.emit("    [gdb] debugger disconnected\n")
+
+    # GDB -> guest: frame the raw RSP bytes onto ch2 and write to the serial link.
+    def gdb_from_client(self, data):
+        if self.serial:
+            try:
+                self.serial.sendall(frame(CH_GDB, data))
+            except OSError:
+                pass
+
+    # guest -> GDB: forward unframed ch2 payload to the connected debugger.
+    def gdb_to_client(self, payload):
+        if self.gdb_client is None:
+            return
+        try:
+            self.gdb_client.sendall(payload)
+        except OSError:
+            self.gdb_drop()
 
     def handle_ctrl_line(self, line):
         line = line.strip()
@@ -318,6 +361,22 @@ def main():
         return 2
 
     h.serial.setblocking(False)
+
+    # GDB tunnel: a local TCP port bridged to ch2. GDB attaches with
+    # `target remote :<port>`; on real hardware this is how a debugger reaches the
+    # stub when the single serial link is shared with the log + control channels.
+    try:
+        h.gdb_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        h.gdb_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        h.gdb_listener.bind(("127.0.0.1", args.gdb_port))
+        h.gdb_listener.listen(1)
+        h.gdb_listener.setblocking(False)
+        print("harness: GDB ch2 tunnel on tcp://127.0.0.1:%d "
+              "(target remote :%d)" % (args.gdb_port, args.gdb_port), file=sys.stderr)
+    except OSError as e:
+        print("harness: GDB tunnel disabled (%s)" % e, file=sys.stderr)
+        h.gdb_listener = None
+
     deframer = Deframer()
     ctrl_buf = bytearray()
     deadline = time.monotonic() + args.timeout
@@ -328,18 +387,33 @@ def main():
             if time.monotonic() > deadline:
                 h.emit("[SysTest] harness overall timeout (%ss) -- aborting\n" % args.timeout)
                 break
-            if qemu.poll() is not None and not h.done:
-                # QEMU exited (isa-debug-exit on ALLDONE, or crash). Drain handled
-                # below; if we already saw ALLDONE this is the normal end.
-                pass
-            r, _, _ = select.select([h.serial], [], [], 0.5)
+            rset = [h.serial]
+            if h.gdb_listener is not None:
+                rset.append(h.gdb_listener)
+            if h.gdb_client is not None:
+                rset.append(h.gdb_client)
+            r, _, _ = select.select(rset, [], [], 0.5)
             h.check_timeout()
-            if not r:
+
+            # GDB tunnel: accept a debugger / relay its bytes onto ch2.
+            if h.gdb_listener in r:
+                h.gdb_accept()
+            if h.gdb_client is not None and h.gdb_client in r:
+                try:
+                    gdata = h.gdb_client.recv(4096)
+                except (BlockingIOError, InterruptedError):
+                    gdata = b""
+                except OSError:
+                    gdata = b""
+                    h.gdb_drop()
+                if gdata:
+                    h.gdb_from_client(gdata)
+                elif h.gdb_client is not None and h.gdb_client in r:
+                    h.gdb_drop()  # EOF
+
+            if h.serial not in r:
                 if qemu.poll() is not None:
-                    # No data and QEMU gone: give the FSM a moment, then stop.
-                    if h.done or h.cursor >= (h.death_count or 0) and h.death_count is not None:
-                        break
-                    # Could be the final isa-debug-exit; stop if nothing pending.
+                    # QEMU gone (final isa-debug-exit on ALLDONE, or a crash).
                     break
                 continue
             try:
@@ -364,7 +438,7 @@ def main():
                             ctrl_buf[:] = rest
                             h.handle_ctrl_line(line.decode(errors="replace"))
                     elif chan == CH_GDB:
-                        pass  # (GDB TCP relay omitted in this minimal driver)
+                        h.gdb_to_client(payload)  # forward to the attached debugger
     finally:
         try:
             qemu.terminate()
@@ -372,7 +446,7 @@ def main():
         except Exception:
             qemu.kill()
         rc = h.finalize()
-        for s in (h.serial, h.monitor, serial_srv, mon_srv):
+        for s in (h.serial, h.monitor, h.gdb_client, h.gdb_listener, serial_srv, mon_srv):
             try:
                 if s:
                     s.close()
