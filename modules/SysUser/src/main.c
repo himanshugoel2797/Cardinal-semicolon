@@ -7,10 +7,13 @@
 #include "plat_defs.h"
 #include "boot_information.h"
 
+void sysuser_register_tests(void);
+
 int module_init()
 {
     //Setup syscall system
     syscall_plat_init();
+    sysuser_register_tests();
     return 0;
 }
 
