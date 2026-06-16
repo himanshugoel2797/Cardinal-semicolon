@@ -18,7 +18,7 @@
 
 #define TEST_ROOT ""          // the object store root path
 #define TEST_DIR  "TestSysObj"
-#define TEST_PATH "/TestSysObj"
+#define TEST_PATH "TestSysObj"
 
 // Create a fresh scratch directory, removing any stale copy first. Returns true
 // on success so the caller can bail out early without cascading failures.
