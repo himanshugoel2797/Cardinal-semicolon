@@ -38,20 +38,32 @@ static void test_timeout_terminates(test_ctx_t *ctx)
 {
     timer_timeout_t t;
     timer_timeout_start(&t, US(500));
+    // Must NOT be expired immediately after start (deadline is in the future).
+    TEST_CHECK_MSG(ctx, !timer_timeout_expired(&t),
+                   "timeout must not be expired immediately after start");
     while (!timer_timeout_expired(&t))
         ;
-    // Reaching here means the timeout terminated; record a passing check.
-    TEST_CHECK(ctx, timer_timeout_expired(&t));
+    // Now it must be expired: a real NOT->expired transition occurred.
+    TEST_CHECK_MSG(ctx, timer_timeout_expired(&t),
+                   "timeout must be expired after busy-wait loop exits");
 }
 
-// A short busy-wait must complete without hanging or faulting.
+// A short busy-wait must complete without hanging or faulting, and must
+// actually stall for at least the requested duration.
 static void test_busywait_smoke(test_ctx_t *ctx)
 {
+    // Only assert an elapsed lower-bound when a calibrated counter is present;
+    // without one, timer_timestamp_ns() returns TIMER_NO_COUNTER and the delta
+    // arithmetic is meaningless.
+    int has_counter = (timer_timestamp_ns() != TIMER_NO_COUNTER);
+    uint64_t requested_ns = US(1);  // 1 µs -- small but unambiguous
     uint64_t t0 = timer_timestamp_ns();
-    timer_busywait_ns(1000);
+    timer_busywait_ns(requested_ns);
     uint64_t t1 = timer_timestamp_ns();
-    TEST_CHECK_MSG(ctx, t1 >= t0,
+    TEST_CHECK_MSG(ctx, !has_counter || t1 >= t0,
                    "timer_busywait_ns() returned and time did not regress");
+    TEST_CHECK_MSG(ctx, !has_counter || (t1 - t0) >= requested_ns,
+                   "timer_busywait_ns() must stall at least the requested duration");
 }
 
 void systimer_register_tests(void)
