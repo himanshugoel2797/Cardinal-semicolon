@@ -94,14 +94,20 @@ static void test_key_str(test_ctx_t *ctx) {
     if (!make_scratch(ctx))
         return;
 
-    const char *src = "cardinal";
+    // Use a long, distinctive string so the stored copy spans more than a
+    // single heap granule: obj_addkey_str must allocate room for the NUL and
+    // terminate the copy, otherwise obj_readkey_str's strlen() over-reads.
+    const char *src = "cardinal-semicolon-objstore-roundtrip";
     TEST_CHECK_EQ_U(ctx, obj_addkey_str(TEST_PATH, "s", src), CS_OK);
 
-    char buf[32];
+    char buf[64];
     memset(buf, 0, sizeof(buf));
     size_t len = sizeof(buf);
     TEST_CHECK_EQ_U(ctx, obj_readkey_str(TEST_PATH, "s", buf, &len), CS_OK);
+    // Exact length proves the stored string is NUL-terminated (a bare strlen on
+    // an unterminated copy would return a garbage length).
     TEST_CHECK_EQ_U(ctx, len, strlen(src));
+    TEST_CHECK(ctx, buf[strlen(src)] == '\0');
     TEST_CHECK(ctx, strcmp(buf, src) == 0);
 
     drop_scratch(ctx);

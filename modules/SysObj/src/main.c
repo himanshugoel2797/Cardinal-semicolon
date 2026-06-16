@@ -177,12 +177,16 @@ cs_error obj_addkey_str(const char *path, const char *keyname,
     if (err != CS_OK)
         return err;
 
-    storelen = MIN((size_t)MAX_OBJ_STRLEN, strlen(val));
+    // Reserve room for the NUL terminator: kvs stores the bare pointer and
+    // obj_readkey_str does strlen() on it, so the stored copy must be
+    // terminated or the reader runs off the end of the allocation.
+    storelen = MIN((size_t)(MAX_OBJ_STRLEN - 1), strlen(val)) + 1;
     strstore = malloc(storelen);
     if (strstore == NULL)
         return CS_FAILURE;
 
-    strncpy(strstore, val, storelen);
+    strncpy(strstore, val, storelen - 1);
+    strstore[storelen - 1] = '\0';
 
     DEBUG_PRINT("[SysReg] AddKeyStr: ");
     DEBUG_PRINT(path);
