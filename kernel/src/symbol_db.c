@@ -1,4 +1,5 @@
 #include "symbol_db.h"
+#include <hash.h>
 #include <stdlib.h>
 #include <string.h>
 #include <types.h>
@@ -36,29 +37,6 @@ void symboldb_init()
     memset(symbol_e_offsets, 0, MAX_SYMBOL_CNT * sizeof(uint64_t));
     memset(symbol_hdr_offsets, 0, MAX_SYMBOL_CNT * sizeof(uint64_t));
     memset(symbol_strhdr_offsets, 0, MAX_SYMBOL_CNT * sizeof(uint64_t));
-}
-
-#define FNV1A_BASIS 2166136261
-#define FNV1A_PRIME 16777619
-static uint32_t hash(const char *src, size_t src_len)
-{
-    uint32_t hash = FNV1A_BASIS;
-    for (size_t i = 0; i < src_len; i++)
-    {
-        hash ^= src[i];
-        hash *= FNV1A_PRIME;
-    }
-
-    /*{
-        char tmp[10];
-        DEBUG_PRINT("Hash Value of ");
-        DEBUG_PRINT(src);
-        DEBUG_PRINT(" : ");
-        DEBUG_PRINT(itoa(hash % MAX_SYMBOL_CNT, tmp, 16));
-        DEBUG_PRINT("\r\n");
-    }*/
-
-    return hash;
 }
 
 static NO_UBSAN uint32_t murmur3_32(const char *key, size_t len, uint32_t seed)
@@ -207,7 +185,7 @@ int symboldb_add(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *symbol)
     char *sym_str = (char *)strhdr->sh_addr + symbol->st_name;
     
     // hash and modulus table len
-    uint32_t s_hash = hash(sym_str, strlen(sym_str));
+    uint32_t s_hash = fnv1a_hash(sym_str, strlen(sym_str));
     uint32_t idx = s_hash % MAX_SYMBOL_CNT;
 
     if (symboldb_addentry(idx, strhdr, hdr, symbol) == 0)
@@ -242,7 +220,7 @@ int symboldb_findfunc(const char *str, Elf64_Shdr **r_hdr, Elf64_Sym **r_sym)
     if (r_sym == NULL)
         return -1;
 
-    uint32_t str_hash = hash(str, strlen(str));
+    uint32_t str_hash = fnv1a_hash(str, strlen(str));
     uint32_t idx = str_hash % MAX_SYMBOL_CNT;
 
     if (symbol_e_offsets[idx] != 0)
@@ -294,7 +272,7 @@ int symboldb_findmatch(Elf64_Shdr *strhdr, Elf64_Shdr *hdr, Elf64_Sym *sym,
     char *sym_str = (char *)strhdr->sh_addr + sym->st_name;
 
     // hash and modulus table len
-    uint32_t s_hash = hash(sym_str, strlen(sym_str));
+    uint32_t s_hash = fnv1a_hash(sym_str, strlen(sym_str));
     uint32_t idx = s_hash % MAX_SYMBOL_CNT;
 
     if (symboldb_entrymatch(idx, strhdr, hdr, sym, r_hdr, r_sym) == 0)

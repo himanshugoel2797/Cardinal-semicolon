@@ -12,6 +12,7 @@
 #include <types.h>
 #include <cardinal/local_spinlock.h>
 #include "elf.h"
+#include "tls_util.h"
 #include "SysInterrupts/interrupts.h"
 
 #define IDT_ENTRY_COUNT (256)
@@ -498,12 +499,7 @@ static void idt_fillswinterrupthandler(char *idt_handler, uint8_t intNum, uint8_
 int idt_init()
 {
     if (idt == NULL)
-    {
-        int (*mp_tls_alloc)(int) = elf_resolvefunction("mp_tls_alloc");
-        TLS void *(*mp_tls_get)(int) = elf_resolvefunction("mp_tls_get");
-
-        idt = (TLS tls_idt_t *)mp_tls_get(mp_tls_alloc(sizeof(tls_idt_t)));
-    }
+        idt = (TLS tls_idt_t *)intr_tls_alloc(sizeof(tls_idt_t));
     idt->idt = malloc(IDT_ENTRY_COUNT * sizeof(idt_t));
     idt->reg_state = malloc(sizeof(regs_t));
 

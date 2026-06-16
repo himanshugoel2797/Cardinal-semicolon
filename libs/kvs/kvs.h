@@ -84,4 +84,13 @@ int kvs_get_type(kvs_t *idx, kvs_val_type *val_type);
 int kvs_remove(kvs_t *r, kvs_t *idx);
 int kvs_delete(kvs_t *r);
 
+// Walk a '/'-separated path starting from `root`, acquiring and releasing
+// `*lock` (a local_spinlock int) around the traversal.  Each path component
+// must be at most `max_keylen` characters.  On success *out is set to the
+// kvs_t for the final component and CS_OK is returned.  Returns CS_DNE if any
+// component is not found or a component name exceeds max_keylen.  If path is
+// empty, *out is set to root and CS_OK is returned without touching the lock.
+int kvs_walk_path(kvs_t *root, int *lock, int max_keylen,
+                  const char *path, kvs_t **out);
+
 #endif

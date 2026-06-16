@@ -32,27 +32,8 @@ int user_elf_load(cs_id task_id, void *elf, size_t elf_len, void (**entry_point)
     Elf64_Ehdr *hdr = elf;
 
     // Verify the header
-    Elf_CommonEhdr *c_hdr = &hdr->e_hdr;
-    if (c_hdr->e_ident[EI_MAG0] != ELF_MAG0)
+    if (!elf_header_valid(hdr, ET_EXEC))
         return -1;
-    if (c_hdr->e_ident[EI_MAG1] != ELF_MAG1)
-        return -1;
-    if (c_hdr->e_ident[EI_MAG2] != ELF_MAG2)
-        return -1;
-    if (c_hdr->e_ident[EI_MAG3] != ELF_MAG3)
-        return -1;
-
-    if (c_hdr->e_ident[EI_DATA] != ELFDATA2LSB)
-        return -2;
-    if (c_hdr->e_type != ET_EXEC)
-        return -2;
-    if (c_hdr->e_machine == ET_NONE)
-        return -2;
-    if (c_hdr->e_version != EV_CURRENT)
-        return -2;
-    if (c_hdr->e_ident[EI_OSABI] != ELFOSABI_GNU &&
-        c_hdr->e_ident[EI_OSABI] != ELFOSABI_NONE)
-        return -2;
 
     *entry_point = (void (*)(void *))hdr->e_entry;
 

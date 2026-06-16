@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <types.h>
+#include <mmio_bar.h>
 
 #include "if_iwmreg.h"
 
@@ -34,47 +35,7 @@ PRIVATE int iwifi_getdevice(uint16_t devID, iwifi_dev_t **dev) {
     return -1;
 }
 
-#define READ_N(type)                                        \
-    if(off % sizeof( type ) != 0)                           \
-        PANIC("Invalid offset");                            \
-    return ((type *)dev->bar)[off / sizeof( type )];        \
-
-#define WRITE_N(type)                                       \
-    if(off % sizeof( type ) != 0)                           \
-        PANIC("Invalid offset");                            \
-    ((type *)dev->bar)[off / sizeof( type )] = val;         \
-
-uint64_t iwifi_read64(iwifi_dev_state_t *dev, int off) {
-    READ_N(uint64_t)
-}
-
-uint32_t iwifi_read32(iwifi_dev_state_t *dev, int off) {
-    READ_N(uint32_t)
-}
-
-uint16_t iwifi_read16(iwifi_dev_state_t *dev, int off) {
-    READ_N(uint16_t)
-}
-
-uint8_t iwifi_read8(iwifi_dev_state_t *dev, int off) {
-    READ_N(uint8_t)
-}
-
-void iwifi_write64(iwifi_dev_state_t *dev, int off, uint64_t val) {
-    WRITE_N(uint64_t)
-}
-
-void iwifi_write32(iwifi_dev_state_t *dev, int off, uint32_t val) {
-    WRITE_N(uint32_t)
-}
-
-void iwifi_write16(iwifi_dev_state_t *dev, int off, uint16_t val) {
-    WRITE_N(uint16_t)
-}
-
-void iwifi_write8(iwifi_dev_state_t *dev, int off, uint8_t val) {
-    WRITE_N(uint8_t)
-}
+DEFINE_BAR_ACCESSORS(iwifi, iwifi_dev_state_t)
 
 void iwifi_periph_write32(iwifi_dev_state_t *dev, int off, uint32_t val) {
     iwifi_write32(dev, IWM_HBUS_TARG_PRPH_WADDR, ((off & 0x000fffff) | (3 << 24)));

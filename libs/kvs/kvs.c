@@ -6,21 +6,12 @@
  */
 #include "kvs.h"
 
+#include <hash.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <types.h>
-
-#define FNV1A_BASIS 2166136261
-#define FNV1A_PRIME 16777619
-static uint32_t hash(const char *src, size_t src_len) {
-    uint32_t hash = FNV1A_BASIS;
-    for (size_t i = 0; i < src_len; i++) {
-        hash ^= src[i];
-        hash *= FNV1A_PRIME;
-    }
-    return hash;
-}
+#include <cardinal/local_spinlock.h>
 
 int kvs_create(kvs_t **r NULLABLE) {
     if (r == NULL)
@@ -73,7 +64,7 @@ static int kvs_add_internal(kvs_t *r NULLABLE, const char *key, void *val,
     if (kvs_find(r, key, NULL) == kvs_ok)
         return kvs_error_exists;
 
-    uint32_t key_hash = hash(key, strnlen(key, key_len));
+    uint32_t key_hash = fnv1a_hash(key, strnlen(key, key_len));
 
     kvs_t *v = malloc(sizeof(kvs_t));
     if (v == NULL)
@@ -234,7 +225,7 @@ int kvs_find(kvs_t *r NULLABLE, const char *key, kvs_t **res) {
     if (key == NULL)
         return kvs_error_invalidargs;
 
-    uint32_t key_hash = hash(key, strnlen(key, key_len));
+    uint32_t key_hash = fnv1a_hash(key, strnlen(key, key_len));
 
     kvs_t *iter = r;
     do {
@@ -300,4 +291,48 @@ int kvs_delete(kvs_t *r NULLABLE) {
     } while (iter != NULL);
 
     return kvs_ok;
+}
+
+int kvs_walk_path(kvs_t *root, int *lock, int max_keylen,
+                  const char *path, kvs_t **out) {
+    char kvs_key[key_len];
+    const char *n_part = NULL;
+    kvs_t *cur_kvs = root;
+
+    if (strlen(path) == 0) {
+        *out = cur_kvs;
+        return CS_OK;
+    }
+
+    local_spinlock_lock(lock);
+    do {
+        n_part = strchr(path, '/');
+        if (n_part == NULL)
+            n_part = strchr(path, 0);
+
+        if (n_part - path > max_keylen) {
+            local_spinlock_unlock(lock);
+            return CS_DNE;
+        }
+
+        memset(kvs_key, 0, key_len);
+        strncpy(kvs_key, path, n_part - path);
+
+        if (kvs_find(cur_kvs, kvs_key, &cur_kvs) != kvs_ok) {
+            *out = cur_kvs;
+            local_spinlock_unlock(lock);
+            return CS_DNE;
+        }
+
+        if (kvs_get_child(cur_kvs, &cur_kvs) != kvs_ok) {
+            PANIC("Unexpected error!");
+        }
+
+        *out = cur_kvs;
+        path = n_part + 1;
+
+    } while (*n_part != 0);
+    local_spinlock_unlock(lock);
+
+    return CS_OK;
 }

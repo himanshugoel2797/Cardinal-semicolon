@@ -32,7 +32,6 @@ typedef struct {
     int idx;
 } interface_def_t;
 
-PRIVATE int network_init(void);
 
 PRIVATE int ethernet_rx(interface_def_t *interface, void *packet, int len);
 

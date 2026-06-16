@@ -25,9 +25,8 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysTaskMgr/task.h"
-#include "SysInterrupts/interrupts.h"
+#include "pci/pci_irq.h"
 #include "SysTimer/timer.h"
-#include "pci/pci.h"
 #include "CoreUsb/usb.h"
 
 #include "xhci.h"
@@ -50,11 +49,6 @@ static uint8_t *alloc_page(uintptr_t *phys_out) {
         return NULL;
     *phys_out = p;
     return (uint8_t *)vmem_phystovirt((intptr_t)p, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-}
-
-// Real wall-clock delay (TSC-paced), like AHCI/RTL/UHCI. Arg is nanoseconds.
-static void delay(uint64_t ns) {
-    timer_busywait_ns(ns);
 }
 
 // ---- TRB ring ----
@@ -621,7 +615,7 @@ int module_init(void *ecam_addr) {
     local_spinlock_unlock(&instance_lock);
     sti(cli_state);
 
-    uint64_t bar = ((uint64_t)(device->bar[0] & ~0xFu)) | ((uint64_t)device->bar[1] << 32);
+    uint64_t bar = pci_first_mmio_bar(device);
     s->mmio = (volatile uint8_t *)vmem_phystovirt((intptr_t)bar, KiB(64), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
     uint8_t caplength = *(volatile uint8_t *)(s->mmio + XHCI_CAP_CAPLENGTH);
@@ -677,15 +671,9 @@ int module_init(void *ecam_addr) {
     s->bounce_virt = alloc_page(&s->bounce_phys);
 
     // MSI: allocate a vector, register the ISR, program the device's MSI cap.
-    int int_cnt = 0;
-    int msi_val = pci_getmsiinfo(device, &int_cnt);
-    int msi_vector = 0;
-    interrupt_allocate(1, interrupt_flags_exclusive, &msi_vector);
+    int msi_vector = pci_setup_msi(device, interrupt_flags_exclusive);
     interrupt_register_handler(msi_vector, xhci_isr);
     s->irq_vector = msi_vector;
-    uintptr_t msi_addr = (uintptr_t)interrupt_msi_register_addr(0);
-    uint32_t msi_msg = (uint32_t)interrupt_msi_register_data(msi_vector);
-    pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
 
     // Enable interrupter 0 (IMAN.IE); moderate to avoid an event-interrupt storm.
     wr32(s->rt, XHCI_RT_IR0 + XHCI_IR_IMOD, 4000);  // ~1ms interval
@@ -717,7 +705,7 @@ int module_init(void *ecam_addr) {
         uint32_t psc = rd32(s->op, XHCI_OP_PORTSC(p));
         wr32(s->op, XHCI_OP_PORTSC(p), psc | XHCI_PORTSC_PP);
     }
-    delay(100 * 1000 * 1000);  // 100ms port power-good settle (USB 2.0 bPwrOn2PwrGood worst case)
+    timer_busywait_ns(100 * 1000 * 1000);  // 100ms port power-good settle (USB 2.0 bPwrOn2PwrGood worst case)
 
     s->init_complete = true;
     DEBUG_PRINT("[xHCI] init complete\r\n");

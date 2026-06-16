@@ -227,4 +227,44 @@ static inline int pci_setmsiinfo(pci_config_t *device, int msix, uintptr_t *msi_
     return 0;
 }
 
+// Assemble the MMIO base address from the device's BAR array, starting the scan
+// at *idx and advancing *idx past the consumed BAR(s) (2 slots for a 64-bit BAR,
+// 1 for a 32-bit BAR). Returns 0 and sets *idx to 6 if no MMIO BAR remains.
+static inline uint64_t pci_read_bar(pci_config_t *device, int *idx)
+{
+    for (int i = *idx; i < 6; i++)
+    {
+        uint64_t bar = 0;
+        if ((device->bar[i] & 0x7) == 0x4) //64-bit memory mapped
+        {
+            bar = (device->bar[i] & 0xFFFFFFF0) + ((uint64_t)device->bar[i + 1] << 32);
+            i++; //consumes two BAR slots
+        }
+        else if ((device->bar[i] & 0x7) == 0x0) //32-bit memory mapped
+        {
+            bar = device->bar[i] & 0xFFFFFFF0;
+        }
+        else
+        {
+            continue; //I/O-space BAR -- skip
+        }
+        //Skip empty (zero-address) BARs; the wanted MMIO BAR may be later
+        //(e.g. AHCI's ABAR is BAR5), matching the original drivers' `if(bar) break`.
+        if (bar)
+        {
+            *idx = i + 1;
+            return bar;
+        }
+    }
+    *idx = 6;
+    return 0;
+}
+
+// Convenience: the first MMIO BAR (covers the common single-MMIO-BAR device).
+static inline uint64_t pci_first_mmio_bar(pci_config_t *device)
+{
+    int idx = 0;
+    return pci_read_bar(device, &idx);
+}
+
 #endif

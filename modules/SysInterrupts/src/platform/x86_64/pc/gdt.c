@@ -10,6 +10,7 @@
 #include <types.h>
 
 #include "elf.h"
+#include "tls_util.h"
 
 #define GDT_ENTRY_COUNT 8
 
@@ -87,12 +88,7 @@ int gdt_init()
 {
 
     if (gdt == NULL)
-    {
-        int (*mp_tls_alloc)(int) = elf_resolvefunction("mp_tls_alloc");
-        TLS void *(*mp_tls_get)(int) = elf_resolvefunction("mp_tls_get");
-
-        gdt = (TLS tls_gdt_t *)mp_tls_get(mp_tls_alloc(sizeof(tls_gdt_t)));
-    }
+        gdt = (TLS tls_gdt_t *)intr_tls_alloc(sizeof(tls_gdt_t));
     gdt->gdt = malloc(GDT_ENTRY_COUNT * sizeof(gdt_t));
     gdt->tss = malloc(sizeof(tss_struct_t));
 

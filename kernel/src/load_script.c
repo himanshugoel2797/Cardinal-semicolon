@@ -139,35 +139,27 @@ int script_execute(char *load_script, size_t load_len)
     return 0;
 }
 
-int loadscript_execute()
+static int named_script_execute(const char *filename)
 {
-
     char *load_script = NULL;
     size_t load_len = 0;
-    if (!Initrd_GetFile("./loadscript.txt", (void **)&load_script, &load_len))
-        PANIC("[Kernel] Failed to find loadscript.");
+    if (!Initrd_GetFile(filename, (void **)&load_script, &load_len))
+        PANIC("[Kernel] Failed to find script.");
 
     return script_execute(load_script, load_len);
+}
+
+int loadscript_execute()
+{
+    return named_script_execute("./loadscript.txt");
 }
 
 int servicescript_execute()
 {
-
-    char *load_script = NULL;
-    size_t load_len = 0;
-    if (!Initrd_GetFile("./servicescript.txt", (void **)&load_script, &load_len))
-        PANIC("[Kernel] Failed to find servicescript.");
-
-    return script_execute(load_script, load_len);
+    return named_script_execute("./servicescript.txt");
 }
 
 int apscript_execute()
 {
-
-    char *load_script = NULL;
-    size_t load_len = 0;
-    if (!Initrd_GetFile("./apscript.txt", (void **)&load_script, &load_len))
-        PANIC("[Kernel] Failed to find apscript.");
-
-    return script_execute(load_script, load_len);
+    return named_script_execute("./apscript.txt");
 }

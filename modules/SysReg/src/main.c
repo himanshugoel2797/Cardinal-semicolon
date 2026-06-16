@@ -37,52 +37,7 @@ static int kern_lock = 0;
 
 static int registry_getkvs(const char *path, kvs_t **k NONNULL)
 {
-
-    char kvs_key[key_len];
-    const char *n_part = NULL;
-    kvs_t *cur_kvs = kern_registry;
-
-    if (strlen(path) == 0)
-    {
-        *k = cur_kvs;
-        return CS_OK;
-    }
-
-    local_spinlock_lock(&kern_lock);
-    do
-    {
-        n_part = strchr(path, '/');
-        if (n_part == NULL)
-            n_part = strchr(path, 0);
-
-        if (n_part - path > MAX_REGISTRY_KEYLEN)
-        {
-            local_spinlock_unlock(&kern_lock);
-            return CS_DNE;
-        }
-
-        memset(kvs_key, 0, key_len);
-        strncpy(kvs_key, path, n_part - path);
-
-        if (kvs_find(cur_kvs, kvs_key, &cur_kvs) != kvs_ok)
-        {
-            *k = cur_kvs;
-            local_spinlock_unlock(&kern_lock);
-            return CS_DNE;
-        }
-
-        if (kvs_get_child(cur_kvs, &cur_kvs) != kvs_ok)
-        {
-            PANIC("Unexpected error!");
-        }
-
-        *k = cur_kvs;
-        path = n_part + 1;
-
-    } while (*n_part != 0);
-    local_spinlock_unlock(&kern_lock);
-
-    return CS_OK;
+    return kvs_walk_path(kern_registry, &kern_lock, MAX_REGISTRY_KEYLEN, path, k);
 }
 
 cs_error registry_createdirectory(const char *path, const char *dirname)

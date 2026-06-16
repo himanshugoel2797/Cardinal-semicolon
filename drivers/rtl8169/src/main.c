@@ -12,9 +12,8 @@
 
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
-#include "SysInterrupts/interrupts.h"
+#include "pci/pci_irq.h"
 #include "SysTaskMgr/task.h"
-#include "pci/pci.h"
 
 #include "state.h"
 
@@ -26,14 +25,10 @@ int module_init(void *ecam_addr)
     device->command.busmaster = 1;
 
     //interrupt setup
-    int int_cnt = 0;
-    int msi_val = pci_getmsiinfo(device, &int_cnt);
+    int int_val = pci_setup_msi(device, interrupt_flags_none);
 
-    if (msi_val < 0)
+    if (int_val < 0)
         DEBUG_PRINT("[RTL8169] NO MSI\r\n");
-
-    int int_val = 0;
-    interrupt_allocate(1, interrupt_flags_none, &int_val);
 
     {
         DEBUG_PRINT("[RTL8169] Allocated Interrupt Vector: ");
@@ -41,10 +36,6 @@ int module_init(void *ecam_addr)
         DEBUG_PRINT(itoa(int_val, tmpbuf, 10));
         DEBUG_PRINT("\r\n");
     }
-
-    uintptr_t msi_addr = (uintptr_t)interrupt_msi_register_addr(0);
-    uint32_t msi_msg = interrupt_msi_register_data(int_val);
-    pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
 
     //The memory space bar for the registers, 8168 series NICs use BAR2, 8169 series use BAR1
     uint64_t bar = ((device->deviceID == 0x8168 ? device->bar[2] : device->bar[1]) & 0xFFFFFFF0);

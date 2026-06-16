@@ -182,3 +182,16 @@ list_history(list_t *a)
     uint64_t i = a->last_accessed_index;
     return i;
 }
+
+int
+list_remove_value(list_t *l, void *val)
+{
+    uint64_t len = l->entry_count;
+    for (uint64_t i = 0; i < len; i++) {
+        if ((uintptr_t)list_at(l, i) == (uintptr_t)val) {
+            list_remove(l, i);
+            return 1;
+        }
+    }
+    return 0;
+}
