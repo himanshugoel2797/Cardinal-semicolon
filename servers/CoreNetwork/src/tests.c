@@ -11,12 +11,29 @@
 #include "CoreNetwork/driver.h"
 #include "CoreNetwork/net.h"
 
-// Header-length constants must match the on-wire layouts the protocol code
-// assumes.
+#include "arp.h"
+#include "ip.h"
+#include "udp.h"
+
+// The *_HEADER_LEN constants are what the protocol code uses to size and offset
+// into on-wire buffers; the packed structs are how that same code actually reads
+// and writes the fields. The two must agree, so compare the constants against
+// the real sizeof() of the wire structs. This catches a struct-layout
+// regression (e.g. lost packing, a reordered/resized field) -- comparing a
+// constant against its own literal would not.
 static void test_header_lengths(test_ctx_t *ctx) {
-    TEST_CHECK_EQ_U(ctx, ARP_HEADER_LEN, 28);
-    TEST_CHECK_EQ_U(ctx, IPV4_HEADER_LEN, 20);
-    TEST_CHECK_EQ_U(ctx, UDP_HEADER_LEN, 8);
+    // arp_t / ipv4_t carry no trailing payload in the header proper (ipv4_t's
+    // body[] is a zero-length flexible member, excluded from sizeof).
+    TEST_CHECK_EQ_U(ctx, ARP_HEADER_LEN, sizeof(arp_t));
+    TEST_CHECK_EQ_U(ctx, IPV4_HEADER_LEN, sizeof(ipv4_t));
+    TEST_CHECK_EQ_U(ctx, UDP_HEADER_LEN, sizeof(udp_t));
+
+    // Concrete wire sizes, so a silently mis-packed struct is caught even if its
+    // matching constant drifted with it.
+    TEST_CHECK_EQ_U(ctx, sizeof(arp_t), 28);
+    TEST_CHECK_EQ_U(ctx, sizeof(ipv4_t), 20);
+    TEST_CHECK_EQ_U(ctx, sizeof(udp_t), 8);
+
     TEST_CHECK_EQ_U(ctx, UDP_IPV4_PACKET_SPACE,
                     IPV4_HEADER_LEN + UDP_HEADER_LEN);
 }
