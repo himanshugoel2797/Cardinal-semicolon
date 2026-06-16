@@ -28,19 +28,38 @@ static void test_statesize(test_ctx_t *ctx) {
     TEST_CHECK(ctx, mp_platform_getstatesize() > 0);
 }
 
-// INLINE: a TLS slot allocation must succeed (returns a non-negative offset).
+// INLINE: mp_tls_alloc bumps a shared cursor, so two successive allocations
+// must hand out distinct, non-overlapping offsets that advance by at least the
+// requested size. A bare "off >= 0" check is vacuous -- the only failure path
+// inside mp_tls_alloc calls PANIC() and never returns.
 static void test_tls_alloc(test_ctx_t *ctx) {
-    int off = mp_tls_alloc(sizeof(uintptr_t));
-    TEST_CHECK(ctx, off >= 0);
+    int a = mp_tls_alloc(sizeof(uintptr_t));
+    int b = mp_tls_alloc(sizeof(uintptr_t));
+    TEST_CHECK(ctx, a >= 0);
+    TEST_CHECK_MSG(ctx, b >= a + (int)sizeof(uintptr_t),
+                   "second allocation must advance past the first");
 }
 
-// PERCPU: the shared TLS slot must resolve to non-NULL storage on every online
-// core, proving per-core TLS is wired up on each core.
+// PERCPU: prove per-core TLS storage is actually backed by memory on every
+// online core. mp_tls_get returns a GS-relative (address_space 256) pointer;
+// the previous test only compared that pointer to NULL (i.e. checked the offset
+// was non-zero) and never touched the storage. Here we dereference it -- a real
+// %gs-relative store and load -- and verify the slot retains what we wrote. An
+// uninitialised GS base or an unmapped slot would fault or read back garbage.
 static void test_tls_percpu(test_ctx_t *ctx) {
-    TEST_CHECK_MSG(ctx, s_tls_off >= 0, "TLS slot was not allocated");
-    if (s_tls_off < 0)
+    TEST_CHECK_MSG(ctx, s_tls_off > 0, "TLS slot was not allocated");
+    if (s_tls_off <= 0)
         return;
-    TEST_CHECK_MSG(ctx, mp_tls_get(s_tls_off) != NULL, "per-core TLS storage is NULL");
+
+    TLS uintptr_t *slot = (TLS uintptr_t *)mp_tls_get(s_tls_off);
+    TEST_CHECK_MSG(ctx, slot != NULL, "per-core TLS storage is NULL");
+    if (slot == NULL)
+        return;
+
+    const uintptr_t sentinel = (uintptr_t)0xC0FFEE00u ^ (uintptr_t)s_tls_off;
+    *slot = sentinel;
+    TEST_CHECK_MSG(ctx, *slot == sentinel,
+                   "per-core TLS slot did not retain the written value");
 }
 
 void sysmp_register_tests(void) {
