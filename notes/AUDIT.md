@@ -444,11 +444,11 @@ a `cr3` load (cr3 points straight at the task's PML4), and a core with no task r
 load against per-task shared-kernel PML4s.
 
 A cross-core TLB-shootdown primitive (`vmem_flush` + an IPI vector) was prototyped while
-this was per-core, but was **removed** as dead code: nothing unmaps a kernel range at
-runtime (every `vmem_unmap` is a user range), so it had zero callers, and the shared PML4
-makes kernel-map *creation* visible everywhere without any IPI. Recover it from git
-(commit `422d332`) if runtime kernel-map churn is ever added — that is the only thing that
-would need it (to invalidate stale TLB entries left by a kernel *unmap*).
+this was per-core, then **removed** as dead code, and has now been **reintroduced**
+adapted to the shared PML4 (see "[FIXED] cross-core TLB shootdown" below). The shared PML4
+still makes kernel-map *creation* visible everywhere without any IPI; the shootdown exists
+for the invalidation cases creation does not cover (runtime kernel *unmap* / permission
+downgrade, and cross-core user unmap).
 
 ### [FIXED] new top-level kernel PML4 entries at runtime would not propagate
 *(Previously latent: a kernel map needing a brand-new top-level PML4 entry at runtime
@@ -464,8 +464,42 @@ PDPTs map nothing, so accesses under them still fault until explicitly mapped. T
 "reserve the full kernel PML4 entry range up front" option; the alternative (propagate new
 entries to every live address space) was rejected — there is no registry of live `vmem_t`,
 and it would race context switches and `vmem_create`. Verified: full KVM boot to
-`servicescript` exit with APs scheduling, fault-free. Orthogonal to TLB shootdown, which
-is only needed for kernel *un*maps and still has no runtime callers.)*
+`servicescript` exit with APs scheduling, fault-free. Orthogonal to TLB shootdown (next
+section).)*
+
+### [FIXED] cross-core TLB shootdown + missing local TLB invalidation
+*(Two gaps, one in `vmem_unmap` itself, one cross-core.*
+
+**Local:** `vmem_unmap` edited the page tables but never issued any `invlpg`, so even
+single-core the stale translation survived until the next context switch — a permission
+downgrade (`task_updatemap` does unmap+remap) was not enforced, and a freed-then-reused
+frame stayed writable through the unmapping task's own stale entry. `vmem_unmap` now calls
+`vmem_local_flush` (per-page `invlpg`, or a `cr3` reload above 1 GiB — kernel pages are not
+global, so a `cr3` reload flushes them too) over the range before returning.
+
+**Cross-core:** a user mapping mutated via `task_unmap`/`task_updatemap` (both take an
+arbitrary target task id, so one core can unmap/downgrade an address space *live on another
+core*) left the other core's TLB stale → it could write a freed/reused frame (UAF) or keep
+the old, more-permissive entry. `task_unmap` even `physmem_free`s the frame immediately.
+Reintroduced a synchronous IPI shootdown (`vmem_shootdown`, `vmem_smp_init`,
+`CALL:vmem_smp_init` after `CALL:mem_init` in `loadscript.txt`), adapted to the shared PML4
+(the old per-core kernel-half refresh is gone; the handler is just local-flush + ack):
+- **Targeting.** Each `vmem_t` records the single `active_apic` it is active on (set/cleared
+  in `vmem_setactive`; one task per AS and no migration ⇒ ≤1 core). Kernel ranges
+  (`virt < 0`) broadcast to all other cores; user ranges shoot down only `active_apic`.
+- **Lifetime/deadlock-safety.** The page-table edit and the cheap local flush run under the
+  task/`vmem` lock; the active-core APIC id is *snapshotted by value* there
+  (`vmem_active_apic`); then the lock is dropped and `vmem_shootdown` runs with interrupts
+  **on** and no lock held (it busy-waits for the target to ack from interrupt context — a
+  target spinning with interrupts off on a lock the initiator holds would deadlock, hence
+  the strict contract). The `vmem_t` is never dereferenced during the wait, so the target
+  task exiting/freeing it mid-shootdown is harmless. The shootdown completes **before**
+  `physmem_free`, so no core can touch the frame through a stale entry once it is reusable.
+- A core that *enters* an AS does a `cr3` load (full flush), so any core that becomes active
+  after the edit needs no shootdown; a stale snapshot only ever causes a harmless extra IPI.
+
+No-op on a single core / before `vmem_smp_init`. Verified: full KVM SMP boot to
+`servicescript` exit, APs scheduling, fault-free.)*
 
 ---
 

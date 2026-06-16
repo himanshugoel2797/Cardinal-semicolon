@@ -60,4 +60,20 @@ intptr_t vmem_vmalloc(size_t sz);
 
 void vmem_vfree(intptr_t virt, size_t sz);
 
+// Set up the cross-core TLB-shootdown IPI. Call once after SysInterrupts/SysMP
+// are up and before APs start scheduling (CALL:vmem_smp_init after CALL:mp_init).
+cs_error vmem_smp_init();
+
+// APIC id of the core a user address space is currently active on, or -1 if none.
+// Snapshot this under the lock that performed the vmem_unmap, then pass it to
+// vmem_shootdown after dropping locks (do not dereference the vmem_t while waiting).
+int vmem_active_apic(vmem_t *vm);
+
+// Complete a cross-core TLB invalidation for a range just unmapped or downgraded
+// by vmem_unmap (which already flushed the local core). Kernel ranges (virt < 0)
+// are broadcast to all other cores; user ranges are sent only to target_apic (from
+// vmem_active_apic) when it is a different core. Must be called with interrupts
+// enabled and holding no page-table or task lock.
+void vmem_shootdown(intptr_t virt, size_t size, int target_apic);
+
 #endif

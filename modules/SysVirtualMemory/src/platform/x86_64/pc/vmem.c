@@ -1,6 +1,7 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysReg/registry.h"
+#include "SysInterrupts/interrupts.h" //IPI enums/typedefs only; functions resolved at runtime
 #include "elf.h"
 #include <cardinal/local_spinlock.h>
 #include <stdint.h>
@@ -33,6 +34,8 @@ struct vmem
     uint64_t *pml4;      //physmap pointer to that 512-entry PML4 page
     int flags;
     int lock;
+    volatile int active_apic; //APIC id of the core this AS is active on, -1 if none.
+                              //One task per AS and no migration, so at most one core.
 };
 
 struct lcl_data
@@ -90,6 +93,56 @@ void vmem_vfree(intptr_t virt, size_t sz)
     if (virt + sz == kernel_vmalloc)
         kernel_vmalloc -= sz;
     local_spinlock_unlock(&kernel_vmalloc_lock);
+}
+
+// --- Cross-core TLB shootdown (SMP) --------------------------------------
+//
+// vmem_unmap / a permission downgrade edits the page tables but only the editing
+// core's own TLB is flushed locally (vmem_local_flush). Any *other* core that has
+// the same translation cached must be told to invalidate it before the physical
+// frame is freed/reused or the (now stricter) permissions are relied upon:
+//   - kernel ranges (virt < 0) are shared in every address space -> broadcast to
+//     every other core;
+//   - user ranges live in a per-task address space that is active on at most one
+//     core (one task per AS, no migration/threads) -> shoot down just that core,
+//     identified by vmem_t.active_apic snapshotted at unmap time.
+// A core that *enters* an address space does a cr3 load (a full flush, since
+// kernel pages are not global), so it never needs a shootdown for an edit that
+// was already visible in the shared page tables before it loaded cr3.
+//
+// Contract: call vmem_shootdown with interrupts ENABLED and holding no page-table
+// or task lock -- it busy-waits for each target to ack from interrupt context, so
+// a target blocked with interrupts off on a lock the caller holds would deadlock.
+#define VMEM_MAX_CORES 256
+static int tlb_vec = -1;                   //shootdown IPI vector, -1 until vmem_smp_init
+static int tlb_lock = 0;                   //serialises shootdown initiators
+static volatile intptr_t tlb_virt;         //range under shootdown (guarded by tlb_lock)
+static volatile size_t tlb_size;
+static volatile int tlb_ack;               //set by the target once it has flushed
+static int tlb_all_apics[VMEM_MAX_CORES];  //every core's APIC id (from the MADT)
+static int tlb_core_count = 0;
+static void (*tlb_sendipi)(int, int, ipi_delivery_mode_t) = NULL;
+static int (*tlb_self_apic)(void) = NULL;  //interrupt_get_cpu_idx (returns this core's APIC id)
+
+//Invalidate [virt, virt+sz) in THIS core's TLB for the currently-active address
+//space. Above a threshold a cr3 reload (which also flushes the kernel half, as
+//kernel pages are not global) is cheaper than a long invlpg sweep.
+static void vmem_local_flush(intptr_t virt, size_t sz)
+{
+    if (sz >= GiB(1))
+    {
+        uintptr_t cr3;
+        __asm__ volatile("mov %%cr3, %0"
+                         : "=r"(cr3)::);
+        __asm__ volatile("mov %0, %%cr3" ::"r"(cr3)
+                         : "memory");
+    }
+    else
+    {
+        for (size_t n = 0; n < sz; n += KiB(4), virt += KiB(4))
+            __asm__ volatile("invlpg (%0)" ::"r"(virt)
+                             : "memory");
+    }
 }
 
 //Per-core CPU/MMU feature setup that must run on every core (the BSP in
@@ -421,10 +474,10 @@ cs_error vmem_unmap(vmem_t *vm, intptr_t virt, size_t size)
     int cli_state = cli();
     if (virt < 0)
     {
-        //Remove from the shared kernel map (see vmem_map). No code path currently
-        //unmaps a kernel range at runtime; if one is added it must also shoot down
-        //stale TLB entries on the other cores (the cr3 reload at the next context
-        //switch only flushes the core that performed the switch).
+        //Remove from the shared kernel map (see vmem_map). This flushes only the
+        //local core (below); a caller unmapping a kernel range at runtime must also
+        //call vmem_shootdown(virt, size, -1) afterwards (interrupts on, no lock) to
+        //invalidate the other cores before reusing the frame.
         local_spinlock_lock(&kmem.lock);
         ptable = kmem.pml4;
     }
@@ -436,6 +489,13 @@ cs_error vmem_unmap(vmem_t *vm, intptr_t virt, size_t size)
     }
 
     int rVal = vmem_unmap_st(ptable, ptable, virt, size, 0);
+
+    //Flush this core's TLB for the range. This is correct for the common
+    //self-unmap (the range belongs to the address space active on this core) and
+    //harmless otherwise; a *foreign* core caching the range is handled separately
+    //by vmem_shootdown, which the caller must invoke before reusing the frame.
+    vmem_local_flush(virt, size);
+
     if (virt >= 0)
         local_spinlock_unlock(&vm->lock);
     else
@@ -462,6 +522,7 @@ int vmem_create(vmem_t **vm_r)
     vm->pml4 = (uint64_t *)vmem_phystovirt(pml4_phys, KiB(4), vmem_flags_cachewriteback);
     vm->flags = vmem_flags_user;
     vm->lock = 0;
+    vm->active_apic = -1; //not active on any core until vmem_setactive runs
     memset(vm->pml4, 0, KiB(4));
 
     //Inherit the shared kernel half. These PML4 entries point at shared
@@ -499,6 +560,20 @@ int vmem_setactive(vmem_t *vm)
     //With a shared kernel PML4 and each address space owning its own PML4 page,
     //activating one is just a cr3 load -- no page-table state to copy in or out.
     int cli_state = cli();
+
+    //Track which core each address space is active on, so a cross-core unmap can
+    //target the right core (tlb_self_apic is NULL until vmem_smp_init, but no task
+    //schedules before then, so nothing relies on the mark that early). The cr3
+    //load below is a full flush, so a core entering an AS starts with a clean TLB.
+    int self = (tlb_self_apic != NULL) ? tlb_self_apic() : -1;
+    if (self >= 0)
+    {
+        vmem_t *prev = lcl->cur_vmem;
+        if (prev != NULL && prev != vm)
+            __atomic_store_n(&prev->active_apic, -1, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&vm->active_apic, self, __ATOMIC_SEQ_CST);
+    }
+
     lcl->cur_vmem = vm;
     __asm__ volatile("mov %0, %%cr3" ::"r"(vm->pml4_phys)
                      :);
@@ -511,6 +586,113 @@ int vmem_getactive(vmem_t **vm)
 {
     *vm = lcl->cur_vmem;
     return 0;
+}
+
+//APIC id of the core a user address space is currently active on, or -1 if none.
+//Snapshot this under the same lock that performed the vmem_unmap, then pass the
+//value to vmem_shootdown after dropping locks: the vmem_t itself must not be
+//dereferenced during the IPI wait (the owning task may exit and free it).
+int vmem_active_apic(vmem_t *vm)
+{
+    if (vm == NULL)
+        return -1;
+    return __atomic_load_n(&vm->active_apic, __ATOMIC_SEQ_CST);
+}
+
+//Shootdown IPI handler -- runs in interrupt context on a *receiving* core. The
+//range is published under tlb_lock before the IPI is sent, so a plain read is
+//safe. Flush, then acknowledge.
+static void tlb_shootdown_handler(int irq)
+{
+    (void)irq;
+    intptr_t v = tlb_virt;
+    size_t s = tlb_size;
+    vmem_local_flush(v, s);
+    __atomic_store_n(&tlb_ack, 1, __ATOMIC_SEQ_CST);
+}
+
+//Shoot down one core and wait for it to ack. Caller holds tlb_lock.
+static void tlb_send_one(int apic)
+{
+    __atomic_store_n(&tlb_ack, 0, __ATOMIC_SEQ_CST);
+    tlb_sendipi(apic, tlb_vec, ipi_delivery_mode_fixed);
+    //One target at a time -- also avoids overrunning the local APIC ICR.
+    while (__atomic_load_n(&tlb_ack, __ATOMIC_SEQ_CST) == 0)
+        __asm__ volatile("pause");
+}
+
+//Complete a cross-core TLB invalidation for a range just unmapped / downgraded by
+//vmem_unmap (which already flushed this core). For a kernel range (virt < 0) every
+//other core is shot down; for a user range only target_apic is (the core the AS
+//was active on, from vmem_active_apic), and only if it is a different core. No-op
+//on a single core or before vmem_smp_init. See the contract above: interrupts
+//must be enabled and no page-table/task lock may be held.
+void vmem_shootdown(intptr_t virt, size_t size, int target_apic)
+{
+    if (tlb_vec < 0 || tlb_core_count <= 1)
+        return; //single core, or SMP shootdown not set up: local flush sufficed
+
+    int self = (tlb_self_apic != NULL) ? tlb_self_apic() : -1;
+
+    local_spinlock_lock(&tlb_lock);
+    tlb_virt = virt;
+    tlb_size = size;
+    if (virt < 0)
+    {
+        for (int i = 0; i < tlb_core_count; i++)
+            if (tlb_all_apics[i] != self)
+                tlb_send_one(tlb_all_apics[i]);
+    }
+    else if (target_apic >= 0 && target_apic != self)
+    {
+        tlb_send_one(target_apic);
+    }
+    local_spinlock_unlock(&tlb_lock);
+}
+
+//Set up the cross-core TLB-shootdown IPI. Run after SysInterrupts/SysMP are up
+//(acpi_init populated HW/LAPIC, intr_init armed the APIC) but before APs start
+//scheduling -- i.e. CALL:vmem_smp_init after CALL:mp_init in loadscript.txt.
+//SysInterrupts loads after SysVirtualMemory, so its entry points are resolved at
+//runtime via the kernel symbol DB rather than linked.
+cs_error vmem_smp_init()
+{
+    cs_error (*intr_allocate)(int, interrupt_flags_t, int *) =
+        (cs_error(*)(int, interrupt_flags_t, int *))elf_resolvefunction("interrupt_allocate");
+    void (*intr_register)(int, InterruptHandler) =
+        (void (*)(int, InterruptHandler))elf_resolvefunction("interrupt_register_handler");
+    tlb_self_apic = (int (*)(void))elf_resolvefunction("interrupt_get_cpu_idx");
+    tlb_sendipi = (void (*)(int, int, ipi_delivery_mode_t))elf_resolvefunction("interrupt_sendipi");
+
+    if (intr_allocate == NULL || intr_register == NULL || tlb_self_apic == NULL || tlb_sendipi == NULL)
+        return CS_UNKN;
+
+    //Enumerate every core's APIC id from the registry (populated from the ACPI
+    //MADT at boot, so all cores are known even before the APs are released). The
+    //HW/LAPIC/<idx> keys are formatted with a base-16 index (see acpi_tables.c).
+    uint64_t count = 0;
+    registry_readkey_uint("HW/LAPIC", "COUNT", &count);
+    tlb_core_count = 0;
+    for (uint64_t i = 0; i < count && tlb_core_count < VMEM_MAX_CORES; i++)
+    {
+        char idx_str[16] = "";
+        char key_str[256] = "HW/LAPIC/";
+        char *key = strncat(key_str, itoa((int)i, idx_str, 16), 255);
+
+        uint64_t apic_id = 0;
+        if (registry_readkey_uint(key, "APIC ID", &apic_id) != CS_OK)
+            continue;
+        tlb_all_apics[tlb_core_count++] = (int)apic_id;
+    }
+
+    //Allocate a dedicated vector and register the handler once (the handler table
+    //is global, so this single registration covers every core's IDT).
+    int base = 0;
+    if (intr_allocate(1, interrupt_flags_exclusive, &base) != CS_OK)
+        return CS_OUTOFMEM;
+    intr_register(base, tlb_shootdown_handler);
+    tlb_vec = base;
+    return CS_OK;
 }
 
 static int vmem_virttophys_st(uint64_t *pg, uint64_t virt, intptr_t *phys, int lv)
