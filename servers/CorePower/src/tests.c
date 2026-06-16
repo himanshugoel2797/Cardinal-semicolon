@@ -10,7 +10,7 @@
 
 // pwr_register with a minimal mock device (null handlers) returns 0.
 static void test_pwr_register(test_ctx_t *ctx) {
-    pwr_device_t dev = {
+    static pwr_device_t dev = {
         .name = "test",
         .event_g = NULL,
         .event_d = NULL,
@@ -26,7 +26,7 @@ static void test_pwr_register(test_ctx_t *ctx) {
 // pwr_sendevent_g dispatches a global power-state change without faulting on a
 // device with a null handler.
 static void test_pwr_sendevent_g(test_ctx_t *ctx) {
-    pwr_device_t dev = {
+    static pwr_device_t dev = {
         .name = "test",
         .event_g = NULL,
         .event_d = NULL,
@@ -43,7 +43,7 @@ static void test_pwr_sendevent_g(test_ctx_t *ctx) {
 // pwr_sendevent_d dispatches a device power-state change without faulting on a
 // device with a null handler.
 static void test_pwr_sendevent_d(test_ctx_t *ctx) {
-    pwr_device_t dev = {
+    static pwr_device_t dev = {
         .name = "test",
         .event_g = NULL,
         .event_d = NULL,
