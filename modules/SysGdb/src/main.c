@@ -361,6 +361,10 @@ int gdb_poll_breakin(void) {
     return 0;
 }
 
+// Registered in tests.c; gated by test_mode_active(), so this is free on a
+// normal boot.
+void sysgdb_register_tests(void);
+
 int module_init() {
     com2_init();
     interrupt_register_handler(1, gdb_exception);  // #DB (single-step / hw bp)
@@ -377,5 +381,7 @@ int module_init() {
         outb(COM2 + 1, 0x01);  // IER: received-data-available interrupt
     }
     DEBUG_PRINT("[SysGdb] GDB stub armed on COM2 (vectors 1,3; async Ctrl-C via IRQ3)\r\n");
+
+    sysgdb_register_tests();
     return 0;
 }
