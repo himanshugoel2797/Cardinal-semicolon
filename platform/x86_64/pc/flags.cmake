@@ -48,6 +48,14 @@ COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-test.iso" "ISO/isodir"
 COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
 DEPENDS image)
 
+# Local-only ISO for the death-test harness: boots with "cardinal.test
+# cardinal.harness". Driven by scripts/systest-harness.py; NOT used in web CI.
+add_custom_target(harness-image
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub_harness.cfg" "ISO/isodir/boot/grub/grub.cfg"
+COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-harness.iso" "ISO/isodir"
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
+DEPENDS image)
+
 add_custom_target(disk.img
     COMMAND qemu-img create -f raw disk.img 128M)
 

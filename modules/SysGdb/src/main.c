@@ -24,6 +24,7 @@
 #include <types.h>
 
 #include "SysInterrupts/interrupts.h"
+#include "SysDebug/csmux.h"
 
 #include "SysGdb/gdb.h"
 
@@ -120,6 +121,59 @@ static int fromhex(int c) {
 #define GDB_BUF 1024
 static char rx_buf[GDB_BUF];
 static char tx_buf[GDB_BUF];
+
+// ---- CSMUX (channel 2) transport: GDB tunneled over the shared COM1 link ----
+//
+// Used during a harness-driven test run, where COM1 carries framed CSMUX traffic
+// (so COM2 is not wired). TX bytes are buffered and flushed as a single CH_GDB
+// frame per RSP packet -- the flush happens when the stub next reads input, which
+// is the natural packet boundary -- so we avoid per-byte framing overhead. The
+// host harness bridges CH_GDB to a local TCP port for GDB to connect to.
+static uint8_t csmux_tx[GDB_BUF];
+static uint32_t csmux_tx_len = 0;
+
+static void csmux_tx_flush(void) {
+    if (csmux_tx_len == 0)
+        return;
+    csmux_send(CSMUX_CH_GDB, csmux_tx, csmux_tx_len);
+    csmux_tx_len = 0;
+}
+
+static int csmux_gdb_getc(void *state) {
+    (void)state;
+    csmux_tx_flush(); // flush the packet we just built before blocking for input
+    for (;;) {
+        uint8_t b;
+        if (csmux_chan_read(CSMUX_CH_GDB, &b, 1) == 1)
+            return (int)b;
+    }
+}
+
+static void csmux_gdb_putc(void *state, int c) {
+    (void)state;
+    if (csmux_tx_len >= sizeof(csmux_tx))
+        csmux_tx_flush();
+    csmux_tx[csmux_tx_len++] = (uint8_t)c;
+}
+
+static int csmux_gdb_poll(void *state) {
+    (void)state;
+    return csmux_chan_avail(CSMUX_CH_GDB);
+}
+
+static const gdb_transport_t csmux_transport = {
+    .getc = csmux_gdb_getc,
+    .putc = csmux_gdb_putc,
+    .poll = csmux_gdb_poll,
+    .state = NULL,
+};
+
+// Route the GDB channel over CSMUX channel 2. Resolved by name and called from
+// SysTest when it enters harness mode, so a debugger can still attach over the
+// single multiplexed serial link during a death-test run.
+void gdb_use_csmux(void) {
+    gdb_register_transport(&csmux_transport);
+}
 
 // Receive one packet ($...#cs) into rx_buf; returns length or -1 on bad checksum.
 static int recv_packet(void) {

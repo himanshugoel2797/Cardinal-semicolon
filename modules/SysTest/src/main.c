@@ -360,6 +360,8 @@ int test_run_suite(const char *suite) {
     for (test_node_t *n = g_tests_head; n != NULL; n = n->next) {
         if (n->entry.done || strcmp(n->entry.def.suite, suite) != 0)
             continue;
+        if (n->entry.def.flags & TEST_FLAG_DEATH)
+            continue; // death tests only run from the harness-driven sweep
         execute_entry(&n->entry);
         n->entry.done = true;
         fails += report_entry(++idx, &n->entry);
@@ -367,15 +369,36 @@ int test_run_suite(const char *suite) {
     return (int)fails;
 }
 
-int test_run_all(void) {
-    if (!g_test_mode)
-        return 0; // normal boot: nothing to do, no cost
+// ---- death-test phase helpers ----------------------------------------------
 
-    resolve_ops();
+static int count_death_tests(void) {
+    int k = 0;
+    for (test_node_t *n = g_tests_head; n != NULL; n = n->next)
+        if (n->entry.def.flags & TEST_FLAG_DEATH)
+            k++;
+    return k;
+}
+
+// The death test at 0-based index `idx` among death tests, or NULL.
+static test_entry_t *death_test_at(int idx) {
+    int k = 0;
+    for (test_node_t *n = g_tests_head; n != NULL; n = n->next) {
+        if (!(n->entry.def.flags & TEST_FLAG_DEATH))
+            continue;
+        if (k == idx)
+            return &n->entry;
+        k++;
+    }
+    return NULL;
+}
+
+// Run + report every NON-death test as a TAP stream. Returns failed-test count.
+static int run_normal_phase(bool harness, int death_count) {
+    int normal_count = g_test_count - death_count;
 
     DEBUG_PRINT("[SysTest] ============ test run start ============\r\n");
     DEBUG_PRINT("1..");
-    print_uint((uint64_t)g_test_count);
+    print_uint((uint64_t)(harness ? normal_count : g_test_count));
     DEBUG_PRINT("\r\n");
     if (!g_ops.resolved_tasks)
         DEBUG_PRINT("[SysTest] WARN: scheduler ops unresolved; task/per-CPU tests run inline\r\n");
@@ -385,8 +408,9 @@ int test_run_all(void) {
     int idx = 0;
     for (test_node_t *n = g_tests_head; n != NULL; n = n->next) {
         test_entry_t *e = &n->entry;
+        if (e->def.flags & TEST_FLAG_DEATH)
+            continue; // handled in the death phase
         if (e->done) {
-            // Already run via test_run_suite(); still account for it in the plan.
             idx++;
             if (e->fails)
                 failed_tests++;
@@ -401,21 +425,90 @@ int test_run_all(void) {
         total_fail_checks += f;
     }
 
+    // Without a harness, death tests cannot run -- list them as skipped so the
+    // plan is complete and a reader sees they exist.
+    if (!harness) {
+        for (test_node_t *n = g_tests_head; n != NULL; n = n->next) {
+            test_entry_t *e = &n->entry;
+            if (!(e->def.flags & TEST_FLAG_DEATH))
+                continue;
+            DEBUG_PRINT("ok ");
+            print_uint((uint64_t)++idx);
+            DEBUG_PRINT(" - ");
+            DEBUG_PRINT(e->def.suite);
+            DEBUG_PRINT(".");
+            DEBUG_PRINT(e->def.name);
+            DEBUG_PRINT(" # SKIP (harness only)\r\n");
+        }
+    }
+
     DEBUG_PRINT("[SysTest] ============ ");
-    print_uint((uint64_t)g_test_count);
+    print_uint((uint64_t)idx);
     DEBUG_PRINT(" tests, ");
     print_uint((uint64_t)failed_tests);
     DEBUG_PRINT(" failed, ");
     print_uint((uint64_t)total_fail_checks);
     DEBUG_PRINT(" failed checks ============\r\n");
+    return failed_tests;
+}
 
-    if (failed_tests == 0)
-        DEBUG_PRINT("[SysTest] ALL TESTS PASSED\r\n");
-    else
-        DEBUG_PRINT("[SysTest] TESTS FAILED\r\n");
+int test_run_all(void) {
+    if (!g_test_mode)
+        return 0; // normal boot: nothing to do, no cost
 
-    test_platform_exit(failed_tests == 0 ? 0 : 1);
-    return 0; // unreachable
+    resolve_ops();
+
+    int death_count = count_death_tests();
+    bool harness = false;
+    int cursor = 0;
+    if (systest_death_harness_mode())
+        harness = systest_death_handshake(death_count, &cursor); // activates CSMUX, gets cursor
+
+    // In harness mode COM1 carries framed CSMUX and COM2 is unwired, so route the
+    // GDB stub over CSMUX channel 2 (if SysGdb is loaded) -- keeps the debugger
+    // usable over the single multiplexed link across reboots.
+    if (harness) {
+        void (*gdb_use_csmux)(void) = (void (*)(void))elf_resolvefunction("gdb_use_csmux");
+        if (gdb_use_csmux != NULL)
+            gdb_use_csmux();
+    }
+
+    // Normal (non-death) tests: run on boot 0 (or any non-harness run). On a
+    // harness resume boot (cursor > 0) they already ran and were reported on
+    // boot 0, so skip straight to the death phase.
+    if (!harness || cursor == 0) {
+        int failed_tests = run_normal_phase(harness, death_count);
+        if (harness) {
+            systest_ctrl_kv("NORMALDONE fails=", failed_tests); // harness owns the verdict
+        } else {
+            if (failed_tests == 0)
+                DEBUG_PRINT("[SysTest] ALL TESTS PASSED\r\n");
+            else
+                DEBUG_PRINT("[SysTest] TESTS FAILED\r\n");
+            test_platform_exit(failed_tests == 0 ? 0 : 1);
+        }
+    }
+
+    // ---- death phase (harness only; one death test per boot) ----
+    if (cursor < death_count) {
+        test_entry_t *e = death_test_at(cursor);
+        systest_ctrl_begin(cursor, e->def.suite, e->def.name, e->def.expect_vector);
+        systest_death_install_hooks();
+        systest_death_arm(e->def.expect_vector, cursor);
+
+        struct test_ctx ctx = {.suite = e->def.suite, .name = e->def.name, .core = 0};
+        e->def.fn(&ctx); // lethal: a correct death test does not return here
+
+        // Reached only if the op failed to kill the kernel: that is a failure.
+        systest_death_disarm();
+        systest_ctrl_kv("SURVIVED cursor=", cursor);
+        system_reset(); // harness records the survive as FAIL and advances
+    }
+
+    // cursor >= death_count: every death test has been processed.
+    systest_ctrl_send("ALLDONE");
+    test_platform_exit(0); // harness owns the aggregate pass/fail verdict
+    return 0;              // unreachable
 }
 
 // ---- registration of SysTest's own framework self-tests --------------------
@@ -424,6 +517,10 @@ void systest_register_selftests(void); // suites.c
 int module_init(void) {
     CardinalBootInfo *bi = GetBootInfo();
     g_test_mode = (bi != NULL) && (strstr(bi->Cmdline, "cardinal.test") != NULL);
+    // "cardinal.harness" additionally enables the CSMUX-driven death-test flow
+    // (local, harness-driven runs only). Never set in plain CI runs.
+    systest_death_set_harness_mode(
+        (bi != NULL) && (strstr(bi->Cmdline, "cardinal.harness") != NULL));
 
     DEBUG_PRINT("[SysTest] loaded");
     DEBUG_PRINT(g_test_mode ? " (TEST MODE active)\r\n" : "\r\n");

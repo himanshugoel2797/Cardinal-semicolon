@@ -49,6 +49,31 @@ static void selftest_percpu(test_ctx_t *ctx) {
     TEST_CHECK(ctx, core < 256);
 }
 
+// ---- death tests: each MUST kill the kernel (harness-driven local runs only) -
+//
+// A death test's body is expected not to return: it triggers a specific CPU
+// fault (or a PANIC) and the death-test machinery confirms the kernel died with
+// the expected vector, then reboots so the harness can advance to the next one.
+// These double as a smoke test of the fault/PANIC paths themselves.
+
+// #GP (vector 13): a write to a non-canonical linear address raises #GP(0).
+static void death_gp_noncanonical(test_ctx_t *ctx) {
+    (void)ctx;
+    *(volatile uint64_t *)0xDEADBEEFDEADBEE0ull = 0;
+}
+
+// #UD (vector 6): an undefined opcode.
+static void death_ud_invalidop(test_ctx_t *ctx) {
+    (void)ctx;
+    __asm__ volatile("ud2");
+}
+
+// PANIC path (no CPU vector): an explicit kernel panic. Expected outcome "any".
+static void death_panic(test_ctx_t *ctx) {
+    (void)ctx;
+    PANIC("SysTest death-test: intentional panic");
+}
+
 void systest_register_selftests(void) {
     test_def_t inl = {
         .suite = "SysTest", .name = "selftest_inline", .fn = selftest_inline,
@@ -67,4 +92,17 @@ void systest_register_selftests(void) {
         .run = TEST_RUN_PERCPU, .flags = TEST_FLAG_NONE,
     };
     test_register(&pcpu);
+
+    // Death tests (run only under a harness-driven local run; SKIP otherwise).
+    test_def_t d_gp = TEST_DEATH_DEF("SysTest", "death_gp_noncanonical",
+                                     death_gp_noncanonical, 13 /* #GP */);
+    test_register(&d_gp);
+
+    test_def_t d_ud = TEST_DEATH_DEF("SysTest", "death_ud_invalidop",
+                                     death_ud_invalidop, 6 /* #UD */);
+    test_register(&d_ud);
+
+    test_def_t d_panic = TEST_DEATH_DEF("SysTest", "death_panic",
+                                        death_panic, TEST_DEATH_ANY);
+    test_register(&d_panic);
 }

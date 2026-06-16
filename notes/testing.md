@@ -88,6 +88,68 @@ cmake --build build --target test-image     # -> build/ISO/os-test.iso
 normal `image` target and `scripts/run-qemu.sh` are unaffected — a normal boot
 never enters test mode.
 
+## Death tests (failure tests that crash the kernel)
+
+A **death test** asserts that some operation *kills* the kernel — an expected CPU
+fault (null/bad deref → `#PF`, non-canonical access → `#GP`, bad opcode → `#UD`,
+…) or a `PANIC`. This is exactly the class of failure a security-oriented
+microkernel most wants pinned down, but the verdict can't survive in-guest: the
+kernel just died. So the state is held **host-side** by a harness that talks to
+the guest over serial and survives guest reboots.
+
+Death tests are **local-only** — they are intentionally *not* run in web CI
+(persistent-reboot under TCG is expensive). In a plain `cardinal.test` run (incl.
+CI) every death test is reported `# SKIP (harness only)`.
+
+### How it works
+
+- **CSMUX** (`modules/SysDebug/src/csmux.c`, `<SysDebug/csmux.h>`): a tiny
+  HDLC-style framing layer that multiplexes several logical channels over the one
+  COM1 serial link — `ch0` debug log, `ch1` test control, `ch2` tunneled GDB.
+  It is dormant on a normal boot (`print_str` writes raw text); it only switches
+  on when the kernel is booted with the extra `cardinal.harness` cmdline token,
+  and the host harness then demuxes the channels apart. This is what lets GDB
+  keep working over the same single wire during a harness run (`ch2`; on real
+  hardware that one wire is all you may have).
+- **Reboot**: a death during an armed death test is caught in the fault path
+  (`interrupt_set_death_hook`, SysInterrupts) and the PANIC path
+  (`debug_set_trap_hook`, SysDebug); the hook reports `DIED vec=<n>` on `ch1` and
+  reboots via `system_reset()` (0xCF9, then 8042, then triple fault).
+- **Cursor across reboots**: the host harness
+  (`scripts/systest-harness.py`) runs **one** persistent QEMU (no `-no-reboot`),
+  holds the death-test cursor, answers the per-boot `HELLO` with `OLEH cursor=N`,
+  records each death, and advances. A death test that *returns* (`SURVIVED`) or
+  hangs (per-death timeout → forced `system_reset` via the QEMU monitor) is a
+  failure. When the cursor passes the last death test the guest sends `ALLDONE`;
+  the harness writes the aggregate sentinel into the log and exits 0/1.
+
+### Writing a death test
+
+```c
+// fn must NOT return -- it triggers the death. `vec` is the expected CPU vector
+// (e.g. 14 #PF, 13 #GP, 6 #UD) or TEST_DEATH_ANY for "any fault or PANIC".
+static void mymod_oob_write(test_ctx_t *ctx) {
+    (void)ctx;
+    *(volatile uint32_t *)0xDEADBEEFDEADBEE0ull = 0; // non-canonical -> #GP
+}
+
+test_def_t d = TEST_DEATH_DEF("MyMod", "oob_write", mymod_oob_write, 13);
+test_register(&d);
+```
+
+### Running locally
+
+```bash
+./scripts/build.sh
+cmake --build build --target harness-image   # -> build/ISO/os-harness.iso
+./scripts/run-deathtests.sh                  # builds the ISO if missing, drives the harness
+```
+
+`run-deathtests.sh` / `systest-harness.py` env knobs: `ACCEL` (default `tcg`;
+`kvm` is much faster if available), `MACHINE`, `MEM`, `SMP`, `TIMEOUT` (overall),
+`DEATH_TIMEOUT` (per-test), `LOG`, `GDB_PORT`. To debug a paused guest mid-run,
+attach GDB to the tunneled `ch2` (see `notes/debugging-gdb.md`).
+
 CI runs this as a separate `test` job in `.github/workflows/build.yml` — the
 first gate that actually boots the OS rather than only checking that artifacts
 built.

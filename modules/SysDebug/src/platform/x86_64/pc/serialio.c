@@ -2,6 +2,7 @@
 #include "debug_log.h"
 #include "elf.h"
 #include "boot_information.h"
+#include "SysDebug/csmux.h"
 
 #include "font.h"
 //#include "wallpaper.h"
@@ -123,9 +124,18 @@ void print_stream(void (*output_stream)(char) NONNULL,
     }
 }
 
+// Hook invoked at the top of debug_handle_trap (the PANIC path) before the
+// interactive shell. SysTest installs one so a PANIC during a death test reports
+// the death and resets instead of hanging in the shell; it returns normally when
+// it decides not to act. NULL on a normal boot.
+static void (*g_trap_hook)(void) = NULL;
+void debug_set_trap_hook(void (*hook)(void)) { g_trap_hook = hook; }
+
 static char priv_s[2048];
 int WEAK debug_handle_trap()
 {
+    if (g_trap_hook != NULL)
+        g_trap_hook(); // death-test path: may report + reset (never returns) when armed
     const char *p = priv_s;
     print_str(p);
     debug_shell(serial_input, serial_output);
@@ -136,7 +146,17 @@ int WEAK print_str(const char *s)
     int state = cli();
     //print_stream(serial_output, SET_RED_BG SET_WHITE_FG);
     log(s);
-    print_stream(serial_output, s);
+    // Once CSMUX is active (harness-driven test run), the debug log rides
+    // CSMUX_CH_LOG so the host can demux it from the control/GDB channels;
+    // otherwise it is raw text on COM1, exactly as on a normal boot.
+    if (csmux_active()) {
+        if (fbuf != NULL)
+            for (const char *r = s; *r != 0; r++)
+                render_char(*r);
+        csmux_send(CSMUX_CH_LOG, s, (uint32_t)strlen(s));
+    } else {
+        print_stream(serial_output, s);
+    }
     //print_stream(serial_output, SET_BLACK_BG SET_WHITE_FG);
 
     if (fbuf != NULL)
