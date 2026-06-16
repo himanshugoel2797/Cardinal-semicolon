@@ -137,7 +137,9 @@ int kvs_get_key(kvs_t *r NULLABLE, char *key NULLABLE) {
     if (key == NULL)
         return kvs_error_invalidargs;
 
-    strncpy(key, r->key, key_len);
+    size_t len = strnlen(r->key, key_len);
+    strncpy(key, r->key, len);
+    key[len] = '\0';
     return kvs_ok;
 }
 
