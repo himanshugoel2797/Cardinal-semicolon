@@ -50,6 +50,11 @@ static void test_heap_malloc_free(test_ctx_t *ctx)
 
     for (int i = 0; i < N; i++)
         free(blocks[i]);
+
+    // free(NULL) is a documented no-op (production guards it); exercise it so
+    // the edge case is actually covered.
+    free(NULL);
+    TEST_CHECK_MSG(ctx, true, "free(NULL) returned without faulting");
 }
 
 // realloc: grow 32 -> 64 (must preserve the original bytes), then shrink to 16
@@ -83,6 +88,12 @@ static void test_realloc_grow_shrink(test_ctx_t *ctx)
         free(grown);
         return;
     }
+
+    // The allocator's realloc keeps a shrink in place (old_len >= req short
+    // circuit returns the same pointer; it never splits nodes on shrink), so
+    // the pointer must be identical -- not merely a copy with the same prefix.
+    TEST_CHECK_MSG(ctx, shrunk == grown,
+                   "realloc shrink kept the block in place (same pointer)");
 
     bool shrink_ok = true;
     for (int i = 0; i < 16; i++)
