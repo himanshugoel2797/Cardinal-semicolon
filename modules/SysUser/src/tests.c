@@ -13,8 +13,11 @@
 
 static void test_getfullstate_size(test_ctx_t *ctx)
 {
-    // The full-state blob must have a positive size for save/restore to work.
-    TEST_CHECK(ctx, syscall_getfullstate_size() > 0);
+    // The full-state blob carries at least the syscall-set dispatch table
+    // (SYSCALL_SET_COUNT pointers), so its size must clear that lower bound --
+    // a plain "> 0" check can never fail and proves nothing.
+    int sz = syscall_getfullstate_size();
+    TEST_CHECK(ctx, sz >= (int)(SYSCALL_SET_COUNT * sizeof(void *)));
 }
 
 static void test_sethandler_negative(test_ctx_t *ctx)
@@ -31,8 +34,27 @@ static void test_sethandler_overflow(test_ctx_t *ctx)
 
 static void test_sethandler_valid(test_ctx_t *ctx)
 {
-    // A valid in-range index must succeed.
-    TEST_CHECK_EQ_U(ctx, syscall_sethandler(1, NULL), CS_OK);
+    // syscall set 0 IS the syscall_funcs table, so we can read a slot back to
+    // prove the store took effect -- and, crucially, save/restore it. The
+    // handler table is module-lifetime global state shared with the live
+    // syscall path; the old test left NULL in slot 1, which would fault any
+    // later dispatch to that index.
+    void **set0 = syscall_get_syscallset(0);
+    TEST_CHECK_MSG(ctx, set0 != NULL, "syscall set 0 must be present");
+    if (set0 == NULL)
+        return;
+
+    void *orig = set0[1];
+
+    // A valid in-range index must succeed AND actually store the handler. Use a
+    // known non-NULL pointer (this function's own address) as the sentinel.
+    void *sentinel = (void *)&test_sethandler_valid;
+    TEST_CHECK_EQ_U(ctx, syscall_sethandler(1, sentinel), CS_OK);
+    TEST_CHECK_MSG(ctx, set0[1] == sentinel, "handler was not stored");
+
+    // Restore the original handler so the test leaves no destructive side-effect.
+    TEST_CHECK_EQ_U(ctx, syscall_sethandler(1, orig), CS_OK);
+    TEST_CHECK_MSG(ctx, set0[1] == orig, "original handler not restored");
 }
 
 void sysuser_register_tests(void)
