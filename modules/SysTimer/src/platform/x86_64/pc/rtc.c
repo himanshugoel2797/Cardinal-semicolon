@@ -163,7 +163,7 @@ PRIVATE int rtc_init()
     int irq = 8 + 32;
     if (interrupt_allocate(1, interrupt_flags_fixed | interrupt_flags_exclusive, &irq) == 0)
     {
-        interrupt_registerhandler(irq, rtc_interrupt);
+        interrupt_register_handler(irq, rtc_interrupt);
         interrupt_setmask(irq, false);
         rtc_write(STATUS_B, rtc_read(STATUS_B) | 0x40);
 

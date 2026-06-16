@@ -149,7 +149,7 @@ int user_elf_load(cs_id task_id, void *elf, size_t elf_len, void (**entry_point)
                     PANIC("[SysTaskMgr] Elf memory allocation failure.");
 
                 //task_map ensures a clear page
-                intptr_t map_vaddr = vmem_phystovirt(phys_dst_addr, KiB(4), task_map_perm_cachewriteback);
+                intptr_t map_vaddr = vmem_phystovirt(phys_dst_addr, KiB(4), vmem_flags_cachewriteback);
 
                 uint64_t dst_off = targ_addr - (dst_addr + j);
                 uint64_t cp_sz = MIN(KiB(4) - dst_off, src_sz);

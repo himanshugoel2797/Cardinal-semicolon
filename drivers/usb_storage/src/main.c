@@ -178,7 +178,7 @@ park:
     while (!s->stop)
         task_yield();
     s->stopped = true;  // hand off: remove() may now reclaim the device
-    end_task_kernel(task_current());
+    task_end_kernel(task_current());
 }
 
 // CoreStorage block read/write callbacks. SCSI READ(10)/WRITE(10), chunked to
@@ -268,11 +268,11 @@ static int stor_probe(usb_enum_device_t *dev) {
     DEBUG_PRINT("[usb_storage] claimed mass-storage device\r\n");
 
     s->task = 0;
-    if (create_task_kernel("usb_storage_test", task_permissions_kernel, &s->task) != CS_OK) {
+    if (task_create_kernel("usb_storage_test", task_permissions_kernel, &s->task) != CS_OK) {
         s->in_use = false;
         return -1;
     }
-    start_task_kernel(s->task, stor_test_task, s);
+    task_start_kernel(s->task, stor_test_task, s);
     return 0;
 }
 

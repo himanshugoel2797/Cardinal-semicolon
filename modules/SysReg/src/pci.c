@@ -112,7 +112,7 @@ int pci_reg_init() {
     uint32_t device = 0;
     uint32_t idx = 0;
 
-    if(registry_createdirectory("HW", "PCI") != registry_err_ok)
+    if(registry_createdirectory("HW", "PCI") != CS_OK)
         return -1;
 
     //Find the ECAM address if possible
@@ -137,41 +137,41 @@ int pci_reg_init() {
 
             idx++;
 
-            if(registry_createdirectory("HW/PCI", idx_str) != registry_err_ok)
+            if(registry_createdirectory("HW/PCI", idx_str) != CS_OK)
                 return -1;
 
 
-            if(registry_addkey_uint(key_idx, "BUS", bus) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "BUS", bus) != CS_OK)
                 return -2;
 
-            if(registry_addkey_uint(key_idx, "DEVICE", device) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "DEVICE", device) != CS_OK)
                 return -3;
 
-            if(registry_addkey_uint(key_idx, "FUNCTION", f) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "FUNCTION", f) != CS_OK)
                 return -4;
 
-            if(registry_addkey_uint(key_idx, "CLASS", devInfo.ClassCode) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "CLASS", devInfo.ClassCode) != CS_OK)
                 return -5;
 
-            if(registry_addkey_uint(key_idx, "SUBCLASS", devInfo.SubClassCode) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "SUBCLASS", devInfo.SubClassCode) != CS_OK)
                 return -6;
 
-            if(registry_addkey_uint(key_idx, "INTERFACE", devInfo.ProgIF) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "INTERFACE", devInfo.ProgIF) != CS_OK)
                 return -7;
 
-            if(registry_addkey_uint(key_idx, "DEVICE_ID", devInfo.DeviceID) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "DEVICE_ID", devInfo.DeviceID) != CS_OK)
                 return -8;
 
-            if(registry_addkey_uint(key_idx, "VENDOR_ID", devInfo.VendorID) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "VENDOR_ID", devInfo.VendorID) != CS_OK)
                 return -9;
 
-            if(registry_addkey_uint(key_idx, "BAR_COUNT", devInfo.BarCount) != registry_err_ok)
+            if(registry_addkey_uint(key_idx, "BAR_COUNT", devInfo.BarCount) != CS_OK)
                 return -10;
 
             for(uint32_t mcfg_idx = 0; mcfg_idx < len / sizeof(MCFG_Entry); mcfg_idx++)
                 if(mcfg->entries[mcfg_idx].start_bus_number <= bus && mcfg->entries[mcfg_idx].end_bus_number >= bus) {
                     uint64_t ecam_addr = mcfg->entries[mcfg_idx].baseAddr + ( (bus - mcfg->entries[mcfg_idx].start_bus_number) << 20 | device << 15 | f << 12 );
-                    if(registry_addkey_uint(key_idx, "ECAM_ADDR", ecam_addr) != registry_err_ok)
+                    if(registry_addkey_uint(key_idx, "ECAM_ADDR", ecam_addr) != CS_OK)
                         return -20;
 
                     break;
@@ -182,7 +182,7 @@ int pci_reg_init() {
     }
 
 
-    if(registry_addkey_uint("HW/PCI", "COUNT", idx) != registry_err_ok)
+    if(registry_addkey_uint("HW/PCI", "COUNT", idx) != CS_OK)
         return -14;
 
     return 0;

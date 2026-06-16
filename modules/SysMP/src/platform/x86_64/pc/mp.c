@@ -33,7 +33,7 @@ int mp_init() {
 
     //Start initializing the APs
     uint64_t ap_cnt = 0;
-    if(registry_readkey_uint("HW/LAPIC", "COUNT", &ap_cnt) != registry_err_ok)
+    if(registry_readkey_uint("HW/LAPIC", "COUNT", &ap_cnt) != CS_OK)
         return -1;
 
     for(uint32_t i = 0; i < ap_cnt; i++) {
@@ -43,10 +43,10 @@ int mp_init() {
 
         uint64_t apic_id = 0;
 
-        if(registry_readkey_uint(key_idx, "APIC ID", &apic_id) != registry_err_ok)
+        if(registry_readkey_uint(key_idx, "APIC ID", &apic_id) != CS_OK)
             return -1;
 
-        if((int)apic_id != interrupt_get_cpuidx()) {
+        if((int)apic_id != interrupt_get_cpu_idx()) {
 
             core_ready = 0;
 
@@ -94,7 +94,7 @@ int mp_signalready() {
     return 0;
 }
 
-int mp_tls_setup() {
+cs_error mp_tls_setup() {
     uint64_t tls = (uint64_t)malloc(TLS_SIZE);
     if(tls == 0)
         return -1;
@@ -137,14 +137,14 @@ void mp_platform_getstate(void* buf) {
     if(buf == NULL)
         PANIC("Parameter is null.");
 
-    interrupt_getregisterstate( (interrupt_register_state_t*) buf);
+    interrupt_get_register_state( (interrupt_register_state_t*) buf);
 }
 
-void mp_platform_setstate(void* buf) {
+void mp_platform_setstate(const void* buf) {
     if(buf == NULL)
         PANIC("Parameter is null.");
 
-    interrupt_setregisterstate( (interrupt_register_state_t*) buf);
+    interrupt_set_register_state( (interrupt_register_state_t*) buf);
 }
 
 void mp_platform_getdefaultstate(void *buf, void *stackpointer, void *instr_ptr, void *args0, void *args1) {

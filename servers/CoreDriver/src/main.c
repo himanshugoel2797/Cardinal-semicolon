@@ -25,7 +25,7 @@ int module_init()
 
     //PCI device info
     uint64_t deviceCount = 0;
-    if (registry_readkey_uint("HW/PCI", "COUNT", &deviceCount) != registry_err_ok)
+    if (registry_readkey_uint("HW/PCI", "COUNT", &deviceCount) != CS_OK)
         return -1;
 
     const char *cursor = str;
@@ -54,23 +54,23 @@ int module_init()
             char *key_idx = strncat(key_str, itoa(idx, idx_str, 16), 255);
 
             uint64_t dev_class = 0;
-            if (registry_readkey_uint(key_idx, "CLASS", &dev_class) != registry_err_ok)
+            if (registry_readkey_uint(key_idx, "CLASS", &dev_class) != CS_OK)
                 return -1;
 
             uint64_t dev_subclass = 0;
-            if (registry_readkey_uint(key_idx, "SUBCLASS", &dev_subclass) != registry_err_ok)
+            if (registry_readkey_uint(key_idx, "SUBCLASS", &dev_subclass) != CS_OK)
                 return -1;
 
             uint64_t dev_progIF = 0;
-            if (registry_readkey_uint(key_idx, "INTERFACE", &dev_progIF) != registry_err_ok)
+            if (registry_readkey_uint(key_idx, "INTERFACE", &dev_progIF) != CS_OK)
                 return -1;
 
             uint64_t dev_devID = 0;
-            if (registry_readkey_uint(key_idx, "DEVICE_ID", &dev_devID) != registry_err_ok)
+            if (registry_readkey_uint(key_idx, "DEVICE_ID", &dev_devID) != CS_OK)
                 return -1;
 
             uint64_t dev_vendorID = 0;
-            if (registry_readkey_uint(key_idx, "VENDOR_ID", &dev_vendorID) != registry_err_ok)
+            if (registry_readkey_uint(key_idx, "VENDOR_ID", &dev_vendorID) != CS_OK)
                 return -1;
 
             bool classMatch = (class == (int)dev_class) || (class == 0xFFFF);
@@ -109,7 +109,7 @@ int module_init()
                 int (*entry_pt_real)(void *) = (int (*)(void *))entry_pt;
 
                 uint64_t ecam_addr = 0;
-                if (registry_readkey_uint(key_idx, "ECAM_ADDR", &ecam_addr) != registry_err_ok)
+                if (registry_readkey_uint(key_idx, "ECAM_ADDR", &ecam_addr) != CS_OK)
                     return -1;
 
                 char tmp_entry_addr[20];
@@ -122,8 +122,8 @@ int module_init()
                 print_str("\r\n");
 
                 //cs_id proc_id;
-                //create_task_kernel((char*)exec_str, task_permissions_kernel, &proc_id);
-                //start_task_kernel(proc_id, (void(*)(void*))(void*)entry_pt_real, (void*)ecam_addr);
+                //task_create_kernel((char*)exec_str, task_permissions_kernel, &proc_id);
+                //task_start_kernel(proc_id, (void(*)(void*))(void*)entry_pt_real, (void*)ecam_addr);
 
                 int err = entry_pt_real((void *)ecam_addr);
                 char idx_str[10];

@@ -14,6 +14,7 @@
 //vmem_phystovirt
 //vmem_init
 
+#include <cardinal/cs_error.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -33,21 +34,15 @@ typedef enum
     vmem_flags_user = (1 << 11),
 
     vmem_flags_rw = (vmem_flags_read | vmem_flags_write),
-} vmem_flags;
+} vmem_flags_t;
 
-typedef enum
-{
-    vmem_err_none = 0,
-    vmem_err_alreadymapped = -1,
-    vmem_err_continue = -2,
-    vmem_err_nomapping = -3,
-} vmem_errs;
+// Error codes are the unified cs_error set (see <cardinal/cs_error.h>).
 
-int vmem_init();
+cs_error vmem_init();
 
-int vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, int perms, int flags);
+cs_error vmem_map(vmem_t *vm, intptr_t virt, intptr_t phys, size_t size, vmem_flags_t perms, vmem_flags_t flags);
 
-int vmem_unmap(vmem_t *vm, intptr_t virt, size_t size);
+cs_error vmem_unmap(vmem_t *vm, intptr_t virt, size_t size);
 
 int vmem_create(vmem_t **vm);
 
@@ -57,9 +52,9 @@ int vmem_setactive(vmem_t *vm);
 
 int vmem_getactive(vmem_t **vm);
 
-int vmem_virttophys(vmem_t *vm, intptr_t virt, intptr_t *phys);
+cs_error vmem_virttophys(vmem_t *vm, intptr_t virt, intptr_t *phys);
 
-intptr_t vmem_phystovirt(intptr_t phys, size_t sz, int flags);
+intptr_t vmem_phystovirt(intptr_t phys, size_t sz, vmem_flags_t flags);
 
 intptr_t vmem_vmalloc(size_t sz);
 

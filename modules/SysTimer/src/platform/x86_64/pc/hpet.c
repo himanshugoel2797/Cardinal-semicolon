@@ -161,7 +161,7 @@ PRIVATE void hpet_timer_handler(int irq) {
 PRIVATE int hpet_getcount() {
     HPET_Main *base_addr = NULL;
     intptr_t hpet_phys_base_addr = 0;
-    if(registry_readkey_uint("HW/HPET", "ADDRESS", (uint64_t*)&hpet_phys_base_addr) != registry_err_ok)
+    if(registry_readkey_uint("HW/HPET", "ADDRESS", (uint64_t*)&hpet_phys_base_addr) != CS_OK)
         return -1;
 
     base_addr = (HPET_Main*)vmem_phystovirt(hpet_phys_base_addr, sizeof(HPET_Main), vmem_flags_uncached | vmem_flags_kernel);
@@ -173,7 +173,7 @@ PRIVATE int hpet_init() {
 
     HPET_Main *base_addr = NULL;
     intptr_t hpet_phys_base_addr = 0;
-    if(registry_readkey_uint("HW/HPET", "ADDRESS", (uint64_t*)&hpet_phys_base_addr) != registry_err_ok)
+    if(registry_readkey_uint("HW/HPET", "ADDRESS", (uint64_t*)&hpet_phys_base_addr) != CS_OK)
         return -1;
 
     base_addr = (HPET_Main*)vmem_phystovirt(hpet_phys_base_addr, sizeof(HPET_Main), vmem_flags_uncached | vmem_flags_kernel);
@@ -209,7 +209,7 @@ PRIVATE int hpet_init() {
     int intrpt_num = 240;   //low priority interrupt
     interrupt_allocate(1, interrupt_flags_none, &intrpt_num);
     timers = (HPET_TimerState*)malloc(sizeof(HPET_TimerState) * base_addr->Capabilities.TimerCount + 1);
-    interrupt_registerhandler(intrpt_num, hpet_timer_handler);
+    interrupt_register_handler(intrpt_num, hpet_timer_handler);
 
     //Enable MSI/FSB interrupt mode for timers, but keep interrupts disabled
     for(int i = 0; i <= base_addr->Capabilities.TimerCount; i++) {
@@ -228,8 +228,8 @@ PRIVATE int hpet_init() {
                 sub_features |= timer_features_pcie_msg_intr;
 
                 base_addr->timers[i].Configuration.FSBInterruptEnable = 1;
-                base_addr->timers[i].InterruptRoute.Address = msi_register_addr(interrupt_get_cpuidx());
-                base_addr->timers[i].InterruptRoute.Value = msi_register_data(intrpt_num);
+                base_addr->timers[i].InterruptRoute.Address = interrupt_msi_register_addr(interrupt_get_cpu_idx());
+                base_addr->timers[i].InterruptRoute.Value = interrupt_msi_register_data(intrpt_num);
             } else {
                 sub_features |= timer_features_fixed_intr;
 

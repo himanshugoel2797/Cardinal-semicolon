@@ -350,7 +350,7 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd)
                 size_t sz = device.scanouts[i].w * device.scanouts[i].h * sizeof(uint32_t);
                 if (sz % KiB(4))
                     sz += KiB(4) - (sz % KiB(4));
-                pagealloc_free(device.scanouts[i].phys_addr, sz);
+                physmem_free(device.scanouts[i].phys_addr, sz);
             }
 
             //setup this scanout
@@ -360,7 +360,7 @@ void virtio_gpu_displayinit_handler(virtio_virtq_cmd_state_t *cmd)
 
             //set its backing data
             size_t sz = display_info->pmodes[i].r.width * display_info->pmodes[i].r.height * sizeof(uint32_t);
-            uintptr_t fbuf = pagealloc_alloc(0, 0, physmem_alloc_flags_data, sz);
+            uintptr_t fbuf = physmem_alloc(0, 0, physmem_alloc_flags_data, sz);
             if (fbuf == PHYSMEM_NO_ALLOC)
             {
                 DEBUG_PRINT("[VirtIO-GPU] Out of memory allocating framebuffer.\r\n");
@@ -455,11 +455,11 @@ int module_init(void *ecam)
     memset(&device, 0, sizeof(device));
 
     cs_id ss_id = 0;
-    cs_error ss_err = create_task_kernel("virtio_gpu_0", task_permissions_kernel, &ss_id);
+    cs_error ss_err = task_create_kernel("virtio_gpu_0", task_permissions_kernel, &ss_id);
     DEBUG_PRINT("[VirtioGpu] initializing...\r\n");
     if (ss_err != CS_OK)
         PANIC("VIRTIO_ERR0");
-    ss_err = start_task_kernel(ss_id, virtio_task_handler, NULL);
+    ss_err = task_start_kernel(ss_id, virtio_task_handler, NULL);
     if (ss_err != CS_OK)
         PANIC("VIRTIO_ERR1");
 

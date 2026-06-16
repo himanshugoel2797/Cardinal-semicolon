@@ -42,8 +42,8 @@ int module_init(void *ecam_addr)
         DEBUG_PRINT("\r\n");
     }
 
-    uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
-    uint32_t msi_msg = msi_register_data(int_val);
+    uintptr_t msi_addr = (uintptr_t)interrupt_msi_register_addr(0);
+    uint32_t msi_msg = interrupt_msi_register_data(int_val);
     pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
 
     //The memory space bar for the registers, 8168 series NICs use BAR2, 8169 series use BAR1
@@ -57,10 +57,10 @@ int module_init(void *ecam_addr)
     rtl8169_init(n_state);
 
     cs_id rtl_task = 0;
-    create_task_kernel("rtl8169_int_poll", task_permissions_kernel, &rtl_task);
-    start_task_kernel(rtl_task, (void (*)(void *))rtl8169_intr_handler, n_state);
+    task_create_kernel("rtl8169_int_poll", task_permissions_kernel, &rtl_task);
+    task_start_kernel(rtl_task, (void (*)(void *))rtl8169_intr_handler, n_state);
     
-    interrupt_registerhandler(int_val, rtl8169_intr_routine);
+    interrupt_register_handler(int_val, rtl8169_intr_routine);
 
     return 0;
 }

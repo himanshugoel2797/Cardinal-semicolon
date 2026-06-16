@@ -28,6 +28,10 @@ void timer_wait(uint64_t ns);
 
 int timer_request(timer_features_t features, uint64_t ns, void (*handler)(int));
 
+// Returned by timer_timestamp()/timer_timestamp_ns() when no readable counter
+// timer is registered. Callers that must tolerate that case should check for it.
+#define TIMER_NO_COUNTER ((uint64_t)-1)
+
 uint64_t timer_timestamp();
 
 uint64_t timer_timestamp_ns();

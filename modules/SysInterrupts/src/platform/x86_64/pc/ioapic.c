@@ -45,7 +45,7 @@ static void ioapic_map(uint32_t idx, uint32_t irq_pin, uint32_t irq, bool active
     high &= ~0xff000000;
     //high |= (0xff000000);
     //bsp is the destination
-    high |= (interrupt_get_cpuidx() << 24);
+    high |= (interrupt_get_cpu_idx() << 24);
     ioapic_write(idx, high_index, high);
 
     uint32_t low = ioapic_read(idx, low_index);
@@ -119,7 +119,7 @@ void interrupt_setmask(uint32_t line, bool mask) {
 int ioapic_init() {
     //Read the registry
     uint64_t count = 0;
-    if(registry_readkey_uint("HW/IOAPIC", "COUNT", &count) != registry_err_ok)
+    if(registry_readkey_uint("HW/IOAPIC", "COUNT", &count) != CS_OK)
         return -1;
 
     ioapics = malloc(sizeof(ioapic_t) * count);
@@ -134,13 +134,13 @@ int ioapic_init() {
         uint64_t base_addr = 0;
         uint64_t intr_base = 0;
 
-        if(registry_readkey_uint(key_idx, "ID", &id) != registry_err_ok)
+        if(registry_readkey_uint(key_idx, "ID", &id) != CS_OK)
             return -1;
 
-        if(registry_readkey_uint(key_idx, "BASE_ADDR", &base_addr) != registry_err_ok)
+        if(registry_readkey_uint(key_idx, "BASE_ADDR", &base_addr) != CS_OK)
             return -1;
 
-        if(registry_readkey_uint(key_idx, "GLOBAL_INTR_BASE", &intr_base) != registry_err_ok)
+        if(registry_readkey_uint(key_idx, "GLOBAL_INTR_BASE", &intr_base) != CS_OK)
             return -1;
 
         ioapics[i].id = (uint32_t)id;
@@ -164,14 +164,14 @@ int ioapic_init() {
             bool level_trigger = false;
 
             int err = registry_readkey_uint(key2_idx, "IRQ", &irq);
-            if(err == registry_err_dne) {
+            if(err == CS_DNE) {
                 //Configure this entry as normal
                 ioapic_map(i, j, j + intr_base + 0x20, false, false);
                 ioapic_setmask(i, j, true);
                 continue;
             }
 
-            if(err != registry_err_ok)
+            if(err != CS_OK)
                 return -1;
 
             registry_readkey_uint(key2_idx, "BUS", &bus);

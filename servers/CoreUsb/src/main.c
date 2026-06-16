@@ -117,14 +117,14 @@ int usb_register_device(usb_device_t *desc, void **handle)
         semaphore_init(&def->sema);
 
         DEBUG_PRINT("[CoreUsb] Registered Device");
-        create_task_kernel(def->device.name, task_permissions_kernel, &def->thread_id);
+        task_create_kernel(def->device.name, task_permissions_kernel, &def->thread_id);
 
         list_append(&device_handles_list, def);
         *handle = def;
     }
     local_spinlock_unlock(&device_handles_list_lock);
 
-    start_task_kernel(def->thread_id, usb_device_thread, def);
+    task_start_kernel(def->thread_id, usb_device_thread, def);
     semaphore_signal(&def->sema);
 
     return 0;

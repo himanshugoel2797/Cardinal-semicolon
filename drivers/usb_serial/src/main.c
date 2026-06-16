@@ -132,7 +132,7 @@ static void usb_serial_pump(void *arg) {
         task_yield();
     }
     f->stopped = true;  // hand off: remove() may now reclaim the device
-    end_task_kernel(task_current());
+    task_end_kernel(task_current());
 }
 
 static int usb_serial_probe(usb_enum_device_t *dev) {
@@ -180,8 +180,8 @@ static int usb_serial_probe(usb_enum_device_t *dev) {
         };
         gdb_register_transport_fn(&transport);
         DEBUG_PRINT("[usb_serial] FTDI up; offered as GDB transport (connect GDB to attach)\r\n");
-        if (create_task_kernel("usb_serial_pump", task_permissions_kernel, &the_ftdi.task) == CS_OK)
-            start_task_kernel(the_ftdi.task, usb_serial_pump, &the_ftdi);
+        if (task_create_kernel("usb_serial_pump", task_permissions_kernel, &the_ftdi.task) == CS_OK)
+            task_start_kernel(the_ftdi.task, usb_serial_pump, &the_ftdi);
     } else {
         DEBUG_PRINT("[usb_serial] FTDI up; SysGdb not loaded, adapter idle\r\n");
     }

@@ -239,7 +239,7 @@ void iwifi_fw_dma(iwifi_dev_state_t *dev, fw_section_t *sect) {
     uint32_t chunk_sz = MIN(IWM_FH_MEM_TB_MAX_LENGTH, sect->len);
 
     //Allocate space for the chunk
-    uintptr_t buf_p = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, IWM_FH_MEM_TB_MAX_LENGTH);
+    uintptr_t buf_p = physmem_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data, IWM_FH_MEM_TB_MAX_LENGTH);
     if (buf_p == PHYSMEM_NO_ALLOC)
     {
         DEBUG_PRINT("[iwm] Out of memory allocating firmware DMA chunk.\r\n");

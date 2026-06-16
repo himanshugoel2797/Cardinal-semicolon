@@ -107,7 +107,7 @@ PRIVATE int apic_timer_tsc_init() {
 
         main_features |= timer_features_counter | timer_features_write;
 
-        if(registry_readkey_uint("HW/PROC", "TSC_FREQ", &main_counter.rate) != registry_err_ok)
+        if(registry_readkey_uint("HW/PROC", "TSC_FREQ", &main_counter.rate) != CS_OK)
             return -1;
 
         strncpy(main_counter.name, "apic_tsc", 16);

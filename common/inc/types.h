@@ -16,6 +16,8 @@ extern "C"
 #include S_(ISA_TYPES_H)
 #include S_(PLATFORM_TYPES_H)
 
+#include <cardinal/cs_error.h>
+
 #define MAX(a, b)           \
   ({                        \
     __typeof__(a) _a = (a); \

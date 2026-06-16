@@ -134,10 +134,10 @@ int module_init(void *ecam)
     memset(&device, 0, sizeof(device));
 
     cs_id ss_id = 0;
-    cs_error ss_err = create_task_kernel("virtio_net_0", task_permissions_kernel, &ss_id);
+    cs_error ss_err = task_create_kernel("virtio_net_0", task_permissions_kernel, &ss_id);
     if (ss_err != CS_OK)
         PANIC("VIRTIO_NET_ERR0");
-    ss_err = start_task_kernel(ss_id, virtio_task_handler, NULL);
+    ss_err = task_start_kernel(ss_id, virtio_task_handler, NULL);
     if (ss_err != CS_OK)
         PANIC("VIRTIO_NET_ERR1");
 
@@ -170,7 +170,7 @@ int module_init(void *ecam)
     virtio_driver_ok(device.common_state);
 
     //Fill the receive virtq with buffers
-    uintptr_t rcv_buf = pagealloc_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
+    uintptr_t rcv_buf = physmem_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
     if (rcv_buf == PHYSMEM_NO_ALLOC)
     {
         DEBUG_PRINT("[VirtIO-Net] Out of memory allocating RX buffer.\r\n");
@@ -186,7 +186,7 @@ int module_init(void *ecam)
     }
 
     //Allocate tx buffer
-    device.tx_buf_phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
+    device.tx_buf_phys = physmem_alloc(0, 0, physmem_alloc_flags_data, VIRTIO_NET_QUEUE_LEN * KiB(2));
     if (device.tx_buf_phys == PHYSMEM_NO_ALLOC)
     {
         DEBUG_PRINT("[VirtIO-Net] Out of memory allocating TX buffer.\r\n");

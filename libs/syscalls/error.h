@@ -6,10 +6,9 @@
 #ifndef CARDINAL_ERROR_SYSCALL_LIB_H
 #define CARDINAL_ERROR_SYSCALL_LIB_H
 
-typedef int cs_error;
-
-#define CS_OUTOFMEM (-2)
-#define CS_UNKN (-1)
-#define CS_OK 0
+// cs_error and the CS_* codes now live in the globally-available common header
+// so every module can use them without a libs/syscalls include. Kept here for
+// existing includers of <error.h> / cs_syscall.h.
+#include <cardinal/cs_error.h>
 
 #endif

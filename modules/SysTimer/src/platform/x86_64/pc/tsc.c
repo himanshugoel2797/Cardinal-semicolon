@@ -35,23 +35,23 @@ static uint64_t tsc_calibrate_pit(void) {
 
 PRIVATE bool use_tsc() {
     bool tsc_valid = false;
-    if(registry_readkey_bool("HW/PROC", "TSC_AVAIL", &tsc_valid) != registry_err_ok)
+    if(registry_readkey_bool("HW/PROC", "TSC_AVAIL", &tsc_valid) != CS_OK)
         return false;
 
     bool tsc_deadline = false;
-    if(registry_readkey_bool("HW/PROC", "TSC_DEADLINE", &tsc_deadline) != registry_err_ok)
+    if(registry_readkey_bool("HW/PROC", "TSC_DEADLINE", &tsc_deadline) != CS_OK)
         return false;
 
     bool tsc_invar = false;
-    if(registry_readkey_bool("HW/PROC", "TSC_INVARIANT", &tsc_invar) != registry_err_ok)
+    if(registry_readkey_bool("HW/PROC", "TSC_INVARIANT", &tsc_invar) != CS_OK)
         return false;
 
     uint64_t tsc_freq = 0;
-    if(registry_readkey_uint("HW/PROC", "TSC_FREQ", &tsc_freq) != registry_err_ok)
+    if(registry_readkey_uint("HW/PROC", "TSC_FREQ", &tsc_freq) != CS_OK)
         return false;
 
     uint64_t apic_freq = 0;
-    if(registry_readkey_uint("HW/PROC", "APIC_FREQ", &apic_freq) != registry_err_ok)
+    if(registry_readkey_uint("HW/PROC", "APIC_FREQ", &apic_freq) != CS_OK)
         return false;
 
     return true;
@@ -83,7 +83,7 @@ PRIVATE int tsc_init() {
         // real rate (a 0 rate breaks timer_timestamp_ns and any rate-based
         // busy-wait -- see timer_busywait_ns).
         uint64_t tsc_freq = 0;
-        if(registry_readkey_uint("HW/PROC", "TSC_FREQ", &tsc_freq) != registry_err_ok)
+        if(registry_readkey_uint("HW/PROC", "TSC_FREQ", &tsc_freq) != CS_OK)
             tsc_freq = 0;
         if(tsc_freq == 0)
             tsc_freq = tsc_calibrate_pit();

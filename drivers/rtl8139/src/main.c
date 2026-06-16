@@ -37,8 +37,8 @@ int module_init(void *ecam_addr)
     rtl8139_init(n_state);
 
     cs_id rtl_task = 0;
-    create_task_kernel("rtl8139_int_poll", task_permissions_kernel, &rtl_task);
-    start_task_kernel(rtl_task, (void (*)(void *))rtl8139_intr_handler, n_state);
+    task_create_kernel("rtl8139_int_poll", task_permissions_kernel, &rtl_task);
+    task_start_kernel(rtl_task, (void (*)(void *))rtl8139_intr_handler, n_state);
 
     return 0;
 }

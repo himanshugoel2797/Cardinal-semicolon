@@ -65,7 +65,7 @@ void fp_platform_getstate(void* buf) {
         __asm__ volatile("fxsaveq (%0)" :: "r"(buf) : "memory");
 }
 
-void fp_platform_setstate(void* buf) {
+void fp_platform_setstate(const void* buf) {
     if(xsave)
         __asm__ volatile("xrstorq (%0)" :: "r"(buf), "d"(0xffffffffffffffff), "a"(0xffffffffffffffff) : "memory");
     else

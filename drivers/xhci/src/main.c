@@ -45,7 +45,7 @@ static inline void wr64(volatile uint8_t *b, uint32_t off, uint64_t v) { *(volat
 
 // Allocate one zeroed, 32-bit, uncached DMA page; returns virt and writes phys.
 static uint8_t *alloc_page(uintptr_t *phys_out) {
-    uintptr_t p = pagealloc_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
+    uintptr_t p = physmem_alloc(0, 0, physmem_alloc_flags_32bit | physmem_alloc_flags_data | physmem_alloc_flags_zero, KiB(4));
     if (p == PHYSMEM_NO_ALLOC)
         return NULL;
     *phys_out = p;
@@ -555,13 +555,13 @@ static void xhci_port_connected(xhci_ctrl_state_t *s, int port) {
 static void xhci_free_slot_mem(xhci_slot_t *sl) {
     for (int dci = 1; dci < 32; dci++) {  // DCI 1..31
         if (sl->ep[dci].configured && sl->ep[dci].ring.trbs != NULL) {
-            pagealloc_free(sl->ep[dci].ring.phys, KiB(4));
+            physmem_free(sl->ep[dci].ring.phys, KiB(4));
             sl->ep[dci].ring.trbs = NULL;
             sl->ep[dci].configured = 0;
         }
     }
     if (sl->dev_ctx != NULL) {
-        pagealloc_free(sl->dev_ctx_phys, KiB(4));
+        physmem_free(sl->dev_ctx_phys, KiB(4));
         sl->dev_ctx = NULL;
     }
 }
@@ -681,10 +681,10 @@ int module_init(void *ecam_addr) {
     int msi_val = pci_getmsiinfo(device, &int_cnt);
     int msi_vector = 0;
     interrupt_allocate(1, interrupt_flags_exclusive, &msi_vector);
-    interrupt_registerhandler(msi_vector, xhci_isr);
+    interrupt_register_handler(msi_vector, xhci_isr);
     s->irq_vector = msi_vector;
-    uintptr_t msi_addr = (uintptr_t)msi_register_addr(0);
-    uint32_t msi_msg = (uint32_t)msi_register_data(msi_vector);
+    uintptr_t msi_addr = (uintptr_t)interrupt_msi_register_addr(0);
+    uint32_t msi_msg = (uint32_t)interrupt_msi_register_data(msi_vector);
     pci_setmsiinfo(device, msi_val, &msi_addr, &msi_msg, 1);
 
     // Enable interrupter 0 (IMAN.IE); moderate to avoid an event-interrupt storm.
@@ -709,8 +709,8 @@ int module_init(void *ecam_addr) {
     usb_register_hostcontroller(desc, &s->handle);
 
     cs_id task = 0;
-    create_task_kernel("xhci_poll", task_permissions_kernel, &task);
-    start_task_kernel(task, (void (*)(void *))xhci_poll_task, s);
+    task_create_kernel("xhci_poll", task_permissions_kernel, &task);
+    task_start_kernel(task, (void (*)(void *))xhci_poll_task, s);
 
     // Power all ports.
     for (int p = 1; p <= s->max_ports; p++) {

@@ -69,7 +69,7 @@ void *WEAK malloc(size_t sz)
         if (alloc_sz % KiB(4))
             alloc_sz += KiB(4) - (alloc_sz % KiB(4));
 
-        uintptr_t phys = pagealloc_alloc(0, 0, physmem_alloc_flags_data, alloc_sz);
+        uintptr_t phys = physmem_alloc(0, 0, physmem_alloc_flags_data, alloc_sz);
         if (phys == PHYSMEM_NO_ALLOC)
         {
             //Out of physical memory: fail the allocation gracefully.
