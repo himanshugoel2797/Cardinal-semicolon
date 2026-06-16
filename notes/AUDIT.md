@@ -394,8 +394,14 @@ design.
   `kernel_updatememhandlers` resolves from the loaded heap allocator, mirroring
   `malloc_hndl`/`free_hndl`; if the real heap is installed but exports no
   `realloc`, the bootstrap one refuses rather than reading foreign metadata.
-  Note: SysMemory does not yet export `realloc`, so that path PANICs — it has no
-  callers today. SysMemory's allocator has the node metadata to add one.)*
+  SysMemory now exports `realloc` (`SysMemory/src/allocator.c`): `malloc`/`free`
+  were factored into lock-free `malloc_unlocked`/`free_unlocked` inners, and
+  `realloc` takes the `cli()`+`alloc_lock` pair once before calling them
+  (NULL→malloc, 0→free, in-place when the node's `len` already covers the rounded
+  request, else alloc/copy/free with the old block preserved on OOM). So
+  `kernel_updatememhandlers` now resolves `realloc_hndl` to a real heap realloc.
+  In-place shrink does not return the slack, consistent with the allocator's
+  whole-node model. No in-tree callers yet.)*
 - ~~`common/src/time.c` `gmtime` partial, `strftime` is a no-op.~~ *(Fixed:
   full `gmtime` (epoch→broken-down UTC, leap-correct, post-1970) and a real
   `strftime` subset (`%Y %y %m %d %e %H %M %S %j %p %a %b %%`, bounds-checked,
@@ -444,12 +450,22 @@ makes kernel-map *creation* visible everywhere without any IPI. Recover it from 
 (commit `422d332`) if runtime kernel-map churn is ever added — that is the only thing that
 would need it (to invalidate stale TLB entries left by a kernel *unmap*).
 
-Remaining (latent): a kernel map that needed a brand-new *top-level* PML4 entry at
-runtime would not propagate to already-created address spaces — but nothing creates one
-(all kernel PML4 entries are pre-created at init, and the vmalloc region has 512 GiB
-under its single pre-created entry). If kernel vmalloc ever outgrows that, add the new
-PML4 entry to every live address space (or reserve the full kernel PML4 entry range up
-front).
+### [FIXED] new top-level kernel PML4 entries at runtime would not propagate
+*(Previously latent: a kernel map needing a brand-new top-level PML4 entry at runtime
+would not reach already-created address spaces, since each process PML4 copies the
+kernel half once at `vmem_create`. Nothing creates one today — the only runtime-growing
+kernel region is `vmem_vmalloc`, which has 512 GiB under its single pre-created entry
+(258) and currently has zero callers. Closed up front anyway: `vmem_init` now reserves
+**every** kernel-half PML4 entry (256..511) by installing a zeroed PDPT for each absent
+one before any AP boots or any task is created, so all 256 are present and shared and any
+future kernel region can grow across a 512 GiB PML4 boundary with no per-address-space
+resync. Cost: at most 256 PDPT pages (1 MiB) pinned for the life of the system; the empty
+PDPTs map nothing, so accesses under them still fault until explicitly mapped. This is the
+"reserve the full kernel PML4 entry range up front" option; the alternative (propagate new
+entries to every live address space) was rejected — there is no registry of live `vmem_t`,
+and it would race context switches and `vmem_create`. Verified: full KVM boot to
+`servicescript` exit with APs scheduling, fault-free. Orthogonal to TLB shootdown, which
+is only needed for kernel *un*maps and still has no runtime callers.)*
 
 ---
 

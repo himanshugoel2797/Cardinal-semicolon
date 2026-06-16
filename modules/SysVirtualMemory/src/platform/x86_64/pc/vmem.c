@@ -181,6 +181,37 @@ cs_error vmem_init()
         vmem_map(NULL, pre, (intptr_t)prep, KiB(4), vmem_flags_kernel | vmem_flags_rw, 0);
     }
 
+    //Reserve every kernel-half PML4 entry (256..511) up front so the
+    //shared-kernel-PML4 model stays correct however kernel mappings grow later.
+    //A process PML4 copies these 256 entries once at creation (vmem_create);
+    //a kernel mapping added afterwards under an *existing* entry propagates via
+    //the shared lower-level tables, but a brand-new top-level entry created
+    //after an address space was cloned would be invisible to it. The maps above
+    //only populate entries 256/257 (physmap WB/UC), 258 (vmalloc) and 511
+    //(kernel image); installing an empty (zeroed) PDPT for the remaining
+    //kernel-half entries makes all 256 present and shared before any AP boots or
+    //any task is created, so vmalloc (or any future kernel region) can grow
+    //across a 512 GiB PML4 boundary with no per-address-space resync. Cost is at
+    //most 256 PDPT pages (1 MiB) pinned for the life of the system. The empty
+    //PDPTs map nothing, so accesses under them still fault until explicitly
+    //mapped. Pre-AP, pre-scheduler init; the lock mirrors vmem_map's discipline.
+    {
+        int cli_state = cli();
+        local_spinlock_lock(&kmem.lock);
+        for (int i = 256; i < 512; i++)
+        {
+            if (kmem.pml4[i] & PRESENT)
+                continue;
+            uintptr_t pdpt = physmem_alloc(-1, -1, physmem_alloc_flags_pagetable, KiB(4));
+            if (pdpt == PHYSMEM_NO_ALLOC)
+                PANIC("Failed to reserve kernel PML4 entry!");
+            memset((uint64_t *)vmem_phystovirt(pdpt, KiB(4), vmem_flags_cachewriteback), 0, KiB(4));
+            kmem.pml4[i] = (pdpt & ADDR_MASK) | PRESENT | WRITE | USER;
+        }
+        local_spinlock_unlock(&kmem.lock);
+        sti(cli_state);
+    }
+
     __asm__ volatile("mov %0, %%cr3" ::"r"(kpml4_phys)
                      :);
 
