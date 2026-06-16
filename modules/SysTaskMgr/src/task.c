@@ -1114,7 +1114,7 @@ cs_error task_sleep(cs_id id, uint64_t ns)
     //one. Sleeping another task only marks it; this core keeps running.
     if (is_self)
         task_yield();
-    return CS_UNKN;
+    return CS_OK;
 }
 
 cs_error nanosleep_syscall()
