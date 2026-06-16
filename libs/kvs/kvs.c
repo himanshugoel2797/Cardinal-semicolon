@@ -262,6 +262,14 @@ int kvs_remove(kvs_t *r NULLABLE, kvs_t *idx NULLABLE) {
     if (idx == NULL)
         return kvs_error_invalidargs;
 
+    if (r->next == idx) {
+        r->next = idx->next;
+        if (idx->val_type == kvs_val_child)
+            kvs_delete(idx->child);
+        free(idx);
+        return kvs_ok;
+    }
+
     kvs_t *iter = r;
     do {
         iter = iter->next;

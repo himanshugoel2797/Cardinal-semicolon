@@ -195,12 +195,13 @@ cs_error registry_addkey_str(const char *path, const char *keyname,
     if (err != CS_OK)
         return err;
 
-    storelen = MIN((size_t)MAX_REGISTRY_STRLEN, strlen(val));
+    storelen = MIN((size_t)(MAX_REGISTRY_STRLEN - 1), strlen(val)) + 1;
     strstore = malloc(storelen);
     if (strstore == NULL)
         return CS_FAILURE;
 
-    strncpy(strstore, val, storelen);
+    strncpy(strstore, val, storelen - 1);
+    strstore[storelen - 1] = '\0';
 
     DEBUG_PRINT("[SysReg] AddKeyStr: ");
     DEBUG_PRINT(path);
@@ -499,8 +500,10 @@ cs_error registry_removekey(const char *path, const char *keyname)
         return CS_DNE;
     }
 
-    kvs_remove(parent_kvs, key_kvs);
+    int kerr = kvs_remove(parent_kvs, key_kvs);
     local_spinlock_unlock(&kern_lock);
+    if (kerr != kvs_ok)
+        return CS_FAILURE;
 
     return CS_OK;
 }
