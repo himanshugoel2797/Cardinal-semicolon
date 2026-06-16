@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <types.h>
+
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysTest/test.h"
 
@@ -54,6 +56,55 @@ static void test_alloc_32bit(test_ctx_t *ctx) {
     }
 }
 
+// An allocation request larger than all installed RAM must fail cleanly with
+// the PHYSMEM_NO_ALLOC sentinel rather than returning a bogus address or
+// faulting. 64 GiB is far beyond any CI/QEMU memory size yet its page count
+// (16 Mi pages) still fits the allocator's int32 page counter, so the free-list
+// scan terminates and returns the sentinel deterministically.
+static void test_alloc_oom(test_ctx_t *ctx) {
+    uintptr_t addr =
+        physmem_alloc(0, 0, physmem_alloc_flags_data, GiB(64));
+    TEST_CHECK_EQ_U(ctx, addr, PHYSMEM_NO_ALLOC);
+    // Defensive: if a buggy allocator ever did hand back a non-sentinel address
+    // for an impossible request, return it so the pool isn't permanently leaked.
+    if (addr != PHYSMEM_NO_ALLOC)
+        physmem_free(addr, GiB(64));
+}
+
+// physmem_alloc rounds the requested size up to a whole BTM_LEVEL page
+// (ALIGN_UP). A sub-page request must therefore still yield a page-aligned
+// address and consume a full page: two consecutive sub-page allocations must
+// land in distinct pages (>= one page apart), proving the round-up happened and
+// the second request did not alias the first. Both are freed with the
+// page-rounded size (physmem_free PANICs on a misaligned size).
+static void test_alloc_subpage_roundup(test_ctx_t *ctx) {
+    uintptr_t a = physmem_alloc(0, 0, physmem_alloc_flags_data, 100);
+    TEST_CHECK_NE_U(ctx, a, PHYSMEM_NO_ALLOC);
+    uintptr_t b = physmem_alloc(0, 0, physmem_alloc_flags_data, 1);
+    TEST_CHECK_NE_U(ctx, b, PHYSMEM_NO_ALLOC);
+
+    if (a != PHYSMEM_NO_ALLOC) {
+        TEST_CHECK_MSG(ctx, a % KiB(4) == 0,
+                       "sub-page allocation must be page-aligned");
+    }
+    if (b != PHYSMEM_NO_ALLOC) {
+        TEST_CHECK_MSG(ctx, b % KiB(4) == 0,
+                       "sub-page allocation must be page-aligned");
+    }
+    // Distinct pages: a 100-byte and a 1-byte request each took a whole page.
+    if (a != PHYSMEM_NO_ALLOC && b != PHYSMEM_NO_ALLOC) {
+        uintptr_t lo = a < b ? a : b;
+        uintptr_t hi = a < b ? b : a;
+        TEST_CHECK_MSG(ctx, hi - lo >= KiB(4),
+                       "sub-page allocations must not alias the same page");
+    }
+
+    if (a != PHYSMEM_NO_ALLOC)
+        physmem_free(a, KiB(4));
+    if (b != PHYSMEM_NO_ALLOC)
+        physmem_free(b, KiB(4));
+}
+
 void sysphysicalmemory_register_tests(void) {
     if (!test_mode_active())
         return;
@@ -84,4 +135,22 @@ void sysphysicalmemory_register_tests(void) {
         .flags = TEST_FLAG_NONE,
     };
     test_register(&alloc_32bit);
+
+    test_def_t alloc_oom = {
+        .suite = "SysPhysicalMemory",
+        .name = "alloc_oom",
+        .fn = test_alloc_oom,
+        .run = TEST_RUN_INLINE,
+        .flags = TEST_FLAG_NONE,
+    };
+    test_register(&alloc_oom);
+
+    test_def_t alloc_subpage_roundup = {
+        .suite = "SysPhysicalMemory",
+        .name = "alloc_subpage_roundup",
+        .fn = test_alloc_subpage_roundup,
+        .run = TEST_RUN_INLINE,
+        .flags = TEST_FLAG_NONE,
+    };
+    test_register(&alloc_subpage_roundup);
 }
