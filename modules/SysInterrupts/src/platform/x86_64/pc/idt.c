@@ -87,6 +87,11 @@ static bool interrupt_blocked[IDT_ENTRY_COUNT];
 static int interrupt_alloc_lock = 0;
 static bool int_arr_inited = false;
 
+// Optional death-test hook: see interrupt_set_death_hook() in interrupts.h.
+// Consulted only on an unhandled CPU exception; NULL on a normal boot.
+static void (*volatile g_death_hook)(int vector) = NULL;
+void interrupt_set_death_hook(void (*hook)(int vector)) { g_death_hook = hook; }
+
 void interrupt_register_handler(int irq, InterruptHandler handler)
 {
     int state = cli();
@@ -328,6 +333,12 @@ void idt_mainhandler(regs_t *regs)
     {
         if (regs->int_no < 32)
         {
+            //Death-test hook: if a death test armed it, report the actual fault
+            //vector on the harness control channel and reboot instead of
+            //panicking into the debug shell. Returns (falls through to the normal
+            //panic) when no death test is armed.
+            if (g_death_hook != NULL)
+                g_death_hook((int)regs->int_no);
             //Unhandled CPU exception: dump the full trap frame (named vector,
             //CR2 for #PF, error code, all GPRs, core APIC id) before panicking
             //so the failure is actually diagnosable.
