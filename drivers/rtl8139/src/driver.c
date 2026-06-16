@@ -55,8 +55,8 @@ int rtl8139_tx(void *state, void *packet, int len, network_device_tx_flags_t gso
 
     rtl8139_state_t *device = (rtl8139_state_t *)state;
     //Wait for the previous transmission on this descriptor to finish, bounded by
-    //a real wall-clock timeout. The hardware clears the TX status bits via DMA
-    //(no interrupt is required), so this is a tight register poll. On timeout
+    //a real wall-clock timeout. The NIC sets OWN (bit 13) and TOK (bit 15) when
+    //transmission completes; poll until both are set. On timeout
     //drop the packet. This runs before the lock is taken, so no unlock is needed
     //on the timeout path.
     if ((device->memar[TX_STS_REG(device->free_tx_buf_idx)] & 0xfff) != 0)

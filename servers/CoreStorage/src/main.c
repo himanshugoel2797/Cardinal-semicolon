@@ -36,14 +36,19 @@ static void probe_device_against_providers(storage_blockdev_t *dev) {
         storage_fsprovider_t *p =
             (i < (int)list_len(&fsprovider_list)) ? list_at(&fsprovider_list, (uint64_t)i) : NULL;
         local_spinlock_unlock(&fsprovider_lock);
-        if (p != NULL && p->probe != NULL && p->probe(dev) == 0)
+        if (p != NULL && p->probe != NULL && p->probe(dev) == 0) {
+            local_spinlock_lock(&blockdev_lock);
+            dev->claimed = 1;  // mounted -- don't offer to any later provider
+            local_spinlock_unlock(&blockdev_lock);
             break;
+        }
     }
 }
 
 int storage_register_blockdev(storage_blockdev_t *desc, void **handle) {
     storage_blockdev_t *dev = (storage_blockdev_t *)malloc(sizeof(storage_blockdev_t));
     *dev = *desc;
+    dev->claimed = 0;  // CoreStorage-internal; ignore whatever the caller's struct held
 
     local_spinlock_lock(&blockdev_lock);
     list_append(&blockdev_list, dev);
@@ -73,7 +78,10 @@ int storage_register_fsprovider(storage_fsprovider_t *desc) {
     DEBUG_PRINT(p->name);
     DEBUG_PRINT("\r\n");
 
-    // Offer it every block device already present.
+    // Offer it every block device already present that no provider has claimed.
+    // A provider may legitimately claim several devices, so this does not stop at
+    // the first match -- but a device claimed here (or earlier) is never offered
+    // again, mirroring probe_device_against_providers' "first to claim wins".
     local_spinlock_lock(&blockdev_lock);
     int n = (int)list_len(&blockdev_list);
     local_spinlock_unlock(&blockdev_lock);
@@ -81,9 +89,13 @@ int storage_register_fsprovider(storage_fsprovider_t *desc) {
         local_spinlock_lock(&blockdev_lock);
         storage_blockdev_t *dev =
             (i < (int)list_len(&blockdev_list)) ? list_at(&blockdev_list, (uint64_t)i) : NULL;
+        int already_claimed = (dev != NULL) ? dev->claimed : 1;
         local_spinlock_unlock(&blockdev_lock);
-        if (dev != NULL && p->probe != NULL)
-            p->probe(dev);
+        if (dev != NULL && !already_claimed && p->probe != NULL && p->probe(dev) == 0) {
+            local_spinlock_lock(&blockdev_lock);
+            dev->claimed = 1;
+            local_spinlock_unlock(&blockdev_lock);
+        }
     }
     return 0;
 }

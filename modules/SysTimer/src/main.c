@@ -77,9 +77,9 @@ void timer_wait(uint64_t ns)
     // Prefer a readable counter (e.g. the calibrated TSC): polling it uses only
     // caller-stack state and no shared hardware, so it is SMP-safe -- any number
     // of cores can timer_wait() concurrently. The periodic-interrupt path below
-    // relies on module-global wait state and a single timer, so it is only a
-    // fallback for platforms with no counter timer (and is not safe for
-    // concurrent callers -- see the globals above).
+    // is also per-core safe (it drives each core's own `local` timer with per-core
+    // TLS wait state -- see timer_wait_state_t above), but it is only a fallback
+    // for platforms with no readable counter timer.
     for (int i = 0; i < timer_idx; i++)
         if ((timer_defs[i].features & (timer_features_counter | timer_features_read)) &&
             timer_defs[i].handlers.read != NULL)

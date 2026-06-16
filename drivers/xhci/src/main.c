@@ -553,7 +553,7 @@ static void xhci_port_connected(xhci_ctrl_state_t *s, int port) {
 
 // Free a slot's DMA: the per-endpoint transfer rings and the device context.
 static void xhci_free_slot_mem(xhci_slot_t *sl) {
-    for (int dci = 1; dci < 31; dci++) {
+    for (int dci = 1; dci < 32; dci++) {  // DCI 1..31
         if (sl->ep[dci].configured && sl->ep[dci].ring.trbs != NULL) {
             pagealloc_free(sl->ep[dci].ring.phys, KiB(4));
             sl->ep[dci].ring.trbs = NULL;

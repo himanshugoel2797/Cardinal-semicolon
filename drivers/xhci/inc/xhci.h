@@ -117,7 +117,7 @@ typedef struct {
     int root_port;
     uint32_t route;  // xHCI route string (0 for a device on a root port)
     int depth;       // hub tiers above this device (0 on a root port)
-    xhci_ep_t ep[31];  // DCI 1..31 (index by DCI)
+    xhci_ep_t ep[32];  // indexed by DCI 1..31 (slot 0 unused); size 32 so DCI 31 (EP 15 IN) is in-bounds
     int in_use;
 } xhci_slot_t;
 

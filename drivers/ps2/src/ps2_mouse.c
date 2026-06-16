@@ -143,10 +143,20 @@ PS2Mouse_Initialize(void)
 
     //Activate the mouse
 
-    //Set the streaming rate to 40
+    //Set the sample rate to 40 (0xF3 = Set Sample Rate, then the value)
+    outb(CMD_PORT, 0xD4); //Select the mouse
+    WAIT_DATA_SENT;
+    outb(DATA_PORT, 0xF3);
+
+    WAIT_DATA_AVL;
+    inb(DATA_PORT);
+
     outb(CMD_PORT, 0xD4); //Select the mouse
     WAIT_DATA_SENT;
     outb(DATA_PORT, 40);
+
+    WAIT_DATA_AVL;
+    inb(DATA_PORT);
 
     outb(CMD_PORT, 0xD4);
     WAIT_DATA_SENT;

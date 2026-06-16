@@ -98,7 +98,8 @@ static void read_devices(void *arg)
                 }
             }
         }
-        //perform an inplace sort based on the timestamp
+        //TODO: events are enqueued in device-poll order, not timestamp order;
+        //cross-device timestamp ordering is not yet implemented.
         local_spinlock_unlock(&device_list_lock);
     }
 }

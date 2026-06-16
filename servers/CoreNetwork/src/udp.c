@@ -44,8 +44,11 @@ static int udp_ipv4_csum_ok(const ipv4_t *packet, const udp_t *udp, int seg_len)
     return net_csum_fold(sum) == 0;
 }
 
-int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int len) {
-    udp_t *udp = (udp_t *)packet->body;
+int udp_ipv4_rx(interface_def_t *interface, ipv4_t *packet, int hdr_len, int len) {
+    // The UDP header begins after the IPv4 header (hdr_len, which accounts for
+    // options when ihl > 5), not at a fixed offset. The caller has validated
+    // that hdr_len + len lies within the received frame.
+    udp_t *udp = (udp_t *)((uint8_t *)packet + hdr_len);
     int seg_len = udp_seg_len(udp, len);
     if (seg_len < 0)
         return 0;  // malformed -> drop
@@ -69,7 +72,10 @@ static int udp_ipv6_csum_ok(const ipv6_t *packet, const udp_t *udp, int seg_len)
     uint8_t ph[40];
     memcpy(ph + 0, packet->src_ip, 16);
     memcpy(ph + 16, packet->dst_ip, 16);
-    uint32_t ulen_be = TO_BE_FRM_LE_32((uint32_t)seg_len);
+    // Upper-layer length is the sender's on-wire UDP length (RFC 8200 pseudo-
+    // header), matching the IPv4 path -- not the clamped seg_len, or a truncated
+    // packet's pseudo-header would diverge from what the sender summed.
+    uint32_t ulen_be = TO_BE_FRM_LE_32((uint32_t)TO_LE_FRM_BE_16(udp->len));
     memcpy(ph + 32, &ulen_be, 4);         // upper-layer length, network order
     ph[36] = ph[37] = ph[38] = 0;
     ph[39] = IP_PROTOCOL_UDP;

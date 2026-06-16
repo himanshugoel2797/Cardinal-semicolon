@@ -313,7 +313,7 @@ static void ps2_irq(int int_num)
         c = inb(DATA_PORT);
         if (c != 0xFA)
         {
-            //Read and send translated scancodes to the Input manager
+            //Read scancodes; only forward to the Input manager when scancode set 3 is active
             if (PS2Keyboard_ActiveScancodeSet() == 3)
             {
                 bool break_code = false;
