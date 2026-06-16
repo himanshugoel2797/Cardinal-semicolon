@@ -469,6 +469,11 @@ static void free_task(int self, process_desc_t *t)
             free(t->syscall_data);
         if (t->user_stack != NULL)
         {
+            //No vmem_shootdown needed here: t has exited, so its address space is
+            //no longer in any core's cr3 (the retiring core did a full cr3 flush
+            //switching away, and active_apic is -1). If a "destroy a live AS" path
+            //is ever added, it MUST shoot down before this physmem_free (see
+            //task_unmap) or another core could UAF the freed frame via a stale TLB.
             vmem_unmap(t->mem, 0x100000000, USER_STACK_LEN);
             physmem_free(t->user_stack_phys, USER_STACK_LEN);
         }
