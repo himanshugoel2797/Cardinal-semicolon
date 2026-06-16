@@ -13,6 +13,8 @@ extern list_t dev_list;
 extern list_t interface_list;
 extern int devIDs[network_device_type_count];
 
+void corenetwork_register_tests(void);
+
 int module_init() {
 
     list_init(&dev_list);
@@ -20,6 +22,8 @@ int module_init() {
 
     for (int i = 0; i < network_device_type_count; i++)
         devIDs[i] = 0;
+
+    corenetwork_register_tests();
 
     return 0;
 }
