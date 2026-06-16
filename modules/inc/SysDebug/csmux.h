@@ -40,6 +40,13 @@ bool csmux_active(void);
 // Send one whole frame on `chan`. Emitted atomically with respect to other
 // senders and safe to call from cli()/trap context (busy-polled TX, no IRQ/DMA,
 // no malloc). Returns 0, or <0 if inactive or len > CSMUX_MAX_PAYLOAD.
+//
+// Re-entrancy caveat: csmux_send takes a TX spinlock under cli(). A CPU exception
+// taken WHILE this core already holds that lock (i.e. a fault from inside a
+// csmux_send / print_str frame) and then trying to send again would self-
+// deadlock. The death-test hooks call csmux_send from the fault/PANIC path, so a
+// death-test body must not be invoked while the TX lock is held -- in practice it
+// never is (test bodies run from the runner, not from inside print_str).
 int csmux_send(uint8_t chan, const void *buf, uint32_t len);
 
 // Pump the COM1 receiver: read any bytes currently available, run the

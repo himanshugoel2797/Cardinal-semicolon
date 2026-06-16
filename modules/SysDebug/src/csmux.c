@@ -96,11 +96,21 @@ int csmux_send(uint8_t chan, const void *buf, uint32_t len) {
 // --- RX rings (one per inbound channel) --------------------------------------
 
 #define RING_CAP 1024u
+// A full-size frame's payload must fit a receive ring with room to spare.
+_Static_assert(RING_CAP >= CSMUX_MAX_PAYLOAD, "RING_CAP must hold a max payload");
+
 typedef struct {
     uint8_t buf[RING_CAP];
     volatile uint32_t head; // producer (pump)
     volatile uint32_t tail; // consumer (reader)
 } ring_t;
+
+// Serialises the receive de-framer. csmux_recv_byte_pump mutates shared deframer
+// state (g_frame/g_flen/g_inframe/g_escape) and the ring heads, so two cores
+// pumping at once (e.g. the SysTest control reader on one core and the tunneled
+// GDB reader on another) would corrupt it. Distinct from g_tx_lock and never
+// nested with it (the pump never sends, csmux_send never pumps), so no deadlock.
+static int g_rx_lock = 0;
 
 static ring_t g_ctrl_ring;
 static ring_t g_gdb_ring;
@@ -165,6 +175,8 @@ static void handle_frame(void) {
 int csmux_recv_byte_pump(void) {
     int n = 0;
     int b;
+    int if_state = cli();
+    local_spinlock_lock(&g_rx_lock);
     while ((b = com1_getb()) >= 0) {
         n++;
         uint8_t c = (uint8_t)b;
@@ -191,6 +203,8 @@ int csmux_recv_byte_pump(void) {
         else
             g_inframe = false; // overflow -> drop, resync on next 0x7E
     }
+    local_spinlock_unlock(&g_rx_lock);
+    sti(if_state);
     return n;
 }
 

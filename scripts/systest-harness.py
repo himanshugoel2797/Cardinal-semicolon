@@ -232,6 +232,14 @@ class Harness:
 
     # ---- finalize ----
     def finalize(self):
+        # No handshake ever completed -> the guest never reached the harness
+        # phase (very early crash, or no harness ISO). That is a failure, not a
+        # vacuous pass.
+        if self.death_count is None:
+            self.emit("[SysTest] no harness handshake (HELLO never received)\n")
+            self.emit("[SysTest] TESTS FAILED\n")
+            self.log.close()
+            return 1
         passed = (self.normal_fails == 0)
         for c in range(self.death_count or 0):
             ok, _ = self.verdicts.get(c, (False, "never ran"))
