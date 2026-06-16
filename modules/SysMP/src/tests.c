@@ -40,8 +40,7 @@ static void test_tls_percpu(test_ctx_t *ctx) {
     TEST_CHECK_MSG(ctx, s_tls_off >= 0, "TLS slot was not allocated");
     if (s_tls_off < 0)
         return;
-    void *p = mp_tls_get(s_tls_off);
-    TEST_CHECK_MSG(ctx, p != NULL, "per-core TLS storage is NULL");
+    TEST_CHECK_MSG(ctx, mp_tls_get(s_tls_off) != NULL, "per-core TLS storage is NULL");
 }
 
 void sysmp_register_tests(void) {
