@@ -41,27 +41,53 @@ static gdb_transport_t mock_transport = {
     .state = NULL,
 };
 
-// Register the mock transport; the call must accept it (non-NULL getc/putc) and
-// return cleanly. We can't observe cur_transport directly from here, so this
-// mainly proves the path doesn't fault and the descriptor is accepted.
+// Registering a valid mock transport must actually install it; a NULL or
+// partial (missing getc/putc) descriptor must be REJECTED, leaving the active
+// transport untouched. We verify both via the active-getc accessor. Restores
+// the default (COM2) at the end so other tests start from a known state.
 static void test_register_transport(test_ctx_t *ctx) {
+    // Start from a known baseline.
+    gdb_unregister_transport(NULL);
+    TEST_CHECK(ctx, gdb_default_transport_active());
+
+    // A valid transport is installed.
     gdb_register_transport(&mock_transport);
-    // A NULL or partial descriptor must be rejected (no crash, no swap).
+    TEST_CHECK(ctx, gdb_active_transport_getc() == (void *)(uintptr_t)mock_getc);
+    TEST_CHECK(ctx, !gdb_default_transport_active());
+
+    // A NULL descriptor must be rejected: the mock stays active.
     gdb_register_transport(NULL);
+    TEST_CHECK(ctx, gdb_active_transport_getc() == (void *)(uintptr_t)mock_getc);
+
+    // A partial descriptor (no getc) must be rejected: the mock stays active.
     gdb_transport_t bad = { .getc = NULL, .putc = mock_putc, .poll = NULL, .state = NULL };
     gdb_register_transport(&bad);
-    TEST_CHECK(ctx, true);
+    TEST_CHECK(ctx, gdb_active_transport_getc() == (void *)(uintptr_t)mock_getc);
+
+    // Restore the default channel.
+    gdb_unregister_transport(NULL);
+    TEST_CHECK(ctx, gdb_default_transport_active());
 }
 
-// Unregister the same transport; passing the active descriptor must revert to
-// the built-in COM2 channel without disturbing anything.
+// Unregistering the active mock must revert to the built-in COM2 channel; a
+// forced NULL revert must be safe even when COM2 is already active. Leaves the
+// default active at the end.
 static void test_unregister_transport(test_ctx_t *ctx) {
     gdb_register_transport(&mock_transport);
-    // Revert only when it is still the active transport.
+    TEST_CHECK(ctx, gdb_active_transport_getc() == (void *)(uintptr_t)mock_getc);
+
+    // Passing the active descriptor reverts to COM2.
     gdb_unregister_transport(&mock_transport);
+    TEST_CHECK(ctx, gdb_default_transport_active());
+
+    // A stale unregister of a non-active transport must NOT clobber the current
+    // (default) channel.
+    gdb_unregister_transport(&mock_transport);
+    TEST_CHECK(ctx, gdb_default_transport_active());
+
     // Forced revert (NULL) is always safe even when COM2 is already active.
     gdb_unregister_transport(NULL);
-    TEST_CHECK(ctx, true);
+    TEST_CHECK(ctx, gdb_default_transport_active());
 }
 
 // Smoke test for the async break-in poll. SKIPPED: gdb_poll_breakin() may drop
