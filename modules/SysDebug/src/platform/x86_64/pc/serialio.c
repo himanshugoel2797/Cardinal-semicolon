@@ -11,12 +11,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#define SERIAL_A ((uint16_t)0x3f8)
-#define SERIAL_A_STATUS (SERIAL_A + 5)
-
-#define SERIAL_B ((uint16_t)0x2f8)
-#define SERIAL_B_STATUS (SERIAL_B + 5)
-
 #define SET_BLACK_FG "\e[30m"
 #define SET_RED_FG "\e[31m"
 #define SET_WHITE_FG "\e[37m"
@@ -37,37 +31,59 @@ static char *hex_str = "0123456789ABCDEF";
 static char *dec_str = "0123456789";
 
 int kernel_updatetraphandlers();
+void print_hexdump(void *datap, int len);
+int print_uint64(uint64_t num, uint8_t base);
 
-static inline bool serial_outputisready()
+// Runtime-resolved phys->virt mapper for the debug shell's peek/poke commands.
+// SysDebug loads before the VM module so vmem_phystovirt can't be linked, but
+// the shell only runs post-boot when it's resolvable via the kernel symbol DB.
+static intptr_t (*g_dbg_phystovirt)(intptr_t, uint64_t, int) = NULL;
+static volatile void *dbg_map(uint64_t phys)
 {
-    char s = 0;
-    s = inb(SERIAL_A_STATUS);
-
-    return s & 0x20;
+    if (g_dbg_phystovirt == NULL)
+        g_dbg_phystovirt = (intptr_t(*)(intptr_t, uint64_t, int))
+                           elf_resolvefunction("vmem_phystovirt");
+    if (g_dbg_phystovirt == NULL)
+        return NULL;
+    uint64_t pg = phys & ~0xFFFULL;
+    // flags: uncached(1<<5) | kernel(1<<10) | rw(write 1<<0)
+    uint8_t *v = (uint8_t *)g_dbg_phystovirt((intptr_t)pg, 4096, 0x20 | 0x400 | 0x1);
+    return (volatile void *)(v + (phys & 0xFFF));
+}
+static uint64_t dbg_hex(const char **s)
+{
+    const char *p = *s;
+    while (*p == ' ') p++;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    uint64_t v = 0;
+    for (;; p++)
+    {
+        char c = *p;
+        int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else break;
+        v = (v << 4) | (uint64_t)d;
+    }
+    *s = p;
+    return v;
 }
 
-static inline bool serial_inputisready()
+// Serial I/O for the interactive PANIC shell, routed through the shared console
+// UART (csmux.c) so it follows any ACPI-SPCR retarget instead of assuming the
+// legacy 0x3f8 COM1 port.
+static void serial_output(char c)
 {
-    char s = 0;
-    s = inb(SERIAL_A_STATUS);
-
-    return s & 0x1;
+    csmux_uart_putb((uint8_t)c);
 }
 
-static inline void serial_output(char c)
+static char serial_input()
 {
-    while (serial_outputisready() == 0)
+    int b;
+    while ((b = csmux_uart_getb()) < 0)
         ;
-    outb(SERIAL_A, c);
-}
-
-static inline char serial_input()
-{
-    char c = 0;
-    while (serial_inputisready() == 0)
-        ;
-    c = inb(SERIAL_A);
-    return c;
+    return (char)b;
 }
 
 static void render_char(char c)
@@ -214,7 +230,8 @@ int debug_shell(char (*input_stream)(), void (*output_stream)(char))
 
     print_stream(output_stream,
                  "\r\n" SET_RED_FG
-                 "PANIC detected. Entering debug mode.\r\n\r\n" SET_WHITE_FG ">");
+                 "Entering debug shell. Commands: call <fn> | r <phys> [sz] | "
+                 "w <phys> <val> [sz] | d <phys>\r\n\r\n" SET_WHITE_FG ">");
 
     while (true)
     {
@@ -266,6 +283,49 @@ int debug_shell(char (*input_stream)(), void (*output_stream)(char))
                 }
             }
 
+            // Hardware peek/poke over the bridge:
+            //   r <phys> [sz]        read sz(1/2/4/8, default 4) bytes
+            //   w <phys> <val> [sz]  write
+            //   d <phys>             hexdump 64 bytes
+            // <phys> is any physical address: PCI config space is the ECAM MMIO,
+            // device registers are the BAR MMIO, so the whole bring-up can be
+            // driven live without a reflash.
+            else if ((cmd_buf[0] == 'r' || cmd_buf[0] == 'w' || cmd_buf[0] == 'd')
+                     && cmd_buf[1] == ' ')
+            {
+                cmd_fnd = true;
+                const char *p = cmd_buf + 1;
+                uint64_t addr = dbg_hex(&p);
+                volatile void *a = dbg_map(addr);
+                if (a == NULL)
+                    print_stream(output_stream, "map failed\r\n");
+                else if (cmd_buf[0] == 'r')
+                {
+                    uint64_t sz = (*p) ? dbg_hex(&p) : 4;
+                    uint64_t val = (sz == 1) ? *(volatile uint8_t *)a
+                                 : (sz == 2) ? *(volatile uint16_t *)a
+                                 : (sz == 8) ? *(volatile uint64_t *)a
+                                             : *(volatile uint32_t *)a;
+                    print_stream(output_stream, "= 0x");
+                    print_uint64(val, 16);
+                    print_stream(output_stream, "\r\n");
+                }
+                else if (cmd_buf[0] == 'w')
+                {
+                    uint64_t val = dbg_hex(&p);
+                    uint64_t sz = (*p) ? dbg_hex(&p) : 4;
+                    if (sz == 1) *(volatile uint8_t *)a = (uint8_t)val;
+                    else if (sz == 2) *(volatile uint16_t *)a = (uint16_t)val;
+                    else if (sz == 8) *(volatile uint64_t *)a = val;
+                    else *(volatile uint32_t *)a = (uint32_t)val;
+                    print_stream(output_stream, "ok\r\n");
+                }
+                else
+                {
+                    print_hexdump((void *)a, 64);
+                }
+            }
+
             if (!cmd_fnd)
                 print_stream(
                     output_stream,
@@ -287,8 +347,25 @@ int debug_shell(char (*input_stream)(), void (*output_stream)(char))
     return 0;
 }
 
+// Entered from servicescript (CALL:) once boot is otherwise complete. Drops into
+// the interactive debug shell over serial iff the kernel was booted with the
+// "cardinal.debugshell" cmdline flag -- selected at runtime from the GRUB
+// "debug" menu entry over serial, so switching in/out of probe mode needs no
+// reflash. A normal boot (no flag) returns immediately.
+int sysdebug_shell_if_flagged()
+{
+    CardinalBootInfo *bi = GetBootInfo();
+    if (bi != NULL && strstr(bi->Cmdline, "cardinal.debugshell") != NULL)
+        debug_shell(serial_input, serial_output);
+    return 0;
+}
+
 int init_serial_debug()
 {
+    // Put the console UART into a known 115200 8N1 state before anything else
+    // logs -- the firmware/GRUB hand-off can leave the divisor at the wrong baud
+    // on real hardware (e.g. the AtomicPi), garbling all serial output.
+    csmux_uart_init();
     kernel_updatetraphandlers();
     print_stream(
         serial_output, SET_GREEN_BG SET_RED_FG
@@ -298,14 +375,10 @@ int init_serial_debug()
 
 #define BASE_HEX 16
 
-#define PRINT_BITCNT(bitcnt)                           \
-    if (base == BASE_HEX)                             \
-        for (int i = (bitcnt - 4); i >= 0; i -= 4)     \
-        {                                              \
-            while (serial_outputisready() == 0)        \
-                ;                                      \
-            outb(SERIAL_A, hex_str[(num >> i) & 0xF]); \
-        }
+#define PRINT_BITCNT(bitcnt)                       \
+    if (base == BASE_HEX)                          \
+        for (int i = (bitcnt - 4); i >= 0; i -= 4) \
+            csmux_uart_putb(hex_str[(num >> i) & 0xF]);
 
 int WEAK print_int8(int8_t num, uint8_t base)
 {

@@ -16,39 +16,109 @@
 
 #include "SysDebug/csmux.h"
 
-#define COM1 ((uint16_t)0x3f8)
-#define COM1_LSR (COM1 + 5)
-
 static volatile bool g_active = false;
 static int g_tx_lock = 0; // serialises whole-frame sends across cores
 static int g_rx_lock = 0; // serialises the receive de-framer across cores
 
-// --- raw COM1 byte I/O (busy-polled; safe in trap/cli context) ---------------
+// --- console UART target (busy-polled; safe in trap/cli context) -------------
+//
+// The defaults reproduce the original hardcoded COM1 path exactly: legacy port
+// I/O at 0x3f8, byte-spaced registers. So early boot (before ACPI SPCR is
+// parsed) and platforms without an SPCR table (e.g. QEMU) are unchanged.
+// sysdebug_console_uart_set() retargets these once SPCR names the real console
+// UART -- e.g. the AtomicPi's MMIO DesignWare 8250 (32-bit registers, reg << 2).
+static volatile uintptr_t g_uart_base = 0x3f8; // I/O port, or virtual MMIO base
+static volatile int g_uart_mmio = 0;           // 0 = port I/O, 1 = MMIO
+static volatile int g_uart_shift = 0;          // reg N at base + (N << shift)
+static volatile int g_uart_mmio32 = 0;         // MMIO width: 1 = 32-bit, else 8-bit
 
-static inline void com1_putb(uint8_t b) {
-    while ((inb(COM1_LSR) & 0x20) == 0)
+#define UART_REG_DATA 0     // RBR (read) / THR (write) / DLL (low divisor, DLAB=1)
+#define UART_REG_IER 1      // interrupt enable / DLM (high divisor, DLAB=1)
+#define UART_REG_FCR 2      // FIFO control (write)
+#define UART_REG_LCR 3      // line control
+#define UART_REG_MCR 4      // modem control
+#define UART_REG_LSR 5      // line status register
+#define UART_LSR_THRE 0x20  // TX holding register empty
+#define UART_LSR_DR 0x01    // RX data ready
+#define UART_LCR_DLAB 0x80  // divisor-latch access
+#define UART_LCR_8N1 0x03   // 8 data bits, no parity, 1 stop
+
+static inline uint8_t uart_reg_rd(int reg) {
+    uintptr_t a = g_uart_base + ((uintptr_t)reg << g_uart_shift);
+    if (!g_uart_mmio)
+        return inb((uint16_t)a);
+    if (g_uart_mmio32)
+        return (uint8_t)*(volatile uint32_t *)a;
+    return *(volatile uint8_t *)a;
+}
+
+static inline void uart_reg_wr(int reg, uint8_t v) {
+    uintptr_t a = g_uart_base + ((uintptr_t)reg << g_uart_shift);
+    if (!g_uart_mmio)
+        outb((uint16_t)a, v);
+    else if (g_uart_mmio32)
+        *(volatile uint32_t *)a = v;
+    else
+        *(volatile uint8_t *)a = v;
+}
+
+void csmux_uart_putb(uint8_t b) {
+    while ((uart_reg_rd(UART_REG_LSR) & UART_LSR_THRE) == 0)
         ;
-    outb(COM1, b);
+    uart_reg_wr(UART_REG_DATA, b);
 }
 
 // Non-blocking: returns the next byte or -1 if the RX FIFO is empty.
-static inline int com1_getb(void) {
-    if ((inb(COM1_LSR) & 0x01) == 0)
+int csmux_uart_getb(void) {
+    if ((uart_reg_rd(UART_REG_LSR) & UART_LSR_DR) == 0)
         return -1;
-    return inb(COM1);
+    return uart_reg_rd(UART_REG_DATA);
 }
 
-// --- default byte transport: polled COM1 -------------------------------------
+void csmux_uart_init(void) {
+    // Program the console UART for 115200 8N1, FIFOs on, polled (no IRQ). The
+    // firmware/GRUB leave it configured, but the multiboot2 hand-off can reset
+    // the divisor on real hardware -- observed on the AtomicPi, whose serial then
+    // came out at the wrong baud (a corrupt stream over the link). Set it
+    // explicitly rather than inheriting an unknown rate. Divisor 1 = 115200 on the
+    // standard 1.8432 MHz 16550 clock (legacy COM1). For an MMIO/LPSS UART on a
+    // different clock this divisor would need recomputing -- not done here, since
+    // the console stays on the legacy 0x3f8 port.
+    uart_reg_wr(UART_REG_IER, 0x00);           // disable interrupts
+    uart_reg_wr(UART_REG_LCR, UART_LCR_DLAB);  // DLAB=1: data/IER become DLL/DLM
+    uart_reg_wr(UART_REG_DATA, 0x01);          // DLL = 1  -> 115200
+    uart_reg_wr(UART_REG_IER, 0x00);           // DLM = 0
+    uart_reg_wr(UART_REG_LCR, UART_LCR_8N1);   // 8N1, DLAB=0
+    uart_reg_wr(UART_REG_FCR, 0xC7);           // enable + clear FIFOs, 14B trigger
+    uart_reg_wr(UART_REG_MCR, 0x03);           // DTR | RTS (no loopback)
+}
+
+void sysdebug_console_uart_set(int is_mmio, uint64_t base, int reg_shift, int access32) {
+    // Swing the target under both link locks so no core is mid-write or mid-pump
+    // on the old UART when the pointers change.
+    int if_state = cli();
+    local_spinlock_lock(&g_tx_lock);
+    local_spinlock_lock(&g_rx_lock);
+    g_uart_base = (uintptr_t)base;
+    g_uart_mmio = is_mmio ? 1 : 0;
+    g_uart_shift = reg_shift;
+    g_uart_mmio32 = access32 ? 1 : 0;
+    local_spinlock_unlock(&g_rx_lock);
+    local_spinlock_unlock(&g_tx_lock);
+    sti(if_state);
+}
+
+// --- default byte transport: the polled console UART -------------------------
 
 static void com1_write(void *state, const uint8_t *buf, uint32_t len) {
     (void)state;
     for (uint32_t i = 0; i < len; i++)
-        com1_putb(buf[i]);
+        csmux_uart_putb(buf[i]);
 }
 
 static int com1_getb_xport(void *state) {
     (void)state;
-    return com1_getb();
+    return csmux_uart_getb();
 }
 
 static csmux_transport_t g_xport = {com1_write, com1_getb_xport, NULL};
@@ -213,10 +283,11 @@ void csmux_log_flush(void) {
 }
 
 void csmux_raw_write(const void *buf, uint32_t len) {
-    // Unframed write -- ALWAYS to COM1, never the (possibly USB) transport: this
-    // is the pre-activation boot log, which can be emitted from inside the USB
-    // stack itself, so routing it over a USB transport could re-enter the USB
-    // layer. Held under g_tx_lock so a core still logging raw cannot interleave
+    // Unframed write -- bypasses the pluggable transport (never the possibly-USB
+    // link), going straight to the current console UART (PIO or, after an SPCR
+    // retarget, MMIO). This is the pre-activation boot log, which can be emitted
+    // from inside the USB stack itself, so routing it over a USB transport could
+    // re-enter the USB layer. Held under g_tx_lock so a core still logging raw cannot interleave
     // its bytes with another core's COM1 frame (which corrupted the handshake
     // frame intermittently when the transport is COM1).
     int if_state = cli();

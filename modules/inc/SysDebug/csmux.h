@@ -89,7 +89,36 @@ int csmux_send(uint8_t chan, const void *buf, uint32_t len);
 // one core cannot interleave with another core's frame (which would corrupt it).
 void csmux_raw_write(const void *buf, uint32_t len);
 
-// Pump the COM1 receiver: read any bytes currently available, run the
+// --- console UART target -----------------------------------------------------
+// The raw byte I/O underneath CSMUX (and the unframed boot log + the debug
+// shell in serialio.c) drives one console UART. By default this is the legacy PC
+// COM1 at I/O port 0x3f8 -- which GRUB and early boot already assume and which
+// QEMU provides -- so a normal boot is byte-for-byte unchanged. On hardware
+// whose firmware console is not a legacy 0x3f8 port (e.g. the AtomicPi's Intel
+// LPSS / DesignWare 8250 UART: MMIO-mapped, 32-bit registers spaced 4 bytes
+// apart), SysReg parses the ACPI SPCR table and calls sysdebug_console_uart_set
+// to retarget every subsequent byte of serial output at the real UART.
+//
+//   is_mmio   0 = x86 port I/O (inb/outb); 1 = memory-mapped
+//   base      I/O port (PIO), or an already-mapped *virtual* base (MMIO)
+//   reg_shift register stride: register N lives at base + (N << reg_shift)
+//             (0 = legacy/byte-spaced, 2 = a 32-bit DesignWare UART)
+//   access32  MMIO only: 1 = 32-bit register loads/stores, 0 = 8-bit
+void sysdebug_console_uart_set(int is_mmio, uint64_t base, int reg_shift, int access32);
+
+// Program the current console UART for 115200 8N1, FIFOs on, polled. Call once
+// early (SysDebug's init_serial_debug does) so serial output is at a known baud
+// rather than whatever the firmware/bootloader hand-off happened to leave.
+void csmux_uart_init(void);
+
+// Low-level console-UART byte I/O, shared by the default CSMUX transport, the
+// unframed log path, and the debug shell. csmux_uart_putb blocks until the TX
+// holding register is empty; csmux_uart_getb is non-blocking and returns the
+// next byte or -1 when the RX FIFO is empty.
+void csmux_uart_putb(uint8_t b);
+int csmux_uart_getb(void);
+
+// Pump the console-UART receiver: read any bytes currently available, run the
 // de-framer, and route complete frames into per-channel receive rings.
 // Non-blocking. Returns the number of raw bytes consumed.
 int csmux_recv_byte_pump(void);

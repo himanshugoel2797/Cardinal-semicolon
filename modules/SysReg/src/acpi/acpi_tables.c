@@ -10,6 +10,7 @@
 #include "acpi/fadt.h"
 #include "acpi/hpet.h"
 #include "acpi/mcfg.h"
+#include "acpi/spcr.h"
 
 #include "registry.h"
 #include "SysVirtualMemory/vmem.h"
@@ -319,6 +320,56 @@ int acpi_init()
 
             if (registry_addkey_uint("HW/HPET", "MINIMUM_TICK", hpet->MinimumTick) != CS_OK)
                 return -16;
+        }
+    }
+
+    {
+        SPCR *spcr = ACPITables_FindTable(SPCR_SIG);
+
+        // SPCR is optional (absent on QEMU). When present it names the firmware's
+        // console UART. We publish + log it for diagnostics but DELIBERATELY DO NOT
+        // retarget the console onto it: on the AtomicPi the SPCR UART is the Intel
+        // LPSS / DesignWare 8250, whose reference clock differs from the legacy
+        // 16550. Inheriting its divisor (we don't reprogram baud) makes Cardinal
+        // transmit at the wrong rate -- observed as a ~1/3-speed corrupt stream over
+        // the serial bridge. The legacy 0x3f8 COM1 path works at 115200 on that
+        // board (GRUB uses it), so the console stays on COM1. Driving the LPSS UART
+        // correctly needs its baud divisor reprogrammed for its own clock; until
+        // that is implemented, sysdebug_console_uart_set stays available but unused
+        // here. The values logged/published below are exactly what such a fix needs.
+        if (spcr != NULL && spcr != (SPCR *)-1)
+        {
+            uint8_t space = spcr->base_address.address_space_id;
+            uint8_t access = spcr->base_address.reserved; // ACPI AccessSize
+            uint64_t phys = spcr->base_address.address;
+            int is_mmio = (space == ACPI_GAS_SPACE_MEM);
+            // Diagnostic only: the register stride a DW/LPSS 8250 would need
+            // (8-bit regs in 32-bit slots => stride 4) if/when we drive it.
+            int reg_shift = (is_mmio && access == ACPI_GAS_ACCESS_DWORD) ? 2 : 0;
+
+            if (registry_createdirectory("HW", "SPCR") != CS_OK)
+                return -17;
+            if (registry_addkey_uint("HW/SPCR", "INTERFACE_TYPE", spcr->interface_type) != CS_OK)
+                return -18;
+            if (registry_addkey_uint("HW/SPCR", "SPACE_ID", space) != CS_OK)
+                return -19;
+            if (registry_addkey_uint("HW/SPCR", "ACCESS_SIZE", access) != CS_OK)
+                return -20;
+            if (registry_addkey_uint("HW/SPCR", "ADDRESS", phys) != CS_OK)
+                return -21;
+            registry_addkey_uint("HW/SPCR", "REG_SHIFT", reg_shift);
+            registry_addkey_uint("HW/SPCR", "MMIO", is_mmio);
+            registry_addkey_uint("HW/SPCR", "BAUD_CODE", spcr->baud_rate);
+
+            DEBUG_PRINT("[SPCR] console UART space=");
+            print_uint64(space, 16);
+            DEBUG_PRINT(" access=");
+            print_uint64(access, 16);
+            DEBUG_PRINT(" phys=");
+            print_uint64(phys, 16);
+            DEBUG_PRINT(" baudcode=");
+            print_uint64(spcr->baud_rate, 16);
+            DEBUG_PRINT(" (diagnostic only; console stays on COM1 0x3f8)\r\n");
         }
     }
 
