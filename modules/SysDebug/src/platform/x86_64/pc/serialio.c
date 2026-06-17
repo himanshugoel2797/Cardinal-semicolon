@@ -149,14 +149,16 @@ int WEAK print_str(const char *s)
     if (fbuf != NULL)
         for (const char *r = s; *r != 0; r++)
             render_char(*r);
-    // Once CSMUX is active over the (light) COM1 mux, the debug log rides
-    // CSMUX_CH_LOG so the host can demux it from the control/GDB channels. Over a
-    // heavy transport (FTDI/USB) the log would saturate the single link and bury
-    // the handshake, so it stays on COM1 (raw) while control + GDB ride the link.
-    // csmux_raw_write always targets COM1 and shares CSMUX's TX lock, so raw and
-    // framed output never interleave into a corrupt frame.
-    if (csmux_active() && !csmux_xport_heavy())
-        csmux_send(CSMUX_CH_LOG, s, (uint32_t)strlen(s));
+    // Once CSMUX is active, the debug log rides CSMUX_CH_LOG over whatever the one
+    // link is -- COM1 or a USB-serial adapter -- so a board whose only serial is a
+    // USB-to-serial dongle still gets the log, alongside control (ch1) and GDB
+    // (ch2), demuxed by the host. Before activation (or when CSMUX is off) it is
+    // raw bytes on COM1, as on a normal boot. csmux_send / csmux_raw_write share
+    // the TX lock so raw and framed output never interleave into a corrupt frame,
+    // and csmux_send drops a frame re-entered from inside the transport write
+    // (a log emitted mid-USB-transfer) rather than deadlocking.
+    if (csmux_active())
+        csmux_log_append(s, (uint32_t)strlen(s));
     else
         csmux_raw_write(s, (uint32_t)strlen(s));
     //print_stream(serial_output, SET_BLACK_BG SET_WHITE_FG);

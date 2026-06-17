@@ -160,11 +160,13 @@ whole mux rides that one link. The SysTest runner waits briefly for such a link 
 enumerate before the handshake, then uses it; if none appears it stays on COM1.
 Link selection is automatic; the only knob is the `cardinal.harness` token.
 
-Because a USB link's per-write cost is a full transfer, the high-volume debug log
-is **kept on COM1** over a heavy (FTDI) transport; only the low-rate control (ch1)
-and GDB (ch2) channels ride the USB link (otherwise the log floods and buries the
-handshake). On a single-FTDI-link board the log is therefore on COM1 (attach it if
-available); control + death tests + GDB work over the one USB link.
+All three channels — log (ch0), control (ch1), GDB (ch2) — ride the one link, so
+a board whose only serial is a USB-to-serial dongle gets everything over it. The
+debug log is high-volume, so it is **coalesced**: log bytes are buffered and
+flushed as a few large CH_LOG frames (auto-flush when full, before any control/GDB
+frame, and via `csmux_log_flush`) instead of one USB transfer per line. Without
+that, the per-transfer latency of a line-per-frame log over USB starves the
+low-rate control channel and the handshake never completes.
 
 Drive it from the host either against QEMU's emulated FTDI:
 

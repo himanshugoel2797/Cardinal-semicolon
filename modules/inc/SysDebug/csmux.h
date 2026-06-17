@@ -56,13 +56,21 @@ void csmux_set_transport(const csmux_transport_t *t);
 void csmux_activate(void);
 bool csmux_active(void);
 
-// True when the active transport is a "heavy" one (a custom transport such as
-// FTDI/USB, where each write is a USB transfer). The debug log is kept off such a
-// link -- its volume would saturate the link and bury the low-rate control/GDB
-// channels -- so print_str routes the log to COM1 instead while control (ch1) and
-// GDB (ch2) ride the single link. (On the default COM1 transport this is false
-// and the log rides CSMUX ch0 as normal.)
+// True once a custom (non-default-COM1) transport has been installed -- i.e. a
+// USB-serial adapter has been bound as the link. SysTest uses this to wait for an
+// FTDI link to enumerate before the handshake, so the mux rides that single link.
 bool csmux_xport_heavy(void);
+
+// Append debug-log bytes to the coalescing buffer (CSMUX_CH_LOG). The log is
+// high-volume, so instead of a frame (a USB transfer) per line it is batched and
+// flushed as a few large frames -- otherwise per-line transfer latency over a USB
+// link starves the low-rate control/GDB channels sharing the single link. The
+// buffer auto-flushes when full, before any control/GDB frame, and via
+// csmux_log_flush(). print_str routes the log here once CSMUX is active.
+void csmux_log_append(const void *buf, uint32_t len);
+
+// Flush any buffered log now (e.g. periodically, and before a death is reported).
+void csmux_log_flush(void);
 
 // Send one whole frame on `chan`. Emitted atomically with respect to other
 // senders and safe to call from cli()/trap context (busy-polled TX, no IRQ/DMA,
