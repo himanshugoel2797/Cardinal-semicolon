@@ -58,17 +58,18 @@ static void test_alloc_32bit(test_ctx_t *ctx) {
 
 // An allocation request larger than all installed RAM must fail cleanly with
 // the PHYSMEM_NO_ALLOC sentinel rather than returning a bogus address or
-// faulting. 64 GiB is far beyond any CI/QEMU memory size yet its page count
-// (16 Mi pages) still fits the allocator's int32 page counter, so the free-list
-// scan terminates and returns the sentinel deterministically.
+// faulting. 512 TiB is beyond any conceivable physical memory, so this is OOM on
+// every machine. (It also exercises the >8 TiB path where the page count exceeds
+// 32 bits: the allocator uses a 64-bit pg_cnt so this fails as OOM instead of
+// wrapping to a tiny count and spuriously succeeding.)
 static void test_alloc_oom(test_ctx_t *ctx) {
     uintptr_t addr =
-        physmem_alloc(0, 0, physmem_alloc_flags_data, GiB(64));
+        physmem_alloc(0, 0, physmem_alloc_flags_data, TiB(512));
     TEST_CHECK_EQ_U(ctx, addr, PHYSMEM_NO_ALLOC);
     // Defensive: if a buggy allocator ever did hand back a non-sentinel address
     // for an impossible request, return it so the pool isn't permanently leaked.
     if (addr != PHYSMEM_NO_ALLOC)
-        physmem_free(addr, GiB(64));
+        physmem_free(addr, TiB(512));
 }
 
 // physmem_alloc rounds the requested size up to a whole BTM_LEVEL page

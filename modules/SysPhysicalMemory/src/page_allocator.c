@@ -167,9 +167,11 @@ uintptr_t physmem_alloc(int domain, int color, physmem_alloc_flags_t flags,
     // Thus, change the page increment appropriately
     // Coloring only matters for single page allocations of cache age size
 
-    // allocations are multiples of BTM_LEVEL pages
+    // allocations are multiples of BTM_LEVEL pages. pg_cnt is 64-bit: a request
+    // so large it would overflow a 32-bit page count (> ~8 TiB) must still fail
+    // cleanly as OOM, not wrap to a tiny/zero count and spuriously "succeed".
     size = ALIGN_UP(size, BTM_LEVEL);
-    int32_t pg_cnt = size / BTM_LEVEL;
+    uint64_t pg_cnt = size / BTM_LEVEL;
 
     // dequeue and enqueue until a unit large enough for this allocation is found
     for (int32_t j = 0; j < 2; j++) {
@@ -193,10 +195,10 @@ uintptr_t physmem_alloc(int domain, int color, physmem_alloc_flags_t flags,
                     continue;
                 }
 
-            if ((int32_t)GET_PG_CNT(deq) >= pg_cnt) {
+            if ((uint64_t)GET_PG_CNT(deq) >= pg_cnt) {
                 uint64_t ret_addr = GET_ADDR(deq);
                 uint64_t n_addr = ret_addr + pg_cnt * BTM_LEVEL;
-                int32_t n_pg_cnt = GET_PG_CNT(deq) - pg_cnt;
+                int32_t n_pg_cnt = (int32_t)(GET_PG_CNT(deq) - pg_cnt);
                 if (n_pg_cnt > 0)
                     insert_queue_front(BUILD_ENTRY(n_addr, n_pg_cnt));
 
