@@ -245,7 +245,12 @@ void timer_timeout_start(timer_timeout_t *t, uint64_t ns)
         uint64_t whole = ns / 1000000000ULL;
         uint64_t frac = ns % 1000000000ULL;
         t->timed = 1;
-        t->deadline = timer_timestamp() + whole * rate + (frac * rate) / 1000000000ULL;
+        // Round the fractional-second tick count UP: otherwise a sub-tick
+        // timeout (e.g. US(500) on a low-rate counter) truncates to 0 ticks,
+        // making the deadline equal to "now" so the timeout reports expired
+        // immediately and busywaits don't actually wait.
+        uint64_t frac_ticks = (frac * rate + 999999999ULL) / 1000000000ULL;
+        t->deadline = timer_timestamp() + whole * rate + frac_ticks;
         t->spin = 0;
         t->spin_cap = 0;
     }
@@ -275,6 +280,8 @@ void timer_busywait_ns(uint64_t ns)
         ;
 }
 
+void systimer_register_tests(void);
+
 int module_init()
 {
     // Reserve a per-core TLS slot for the periodic timer_wait() fallback state,
@@ -286,5 +293,9 @@ int module_init()
     memset(timer_defs, 0, sizeof(timer_defs_t) * timer_def_cnt);
 
     int err = timer_platform_init();
-    return err;
+    if (err != 0)
+        return err;
+
+    systimer_register_tests();
+    return 0;
 }

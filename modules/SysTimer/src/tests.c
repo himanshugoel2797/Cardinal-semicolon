@@ -1,0 +1,138 @@
+// Copyright (c) 2026 Himanshu Goel
+//
+// This software is released under the MIT License.
+// https://opensource.org/licenses/MIT
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <types.h>
+
+#include "SysTimer/timer.h"
+#include "SysTest/test.h"
+
+// The persistent counter (TSC/HPET) must be calibrated for any sane time source.
+static void test_counter_rate_nonzero(test_ctx_t *ctx)
+{
+    TEST_CHECK_MSG(ctx, timer_counter_rate() > 0,
+                   "timer_counter_rate() must be > 0");
+}
+
+// A readable counter must be present so timestamps are meaningful.
+static void test_timestamp_available(test_ctx_t *ctx)
+{
+    TEST_CHECK_MSG(ctx, timer_timestamp_ns() != TIMER_NO_COUNTER,
+                   "timer_timestamp_ns() must not be TIMER_NO_COUNTER");
+}
+
+// Timestamps must never go backwards.
+static void test_timestamp_monotonic(test_ctx_t *ctx)
+{
+    uint64_t t0 = timer_timestamp_ns();
+    uint64_t t1 = timer_timestamp_ns();
+    TEST_CHECK_MSG(ctx, t1 >= t0,
+                   "timer_timestamp_ns() must be monotonic");
+}
+
+// A started timeout must terminate AND actually wait roughly the requested
+// duration -- i.e. it must not fire immediately (the original "expired after the
+// loop" check was trivially true). We verify the elapsed time over the whole
+// wait rather than snapshotting expired() right after start: under TCG the TSC
+// advances in large jumps between two reads, so a single-read "not expired yet"
+// check is inherently racy, whereas the total elapsed time is stable.
+static void test_timeout_terminates(test_ctx_t *ctx)
+{
+    const uint64_t req = MS(10);
+    uint64_t t0 = timer_timestamp_ns();
+
+    timer_timeout_t t;
+    timer_timeout_start(&t, req);
+    while (!timer_timeout_expired(&t))
+        ;
+
+    uint64_t t1 = timer_timestamp_ns();
+    // The loop terminated and now reports expired.
+    TEST_CHECK_MSG(ctx, timer_timeout_expired(&t),
+                   "timeout must be expired after busy-wait loop exits");
+    // It must have waited close to the requested duration; a deadline that
+    // truncated to "now" would exit with ~0 elapsed. Allow half the request as
+    // slack for rounding and counter granularity. Only meaningful with a
+    // calibrated counter.
+    if (timer_timestamp_ns() != TIMER_NO_COUNTER)
+        TEST_CHECK_MSG(ctx, (t1 - t0) >= req / 2,
+                       "timeout fired far earlier than the requested duration");
+}
+
+// A short busy-wait must complete without hanging or faulting, and must
+// actually stall for at least the requested duration.
+static void test_busywait_smoke(test_ctx_t *ctx)
+{
+    // Only assert an elapsed lower-bound when a calibrated counter is present;
+    // without one, timer_timestamp_ns() returns TIMER_NO_COUNTER and the delta
+    // arithmetic is meaningless.
+    int has_counter = (timer_timestamp_ns() != TIMER_NO_COUNTER);
+    uint64_t requested_ns = US(1);  // 1 µs -- small but unambiguous
+    uint64_t t0 = timer_timestamp_ns();
+    timer_busywait_ns(requested_ns);
+    uint64_t t1 = timer_timestamp_ns();
+    TEST_CHECK_MSG(ctx, !has_counter || t1 >= t0,
+                   "timer_busywait_ns() returned and time did not regress");
+    TEST_CHECK_MSG(ctx, !has_counter || (t1 - t0) >= requested_ns,
+                   "timer_busywait_ns() must stall at least the requested duration");
+}
+
+void systimer_register_tests(void)
+{
+    if (!test_mode_active())
+        return;
+
+    {
+        test_def_t t = {
+            .suite = "SysTimer",
+            .name = "counter_rate_nonzero",
+            .fn = test_counter_rate_nonzero,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "SysTimer",
+            .name = "timestamp_available",
+            .fn = test_timestamp_available,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "SysTimer",
+            .name = "timestamp_monotonic",
+            .fn = test_timestamp_monotonic,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "SysTimer",
+            .name = "timeout_terminates",
+            .fn = test_timeout_terminates,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+    {
+        test_def_t t = {
+            .suite = "SysTimer",
+            .name = "busywait_smoke",
+            .fn = test_busywait_smoke,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+}
