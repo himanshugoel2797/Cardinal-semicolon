@@ -110,6 +110,38 @@ int rtl8169_tx(void *state, void *packet, int len, network_device_tx_flags_t gso
     return 0;
 }
 
+//Indirect MII (PHY) register write through PHYAR (0x60). Writes
+//(reg<<16)|(data)|BUSY, then polls until the NIC clears BUSY (write done),
+//bounded by a wall-clock timeout so a wedged PHY can't hang boot. Matches the
+//BSD re_gmii_writereg sequence.
+static void rtl8169_phy_write(rtl8169_state_t *state, int reg, uint16_t data)
+{
+    //memar is volatile, but the int-cast strips it; use a volatile pointer so
+    //the poll below actually re-reads the register each iteration.
+    volatile uint32_t *phyar = (volatile uint32_t *)&state->memar[PHYAR_REG];
+    *phyar = ((uint32_t)reg << 16) | ((uint32_t)data & PHYAR_DATA) | PHYAR_BUSY;
+
+    timer_timeout_t to;
+    timer_timeout_start(&to, MS(20));
+    while (*phyar & PHYAR_BUSY)
+    {
+        if (timer_timeout_expired(&to))
+        {
+            DEBUG_PRINT("[RTL8169] PHY write timed out.\r\n");
+            return;
+        }
+    }
+    timer_wait(US(20));  //BSD waits ~20us after each MII access settles
+}
+
+//Wake the PHY: select page 0, then clear power-down. Without this a
+//powered-down PHY never links. RL_FLAG_PHYWAKE in the BSD drivers.
+static void rtl8169_phy_wake(rtl8169_state_t *state)
+{
+    rtl8169_phy_write(state, 0x1F, 0);  //select PHY page 0
+    rtl8169_phy_write(state, 0x0E, 0);  //clear power-down
+}
+
 static network_device_desc_t device_desc = {
     .name = "RTL8169",
     .features = 0,
@@ -125,6 +157,18 @@ static network_device_desc_t device_desc = {
 //Setup this device
 int rtl8169_init(rtl8169_state_t *state)
 {
+    //Sanity-check the MMIO mapping before resetting: read CMD_REG and the
+    //TXCFG hwrev. If the BAR is wrong/decode is off these read back as 0xFF /
+    //0xFFFFFFFF, which is the tell-tale of "reset never clears".
+    {
+        char tmpbuf[12];
+        DEBUG_PRINT("[RTL8169] pre-reset CMD=0x");
+        DEBUG_PRINT(itoa(state->memar[CMD_REG], tmpbuf, 16));
+        DEBUG_PRINT(" TXCFG=0x");
+        DEBUG_PRINT(itoa(*(uint32_t *)&state->memar[TX_CFG_REG], tmpbuf, 16));
+        DEBUG_PRINT("\r\n");
+    }
+
     //Reset, bounded by a real wall-clock timeout so a wedged/absent NIC can't
     //hang boot. The reset bit self-clears within microseconds on real hardware.
     state->memar[CMD_REG] = CMD_RST_VAL;
@@ -140,6 +184,22 @@ int rtl8169_init(rtl8169_state_t *state)
             }
         }
     }
+
+    //Identify the chip from the hwrev field of TXCFG (0x40). Informational, but
+    //the value tells us which init quirks apply (this driver targets the
+    //RTL8111G/8168G path; QEMU does not emulate an 8168).
+    uint32_t hwrev = *(uint32_t *)&state->memar[TX_CFG_REG] & HWREV_MASK;
+    {
+        char tmpbuf[12];
+        DEBUG_PRINT("[RTL8169] Chip hwrev: 0x");
+        DEBUG_PRINT(itoa(hwrev, tmpbuf, 16));
+        if (hwrev == HWREV_8168G)
+            DEBUG_PRINT(" (RTL8168G)");
+        DEBUG_PRINT("\r\n");
+    }
+
+    //Wake the PHY (page 0 + clear power-down) so the link can come up.
+    rtl8169_phy_wake(state);
 
     //Allocate physical memory for the network buffers
     uintptr_t buffer_phys = physmem_alloc(0, 0, physmem_alloc_flags_data, RX_BUFFER_SIZE + TX_BUFFER_SIZE);
@@ -186,7 +246,12 @@ int rtl8169_init(rtl8169_state_t *state)
     for (int i = 0; i < 6; i++)
         device_desc.mac[i] = state->memar[MAC_REG(i)];
 
-    *(uint16_t *)(&state->memar[0x00e0]) |= 3;
+    //Configure the "C+" command register FIRST (both BSD drivers: "we must
+    //configure the C+ register before all others"). The 8168G value enables
+    //C+ mode with PCI multi-rd/wr + RX checksum + MAC-statistics-disable; it
+    //does NOT set the legacy per-chip RX/TX-enable bits (those are implied on
+    //the newer MAC and the real RX/TX enable happens via CMD_REG below).
+    *(uint16_t *)(&state->memar[CPLUS_CMD_REG]) = CPLUS_8168G_VAL;
 
     //Configure the NIC
     state->memar[_93C56_CMD] = _93C56_UNLOCK; //Unlock config area
@@ -200,8 +265,10 @@ int rtl8169_init(rtl8169_state_t *state)
         //TODO: Newer chips don't need the TX to be on before configuring
         //state->memar[CMD_REG] = CMD_TX_EN | CMD_RX_EN; 
 
-        //Configure RX, no minimum rx size, unlimited burst size, accept all packets
-        *(uint32_t *)(&state->memar[RCR_REG]) = (7 << 13) | (7 << 8) | (1 << 5) | (1 << 4) | (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
+        //Configure RX: no FIFO threshold, unlimited DMA burst, EarlyOff-V2
+        //(via RCR_BASE_CONFIG), accept all packet types (allphys/match/multi/
+        //broad/runt/err = low 6 bits).
+        *(uint32_t *)(&state->memar[RCR_REG]) = RCR_BASE_CONFIG | (1 << 5) | (1 << 4) | (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
         
         //Configure TX, maximum transmit rate, unlimited burst size
         *(uint32_t *)(&state->memar[TX_CFG_REG]) = (3 << 24) | (7 << 8);
