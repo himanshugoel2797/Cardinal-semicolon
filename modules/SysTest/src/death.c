@@ -29,6 +29,15 @@ static struct {
 void systest_death_set_harness_mode(bool on) { g_harness_mode = on; }
 bool systest_death_harness_mode(void) { return g_harness_mode; }
 
+// Optional wall-clock source (SysTimer), resolved at handshake time. Used to
+// bound the handshake by real time rather than by a poll-iteration count: over a
+// USB-serial link each idle poll is a full USB round-trip, so an iteration budget
+// would translate to a wildly transport-dependent wall-clock timeout.
+static uint64_t (*g_now_ns)(void) = NULL;
+#ifndef TIMER_NO_COUNTER
+#define TIMER_NO_COUNTER ((uint64_t)-1)
+#endif
+
 // ---- tiny text builders (no libc printf in kernel space) --------------------
 
 static char *append_str(char *p, char *end, const char *s) {
@@ -94,12 +103,22 @@ void systest_ctrl_begin(int cursor, const char *suite, const char *name, int exp
 // ---- control-channel receive (bounded) --------------------------------------
 
 // Read one '\n'-terminated line from CH_CTRL into buf. Returns length (excl.
-// NUL) or -1 on timeout. `spin_budget` bounds consecutive empty polls so this
-// can never hang the run if no harness is listening.
-static int ctrl_read_line(char *buf, uint32_t cap, uint32_t spin_budget) {
+// NUL) or -1 on timeout. Bounded by `timeout_ms` of wall-clock when a timer is
+// available, else by `spin_budget` consecutive empty polls -- either way this can
+// never hang the run if no harness is listening.
+static int ctrl_read_line(char *buf, uint32_t cap, uint32_t spin_budget, uint32_t timeout_ms) {
     uint32_t pos = 0;
     uint32_t idle = 0;
-    while (idle < spin_budget) {
+    uint64_t deadline = 0;
+    bool have_clock = false;
+    if (g_now_ns != NULL) {
+        uint64_t now = g_now_ns();
+        if (now != TIMER_NO_COUNTER) {
+            have_clock = true;
+            deadline = now + (uint64_t)timeout_ms * 1000000ull;
+        }
+    }
+    for (;;) {
         char c;
         int n = csmux_chan_read(CSMUX_CH_CTRL, &c, 1);
         if (n == 1) {
@@ -112,13 +131,17 @@ static int ctrl_read_line(char *buf, uint32_t cap, uint32_t spin_budget) {
             }
             if (pos < cap - 1)
                 buf[pos++] = c;
-        } else {
-            idle++;
-            for (volatile int d = 0; d < 64; d++)
-                ; // brief pause between polls
+            continue;
         }
+        if (have_clock) {
+            if (g_now_ns() >= deadline)
+                return -1;
+        } else if (++idle >= spin_budget) {
+            return -1;
+        }
+        for (volatile int d = 0; d < 64; d++)
+            ; // brief pause between polls
     }
-    return -1;
 }
 
 // Parse the integer following `key` (e.g. "cursor=") in `s`; -1 if not found.
@@ -140,7 +163,40 @@ static int parse_int_after(const char *s, const char *key) {
     return neg ? -v : v;
 }
 
+// Give USB enumeration a chance to bind a "heavy" transport (an FTDI USB-serial
+// adapter) before the handshake, so the mux rides that single link rather than
+// COM1. Bounded by `timeout_ms`; returns immediately once a heavy transport
+// appears, and is a harmless short wait when none will (COM1-only runs).
+static void wait_for_heavy_transport(uint32_t timeout_ms) {
+    if (csmux_xport_heavy())
+        return;
+    uint64_t deadline = 0;
+    bool have_clock = (g_now_ns != NULL) && (g_now_ns() != TIMER_NO_COUNTER);
+    if (have_clock)
+        deadline = g_now_ns() + (uint64_t)timeout_ms * 1000000ull;
+    uint32_t spins = 0;
+    while (!csmux_xport_heavy()) {
+        if (have_clock) {
+            if (g_now_ns() >= deadline)
+                return;
+        } else if (++spins >= 2000000u) {
+            return;
+        }
+        for (volatile int d = 0; d < 256; d++)
+            ;
+    }
+}
+
 bool systest_death_handshake(int death_count, int *cursor) {
+    // Resolve a wall-clock source so the handshake timeout is real-time bounded
+    // regardless of the link (COM1 polls are cheap; FTDI polls are USB round-trips).
+    if (g_now_ns == NULL)
+        g_now_ns = (uint64_t (*)(void))elf_resolvefunction("timer_timestamp_ns");
+
+    // Let an FTDI link enumerate so we mux over it instead of COM1 (real HW path).
+    // Bounded; harmless when no USB-serial is present (COM1-only runs).
+    wait_for_heavy_transport(3000 /* ms */);
+
     csmux_activate();
 
     char hello[64];
@@ -152,7 +208,7 @@ bool systest_death_handshake(int death_count, int *cursor) {
     systest_ctrl_send(hello);
 
     char line[256];
-    int n = ctrl_read_line(line, sizeof(line), 4000000);
+    int n = ctrl_read_line(line, sizeof(line), 4000000, 4000 /* ms */);
     if (n < 0)
         return false;
     if (strncmp(line, "OLEH", 4) != 0)

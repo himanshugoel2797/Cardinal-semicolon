@@ -31,11 +31,38 @@
 
 #define CSMUX_MAX_PAYLOAD 1024u
 
-// Switch COM1 into framed mode. Emits a raw "[[CSMUX-START v1]]" banner first so
-// the host demuxer has an unambiguous raw->framed sync point (and re-sync after
-// each reboot). Idempotent. After this, print_str routes the log onto CH_LOG.
+// Pluggable byte transport. CSMUX defaults to polled COM1, but on real hardware
+// the only link may be a USB-serial (FTDI) adapter; usb_serial registers itself
+// as the transport so the whole mux rides that one link. `write` must deliver the
+// whole frame atomically (one call) and `getb` returns the next received byte or
+// -1 if none (non-blocking). NEITHER callback may emit to the debug log
+// (print_str), or it would re-enter csmux_send under its own lock -- the COM1 and
+// FTDI transports honour this (the USB transfer path takes no logging under its
+// controller lock).
+typedef struct {
+    void (*write)(void *state, const uint8_t *buf, uint32_t len);
+    int (*getb)(void *state); // next byte, or -1 if none (non-blocking)
+    void *state;
+} csmux_transport_t;
+
+// Replace the active byte transport (default: COM1). Call before csmux_activate
+// (e.g. from a USB-serial driver's probe). The descriptor is copied.
+void csmux_set_transport(const csmux_transport_t *t);
+
+// Switch the active link into framed mode. Emits a raw "[[CSMUX-START v1]]"
+// banner first so the host demuxer has an unambiguous raw->framed sync point (and
+// re-sync after each reboot). Idempotent. After this, print_str routes the log
+// onto CH_LOG.
 void csmux_activate(void);
 bool csmux_active(void);
+
+// True when the active transport is a "heavy" one (a custom transport such as
+// FTDI/USB, where each write is a USB transfer). The debug log is kept off such a
+// link -- its volume would saturate the link and bury the low-rate control/GDB
+// channels -- so print_str routes the log to COM1 instead while control (ch1) and
+// GDB (ch2) ride the single link. (On the default COM1 transport this is false
+// and the log rides CSMUX ch0 as normal.)
+bool csmux_xport_heavy(void);
 
 // Send one whole frame on `chan`. Emitted atomically with respect to other
 // senders and safe to call from cli()/trap context (busy-polled TX, no IRQ/DMA,
@@ -48,6 +75,11 @@ bool csmux_active(void);
 // death-test body must not be invoked while the TX lock is held -- in practice it
 // never is (test bodies run from the runner, not from inside print_str).
 int csmux_send(uint8_t chan, const void *buf, uint32_t len);
+
+// Unframed write over the active link, serialised by the same lock as
+// csmux_send. print_str's raw (pre-activation) path uses this so raw logging from
+// one core cannot interleave with another core's frame (which would corrupt it).
+void csmux_raw_write(const void *buf, uint32_t len);
 
 // Pump the COM1 receiver: read any bytes currently available, run the
 // de-framer, and route complete frames into per-channel receive rings.

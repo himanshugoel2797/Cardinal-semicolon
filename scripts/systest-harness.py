@@ -296,6 +296,50 @@ class Harness:
         return 0 if passed else 1
 
 
+# Adapter so a real serial tty looks like the unix socket the loop expects
+# (fileno/recv/sendall/setblocking/close). Raw 8N1 at the requested baud.
+class SerialTTY:
+    def __init__(self, dev, baud):
+        import termios
+        self.fd = os.open(dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        a = termios.tcgetattr(self.fd)
+        speed = getattr(termios, "B%d" % baud, termios.B115200)
+        a[0] = 0  # iflag
+        a[1] = 0  # oflag
+        a[3] = 0  # lflag (raw: no echo/canonical/signals)
+        a[2] = (a[2] & ~termios.CSIZE & ~termios.PARENB) | termios.CS8 | termios.CREAD | termios.CLOCAL
+        a[4] = speed  # ispeed
+        a[5] = speed  # ospeed
+        termios.tcsetattr(self.fd, termios.TCSANOW, a)
+
+    def fileno(self):
+        return self.fd
+
+    def setblocking(self, flag):
+        pass  # always non-blocking (O_NONBLOCK)
+
+    def recv(self, n):
+        try:
+            return os.read(self.fd, n)
+        except (BlockingIOError, InterruptedError):
+            return b""
+
+    def sendall(self, b):
+        mv = memoryview(b)
+        while mv:
+            try:
+                k = os.write(self.fd, mv)
+                mv = mv[k:]
+            except (BlockingIOError, InterruptedError):
+                continue
+
+    def close(self):
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser(description="SysTest death-test harness (local only)")
     ap.add_argument("--iso", default="build/ISO/os-harness.iso")
@@ -306,59 +350,97 @@ def main():
     ap.add_argument("--smp", default=os.environ.get("SMP", "2"))
     ap.add_argument("--log", default=os.environ.get("LOG", "build/systest-serial.log"))
     ap.add_argument("--gdb-port", type=int, default=int(os.environ.get("GDB_PORT", "1234")))
+    # Which link the CSMUX mux rides under QEMU: COM1 (default) or an emulated FTDI
+    # USB-serial adapter (`-device usb-serial`), exercising the real-hardware path.
+    ap.add_argument("--link", choices=["com1", "ftdi"],
+                    default=os.environ.get("LINK", "com1"))
+    # Real-hardware mode: talk to an actual serial adapter instead of launching
+    # QEMU (no QEMU monitor, so a hung death test cannot be force-reset -- the
+    # overall timeout aborts the run). The guest must be booted with
+    # "cardinal.test cardinal.harness"; with an FTDI adapter the mux auto-rides it.
+    ap.add_argument("--serial-device", default=os.environ.get("SERIAL_DEVICE"),
+                    help="real tty (e.g. /dev/ttyUSB0); skips QEMU")
+    ap.add_argument("--baud", type=int, default=int(os.environ.get("BAUD", "115200")))
     ap.add_argument("--timeout", type=int, default=int(os.environ.get("TIMEOUT", "600")),
                     help="overall wall-clock budget in seconds")
     ap.add_argument("--death-timeout", type=int, default=int(os.environ.get("DEATH_TIMEOUT", "60")),
                     help="per-death-test budget before forcing a reset")
     args = ap.parse_args()
 
-    if not os.path.exists(args.iso):
-        print("harness: ISO not found: %s (build the 'harness-image' target)" % args.iso, file=sys.stderr)
-        return 2
-
-    tmp = tempfile.mkdtemp(prefix="systest-harness-")
-    serial_path = os.path.join(tmp, "serial.sock")
-    mon_path = os.path.join(tmp, "mon.sock")
-
-    # Harness listens; QEMU connects as client (server=off) -> no startup race.
-    serial_srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    serial_srv.bind(serial_path)
-    serial_srv.listen(1)
-    mon_srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    mon_srv.bind(mon_path)
-    mon_srv.listen(1)
-
-    accel_args = ["-accel", args.accel] if args.accel else []
-    qemu_cmd = [
-        args.qemu,
-        "-machine", args.machine,
-        *accel_args,
-        "-m", args.mem, "-smp", args.smp,
-        "-cdrom", args.iso, "-boot", "d",
-        "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-        # NOTE: deliberately NO -no-reboot, so the guest's 0xCF9 write reboots.
-        "-chardev", "socket,id=cs0,path=%s,server=off" % serial_path,
-        "-serial", "chardev:cs0",
-        "-chardev", "socket,id=mon0,path=%s,server=off" % mon_path,
-        "-mon", "chardev=mon0,mode=readline",
-        "-display", "none",
-    ]
-    print("harness: launching:", " ".join(qemu_cmd), file=sys.stderr)
-    qemu = subprocess.Popen(qemu_cmd)
-
     h = Harness(args)
-    try:
-        serial_srv.settimeout(15)
-        h.serial, _ = serial_srv.accept()
-        mon_srv.settimeout(15)
+    qemu = None
+    tmp = serial_srv = mon_srv = None
+
+    if args.serial_device:
+        # --- real hardware: talk to an actual serial adapter, no QEMU ---
         try:
-            h.monitor, _ = mon_srv.accept()
+            h.serial = SerialTTY(args.serial_device, args.baud)
+        except OSError as e:
+            print("harness: cannot open %s: %s" % (args.serial_device, e), file=sys.stderr)
+            return 2
+        print("harness: driving real serial %s @ %d (no QEMU; hang-reset disabled)"
+              % (args.serial_device, args.baud), file=sys.stderr)
+    else:
+        # --- QEMU: mux over COM1 (default) or an emulated FTDI USB-serial ---
+        if not os.path.exists(args.iso):
+            print("harness: ISO not found: %s (build the 'harness-image' target)" % args.iso, file=sys.stderr)
+            return 2
+
+        tmp = tempfile.mkdtemp(prefix="systest-harness-")
+        serial_path = os.path.join(tmp, "serial.sock")
+        mon_path = os.path.join(tmp, "mon.sock")
+
+        # Harness listens; QEMU connects as client (server=off) -> no startup race.
+        serial_srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        serial_srv.bind(serial_path)
+        serial_srv.listen(1)
+        mon_srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        mon_srv.bind(mon_path)
+        mon_srv.listen(1)
+
+        accel_args = ["-accel", args.accel] if args.accel else []
+        qemu_cmd = [
+            args.qemu,
+            "-machine", args.machine,
+            *accel_args,
+            "-m", args.mem, "-smp", args.smp,
+            "-cdrom", args.iso, "-boot", "d",
+            "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+            # NOTE: deliberately NO -no-reboot, so the guest's 0xCF9 write reboots.
+            "-chardev", "socket,id=mux,path=%s,server=off" % serial_path,
+            "-chardev", "socket,id=mon0,path=%s,server=off" % mon_path,
+            "-mon", "chardev=mon0,mode=readline",
+            "-display", "none",
+        ]
+        if args.link == "ftdi":
+            # The mux rides an emulated FTDI adapter (VID 0x0403); usb_serial binds
+            # it and routes CSMUX onto it. COM1 carries only the pre-mux boot log.
+            com1_log = os.path.join(tmp, "com1.log")
+            qemu_cmd += [
+                "-serial", "file:%s" % com1_log,
+                "-device", "qemu-xhci,id=xhci",
+                "-device", "usb-serial,chardev=mux,bus=xhci.0",
+            ]
+            print("harness: FTDI link; COM1 boot log -> %s" % com1_log, file=sys.stderr)
+        else:
+            # The mux rides COM1 directly.
+            qemu_cmd += ["-serial", "chardev:mux"]
+
+        print("harness: launching:", " ".join(qemu_cmd), file=sys.stderr)
+        qemu = subprocess.Popen(qemu_cmd)
+
+        try:
+            serial_srv.settimeout(20)
+            h.serial, _ = serial_srv.accept()
+            mon_srv.settimeout(20)
+            try:
+                h.monitor, _ = mon_srv.accept()
+            except socket.timeout:
+                print("harness: monitor socket not connected (hang-reset disabled)", file=sys.stderr)
         except socket.timeout:
-            print("harness: monitor socket not connected (hang-reset disabled)", file=sys.stderr)
-    except socket.timeout:
-        print("harness: QEMU did not connect to the serial socket", file=sys.stderr)
-        qemu.kill()
-        return 2
+            print("harness: QEMU did not connect to the serial socket", file=sys.stderr)
+            qemu.kill()
+            return 2
 
     h.serial.setblocking(False)
 
@@ -412,7 +494,7 @@ def main():
                     h.gdb_drop()  # EOF
 
             if h.serial not in r:
-                if qemu.poll() is not None:
+                if qemu is not None and qemu.poll() is not None:
                     # QEMU gone (final isa-debug-exit on ALLDONE, or a crash).
                     break
                 continue
@@ -420,8 +502,10 @@ def main():
                 data = h.serial.recv(4096)
             except (BlockingIOError, InterruptedError):
                 continue
+            except OSError:
+                break  # serial device went away
             if not data:
-                if qemu.poll() is not None:
+                if qemu is not None and qemu.poll() is not None:
                     break
                 continue
             for ev in deframer.feed(data):
@@ -440,11 +524,12 @@ def main():
                     elif chan == CH_GDB:
                         h.gdb_to_client(payload)  # forward to the attached debugger
     finally:
-        try:
-            qemu.terminate()
-            qemu.wait(timeout=5)
-        except Exception:
-            qemu.kill()
+        if qemu is not None:
+            try:
+                qemu.terminate()
+                qemu.wait(timeout=5)
+            except Exception:
+                qemu.kill()
         rc = h.finalize()
         for s in (h.serial, h.monitor, h.gdb_client, h.gdb_listener, serial_srv, mon_srv):
             try:
