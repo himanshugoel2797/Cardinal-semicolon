@@ -150,6 +150,44 @@ cmake --build build --target harness-image   # -> build/ISO/os-harness.iso
 `DEATH_TIMEOUT` (per-test), `LOG`, `GDB_PORT`. To debug a paused guest mid-run,
 attach GDB to the tunneled `ch2` (see `notes/debugging-gdb.md`).
 
+### Which serial link the mux rides (auto-detected)
+
+CSMUX has a pluggable byte transport (`csmux_set_transport`, `<SysDebug/csmux.h>`).
+It defaults to **COM1**, but on real hardware the only link is often a USB-serial
+(FTDI) adapter. In harness mode, `drivers/usb_serial` detects the `cardinal.harness`
+token and, on binding an FTDI adapter, registers it as the CSMUX transport — so the
+whole mux rides that one link. The SysTest runner waits briefly for such a link to
+enumerate before the handshake, then uses it; if none appears it stays on COM1.
+Link selection is automatic; the only knob is the `cardinal.harness` token.
+
+Because a USB link's per-write cost is a full transfer, the high-volume debug log
+is **kept on COM1** over a heavy (FTDI) transport; only the low-rate control (ch1)
+and GDB (ch2) channels ride the USB link (otherwise the log floods and buries the
+handshake). On a single-FTDI-link board the log is therefore on COM1 (attach it if
+available); control + death tests + GDB work over the one USB link.
+
+Drive it from the host either against QEMU's emulated FTDI:
+
+```bash
+LINK=ftdi ./scripts/run-deathtests.sh
+# or: python3 scripts/systest-harness.py --link ftdi ...
+```
+
+…or against a real adapter (no QEMU; boot the target with
+`cardinal.test cardinal.harness`):
+
+```bash
+python3 scripts/systest-harness.py --serial-device /dev/ttyUSB0 --baud 115200
+```
+
+**Known QEMU limitation:** with QEMU's `-device usb-serial`, the mux-over-FTDI
+handshake + first death work end-to-end, but the emulated adapter does not
+re-enumerate after the guest's `0xCF9` platform reset, so subsequent death tests
+fall back to COM1 within one QEMU session. A real platform reset re-signals USB
+connect, so multi-death FTDI runs are expected to work on real hardware (the host
+`--serial-device` mode is the path for that); over QEMU, use the COM1 link
+(`run-deathtests.sh` default) for the full multi-death sweep.
+
 CI runs this as a separate `test` job in `.github/workflows/build.yml` — the
 first gate that actually boots the OS rather than only checking that artifacts
 built.

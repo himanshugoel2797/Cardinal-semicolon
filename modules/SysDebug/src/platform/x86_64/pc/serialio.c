@@ -146,17 +146,19 @@ int WEAK print_str(const char *s)
     int state = cli();
     //print_stream(serial_output, SET_RED_BG SET_WHITE_FG);
     log(s);
-    // Once CSMUX is active (harness-driven test run), the debug log rides
-    // CSMUX_CH_LOG so the host can demux it from the control/GDB channels;
-    // otherwise it is raw text on COM1, exactly as on a normal boot.
-    if (csmux_active()) {
-        if (fbuf != NULL)
-            for (const char *r = s; *r != 0; r++)
-                render_char(*r);
+    if (fbuf != NULL)
+        for (const char *r = s; *r != 0; r++)
+            render_char(*r);
+    // Once CSMUX is active over the (light) COM1 mux, the debug log rides
+    // CSMUX_CH_LOG so the host can demux it from the control/GDB channels. Over a
+    // heavy transport (FTDI/USB) the log would saturate the single link and bury
+    // the handshake, so it stays on COM1 (raw) while control + GDB ride the link.
+    // csmux_raw_write always targets COM1 and shares CSMUX's TX lock, so raw and
+    // framed output never interleave into a corrupt frame.
+    if (csmux_active() && !csmux_xport_heavy())
         csmux_send(CSMUX_CH_LOG, s, (uint32_t)strlen(s));
-    } else {
-        print_stream(serial_output, s);
-    }
+    else
+        csmux_raw_write(s, (uint32_t)strlen(s));
     //print_stream(serial_output, SET_BLACK_BG SET_WHITE_FG);
 
     if (fbuf != NULL)

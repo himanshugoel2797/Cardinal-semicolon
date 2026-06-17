@@ -29,7 +29,9 @@
 
 #include "CoreUsb/usb.h"
 #include "SysGdb/gdb.h"  // gdb_transport_t (type only -- no symbol is imported)
+#include "SysDebug/csmux.h"  // CSMUX byte-transport registration (harness mode)
 #include "SysTaskMgr/task.h"
+#include "boot_information.h" // GetBootInfo: detect the harness cmdline token
 #include "symbol_db.h"   // symboldb_findfunc: resolve SysGdb hooks optionally
 
 #define FTDI_VID 0x0403
@@ -112,6 +114,34 @@ static int ftdi_poll(void *state) {
     return ftdi_fill((ftdi_dev_t *)state);
 }
 
+// CSMUX byte-transport callbacks (harness mode). getb is non-blocking: drain the
+// RX ring, pulling one bulk-IN packet if empty, and return -1 when nothing is
+// available. write sends a whole CSMUX frame as bulk-OUT, chunked to the endpoint
+// max packet -- one transfer batch rather than the per-byte transfers a naive
+// putc loop would do. Neither logs (so they never re-enter csmux_send).
+static int ftdi_getb(void *state) {
+    ftdi_dev_t *f = (ftdi_dev_t *)state;
+    if (f->rtail == f->rhead)
+        ftdi_fill(f);
+    if (f->rtail == f->rhead)
+        return -1;
+    uint8_t c = f->ring[f->rtail];
+    f->rtail = (f->rtail + 1) % (int)sizeof(f->ring);
+    return c;
+}
+
+static void ftdi_write(void *state, const uint8_t *buf, uint32_t len) {
+    ftdi_dev_t *f = (ftdi_dev_t *)state;
+    uint32_t off = 0;
+    while (off < len) {
+        int chunk = (int)(len - off);
+        if (chunk > f->out_mps)
+            chunk = f->out_mps;
+        usb_dev_bulk(f->dev, f->out_ep, f->out_mps, (void *)(buf + off), chunk, 0);
+        off += (uint32_t)chunk;
+    }
+}
+
 static void ftdi_ctrl(usb_enum_device_t *dev, uint8_t req, uint16_t val, uint16_t idx) {
     usb_setup_packet_t s = {0x40, req, val, idx, 0};
     usb_dev_control(dev, &s, NULL, 0);
@@ -166,8 +196,25 @@ static int usb_serial_probe(usb_enum_device_t *dev) {
     ftdi_ctrl(dev, FTDI_REQ_SET_MODEM_CTRL, 0x0303, 1);  // DTR+RTS on
     ftdi_ctrl(dev, FTDI_REQ_SET_BAUDRATE, 0x001A, 0);
 
-    // If SysGdb is present, offer this adapter to it as a byte transport and
-    // start the pump that lets GDB's async Ctrl-C break in (USB bulk has no RX
+    // Harness mode (kernel cmdline "cardinal.harness"): this FTDI link is the one
+    // wire the in-OS test harness drives, so route the whole CSMUX mux over it.
+    // GDB then rides CSMUX channel 2 and SysTest's gdb_pump drives async break-in,
+    // so we register no direct GDB transport and start no pump here. This is the
+    // real-hardware path: log + control + GDB all share the single adapter.
+    CardinalBootInfo *bi = GetBootInfo();
+    if (bi != NULL && strstr(bi->Cmdline, "cardinal.harness") != NULL) {
+        csmux_transport_t t = {
+            .write = ftdi_write,
+            .getb = ftdi_getb,
+            .state = &the_ftdi,
+        };
+        csmux_set_transport(&t);
+        DEBUG_PRINT("[usb_serial] FTDI up; routed into CSMUX (harness mode)\r\n");
+        return 0;
+    }
+
+    // Otherwise: if SysGdb is present, offer this adapter to it as a byte transport
+    // and start the pump that lets GDB's async Ctrl-C break in (USB bulk has no RX
     // IRQ). SysGdb owns all GDB protocol; we only provide byte I/O. If SysGdb is
     // absent the adapter just comes up idle.
     resolve_gdb_hooks();
