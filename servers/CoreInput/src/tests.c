@@ -136,11 +136,13 @@ static void test_event_poll(test_ctx_t *ctx)
     TEST_CHECK_EQ_U(ctx, input_device_register(&poll_dev), 0);
 
     // Give the background "core_input_updater" task time to poll the device and
-    // drain its pending events. Poll a bounded number of short sleeps so a
-    // healthy system passes fast and a broken one fails rather than hangs.
+    // drain its pending events. The loop exits as soon as all events are read, so
+    // a healthy system still passes fast; the bound is generous (up to ~1s) so a
+    // slow/loaded CI host (the full ~100-test suite under TCG) doesn't fail this
+    // eventual-delivery check just because the poll task was scheduled less often.
     cs_id self = task_current();
-    for (int i = 0; i < 50 && mock_reads < want; i++)
-        task_sleep(self, MS(2));
+    for (int i = 0; i < 200 && mock_reads < want; i++)
+        task_sleep(self, MS(5));
 
     // The poll task must have driven our device: read() was called for each
     // event we made available, proving the registered device's events flow
