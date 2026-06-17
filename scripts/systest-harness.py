@@ -29,6 +29,7 @@
 import argparse
 import os
 import select
+import shutil
 import socket
 import subprocess
 import sys
@@ -38,6 +39,8 @@ import time
 CH_LOG = 0
 CH_CTRL = 1
 CH_GDB = 2
+
+CSMUX_MAX_PAYLOAD = 1024  # must match modules/inc/SysDebug/csmux.h
 
 SOF = 0x7E
 ESC = 0x7D
@@ -197,12 +200,16 @@ class Harness:
             self.emit("    [gdb] debugger disconnected\n")
 
     # GDB -> guest: frame the raw RSP bytes onto ch2 and write to the serial link.
+    # Split into <= CSMUX_MAX_PAYLOAD chunks: a large GDB write packet (M/X) can
+    # exceed one frame, and the guest deframer drops any oversized frame.
     def gdb_from_client(self, data):
-        if self.serial:
+        if not self.serial:
+            return
+        for i in range(0, len(data), CSMUX_MAX_PAYLOAD):
             try:
-                self.serial.sendall(frame(CH_GDB, data))
+                self.serial.sendall(frame(CH_GDB, data[i:i + CSMUX_MAX_PAYLOAD]))
             except OSError:
-                pass
+                return
 
     # guest -> GDB: forward unframed ch2 payload to the connected debugger.
     def gdb_to_client(self, payload):
@@ -307,7 +314,7 @@ class SerialTTY:
         a[0] = 0  # iflag
         a[1] = 0  # oflag
         a[3] = 0  # lflag (raw: no echo/canonical/signals)
-        a[2] = (a[2] & ~termios.CSIZE & ~termios.PARENB) | termios.CS8 | termios.CREAD | termios.CLOCAL
+        a[2] = (a[2] & ~termios.CSIZE & ~termios.PARENB & ~termios.CSTOPB) | termios.CS8 | termios.CREAD | termios.CLOCAL
         a[4] = speed  # ispeed
         a[5] = speed  # ospeed
         termios.tcsetattr(self.fd, termios.TCSANOW, a)
@@ -484,14 +491,14 @@ def main():
                 try:
                     gdata = h.gdb_client.recv(4096)
                 except (BlockingIOError, InterruptedError):
-                    gdata = b""
+                    gdata = None  # transient (EAGAIN/EINTR): leave the session up
                 except OSError:
-                    gdata = b""
+                    gdata = None
                     h.gdb_drop()
                 if gdata:
                     h.gdb_from_client(gdata)
-                elif h.gdb_client is not None and h.gdb_client in r:
-                    h.gdb_drop()  # EOF
+                elif gdata == b"":
+                    h.gdb_drop()  # clean EOF: debugger closed the connection
 
             if h.serial not in r:
                 if qemu is not None and qemu.poll() is not None:
@@ -537,6 +544,8 @@ def main():
                     s.close()
             except OSError:
                 pass
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     return rc
 
