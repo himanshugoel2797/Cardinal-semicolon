@@ -19,7 +19,7 @@
 #define COM1 ((uint16_t)0x3f8)
 #define COM1_LSR (COM1 + 5)
 
-static bool g_active = false;
+static volatile bool g_active = false;
 static int g_tx_lock = 0; // serialises whole-frame sends across cores
 static int g_rx_lock = 0; // serialises the receive de-framer across cores
 
@@ -371,8 +371,10 @@ void csmux_activate(void) {
     static const char banner[] = "\r\n[[CSMUX-START v1]]\r\n";
     int if_state;
     if (tx_acquire(&if_state)) {
-        g_xport.write(g_xport.state, (const uint8_t *)banner, (uint32_t)(sizeof(banner) - 1));
+        if (!g_active) { // re-check under the lock so the banner is emitted once
+            g_xport.write(g_xport.state, (const uint8_t *)banner, (uint32_t)(sizeof(banner) - 1));
+            g_active = true; // set inside the lock: no window where banner sent but flag clear
+        }
         tx_release(if_state);
     }
-    g_active = true;
 }

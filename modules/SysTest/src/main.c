@@ -25,6 +25,7 @@
 #include "boot_information.h"
 #include "elf.h"
 #include "priv_test.h"
+#include "SysDebug/csmux.h" // csmux_log_flush (direct: SysDebug loads before SysTest)
 
 // ---- registration list -----------------------------------------------------
 
@@ -380,6 +381,7 @@ static void gdb_pump_task(void *a) {
     for (;;) {
         if (g_gdb_poll != NULL)
             g_gdb_poll();
+        csmux_log_flush(); // push out any buffered log so it isn't stuck while idle
         if (g_ops.task_yield != NULL)
             g_ops.task_yield();
     }
@@ -493,7 +495,8 @@ int test_run_all(void) {
             if (g_gdb_poll != NULL && g_ops.resolved_tasks && g_ops.task_yield != NULL) {
                 systest_id_t pid = 0;
                 if (g_ops.task_create("gdb_pump", SYSTEST_PERM_KERNEL, &pid) == CS_OK)
-                    g_ops.task_start(pid, (void *)gdb_pump_task, NULL);
+                    if (g_ops.task_start(pid, (void *)gdb_pump_task, NULL) != CS_OK && g_ops.task_end)
+                        g_ops.task_end(pid); // reap the created-but-unstarted orphan
             }
         }
     }
