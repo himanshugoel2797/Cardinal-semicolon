@@ -49,6 +49,9 @@
 #define CPLUS_RXCSUM (0x0020)
 #define CPLUS_VLANSTRIP (0x0040)
 #define CPLUS_MACSTAT_DIS (0x0080)
+// 8168G C+ command value, matching the BSD `re` drivers. Bit 0 is NOT the
+// legacy TX-enable here: on the MAC-statistics (8168G) path it is an implied
+// magic bit the BSD code sets alongside MACSTAT_DIS, not CPLUS_TXENB.
 #define CPLUS_8168G_VAL (CPLUS_PCI_MRW | CPLUS_RXCSUM | CPLUS_MACSTAT_DIS | 0x0001)
 
 // RXCFG (0x44) base config, matching BSD RL_RXCFG_CONFIG:

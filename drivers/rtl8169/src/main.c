@@ -93,7 +93,7 @@ static uint64_t mmio_used_top(uint64_t ceiling)
     {
         char idx_str[12];
         char key[64] = "HW/PCI/";
-        char *k = strncat(key, itoa(i, idx_str, 10), 63);
+        char *k = strncat(key, itoa(i, idx_str, 16), 56);  //keys are hex (see SysReg/pci.c)
 
         uint64_t ecam = 0;
         if (registry_readkey_uint(k, "ECAM_ADDR", &ecam) != CS_OK || ecam == 0)
@@ -106,6 +106,8 @@ static uint64_t mmio_used_top(uint64_t ceiling)
             if (v & 0x1)
                 continue;                       //I/O BAR
             bool b64 = ((v & 0x6) == 0x4);
+            if (b64 && b + 1 >= 6)
+                break;                           //malformed 64-bit BAR in the last slot
             uint64_t base = v & 0xFFFFFFF0;
             if (b64)
                 base |= ((uint64_t)d->bar[b + 1] << 32);
@@ -153,7 +155,7 @@ static bool open_bridge_window(uint64_t nic_ecam, uint64_t base)
     {
         char idx_str[12];
         char key[64] = "HW/PCI/";
-        char *k = strncat(key, itoa(i, idx_str, 10), 63);
+        char *k = strncat(key, itoa(i, idx_str, 16), 56);  //keys are hex (see SysReg/pci.c)
         uint64_t ecam = 0;
         if (registry_readkey_uint(k, "ECAM_ADDR", &ecam) != CS_OK || ecam == 0)
             continue;
@@ -259,21 +261,15 @@ static uint64_t assign_mmio_bar(pci_config_t *device, uint64_t ecam_phys)
     if (size == 0)
         size = 0x10000;
 
-    //Place just above the highest assigned neighbour BAR, 1MiB-aligned (the
-    //bridge memory window below is 1MiB-granular, so a clean 1MiB slot keeps the
-    //window and the BAR aligned together). If that is unusable (no neighbours,
-    //or it would reach the ceiling), fall back to a fixed address well inside
-    //the Cherry Trail PCIe MMIO window and clear of the observed used region.
+    //Place the BAR 1MiB-aligned just above the highest firmware-assigned MMIO
+    //BAR (the bridge memory window below is 1MiB-granular, so a clean 1MiB slot
+    //keeps the window and the BAR aligned together). This is guaranteed to sit
+    //inside the host-bridge MMIO aperture and clear of the used region. If no
+    //neighbour BARs were found (top==0) or it would reach the ECAM ceiling,
+    //give up rather than guess an address that could alias other MMIO.
     uint64_t top = mmio_used_top(ceiling);
     uint64_t base = (top + 0xFFFFF) & ~0xFFFFFULL;
-    bool fallback = false;
-    if (base == 0 || base + 0x100000 > ceiling)
-    {
-        base = 0xd0000000ULL;
-        fallback = true;
-    }
-
-    if (base == 0 || base + size > ceiling)     //even the fallback is unusable
+    if (top == 0 || base == 0 || base + 0x100000 > ceiling)
     {
         DEBUG_PRINT("[RTL8169] self-assign: no valid placement\r\n");
         device->command.mem_space = 1;
@@ -281,8 +277,15 @@ static uint64_t assign_mmio_bar(pci_config_t *device, uint64_t ecam_phys)
     }
 
     //Open the upstream bridge's memory window FIRST so the address actually
-    //reaches the NIC's bus, then program the NIC's BAR.
-    open_bridge_window(ecam_phys, base);
+    //reaches the NIC's bus. If there's no such bridge, the BAR would be
+    //unreachable (reads return 0xff) -- give up instead of programming a BAR
+    //that decodes nowhere.
+    if (!open_bridge_window(ecam_phys, base))
+    {
+        DEBUG_PRINT("[RTL8169] self-assign: bridge window not opened\r\n");
+        device->command.mem_space = 1;
+        return 0;
+    }
 
     device->bar[idx] = (uint32_t)(base & 0xFFFFFFF0) | type_bits;
     if (is64)
@@ -297,7 +300,7 @@ static uint64_t assign_mmio_bar(pci_config_t *device, uint64_t ecam_phys)
         DEBUG_PRINT(itoa(idx, t, 10));
         DEBUG_PRINT(" @ 0x");
         DEBUG_PRINT(ltoa((long long)base, t, 16));
-        DEBUG_PRINT(fallback ? " (fallback, used_top 0x" : " (above used_top 0x");
+        DEBUG_PRINT(" (above used_top 0x");
         DEBUG_PRINT(ltoa((long long)top, t, 16));
         DEBUG_PRINT("), decode enabled\r\n");
     }
@@ -373,7 +376,14 @@ int module_init(void *ecam_addr)
 
     n_state->memar = (uint8_t *)vmem_phystovirt((intptr_t)bar, KiB(4), vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
 
-    rtl8169_init(n_state);
+    //If the chip won't initialise (reset timeout / OOM) don't start the poll
+    //task or register the interrupt against a half-built state -- just leave the
+    //NIC unavailable (return success so CoreDriver doesn't PANIC).
+    if (rtl8169_init(n_state) != 0)
+    {
+        free(n_state);
+        return 0;
+    }
 
     cs_id rtl_task = 0;
     task_create_kernel("rtl8169_int_poll", task_permissions_kernel, &rtl_task);
