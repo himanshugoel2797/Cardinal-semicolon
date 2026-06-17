@@ -157,18 +157,6 @@ static network_device_desc_t device_desc = {
 //Setup this device
 int rtl8169_init(rtl8169_state_t *state)
 {
-    //Sanity-check the MMIO mapping before resetting: read CMD_REG and the
-    //TXCFG hwrev. If the BAR is wrong/decode is off these read back as 0xFF /
-    //0xFFFFFFFF, which is the tell-tale of "reset never clears".
-    {
-        char tmpbuf[12];
-        DEBUG_PRINT("[RTL8169] pre-reset CMD=0x");
-        DEBUG_PRINT(itoa(state->memar[CMD_REG], tmpbuf, 16));
-        DEBUG_PRINT(" TXCFG=0x");
-        DEBUG_PRINT(itoa(*(uint32_t *)&state->memar[TX_CFG_REG], tmpbuf, 16));
-        DEBUG_PRINT("\r\n");
-    }
-
     //Reset, bounded by a real wall-clock timeout so a wedged/absent NIC can't
     //hang boot. The reset bit self-clears within microseconds on real hardware.
     state->memar[CMD_REG] = CMD_RST_VAL;

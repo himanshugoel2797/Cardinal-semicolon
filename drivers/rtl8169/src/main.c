@@ -11,7 +11,6 @@
 #include <cardinal/local_spinlock.h>
 
 #include "SysVirtualMemory/vmem.h"
-#include "SysPhysicalMemory/phys_mem.h"
 #include "SysReg/registry.h"
 #include "SysTimer/timer.h"
 #include "pci/pci_irq.h"
@@ -117,18 +116,6 @@ static uint64_t mmio_used_top(uint64_t ceiling)
                 uint64_t sz = bar_size((volatile uint32_t *)d->bar, b);
                 d->command.mem_space = ms;
                 uint64_t end = base + sz;
-                {
-                    char t[20];
-                    DEBUG_PRINT("[RTL8169]   dev");
-                    DEBUG_PRINT(itoa((int)i, t, 10));
-                    DEBUG_PRINT(" bar");
-                    DEBUG_PRINT(itoa(b, t, 10));
-                    DEBUG_PRINT(" base=0x");
-                    DEBUG_PRINT(ltoa((long long)base, t, 16));
-                    DEBUG_PRINT(" sz=0x");
-                    DEBUG_PRINT(ltoa((long long)sz, t, 16));
-                    DEBUG_PRINT("\r\n");
-                }
                 //Only let BARs that lie wholly within the sub-4GiB window below
                 //the ceiling raise the top; a mis-sized or high-mapped BAR must
                 //not push the placement out of the usable aperture.
@@ -266,12 +253,10 @@ static uint64_t assign_mmio_bar(pci_config_t *device, uint64_t ecam_phys)
         return 0;
     }
 
-    //Size the chosen BAR; if it won't size (reads back 0 even now) fall back to
-    //64KiB, which comfortably covers the RTL8168 register file, and proceed
-    //anyway so the pre-reset register probe can show whether the BAR responds.
+    //Size the chosen BAR; if it won't report a size, fall back to 64KiB, which
+    //comfortably covers the RTL8168 register file.
     uint64_t size = bar_size((volatile uint32_t *)device->bar, idx);
-    bool sized = (size != 0);
-    if (!sized)
+    if (size == 0)
         size = 0x10000;
 
     //Place just above the highest assigned neighbour BAR, 1MiB-aligned (the
@@ -288,25 +273,9 @@ static uint64_t assign_mmio_bar(pci_config_t *device, uint64_t ecam_phys)
         fallback = true;
     }
 
-    {
-        char t[20];
-        DEBUG_PRINT("[RTL8169] assign: idx=");
-        DEBUG_PRINT(itoa(idx, t, 10));
-        DEBUG_PRINT(is64 ? " 64b" : " 32b");
-        DEBUG_PRINT(sized ? " size=0x" : " size(dflt)=0x");
-        DEBUG_PRINT(ltoa((long long)size, t, 16));
-        DEBUG_PRINT(" used_top=0x");
-        DEBUG_PRINT(ltoa((long long)top, t, 16));
-        DEBUG_PRINT(fallback ? " base(fallback)=0x" : " base=0x");
-        DEBUG_PRINT(ltoa((long long)base, t, 16));
-        DEBUG_PRINT(" ceiling=0x");
-        DEBUG_PRINT(ltoa((long long)ceiling, t, 16));
-        DEBUG_PRINT("\r\n");
-    }
-
     if (base == 0 || base + size > ceiling)     //even the fallback is unusable
     {
-        DEBUG_PRINT("[RTL8169] assign: no valid placement\r\n");
+        DEBUG_PRINT("[RTL8169] self-assign: no valid placement\r\n");
         device->command.mem_space = 1;
         return 0;
     }
@@ -324,11 +293,12 @@ static uint64_t assign_mmio_bar(pci_config_t *device, uint64_t ecam_phys)
 
     {
         char t[20];
-        uint32_t rb = device->bar[idx];         //read back to confirm it stuck
-        DEBUG_PRINT("[RTL8169] BAR assigned @ 0x");
+        DEBUG_PRINT("[RTL8169] self-assigned BAR");
+        DEBUG_PRINT(itoa(idx, t, 10));
+        DEBUG_PRINT(" @ 0x");
         DEBUG_PRINT(ltoa((long long)base, t, 16));
-        DEBUG_PRINT(" (readback bar=0x");
-        DEBUG_PRINT(itoa((int)rb, t, 16));
+        DEBUG_PRINT(fallback ? " (fallback, used_top 0x" : " (above used_top 0x");
+        DEBUG_PRINT(ltoa((long long)top, t, 16));
         DEBUG_PRINT("), decode enabled\r\n");
     }
     return base;
@@ -375,19 +345,11 @@ int module_init(void *ecam_addr)
     uint64_t bar = pci_first_mmio_bar(device);
 
     {
-        char tmpbuf[12];
+        char tmpbuf[20];
         DEBUG_PRINT("[RTL8169] deviceID=0x");
         DEBUG_PRINT(itoa(device->deviceID, tmpbuf, 16));
-        DEBUG_PRINT(" raw bars:");
-        for (int i = 0; i < 6; i++)
-        {
-            DEBUG_PRINT(" ");
-            DEBUG_PRINT(itoa((int)device->bar[i], tmpbuf, 16));
-        }
-        DEBUG_PRINT(" -> mmio_lo=0x");
-        DEBUG_PRINT(itoa((int)bar, tmpbuf, 16));
-        DEBUG_PRINT(" hi=0x");
-        DEBUG_PRINT(itoa((int)(bar >> 32), tmpbuf, 16));
+        DEBUG_PRINT(" mmio bar=0x");
+        DEBUG_PRINT(ltoa((long long)bar, tmpbuf, 16));
         DEBUG_PRINT("\r\n");
     }
 
