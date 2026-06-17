@@ -70,7 +70,12 @@ static int kvs_add_internal(kvs_t *r NULLABLE, const char *key, void *val,
     if (v == NULL)
         return kvs_error_outofmemory;
 
+    // common's strncpy neither pads nor NUL-terminates, and v is malloc'd
+    // (uninitialised), so terminate the key explicitly -- otherwise kvs_get_key's
+    // strnlen() reads past the name into heap garbage and returns a corrupted key
+    // (benign only when the fresh allocation happened to be zero).
     strncpy(v->key, key, key_len);
+    v->key[strnlen(key, key_len - 1)] = '\0';
     v->owner_locked = false;
     v->key_hash = key_hash;
     v->val_type = val_type;
@@ -197,6 +202,7 @@ int kvs_set_key(kvs_t *r NULLABLE, char *key NULLABLE) {
         return kvs_error_invalidargs;
 
     strncpy(r->key, key, key_len);
+    r->key[strnlen(key, key_len - 1)] = '\0'; // terminate: common strncpy does not
     return kvs_ok;
 }
 

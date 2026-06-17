@@ -116,10 +116,11 @@ jobs:
           cmake --build build --target test-image
           test -f build/ISO/os-test.iso
 
-      # No /dev/kvm on GitHub runners, so force TCG and allow a generous timeout
-      # (a full TCG boot of the whole service stack is slow).
+      # No /dev/kvm on GitHub runners, so force TCG and allow a generous timeout.
+      # The whole service stack plus the full in-OS test suite (~100 tests across
+      # every Sys*/Core* module) is slow under TCG, so budget accordingly.
       - name: Run in-OS test suite
-        run: ACCEL=tcg TIMEOUT=300 ./scripts/run-tests-qemu.sh
+        run: ACCEL=tcg TIMEOUT=900 ./scripts/run-tests-qemu.sh
 
       - name: Upload serial log on failure
         if: failure()
