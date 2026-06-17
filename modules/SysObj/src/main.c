@@ -177,12 +177,16 @@ cs_error obj_addkey_str(const char *path, const char *keyname,
     if (err != CS_OK)
         return err;
 
-    storelen = MIN((size_t)MAX_OBJ_STRLEN, strlen(val));
+    // Reserve room for the NUL terminator: kvs stores the bare pointer and
+    // obj_readkey_str does strlen() on it, so the stored copy must be
+    // terminated or the reader runs off the end of the allocation.
+    storelen = MIN((size_t)(MAX_OBJ_STRLEN - 1), strlen(val)) + 1;
     strstore = malloc(storelen);
     if (strstore == NULL)
         return CS_FAILURE;
 
-    strncpy(strstore, val, storelen);
+    strncpy(strstore, val, storelen - 1);
+    strstore[storelen - 1] = '\0';
 
     DEBUG_PRINT("[SysReg] AddKeyStr: ");
     DEBUG_PRINT(path);
@@ -407,8 +411,18 @@ cs_error obj_readkey_str(const char *path, const char *keyname, char *val,
 
     if (val != NULL && val_len != NULL)
     {
-        strncpy(val, strval, *val_len);
-        *val_len = strlen(strval);
+        // common's strncpy stops at the source NUL and neither copies it nor
+        // pads, so terminate the caller's buffer explicitly. Copy at most
+        // cap-1 bytes and report the full source length.
+        size_t cap = *val_len;
+        size_t srclen = strlen(strval);
+        if (cap > 0)
+        {
+            size_t copy = MIN(srclen, cap - 1);
+            strncpy(val, strval, copy);
+            val[copy] = '\0';
+        }
+        *val_len = srclen;
     }
     local_spinlock_unlock(&kern_lock);
     return CS_OK;
@@ -837,8 +851,11 @@ cs_error obj_islocked(dir_t dir, bool *status){
     return CS_OK;
 }
 
+void sysobj_register_tests(void);
+
 int module_init() {
     if (kvs_create(&kern_registry) != kvs_ok)
         PANIC("Failed to initialize object store.");
+    sysobj_register_tests();
     return 0;
 }
