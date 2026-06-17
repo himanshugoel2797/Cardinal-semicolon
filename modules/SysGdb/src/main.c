@@ -93,6 +93,20 @@ void gdb_unregister_transport(const gdb_transport_t *t) {
     DEBUG_PRINT("[SysGdb] GDB channel reverted to COM2\r\n");
 }
 
+// Test-only accessors: the SysTest suite cannot see the static cur_transport,
+// so these let it verify which transport is installed. Not part of the
+// debugging API. gdb_active_transport_getc() returns the active getc pointer
+// (so a test can confirm its own descriptor was actually installed);
+// gdb_default_transport_active() reports whether the built-in COM2 channel is
+// the active one (so a test can confirm a revert really happened).
+void *gdb_active_transport_getc(void) {
+    return (void *)(uintptr_t)cur_transport.getc;
+}
+bool gdb_default_transport_active(void) {
+    return cur_transport.getc == com2_transport.getc &&
+           cur_transport.state == com2_transport.state;
+}
+
 // ---- RSP helpers ----
 static const char hexc[] = "0123456789abcdef";
 
@@ -361,6 +375,10 @@ int gdb_poll_breakin(void) {
     return 0;
 }
 
+// Registered in tests.c; gated by test_mode_active(), so this is free on a
+// normal boot.
+void sysgdb_register_tests(void);
+
 int module_init() {
     com2_init();
     interrupt_register_handler(1, gdb_exception);  // #DB (single-step / hw bp)
@@ -377,5 +395,7 @@ int module_init() {
         outb(COM2 + 1, 0x01);  // IER: received-data-available interrupt
     }
     DEBUG_PRINT("[SysGdb] GDB stub armed on COM2 (vectors 1,3; async Ctrl-C via IRQ3)\r\n");
+
+    sysgdb_register_tests();
     return 0;
 }

@@ -42,4 +42,19 @@ void gdb_unregister_transport(const gdb_transport_t *transport);
 // entire RSP protocol stay owned by SysGdb -- the caller needs no GDB knowledge.
 int gdb_poll_breakin(void);
 
+// ---- Test-only accessors (used by the SysTest suite) ----
+// These expose just enough of the otherwise-private active-transport state for
+// the in-OS tests to verify register/unregister behavior; they are not part of
+// the debugging API and should not be relied on by drivers.
+
+#include <stdbool.h>
+
+// Returns the active transport's getc function pointer (as an opaque void*), so
+// a test can confirm a specific transport was actually installed.
+void *gdb_active_transport_getc(void);
+
+// True iff the built-in COM2 transport is currently the active channel, so a
+// test can confirm a revert to the default really happened.
+bool gdb_default_transport_active(void);
+
 #endif
