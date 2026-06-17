@@ -5,6 +5,8 @@
  * https://opensource.org/licenses/MIT
  */
 
+void sysvirtualmemory_register_tests(void);
+
 int module_init() {
     //virtual memory code is platform specific recursive implementation for 64-bit
     //vmem_map
@@ -19,5 +21,6 @@ int module_init() {
     //TODO: update physical memory code to include task priority flags
 
     //define standard functions which are used to setup the kernel's desired mapping of memory
+    sysvirtualmemory_register_tests();
     return 0;
 }
