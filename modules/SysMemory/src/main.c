@@ -16,7 +16,10 @@ void *stack_alloc(size_t sz, bool kernel) {
 
 int kernel_updatememhandlers();
 
+void sysmemory_register_tests(void);
+
 int module_init() {
+    sysmemory_register_tests();
     return 0;
 }
 
