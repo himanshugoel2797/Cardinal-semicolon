@@ -206,6 +206,13 @@ typedef void (*usb_class_remove_t)(usb_enum_device_t *dev);
 int usb_register_class_driver(uint8_t dev_class, usb_class_probe_t probe,
                               usb_class_remove_t remove);
 
+// Test-only accessors (used by the SysTest suite): return the probe / remove
+// callback currently registered for a class byte, or NULL if none. They let the
+// in-OS tests confirm usb_register_class_driver actually stored the callback in
+// the otherwise-private class table; not part of the class-driver API.
+usb_class_probe_t usb_class_driver_probe(uint8_t dev_class);
+usb_class_remove_t usb_class_driver_remove(uint8_t dev_class);
+
 // Called by a host-controller driver when a (reset, enabled) port reports a new
 // device. CoreUsb performs address assignment + descriptor reads, then dispatches
 // to a matching class driver. `hc_handle` is what usb_register_hostcontroller
