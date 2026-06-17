@@ -1114,7 +1114,7 @@ cs_error task_sleep(cs_id id, uint64_t ns)
     //one. Sleeping another task only marks it; this core keeps running.
     if (is_self)
         task_yield();
-    return CS_UNKN;
+    return CS_OK;
 }
 
 cs_error nanosleep_syscall()
@@ -1256,6 +1256,8 @@ void task_startnew_user(void *elf, size_t elf_len)
     elf_err = task_start_kernel(elf_id, entry_pt, NULL);
 }
 
+void systaskmgr_register_tests(void);
+
 int module_init()
 {
     //Allocate core memory
@@ -1296,6 +1298,11 @@ int module_init()
     //the end of servicescript_handler -- only once every Core* server/driver has
     //been loaded. The kernel module loader is single-threaded-only, so the APs
     //must stay parked in mp_signalready() until loading is complete.
+
+    //Register the SysTest suite (no-op on a normal boot; executed only under the
+    //"cardinal.test" cmdline). Done after setup is complete and before the BSP
+    //hands itself off to the scheduler below.
+    systaskmgr_register_tests();
 
     //Arm the BSP's preemption timer last, so nothing above can be cut short by a tick
     task_core_arm();
