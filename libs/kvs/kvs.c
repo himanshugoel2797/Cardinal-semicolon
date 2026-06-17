@@ -137,7 +137,9 @@ int kvs_get_key(kvs_t *r NULLABLE, char *key NULLABLE) {
     if (key == NULL)
         return kvs_error_invalidargs;
 
-    strncpy(key, r->key, key_len);
+    size_t len = strnlen(r->key, key_len);
+    strncpy(key, r->key, len);
+    key[len] = '\0';
     return kvs_ok;
 }
 
@@ -261,6 +263,14 @@ int kvs_remove(kvs_t *r NULLABLE, kvs_t *idx NULLABLE) {
 
     if (idx == NULL)
         return kvs_error_invalidargs;
+
+    if (r->next == idx) {
+        r->next = idx->next;
+        if (idx->val_type == kvs_val_child)
+            kvs_delete(idx->child);
+        free(idx);
+        return kvs_ok;
+    }
 
     kvs_t *iter = r;
     do {
