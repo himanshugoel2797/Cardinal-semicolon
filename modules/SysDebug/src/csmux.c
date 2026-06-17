@@ -133,23 +133,10 @@ static uint32_t stuff_into(uint8_t *out, uint32_t o, uint8_t b) {
     return o;
 }
 
-int csmux_send(uint8_t chan, const void *buf, uint32_t len) {
-    if (!g_active)
-        return -1;
-    if (len > CSMUX_MAX_PAYLOAD)
-        return -1;
-
-    const uint8_t *p = (const uint8_t *)buf;
+// Build + emit one frame to the transport. Caller must hold the TX lock.
+static void emit_frame_locked(uint8_t chan, const uint8_t *p, uint32_t len) {
     uint8_t hdr[3] = {chan, (uint8_t)(len & 0xFF), (uint8_t)((len >> 8) & 0xFF)};
     uint16_t crc = 0xFFFF;
-
-    int if_state;
-    if (!tx_acquire(&if_state))
-        return -2; // re-entrant on a heavy transport: drop to avoid self-deadlock
-
-    // Build the whole stuffed frame, then hand it to the transport in one call:
-    // the FTDI transport turns that into a single USB bulk transfer rather than a
-    // (disastrous) transfer per byte, and one write keeps the frame atomic.
     uint32_t o = 0;
     g_stage[o++] = 0x7E;
     for (int i = 0; i < 3; i++) {
@@ -163,11 +150,66 @@ int csmux_send(uint8_t chan, const void *buf, uint32_t len) {
     o = stuff_into(g_stage, o, (uint8_t)(crc & 0xFF));
     o = stuff_into(g_stage, o, (uint8_t)((crc >> 8) & 0xFF));
     g_stage[o++] = 0x7E;
-
+    // One transport write per frame: the FTDI transport turns this into a single
+    // USB bulk batch rather than a (disastrous) transfer per byte, and one write
+    // keeps the frame atomic.
     g_xport.write(g_xport.state, g_stage, o);
+}
 
+// Coalesced log buffer. The debug log is high-volume; emitting a CSMUX_CH_LOG
+// frame per print_str would be one USB transfer per line over an FTDI link, whose
+// per-transfer latency stalls the low-rate control/GDB channels sharing the link.
+// Instead we accumulate log bytes and flush them as a few large CH_LOG frames.
+static uint8_t g_log_buf[CSMUX_MAX_PAYLOAD];
+static uint32_t g_log_len = 0;
+
+static void flush_log_locked(void) {
+    if (g_log_len > 0) {
+        emit_frame_locked(CSMUX_CH_LOG, g_log_buf, g_log_len);
+        g_log_len = 0;
+    }
+}
+
+int csmux_send(uint8_t chan, const void *buf, uint32_t len) {
+    if (!g_active)
+        return -1;
+    if (len > CSMUX_MAX_PAYLOAD)
+        return -1;
+    int if_state;
+    if (!tx_acquire(&if_state))
+        return -2; // re-entrant on a heavy transport: drop to avoid self-deadlock
+    // Flush any buffered log first so control/GDB frames keep order with the log
+    // and are never queued behind it.
+    if (chan != CSMUX_CH_LOG)
+        flush_log_locked();
+    emit_frame_locked(chan, (const uint8_t *)buf, len);
     tx_release(if_state);
     return 0;
+}
+
+void csmux_log_append(const void *buf, uint32_t len) {
+    if (!g_active)
+        return;
+    const uint8_t *p = (const uint8_t *)buf;
+    int if_state;
+    if (!tx_acquire(&if_state))
+        return; // re-entrant (log from inside a transport write): drop
+    for (uint32_t i = 0; i < len; i++) {
+        if (g_log_len >= CSMUX_MAX_PAYLOAD)
+            flush_log_locked();
+        g_log_buf[g_log_len++] = p[i];
+    }
+    tx_release(if_state);
+}
+
+void csmux_log_flush(void) {
+    if (!g_active)
+        return;
+    int if_state;
+    if (!tx_acquire(&if_state))
+        return;
+    flush_log_locked();
+    tx_release(if_state);
 }
 
 void csmux_raw_write(const void *buf, uint32_t len) {
