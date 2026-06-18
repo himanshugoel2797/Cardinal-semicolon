@@ -254,4 +254,13 @@ lisp_value lisp_read(const char **cursor, const char *end, const char **err);
 // like snprintf, so truncation is detectable. Always NUL-terminates if cap > 0.
 size_t lisp_print(lisp_value v, char *buf, size_t cap);
 
+// Like lisp_print but in human (display) form: strings are unquoted and chars
+// are bare. Same snprintf-style return.
+size_t lisp_display(lisp_value v, char *buf, size_t cap);
+
+// Output sink used by the display/write/newline procedures. The host test sets
+// it to stdout; the kernel sets it to DEBUG_PRINT. If unset, output is dropped.
+typedef void (*lisp_output_fn)(const char *s, size_t len, void *ctx);
+void lisp_set_output(lisp_output_fn fn, void *ctx);
+
 #endif
