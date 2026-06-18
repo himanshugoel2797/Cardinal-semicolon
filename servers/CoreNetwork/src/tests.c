@@ -719,6 +719,87 @@ static void test_rdt_reject(test_ctx_t *ctx) {
     TEST_CHECK_MSG(ctx, g_rdt_count == 0, "a rejected RDT datagram still delivered a blob");
 }
 
+// --- Outbound ARP (request build / resolve / aging) ---------------------------
+
+// arp_send_request must broadcast a well-formed ARP request: L2 broadcast dst,
+// our src MAC/IP, opcode REQUEST, target IP filled and target MAC zeroed.
+static void test_arp_request_build(test_ctx_t *ctx) {
+    interface_def_t *iface = make_mock_interface(ctx);
+    if (iface == NULL) {
+        TEST_FAIL(ctx, "interface registration failed");
+        return;
+    }
+    reset_tx_capture();
+
+    uint32_t target = IPV4_ADDR(10, 0, 2, 123);
+    arp_send_request(iface, target);
+
+    TEST_CHECK_EQ_U(ctx, mock_tx_count, 1);
+    int min = (int)(sizeof(ethernet_frame_t) + sizeof(arp_t));
+    TEST_CHECK(ctx, mock_tx_len >= min);
+    if (mock_tx_len < min)
+        return;
+
+    const uint8_t bcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    const uint8_t zero[6] = {0, 0, 0, 0, 0, 0};
+    ethernet_frame_t *eth = (ethernet_frame_t *)mock_tx_frame;
+    TEST_CHECK_EQ_U(ctx, eth->type, ETHERNET_TYPE_ARP);
+    TEST_CHECK(ctx, memcmp(eth->dst_mac, bcast, 6) == 0);
+    TEST_CHECK(ctx, memcmp(eth->src_mac, mock_if_mac, 6) == 0);
+
+    arp_t *a = (arp_t *)eth->body;
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_16(a->opcode), ARP_REQUEST);
+    TEST_CHECK_EQ_U(ctx, a->src_ip, iface->ip);
+    TEST_CHECK_EQ_U(ctx, a->dst_ip, target);
+    TEST_CHECK(ctx, memcmp(a->src_mac, mock_if_mac, 6) == 0);
+    TEST_CHECK(ctx, memcmp(a->dst_mac, zero, 6) == 0);
+}
+
+// A fresh cache entry resolves immediately, with no request transmitted.
+static void test_arp_resolve_cached(test_ctx_t *ctx) {
+    interface_def_t *iface = make_mock_interface(ctx);
+    if (iface == NULL) {
+        TEST_FAIL(ctx, "interface registration failed");
+        return;
+    }
+    uint32_t ip = IPV4_ADDR(10, 0, 2, 201);
+    const uint8_t mac[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+    arp_cache_update(ip, mac);
+
+    reset_tx_capture();
+    uint8_t out[6];
+    memset(out, 0, sizeof(out));
+    TEST_CHECK_EQ_U(ctx, arp_resolve(iface, ip, out), 0);
+    TEST_CHECK(ctx, memcmp(out, mac, 6) == 0);
+    TEST_CHECK_MSG(ctx, mock_tx_count == 0,
+                   "arp_resolve broadcast a request for a cached entry");
+}
+
+// The pure expiry predicate: 0 == never; expired only when now has reached it.
+static void test_arp_expiry_logic(test_ctx_t *ctx) {
+    TEST_CHECK(ctx, !arp_entry_expired(0, 0));
+    TEST_CHECK(ctx, !arp_entry_expired(0, 1000000000ull));
+    TEST_CHECK(ctx, !arp_entry_expired(1000, 999));
+    TEST_CHECK(ctx, arp_entry_expired(1000, 1000));
+    TEST_CHECK(ctx, arp_entry_expired(1000, 5000));
+}
+
+// Resolving an address nobody answers must give up (bounded) and report -1,
+// having broadcast at least one request. Sleeps -> runs as a task.
+static void test_arp_resolve_timeout(test_ctx_t *ctx) {
+    interface_def_t *iface = make_mock_interface(ctx);
+    if (iface == NULL) {
+        TEST_FAIL(ctx, "interface registration failed");
+        return;
+    }
+    reset_tx_capture();
+    uint8_t out[6];
+    uint32_t ip = IPV4_ADDR(10, 0, 2, 222);  // no peer will reply in the test env
+    TEST_CHECK_EQ_U(ctx, arp_resolve(iface, ip, out), -1);
+    TEST_CHECK_MSG(ctx, mock_tx_count >= 1,
+                   "arp_resolve never broadcast a request on a cache miss");
+}
+
 void corenetwork_register_tests(void) {
     if (!test_mode_active())
         return;
@@ -828,6 +909,53 @@ void corenetwork_register_tests(void) {
             .name = "rdt_reject",
             .fn = test_rdt_reject,
             .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "arp_request_build",
+            .fn = test_arp_request_build,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        // TEST_RUN_TASK: arp_resolve is task-context only (it may sleep on a
+        // miss), so exercise it from a real task even though this case hits the
+        // cached fast path.
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "arp_resolve_cached",
+            .fn = test_arp_resolve_cached,
+            .run = TEST_RUN_TASK,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "arp_expiry_logic",
+            .fn = test_arp_expiry_logic,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "arp_resolve_timeout",
+            .fn = test_arp_resolve_timeout,
+            .run = TEST_RUN_TASK,
             .flags = TEST_FLAG_NONE,
         };
         test_register(&t);

@@ -12,7 +12,15 @@ transmit path exists to make the stack observably alive:
 - **ARP** (`arp.c`): a fixed 32-entry IP→MAC cache (`arp_cache_update` /
   `arp_cache_lookup`, spinlock-guarded, round-robin eviction). `arp_rx` validates
   ethernet/IPv4 ARP, learns the sender, and replies to requests addressed to the
-  interface's IP.
+  interface's IP. Outbound: `arp_send_request` broadcasts a who-has, and
+  `arp_resolve(iface, ip, mac_out)` resolves an unknown next-hop — cache hit
+  returns immediately, else it broadcasts requests and polls the cache (which
+  `arp_rx` fills) with short `task_sleep`s, ~4 tries / ~1s, then fails. It
+  **sleeps, so it is task-context only** (never call from rx/interrupt); the
+  caller picks the next-hop IP, so routing stays the caller's concern. Entries
+  **age out** after `ARP_CACHE_TTL_NS` (120s); lookups drop an expired entry and
+  report a miss (lazy aging, no sweep). Aging degrades to never-expire if no
+  monotonic counter is calibrated.
 - **IPv4** (`ip.c`): header-checksum verify (over `ihl*4`), version/ihl sanity,
   length validation, protocol demux. `ipv4_tx()` builds a header (ttl 64, df=0,
   computed checksum) and sends via `ethernet_tx`.
@@ -144,11 +152,13 @@ design and should be decided deliberately, in line with the microkernel model:
    *userspace* surface — how a userspace task binds a port and receives datagrams
    (a `SysUser` syscall family? a `SysObj` object per socket? a shared-memory
    ring?) — and the "raw queue" TODO for unhandled protocols. TCP also needs this.
-2. **TX path architecture.** A proper transmit path wants a per-device tx queue,
-   a tx worker task draining it to the driver, and outbound ARP resolution
-   (hold the packet, emit an ARP request, retry/timeout on reply). The current
-   inline-from-RX send and the broadcast-only `network_tx_packet` are
-   placeholders for this.
+2. **TX path architecture.** Outbound ARP resolution now exists as a synchronous,
+   task-context `arp_resolve` (above). What remains deferred is the richer async
+   path: a per-device tx queue, a tx worker task draining it to the driver, and
+   packet-hold-during-resolution rather than a blocking resolve. The current
+   inline-from-RX send and the broadcast-only `network_tx_packet` are still
+   placeholders for that. The synchronous resolve was a deliberate choice to keep
+   this decoupled from routing — revisit if a non-blocking sender is needed.
 3. **Interface addressing / configuration.** The default IP is still build-time
    (`NET_DEFAULT_IPV4`), now overridable per-boot via the `cardinal.ip=` cmdline.
    Real addressing still needs per-interface config (registry or userspace) and
@@ -157,8 +167,33 @@ design and should be decided deliberately, in line with the microkernel model:
 4. **IPv4 options / fragmentation / reassembly.** Only `ihl == 5`, unfragmented
    datagrams are meaningfully handled.
 5. **TCP.** Not started; needs the socket API (1) and the tx path (2) first.
-6. **ARP aging.** The cache has no timed expiry or a state machine for in-flight
-   resolutions; entries only get overwritten under pressure.
+6. **ARP aging.** Done: entries expire after a TTL (lazy, on lookup). Remaining
+   refinements deferred: negative caching of failed resolutions, and a proper
+   in-flight-resolution state machine (the synchronous `arp_resolve` re-broadcasts
+   per call rather than coalescing concurrent waiters for the same IP).
+
+## Path to TCP
+
+Tracking what TCP needs, as the pieces land, so the remaining design work is
+explicit:
+
+- **Done** — UDP layer, an L4 RX-dispatch template (ICMP/UDP in `ip.c`), and the
+  internet + pseudo-header checksum helpers (`checksum.h`).
+- **Done** — outbound ARP resolution (`arp_resolve`) + cache aging, so a
+  connection-initiating layer can obtain a next-hop MAC.
+- **Done / easy** — timer-driven retransmission: `task_sleep(id, ns)` already
+  backs DHCP's retransmit/renewal and ARP's resolve poll; a TCP RTO timer is the
+  same primitive (no new infrastructure needed).
+- **TODO — routing table (needs design).** The DHCP-learned gateway is stored on
+  the interface, but nothing yet decides on-link-vs-via-gateway or selects a
+  next-hop. `arp_resolve` deliberately takes the next-hop IP *from its caller*, so
+  this can be designed independently of ARP. **This is the main open decision.**
+- **TODO — async / non-blocking TX path.** `arp_resolve` blocks the calling task
+  (fine for connection setup, not for a general fast path); the per-device tx
+  queue + packet-hold-during-resolution from item 2 above is still placeholder.
+- **TODO — the TCP layer itself**: the connection state machine + an in-kernel
+  socket-ish API (callbacks, as RDT does), with the userspace socket surface
+  (item 1) a further, separate decision.
 
 ## Testability
 
