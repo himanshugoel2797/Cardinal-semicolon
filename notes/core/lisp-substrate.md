@@ -232,3 +232,15 @@ or persistent GC.
 
 Each phase is independently reviewable. Persistent GC, JIT, and persistence are
 explicitly later phases the earlier ones are designed not to preclude.
+
+## Conformance testing
+
+Beyond the per-phase host harnesses, validate against an external suite once the
+language is rich enough. North star: **chibi-scheme `r7rs-tests.scm`** (the
+portable R7RS-small suite). Caveat: standard suites assume the full numeric
+tower (floats/rationals — we are integer-only by the no-FP constraint) and use
+`define-syntax`/`call/cc` in their own harness, so a full run waits on basic
+`syntax-rules` + `call/cc` + error handling, and the numeric-tower sections are
+expected-skip. Near-term: a thunk-based `(test expr => expected)` harness (no
+macros needed) over a curated subset matching the current feature level, grown
+as features land — failures drive the worklist.

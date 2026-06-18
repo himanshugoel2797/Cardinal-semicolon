@@ -92,7 +92,10 @@ int main(void) {
     roundtrip("\"hello\"", "\"hello\"");
     roundtrip("\"a\\nb\"", "\"a\\nb\"");
     roundtrip("; comment line\n99", "99");
-    roundtrip("(a, b, c)", "(a b c)");  // commas are whitespace
+    roundtrip("`x", "(quasiquote x)");
+    roundtrip(",x", "(unquote x)");
+    roundtrip(",@x", "(unquote-splicing x)");
+    roundtrip("`(a ,b ,@c)", "(quasiquote (a (unquote b) (unquote-splicing c)))");
     roundtrip("#\\a", "#\\a");          // char literal round-trips
     roundtrip("#\\)", "#\\)");          // delimiter as a char
     roundtrip("(#\\x #\\y)", "(#\\x #\\y)");
