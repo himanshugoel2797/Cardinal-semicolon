@@ -16,19 +16,25 @@
 
 #include "SysTimer/timer.h"
 #include "SysInterrupts/interrupts.h"
-#include "CoreInput/input.h"
 
 static int kbd_lock = 0;
 static queue_t kbd_q;
 static int mouse_lock = 0;
 static queue_t mouse_q;
 
-struct ss3_translation_tbl
-{
-    uint8_t code;
-    kbd_keys_t key;
-};
+// ps2 is being migrated to the Lisp async input service: instead of registering
+// synchronous CoreInput callbacks, the IRQ posts an event (queues + wakes a Lisp
+// context via this hook) and the Lisp ps2 driver context drains it with
+// ps2_poll_key. The hook is ISR-context (set by SysLisp to wake the parked
+// context); NULL until then (events just queue).
+static void (*g_irq_hook)(void) = NULL;
 
+void ps2_set_irq_hook(void (*hook)(void))
+{
+    g_irq_hook = hook;
+}
+
+#if 0  // scancode-set-3 translation table (removed with the CoreInput callback path)
 static struct ss3_translation_tbl ss3[] = {
     {.code = 0x1C, .key = kbd_keys_A},
     {.code = 0x32, .key = kbd_keys_B},
@@ -136,6 +142,7 @@ static struct ss3_translation_tbl ss3[] = {
     {.code = 0x4A, .key = kbd_keys_fwdslash},
     {.code = 0, .key = kbd_keys_unkn},
 };
+#endif
 
 static void ps2_irq(int int_num)
 {
@@ -313,143 +320,73 @@ static void ps2_irq(int int_num)
         c = inb(DATA_PORT);
         if (c != 0xFA)
         {
-            //Read scancodes; only forward to the Input manager when scancode set 3 is active
-            if (PS2Keyboard_ActiveScancodeSet() == 3)
+            // Enqueue the RAW scancode regardless of the active scancode set. The
+            // Lisp async-input migration is set-agnostic (it forwards raw codes;
+            // proper decode is a later refinement) so the pipeline works under
+            // QEMU's emulated keyboard, which does not reliably honour set 3. The
+            // 0xF0 "break" (release) prefix is common to sets 2 and 3.
+            bool break_code = false;
+            if (c == 0xf0)
             {
-                bool break_code = false;
-                if (c == 0xf0)
-                {
-                    break_code = true;
-                    c = inb(DATA_PORT);
-                }
-
-                local_spinlock_lock(&kbd_lock);
-                if (queue_full(&kbd_q))
-                {
-                    uint64_t dummy = 0;
-                    queue_trydequeue(&kbd_q, &dummy);
-                    queue_trydequeue(&kbd_q, &dummy);
-                }
-                queue_tryenqueue(&kbd_q, stamp);
-                queue_tryenqueue(&kbd_q, ((uint64_t)break_code << 32) | c);
-                local_spinlock_unlock(&kbd_lock);
+                break_code = true;
+                c = inb(DATA_PORT);
             }
-            //DEBUG_PRINT("[PS/2] Keyboard Interrupt: ");
-            //DEBUG_PRINT(itoa(c, tmp_buf, 16));
-            //DEBUG_PRINT("\r\n");
+
+            local_spinlock_lock(&kbd_lock);
+            if (queue_full(&kbd_q))
+            {
+                uint64_t dummy = 0;
+                queue_trydequeue(&kbd_q, &dummy);
+                queue_trydequeue(&kbd_q, &dummy);
+            }
+            queue_tryenqueue(&kbd_q, stamp);
+            queue_tryenqueue(&kbd_q, ((uint64_t)break_code << 32) | c);
+            local_spinlock_unlock(&kbd_lock);
         }
     }
+
+    // Post the event to the Lisp input service (wake the parked ps2 context). Two
+    // word reads + a word write -- ISR-safe; NULL until SysLisp installs it.
+    if (g_irq_hook != NULL)
+        g_irq_hook();
 }
 
-static bool ps2_has_pending(void *state)
+// True if a keyboard event is waiting. Used by the Lisp ps2 context (under cli)
+// to decide whether to park, so a key that arrives just before it parks is not
+// missed.
+int ps2_pending(void)
 {
-    if (state == NULL)
-    {
-        //keyboard
-        int cli_state = cli();
-        local_spinlock_lock(&kbd_lock);
-        bool retVal = queue_entcnt(&kbd_q) != 0;
-        local_spinlock_unlock(&kbd_lock);
-        sti(cli_state);
-        return retVal;
-    }
-    else
-    {
-        //mouse
-        int cli_state = cli();
-        local_spinlock_lock(&mouse_lock);
-        bool retVal = queue_entcnt(&mouse_q) != 0;
-        local_spinlock_unlock(&mouse_lock);
-        sti(cli_state);
-        return retVal;
-    }
+    int cli_state = cli();
+    local_spinlock_lock(&kbd_lock);
+    int n = queue_entcnt(&kbd_q) != 0;
+    local_spinlock_unlock(&kbd_lock);
+    sti(cli_state);
+    return n;
 }
 
-static void ps2_read(void *state, input_device_event_t *event)
+// Dequeue the next keyboard event. Returns 1 and fills *code (raw scancode) and
+// *pressed (1 = make, 0 = break) when one was available, else 0. The FFI backing
+// the (%ps2-poll) primitive.
+int ps2_poll_key(int *code, int *pressed)
 {
-    if (state == NULL)
+    int cli_state = cli();
+    local_spinlock_lock(&kbd_lock);
+    int got = 0;
+    if (queue_entcnt(&kbd_q) != 0)
     {
-        //keyboard
-        int cli_state = cli();
-        local_spinlock_lock(&kbd_lock);
-        uint64_t stamp = 0;
-        uint64_t inpt = 0;
+        uint64_t stamp = 0, inpt = 0;
         queue_trydequeue(&kbd_q, &stamp);
         queue_trydequeue(&kbd_q, &inpt);
-        local_spinlock_unlock(&kbd_lock);
-        sti(cli_state);
-
-        uint32_t input_type = inpt & 0xffffffff;
-
-        event->timestamp = stamp;
-
-        int idx = 0;
-        for (; ss3[idx].code != 0; idx++)
-            if (ss3[idx].code == input_type)
-            {
-                event->is_btn_event = true;
-                event->index = (uint32_t)ss3[idx].key;
-                event->state = (bool)(inpt >> 32);
-                break;
-            }
-        if (ss3[idx].code == 0)
-        {
-            event->is_btn_event = true;
-            event->index = (uint32_t)kbd_keys_unkn;
-            event->state = false;
-        }
+        if (code != NULL)
+            *code = (int)(inpt & 0xffffffff);
+        if (pressed != NULL)
+            *pressed = ((inpt >> 32) & 1) ? 0 : 1;  // break_code set => released
+        got = 1;
     }
-    else
-    {
-        //mouse
-        int cli_state = cli();
-        local_spinlock_lock(&mouse_lock);
-        uint64_t stamp = 0;
-        uint64_t inpt = 0;
-        queue_trydequeue(&mouse_q, &stamp);
-        queue_trydequeue(&mouse_q, &inpt);
-        local_spinlock_unlock(&mouse_lock);
-        sti(cli_state);
-
-        uint32_t input_type = inpt >> 32;
-
-        event->timestamp = stamp;
-        if (input_type == 4 || input_type == 5 || input_type == 6 || input_type == 7 || input_type == 8)
-        {
-            event->is_btn_event = true;
-            event->index = input_type;
-            event->state = inpt & 1;
-        }
-        else
-        {
-            event->is_btn_event = false;
-            event->index = input_type;
-            event->position = (int)(inpt & 0xffffffff);
-        }
-    }
+    local_spinlock_unlock(&kbd_lock);
+    sti(cli_state);
+    return got;
 }
-
-static input_device_desc_t kbd_desc = {
-    .name = "PS/2 Keyboard",
-    .state = NULL,
-    .features = input_device_features_none,
-    .type = input_device_type_keyboard,
-    .handlers = {
-        .has_pending = ps2_has_pending,
-        .read = ps2_read,
-    },
-};
-
-static input_device_desc_t mouse_desc = {
-    .name = "PS/2 Mouse",
-    .state = (void *)1,
-    .features = input_device_features_none,
-    .type = input_device_type_mouse,
-    .handlers = {
-        .has_pending = ps2_has_pending,
-        .read = ps2_read,
-    },
-};
 
 uint8_t PS2_Initialize()
 {
@@ -568,11 +505,20 @@ uint8_t PS2_Initialize()
     queue_init(&kbd_q, BUF_LEN * ENT_SIZE);
     queue_init(&mouse_q, BUF_LEN * ENT_SIZE);
 
-    input_device_register(&kbd_desc);
-    input_device_register(&mouse_desc);
+    // No input_device_register: ps2 no longer plugs into the native CoreInput via
+    // synchronous callbacks. The Lisp input service polls ps2_poll_key after the
+    // IRQ hook wakes its driver context (see SysLisp).
 
     interrupt_register_handler(kbd_irq, ps2_irq);
     interrupt_register_handler(mouse_irq, ps2_irq);
+
+    // Program the IOAPIC redirection entries: GSI 1 (keyboard) and GSI 12 (mouse)
+    // are edge-triggered, active-high ISA lines; route each to the vector just
+    // allocated, destined for THIS core (the BSP, where the Lisp ps2 context runs
+    // and where ps2_wake_hook must be able to wake it from hlt). Without this the
+    // i8042 raises the line but the IOAPIC never delivers it to our handler.
+    interrupt_mapinterrupt(1, kbd_irq, false, false);
+    interrupt_mapinterrupt(12, mouse_irq, false, false);
 
     interrupt_setmask(1, false);
     interrupt_setmask(12, false);

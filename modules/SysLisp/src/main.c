@@ -141,6 +141,63 @@ static lisp_value prim_event_wait(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// --- ps2 keyboard driver, migrated to a Lisp context --------------------------
+//
+// The ps2 module (loaded before us) does the controller init + decode + queueing
+// in its IRQ; here we bridge it to the Lisp input service. The keyboard IRQ fires
+// ps2_wake_hook (ISR context: one word write) to wake the parked ps2 driver
+// CONTEXT, which then drains events with (%ps2-poll) and forwards them as messages
+// to the coreinput context. This is the ISR -> wake -> poll -> send path -- the
+// first real-hardware exercise of the wake bridge.
+void ps2_set_irq_hook(void (*hook)(void));  // exported by the ps2 module
+int ps2_poll_key(int *code, int *pressed);
+int ps2_pending(void);
+
+static volatile lisp_value g_ps2_waiter = 0;  // the parked ps2 context (0 = none)
+
+static void ps2_wake_hook(void) {  // ISR context
+    lisp_value w = g_ps2_waiter;
+    if (w != 0)
+        lisp_ctx_wake(w);
+}
+
+// (%ps2-poll) -> (key <scancode> <pressed?>) for the next event, or #f if none.
+static lisp_value prim_ps2_poll(lisp_value *a, int n, const char **e) {
+    (void)a;
+    (void)n;
+    (void)e;
+    int code = 0, pressed = 0;
+    if (!ps2_poll_key(&code, &pressed))
+        return LISP_FALSE;
+    // Built in the running (ps2) context's heap; deep-copied into coreinput's on
+    // send. (key code pressed)
+    lisp_value tail = lisp_cons(lisp_fixnum(code), lisp_cons(lisp_fixnum(pressed), LISP_EMPTY));
+    return lisp_cons(lisp_make_symbol("key", 3), tail);
+}
+
+// (%ps2-wait) -> park the running context until the next keyboard IRQ, UNLESS an
+// event is already pending (so a key landing just before we park is not missed).
+// cli() closes the check-then-park window against the same-core IRQ; the ps2 IRQ
+// is delivered to the BSP, where this context runs. (A keyboard IRQ routed to a
+// different core than the waiter could still miss -- acceptable until cross-core
+// messaging lands; the input service is BSP-pinned for now.)
+static lisp_value prim_ps2_wait(lisp_value *a, int n, const char **e) {
+    (void)a;
+    (void)n;
+    lisp_value self = lisp_current_ctx();
+    if (self == LISP_EMPTY)
+        return (*e = "%ps2-wait: not under the scheduler"), LISP_UNDEF;
+    g_ps2_waiter = self;
+    int cli_state = cli();
+    if (ps2_pending()) {  // an event arrived; stay runnable and re-drain
+        sti(cli_state);
+        return LISP_FALSE;
+    }
+    lisp_ctx_block(self);  // blocked=1, budget=0 -> suspends at the next safe point
+    sti(cli_state);
+    return LISP_UNDEF;
+}
+
 // --- Self-test ----------------------------------------------------------------
 
 static int g_pass = 0;
@@ -350,9 +407,10 @@ static void announce_core(int id, const char *err, lisp_value proof) {
 // The whole thing is set up as ONE expression evaluated in the shared env: it only
 // LOOKS UP names there (spawn/recv/cond/...), never `define`s into it -- mutating
 // the cross-core-shared env after the APs are live would be a data race. The
-// coordinator handle is held in a `let` binding the feeder lambda closes over,
-// not in a global. Slice 1a feeds it from a SYNTHETIC source; slice 1b replaces
-// that source with the migrated ps2 driver (IRQ -> wake -> %ps2-poll -> send).
+// coordinator handle is held in a `let` binding the ps2 driver context closes
+// over, not in a global. The ps2 context registers, then pumps: it drains
+// (%ps2-poll) and forwards each event, parking on (%ps2-wait) -- woken by the
+// keyboard IRQ via ps2_wake_hook -- when the queue is empty.
 static void setup_input_service(void) {
     const char *err = NULL;
     lisp_eval_string(
@@ -368,13 +426,16 @@ static void setup_input_service(void) {
         "                     (display \"[coreinput] event \") (display (cadr m)) (newline)"
         "                     (loop devs))"
         "                    (else (loop devs))))))))) "
-        // Slice-1a synthetic feeder (replaced by the ps2 context in 1b):
+        // Slice-1b: the migrated ps2 driver context -- register, then pump: drain
+        // (%ps2-poll), forward each event to coreinput, park on (%ps2-wait) (woken
+        // by the keyboard IRQ) when the queue is empty.
         "  (spawn (lambda ()"
-        "    (send coreinput (list 'register 'synthetic-kbd))"
-        "    (send coreinput (list 'event (list 'key 65)))"
-        "    (send coreinput (list 'event (list 'key 66)))"
-        "    (send coreinput (list 'event (list 'key 67)))"
-        "    'fed)))",
+        "    (send coreinput (list 'register 'ps2-keyboard))"
+        "    (let pump ()"
+        "      (let ((e (%ps2-poll)))"
+        "        (if e"
+        "            (begin (send coreinput (list 'event e)) (pump))"
+        "            (begin (%ps2-wait) (pump))))))))",
         g_env, &err);
     if (err != NULL) {
         print_str("[SysLisp] input service setup error: ");
@@ -472,6 +533,12 @@ int lisp_scheduler_enter() {
                     lisp_make_primitive(prim_event_count, "%event-count"));
     lisp_env_define(g_env, lisp_make_symbol("%event-wait", 11),
                     lisp_make_primitive(prim_event_wait, "%event-wait"));
+    lisp_env_define(g_env, lisp_make_symbol("%ps2-poll", 9),
+                    lisp_make_primitive(prim_ps2_poll, "%ps2-poll"));
+    lisp_env_define(g_env, lisp_make_symbol("%ps2-wait", 9),
+                    lisp_make_primitive(prim_ps2_wait, "%ps2-wait"));
+    // Route the ps2 keyboard IRQ to wake the (soon-to-be-spawned) ps2 context.
+    ps2_set_irq_hook(ps2_wake_hook);
 
     // Single-core phase: self-test + the ISR-bridge demo run with the system
     // collector still active (the BSP is the only core building shared state).

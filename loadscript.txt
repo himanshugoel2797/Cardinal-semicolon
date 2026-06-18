@@ -24,5 +24,6 @@ CALL:fp_mp_init
 LOAD:./SysObj.celf
 LOAD:./SysUser.celf
 LOAD:./SysTaskMgr.celf
+LOAD:./ps2.celf
 LOAD:./SysLisp.celf
 CALL:lisp_scheduler_enter
