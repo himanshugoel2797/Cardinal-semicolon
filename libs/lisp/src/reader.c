@@ -79,6 +79,70 @@ static bool parse_int(const char *tok, size_t len, lisp_value *out) {
     return true;
 }
 
+// Parse a flonum literal: [+-]? digits? ('.' digits?)? ([eE][+-]?digits)? with
+// at least one digit and at least one of '.'/'e' (so plain integers fall through
+// to parse_int and over-range integers stay symbols, not silently inexact). The
+// conversion is a simple mantissa * 10^exp -- not perfectly rounded, adequate for
+// literals; a correctly-rounded reader is a later refinement.
+static bool parse_float(const char *tok, size_t len, lisp_value *out) {
+    size_t i = 0;
+    bool neg = false;
+    if (i < len && (tok[i] == '+' || tok[i] == '-')) {
+        neg = (tok[i] == '-');
+        i++;
+    }
+    double mant = 0.0;
+    int fracdigits = 0;
+    bool has_digit = false, has_dot = false, has_exp = false;
+    while (i < len && tok[i] >= '0' && tok[i] <= '9') {
+        mant = mant * 10.0 + (tok[i] - '0');
+        has_digit = true;
+        i++;
+    }
+    if (i < len && tok[i] == '.') {
+        has_dot = true;
+        i++;
+        while (i < len && tok[i] >= '0' && tok[i] <= '9') {
+            mant = mant * 10.0 + (tok[i] - '0');
+            fracdigits++;
+            has_digit = true;
+            i++;
+        }
+    }
+    int exp = 0;
+    bool expneg = false;
+    if (i < len && (tok[i] == 'e' || tok[i] == 'E')) {
+        has_exp = true;
+        i++;
+        if (i < len && (tok[i] == '+' || tok[i] == '-')) {
+            expneg = (tok[i] == '-');
+            i++;
+        }
+        if (i >= len || tok[i] < '0' || tok[i] > '9')
+            return false;  // exponent marker with no digits
+        while (i < len && tok[i] >= '0' && tok[i] <= '9') {
+            if (exp < 100000)  // cap: avoids int overflow; beyond double range anyway
+                exp = exp * 10 + (tok[i] - '0');
+            i++;
+        }
+    }
+    if (i != len || !has_digit || (!has_dot && !has_exp))
+        return false;  // trailing junk, no digits, or a plain integer
+
+    int e = (expneg ? -exp : exp) - fracdigits;
+    int mag = e < 0 ? -e : e;
+    if (mag > 400)
+        mag = 400;  // 10^309 already overflows double to inf; cap the loop
+    double scale = 1.0;
+    for (int k = 0; k < mag; k++)
+        scale *= 10.0;
+    double value = e < 0 ? mant / scale : mant * scale;
+    if (neg)
+        value = -value;
+    *out = lisp_make_flonum(value);
+    return *out != LISP_UNDEF;
+}
+
 static lisp_value read_string(const char **cur, const char *end, const char **err) {
     const char *c = *cur + 1;  // skip opening quote
     char buf[1024];
@@ -126,6 +190,8 @@ static lisp_value read_atom(const char **cur, const char *end, const char **err)
     // :foo reads as an ordinary symbol (#:foo keyword syntax is deferred).
     lisp_value num;
     if (parse_int(start, len, &num))
+        return num;
+    if (parse_float(start, len, &num))
         return num;
 
     return lisp_make_symbol(start, len);
