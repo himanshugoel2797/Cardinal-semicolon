@@ -270,7 +270,7 @@ explicitly later phases the earlier ones are designed not to preclude.
 ## Testing
 
 Per-phase host harnesses (`libs/lisp/test/`) plus a thunk-based
-`(test expr => expected)` corpus (`conformance.scm`, ~70 cases) exercise the
+`(test expr => expected)` corpus (`conformance.clp`, ~70 cases) exercise the
 whole language host-side. Full R7RS conformance (the chibi `r7rs-tests.scm`
 suite) is **not** a goal — this is a Scheme-*inspired* Lisp, not R7RS; the suite
 was only ever a correctness check, which the host harnesses provide. (It would

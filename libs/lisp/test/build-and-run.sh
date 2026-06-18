@@ -12,7 +12,7 @@ for t in "$HERE"/test_*.c; do
   name="$(basename "$t" .c)"
   clang -std=c11 -Wall -Wextra -Werror -g -I"$LISP/inc" \
     "$LISP"/src/*.c "$t" -o "$TMP/$name"
-  # Pass the test dir so the conformance runner can locate conformance.scm;
+  # Pass the test dir so the conformance runner can locate conformance.clp;
   # the plain test_*.c mains are int main(void) and ignore the extra arg.
   "$TMP/$name" "$HERE" || status=1
   echo
