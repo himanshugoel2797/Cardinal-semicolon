@@ -3,12 +3,17 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-// A tree-walking Scheme evaluator with lexical environments and proper tail
-// calls (via an internal loop, not C recursion) for if/begin/let/cond/and/or and
-// procedure application. Special forms: quote, quasiquote, if, define, lambda,
-// let/let*/letrec/named-let, begin, set!, cond, and, or. Everything else is
-// procedure application. Objects are GC-allocated (gc.c); first-class
-// continuations and a bytecode VM are still future work.
+// A tree-walking Scheme-inspired Lisp evaluator with lexical environments and
+// proper tail calls (via an internal loop, not C recursion). Special forms:
+// quote, quasiquote, if, define, lambda, let/let*/letrec/named-let, begin, set!,
+// cond, and, or, when, unless, while, case. The common derived forms are kept as
+// interpreter special cases (cheap, and a future JIT can recognize them directly)
+// rather than as a macro engine. Objects are GC-allocated (gc.c).
+//
+// Deliberately NOT included (cut to keep the substrate small -- see
+// notes/core/lisp-substrate.md): syntax-rules macros and call/cc / the
+// exception system. They can return if a concrete need (e.g. a driver DSL)
+// arises.
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -24,7 +29,6 @@
 static lisp_value fail(const char **err, const char *msg) {
     if (err != NULL)
         *err = msg;
-    lisp_ctl_clear();  // a plain error is not a continuation escape or a raise
     return LISP_UNDEF;
 }
 
@@ -351,26 +355,6 @@ tail:
             return fail(err, "malformed define");
         }
 
-        if (is_form(head, "define-syntax")) {
-            if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_cdr(rest)))
-                return fail(err, "malformed define-syntax");
-            lisp_value name = lisp_car(rest);
-            if (!lisp_is_symbol(name))
-                return fail(err, "define-syntax: name must be a symbol");
-            lisp_value spec = lisp_car(lisp_cdr(rest));
-            if (!lisp_is_pair(spec) || !is_form(lisp_car(spec), "syntax-rules"))
-                return fail(err, "define-syntax: only syntax-rules is supported");
-            if (!lisp_is_pair(lisp_cdr(spec)))  // need at least the literals list
-                return fail(err, "malformed syntax-rules");
-            lisp_value lits = lisp_car(lisp_cdr(spec));   // (literal ...)
-            lisp_value rules = lisp_cdr(lisp_cdr(spec));  // ((pat tmpl) ...)
-            lisp_value m = lisp_make_macro(lits, rules, env);
-            if (m == LISP_UNDEF)
-                return fail(err, "out of memory");
-            lisp_env_define(env, name, m);
-            return name;
-        }
-
         if (is_form(head, "lambda")) {
             if (!lisp_is_pair(rest))
                 return fail(err, "malformed lambda");
@@ -602,89 +586,84 @@ tail:
             return LISP_UNDEF;  // no clause matched
         }
 
-        if (is_form(head, "guard")) {
-            // (guard (var clause ...) body ...). Catches a raise OR a plain
-            // error escaping body (but not a continuation escape); binds var to
-            // the condition and runs the clauses like cond; re-raises if none
-            // match.
-            if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_car(rest)))
-                return fail(err, "malformed guard");
-            lisp_value spec = lisp_car(rest);
-            lisp_value var = lisp_car(spec);
-            lisp_value clauses = lisp_cdr(spec);
-            lisp_value body = lisp_cdr(rest);
-
-            lisp_value result = LISP_UNDEF;
-            for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b)) {
-                result = lisp_eval(lisp_car(b), env, err);
+        if (is_form(head, "when") || is_form(head, "unless")) {
+            // (when test body...) / (unless test body...). Common derived forms
+            // kept as interpreter special cases (cheap, and JIT-friendly) rather
+            // than macros.
+            if (!lisp_is_pair(rest))
+                return fail(err, "malformed when/unless");
+            bool want = is_form(head, "when");
+            lisp_value test = lisp_eval(lisp_car(rest), env, err);
+            if (test == LISP_UNDEF && err != NULL && *err != NULL)
+                return LISP_UNDEF;
+            if (lisp_truthy(test) != want)
+                return LISP_UNDEF;  // body not run
+            lisp_value b = lisp_cdr(rest);
+            if (!lisp_is_pair(b))
+                return LISP_UNDEF;
+            while (lisp_is_pair(lisp_cdr(b))) {
+                lisp_eval(lisp_car(b), env, err);
                 if (err != NULL && *err != NULL)
-                    break;
+                    return LISP_UNDEF;
+                b = lisp_cdr(b);
             }
-            if (err == NULL || *err == NULL)
-                return result;  // body completed normally
-            if (lisp_ctl_kind() == LISP_CTL_CONT)
-                return LISP_UNDEF;  // a continuation is escaping -- not ours to catch
+            expr = lisp_car(b);
+            goto tail;
+        }
 
-            // Build the condition: the raised value, or an error object wrapping
-            // the plain-error message.
-            lisp_value cond;
-            if (lisp_ctl_kind() == LISP_CTL_RAISE) {
-                cond = lisp_ctl_value();
-            } else {
-                lisp_value msg = lisp_make_string(*err, strlen(*err));
-                cond = lisp_make_error_object(msg, LISP_EMPTY);
-            }
-            lisp_ctl_clear();
-            *err = NULL;
-
-            lisp_value genv = lisp_make_env(env);
-            if (genv == LISP_UNDEF)
-                return fail(err, "out of memory");
-            lisp_env_define(genv, var, cond);
-
-            for (lisp_value cl = clauses; lisp_is_pair(cl); cl = lisp_cdr(cl)) {
-                lisp_value clause = lisp_car(cl);
-                if (!lisp_is_pair(clause))
-                    return fail(err, "malformed guard clause");
-                lisp_value test = lisp_car(clause);
-                lisp_value cbody = lisp_cdr(clause);
-                lisp_value tv = LISP_TRUE;
-                bool take = is_form(test, "else");
-                if (!take) {
-                    tv = lisp_eval(test, genv, err);
+        if (is_form(head, "while")) {
+            // (while test body...) -- an imperative loop; returns unspecified.
+            if (!lisp_is_pair(rest))
+                return fail(err, "malformed while");
+            lisp_value test = lisp_car(rest);
+            lisp_value body = lisp_cdr(rest);
+            for (;;) {
+                lisp_value t = lisp_eval(test, env, err);
+                if (t == LISP_UNDEF && err != NULL && *err != NULL)
+                    return LISP_UNDEF;
+                if (!lisp_truthy(t))
+                    return LISP_UNDEF;
+                for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b)) {
+                    lisp_eval(lisp_car(b), env, err);
                     if (err != NULL && *err != NULL)
                         return LISP_UNDEF;
-                    take = lisp_truthy(tv);
-                }
-                if (take) {
-                    if (!lisp_is_pair(cbody))
-                        return tv;  // (test) with no body -> the test value
-                    lisp_value r = LISP_UNDEF;
-                    for (lisp_value bb = cbody; lisp_is_pair(bb); bb = lisp_cdr(bb)) {
-                        r = lisp_eval(lisp_car(bb), genv, err);
-                        if (err != NULL && *err != NULL)
-                            return LISP_UNDEF;
-                    }
-                    return r;
                 }
             }
-            // No clause matched: re-raise the original condition.
-            lisp_ctl_set_raise(cond);
-            if (err != NULL)
-                *err = "uncaught exception";
-            return LISP_UNDEF;
         }
-    }
 
-    // Macro use: if the operator names a syntax-rules macro, expand and re-eval
-    // the expansion in tail position.
-    if (lisp_is_symbol(head)) {
-        lisp_value mac;
-        if (lisp_env_lookup(env, head, &mac) && lisp_is_objtype(mac, LISP_OBJ_MACRO)) {
-            expr = lisp_macro_expand(mac, expr, err);
-            if (expr == LISP_UNDEF && err != NULL && *err != NULL)
+        if (is_form(head, "case")) {
+            // (case key (datums body...) ... (else body...)). Datums match by
+            // eqv? (a word compare -- exact for fixnums/chars/booleans/interned
+            // symbols; identity for other heap values).
+            if (!lisp_is_pair(rest))
+                return fail(err, "malformed case");
+            lisp_value key = lisp_eval(lisp_car(rest), env, err);
+            if (key == LISP_UNDEF && err != NULL && *err != NULL)
                 return LISP_UNDEF;
-            goto tail;
+            for (lisp_value cl = lisp_cdr(rest); lisp_is_pair(cl); cl = lisp_cdr(cl)) {
+                lisp_value clause = lisp_car(cl);
+                if (!lisp_is_pair(clause))
+                    return fail(err, "malformed case clause");
+                lisp_value datums = lisp_car(clause);
+                bool take = is_form(datums, "else");
+                for (lisp_value d = datums; !take && lisp_is_pair(d); d = lisp_cdr(d))
+                    if (lisp_car(d) == key)
+                        take = true;
+                if (take) {
+                    lisp_value cbody = lisp_cdr(clause);
+                    if (!lisp_is_pair(cbody))
+                        return LISP_UNDEF;
+                    while (lisp_is_pair(lisp_cdr(cbody))) {
+                        lisp_eval(lisp_car(cbody), env, err);
+                        if (err != NULL && *err != NULL)
+                            return LISP_UNDEF;
+                        cbody = lisp_cdr(cbody);
+                    }
+                    expr = lisp_car(cbody);
+                    goto tail;
+                }
+            }
+            return LISP_UNDEF;  // no clause matched
         }
     }
 
@@ -730,8 +709,6 @@ tail:
         expr = lisp_car(body);  // tail call: loop instead of recursing
         goto tail;
     }
-    if (lisp_is_objtype(op, LISP_OBJ_CONT))
-        return lisp_cont_invoke(op, argc >= 1 ? args[0] : LISP_UNDEF, err);
     return fail(err, "attempt to call a non-procedure");
 }
 
@@ -753,8 +730,6 @@ lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **
         }
         return result;
     }
-    if (lisp_is_objtype(proc, LISP_OBJ_CONT))
-        return lisp_cont_invoke(proc, argc >= 1 ? args[0] : LISP_UNDEF, err);
     return fail(err, "attempt to call a non-procedure");
 }
 
@@ -762,14 +737,12 @@ lisp_value lisp_default_env(void) {
     lisp_value env = lisp_make_env(LISP_EMPTY);
     if (env != LISP_UNDEF) {
         lisp_install_primitives(env);
-        lisp_install_control(env);  // call/cc, raise, error, values, ...
         lisp_load_prelude(env);     // standard library, defined in Scheme
     }
     return env;
 }
 
 lisp_value lisp_eval_string(const char *src, lisp_value env, const char **err) {
-    lisp_ctl_clear();  // no nonlocal exit in flight at the start of a fresh eval
     const char *cur = src;
     const char *end = src + strlen(src);
     lisp_value result = LISP_UNDEF;

@@ -35,7 +35,21 @@ static void evals(const char *src, const char *expect) {
 }
 
 int main(void) {
-    printf("[lisp Phase 3a] binding forms + quasiquote\n");
+    printf("[lisp Phase 3a] binding forms + quasiquote + common special forms\n");
+
+    // when / unless / while / case (interpreter special forms, not macros)
+    evals("(when (< 1 2) 'a 'b 'c)", "c");
+    evals("(when (> 1 2) 'a)", "#<undef>");
+    evals("(unless (> 1 2) 'ran)", "ran");
+    evals("(unless (< 1 2) 'ran)", "#<undef>");
+    evals("(define n 0) (define s 0)"
+          " (while (< n 5) (set! s (+ s n)) (set! n (+ n 1)))"
+          " s",
+          "10");
+    evals("(case 2 ((1) 'one) ((2 3) 'two-or-three) (else 'other))", "two-or-three");
+    evals("(case 9 ((1) 'one) ((2 3) 'two-or-three) (else 'other))", "other");
+    evals("(case 'x ((a b) 1) ((x y) 2))", "2");
+    evals("(case 5 ((1) 'one))", "#<undef>");  // no clause matched
 
     // let*
     evals("(let* ((a 1) (b (+ a 1)) (c (+ a b))) (list a b c))", "(1 2 3)");

@@ -64,10 +64,23 @@ simplifications:
 - **W7 is literally a capability-secure Scheme** (see below), so the security
   model is not bolted on — it is the language's own scoping discipline.
 
-Scope: a small, R7RS-*flavoured* core (not a full R7RS implementation) — Scheme
-syntax and semantics (`#t`/`#f`, `#\char`, `()` with no nil, only `#f` false,
-`define`/`lambda`/`let`/`if`/`quote`/`set!`/`begin`/`cond`). Numerics: unboxed
-fixnums plus heap-boxed flonums (see below); bignums/rationals are optional later.
+Scope: a small **Scheme-*inspired* Lisp** — not R7RS-conformant, and that is a
+deliberate choice (2026-06). Scheme syntax/semantics (`#t`/`#f`, `#\char`, `()`
+with no nil, only `#f` false) and special forms `quote`/`quasiquote`/`if`/
+`define`/`lambda`/`let`/`let*`/`letrec`/named-`let`/`set!`/`begin`/`cond`/`and`/
+`or`/`when`/`unless`/`while`/`case`, plus a Scheme-defined prelude. Numerics:
+unboxed fixnums + heap-boxed flonums; bignums/rationals optional later.
+
+**Cut (2026-06), to keep the substrate small:** `syntax-rules` **macros** and
+**`call/cc`** + the exception/`values` system were implemented, validated, then
+removed. The common derived forms (`when`/`unless`/`case`/`while`) are kept as
+cheap interpreter special cases instead of macros (a future JIT recognizes them
+directly; macros' real payoff — *program-defined* syntax — isn't needed yet, and
+nothing in the prelude depended on the macro engine). `call/cc` was the
+lowest-value / highest-subtlety piece. Both can return if a concrete need (a
+driver/IPC DSL → macros; coroutines → continuations) arises. Consequently R7RS
+conformance (the chibi `r7rs-tests.scm` suite) is **no longer a goal** — it was
+only ever a way to validate correctness, which the per-feature host suites do.
 
 ### Floating point is in scope (corrected)
 
@@ -242,24 +255,24 @@ behind a VM.
   need a VM value stack and is not currently planned.
 - **Bytecode VM — deferred.** Pure optimization; revisit only on a measured need
   or if a moving GC is wanted.
+- **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
+  roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against
   `common/`; wire the output sink to DEBUG_PRINT; host-function FFI to expose
-  existing C servers; the native-ISR → Scheme-task event/continuation bridge.
+  existing C servers; the native-ISR → Scheme-task event bridge.
 - **Then — concurrency primitives** (the atomic box / CAS-of-root), **capabilities**
-  (W7 environments), **macros + call/cc** (unlock the full chibi r7rs suite),
-  **driver MMIO/bytevector primitives**, the **single-level-store persistence
-  layer**, the **foreign-native jail**.
+  (W7-style environments), **driver MMIO/bytevector primitives**, the
+  **single-level-store persistence layer**, the **foreign-native jail**.
 
 Each phase is independently reviewable. Moving/persistent GC, JIT, and persistence are
 explicitly later phases the earlier ones are designed not to preclude.
 
-## Conformance testing
+## Testing
 
-Beyond the per-phase host harnesses, validate against an external suite once the
-language is rich enough. North star: **chibi-scheme `r7rs-tests.scm`** (the
-portable R7RS-small suite). Caveat: standard suites use `define-syntax`/`call/cc`
-in their own harness, so a full run waits on basic `syntax-rules` + `call/cc` +
-error handling. We have fixnums + flonums; the rational/bignum sections of the
-numeric tower remain expected-skip until those land. Near-term: a thunk-based `(test expr => expected)` harness (no
-macros needed) over a curated subset matching the current feature level, grown
-as features land — failures drive the worklist.
+Per-phase host harnesses (`libs/lisp/test/`) plus a thunk-based
+`(test expr => expected)` corpus (`conformance.scm`, ~70 cases) exercise the
+whole language host-side. Full R7RS conformance (the chibi `r7rs-tests.scm`
+suite) is **not** a goal — this is a Scheme-*inspired* Lisp, not R7RS; the suite
+was only ever a correctness check, which the host harnesses provide. (It would
+also require `define-syntax`/`call/cc`, which were cut, and the full numeric
+tower.)
