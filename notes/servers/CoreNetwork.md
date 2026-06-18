@@ -54,6 +54,55 @@ permitting) ICMP echo should now be answered. Note QEMU slirp's ICMP support is
 limited and host→guest reachability is restricted, so a packet-trace or a
 TAP/bridge setup is the reliable way to verify, not a host `ping`.
 
+## UDP + reliable delivery (RDT)
+
+A general UDP layer and a reliable transport on top of it, exported for any
+service to use (public headers in `servers/inc/CoreNetwork/`):
+
+- **UDP** (`udp.c`, `CoreNetwork/udp.h`): a small spinlock-guarded port table.
+  `udp_bind(port, handler, ctx)` / `udp_unbind(port)` register a handler; the
+  rx demux (`udp_ipv4_rx`) validates the checksum (pseudo-header; `csum==0` means
+  "absent"), looks up the bound port, and — crucially — copies the handler out
+  **under the lock then releases it before calling**, so a handler may reply via
+  `udp_send_to` without self-deadlocking. The handler is given the sender's
+  ip/mac/port, so a reply needs no outbound ARP (we answer the captured MAC).
+  `udp_send_to` builds the UDP header + pseudo-header checksum and sends via
+  `ipv4_tx`. The pseudo-header sum is factored (`udp_ipv4_pseudo_sum`) so the rx
+  verify and tx build paths cannot drift.
+- **RDT** (`rdt.c`, `CoreNetwork/rdt.h`): a minimal **R**eliable **D**elivery
+  **T**ransport for shipping a named blob to the device far faster than the serial
+  bridge. It is **responder-driven and stop-and-wait**: the *host* owns all
+  retransmission and the device only ACKs what it has, so there are **no
+  device-side timers** and a dropped datagram costs one host timeout, never a
+  device hang (the same design as the serial `recv_blob`). One datagram = one
+  `rdt_hdr_t` + trailing (the blob name for START, a chunk for DATA). The device
+  keeps a small transfer table (START allocates the buffer, DATA appends at a
+  cumulative offset and ACKs `recd`, an out-of-order/duplicate DATA re-ACKs
+  current progress) and a completed-transfer memo so a retransmitted final DATA
+  re-ACKs FIN idempotently without re-running the sink. `rdt_listen(port, cb, ctx)`
+  binds a UDP port and fires `cb` with the assembled blob. Hostile inputs are
+  bounded: `RDT_MAX_BLOB` cap on the declared length, a fixed transfer-table size
+  with round-robin eviction, and a per-datagram checksum.
+- **Interface address override** (`net_dev.c`): `cardinal.ip=A.B.C.D` on the
+  kernel command line overrides `NET_DEFAULT_IPV4` at registration time — a small
+  stepping stone toward DHCP, and what lets a QEMU run pick the slirp address.
+- **Consumer** (`servers/CoreNetDebug/`): a separate, optional server gated by the
+  `cardinal.netdbg` cmdline flag. It binds UDP 1337 (echo, for liveness/latency)
+  and `rdt_listen`s 1338 (reliable upload, logging the blob name/len/FNV-1a
+  digest). Host side: `scripts/cardinal-net.py ping|upload`.
+
+### Runtime validation (2026-06, QEMU slirp, virtio-net)
+
+End-to-end with `cardinal.netdbg cardinal.ip=10.0.2.15` and
+`-device virtio-net-pci -netdev user,hostfwd=udp::13370-:1337,hostfwd=udp::13380-:1338`:
+`cardinal-net.py ping` got 5/5 echo replies, and `upload` of a 5000-byte blob
+completed with 0 retransmits, the guest logging a digest identical to the host's.
+(The `rtl8139` driver, by contrast, never delivers RX to `network_rx_packet`, so
+it cannot drive this — a separate driver gap, noted in AUDIT.) The UDP demux,
+checksum, `udp_send_to`, and full RDT state machine (reassembly, cumulative ACK,
+duplicate/out-of-order re-ACK, oversize/bad-magic/bad-csum rejection) are also
+covered by in-OS SysTest loopback tests that craft frames and capture tx.
+
 ## RX length handling (hardened)
 
 The receive path treats all header length fields as untrusted. The virtio-net
@@ -89,19 +138,22 @@ learned only from actual ARP traffic).
 These were left as notes rather than code because each constrains the system
 design and should be decided deliberately, in line with the microkernel model:
 
-1. **Socket / port API + userspace surface.** How services and userspace bind
-   ports and receive datagrams (a `SysUser` syscall family? a `SysObj` object
-   per socket? a shared-memory ring?). This is the biggest decision and gates
-   UDP/TCP delivery, the "raw queue" TODOs, and any real application.
+1. **Userspace socket surface.** In-kernel services can now bind UDP ports
+   (`udp_bind`) and run a reliable transport (`rdt_listen`), which unblocks
+   kernel-side consumers like `CoreNetDebug`. What remains deferred is the
+   *userspace* surface — how a userspace task binds a port and receives datagrams
+   (a `SysUser` syscall family? a `SysObj` object per socket? a shared-memory
+   ring?) — and the "raw queue" TODO for unhandled protocols. TCP also needs this.
 2. **TX path architecture.** A proper transmit path wants a per-device tx queue,
    a tx worker task draining it to the driver, and outbound ARP resolution
    (hold the packet, emit an ARP request, retry/timeout on reply). The current
    inline-from-RX send and the broadcast-only `network_tx_packet` are
    placeholders for this.
-3. **Interface addressing / configuration.** Static IP is hard-coded
-   (`NET_DEFAULT_IPV4`). Real addressing needs per-interface config (registry or
-   userspace) and **DHCP**. Subnet mask, gateway, and a routing table all live
-   here.
+3. **Interface addressing / configuration.** The default IP is still build-time
+   (`NET_DEFAULT_IPV4`), now overridable per-boot via the `cardinal.ip=` cmdline.
+   Real addressing still needs per-interface config (registry or userspace) and
+   **DHCP** (RDT-style UDP services make a DHCP client straightforward now).
+   Subnet mask, gateway, and a routing table all live here.
 4. **IPv4 options / fragmentation / reassembly.** Only `ihl == 5`, unfragmented
    datagrams are meaningfully handled.
 5. **TCP.** Not started; needs the socket API (1) and the tx path (2) first.
