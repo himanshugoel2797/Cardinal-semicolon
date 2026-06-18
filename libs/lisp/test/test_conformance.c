@@ -3,7 +3,7 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-// Host runner for the curated R7RS conformance subset (conformance.scm). Loads
+// Host runner for the curated R7RS conformance subset (conformance.clp). Loads
 // the script, evaluates it with output wired to stdout, and checks the global
 // `fail` counter the in-Scheme harness maintains. argv[1] is the directory the
 // script lives in (passed by build-and-run.sh).
@@ -22,7 +22,7 @@ static void host_out(const char *s, size_t len, void *ctx) {
 int main(int argc, char **argv) {
     const char *dir = argc > 1 ? argv[1] : ".";
     char path[1024];
-    snprintf(path, sizeof(path), "%s/conformance.scm", dir);
+    snprintf(path, sizeof(path), "%s/conformance.clp", dir);
 
     FILE *f = fopen(path, "rb");
     if (f == NULL) {
