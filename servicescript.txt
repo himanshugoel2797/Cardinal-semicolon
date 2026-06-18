@@ -12,9 +12,9 @@ LOAD:./usb_hid.celf
 LOAD:./usb_storage.celf
 LOAD:./usb_hub.celf
 LOAD:./usb_serial.celf
+CALL:sysdebug_shell_if_flagged
 LOAD:./CoreDriver.celf
 CALL:coredisplay_postinit
-CALL:sysdebug_shell_if_flagged
 #USER:./mana.celf
 CALL:task_release_aps
 CALL:test_run_all

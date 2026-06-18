@@ -2,6 +2,8 @@
 #include "debug_log.h"
 #include "elf.h"
 #include "boot_information.h"
+#include "module_def.h"
+#include "initrd.h"
 #include "SysDebug/csmux.h"
 
 #include "font.h"
@@ -70,6 +72,11 @@ static uint64_t dbg_hex(const char **s)
     return v;
 }
 
+// Buffer for a signed .celf module streamed in over serial by the `load`
+// command. Lets new debug/experiment code be pushed and run over the bridge
+// without reflashing the boot medium.
+static uint8_t g_loadbuf[256 * 1024];
+
 // Serial I/O for the interactive PANIC shell, routed through the shared console
 // UART (csmux.c) so it follows any ACPI-SPCR retarget instead of assuming the
 // legacy 0x3f8 COM1 port.
@@ -84,6 +91,69 @@ static char serial_input()
     while ((b = csmux_uart_getb()) < 0)
         ;
     return (char)b;
+}
+
+// Read one byte, but give up after `spins` empty polls instead of blocking
+// forever -- so a dropped byte mid-transfer can't wedge the receiver.
+// csmux_uart_getb is ~1 PIO read/iteration, so a few million spins is a
+// sub-second bound: long enough to ride out bridge latency, short enough to
+// recover a loss. Returns the byte or -1 on timeout.
+#define RECV_SPIN 8000000ULL
+static int recv_byte_to(uint64_t spins)
+{
+    for (uint64_t i = 0; i < spins; i++)
+    {
+        int b = csmux_uart_getb();
+        if (b >= 0)
+            return b;
+    }
+    return -1;
+}
+
+// Receive `len` bytes into `buf` over the lossy, flow-control-less serial bridge
+// using a chunked + checksummed + acked protocol (the host's send_blob mirrors
+// it): for each 512-byte chunk the sender appends a 1-byte sum; we reply 'A' if
+// it matches or 'R' to request a resend (also on a read timeout / short chunk).
+// A dropped byte then costs one chunk retransmit instead of hanging the whole
+// transfer -- which is exactly what the old blind fixed-count read did. Returns
+// true when all `len` bytes are in, false if the link gives up.
+#define RECV_CHUNK 256   //must match the host send_blob chunk size
+static bool recv_blob(uint8_t *buf, uint64_t len, void (*out)(char))
+{
+    uint64_t recd = 0;
+    int fails = 0;
+    while (recd < len)
+    {
+        uint64_t clen = (len - recd < RECV_CHUNK) ? (len - recd) : RECV_CHUNK;
+        uint32_t sum = 0;
+        bool ok = true;
+        for (uint64_t i = 0; i < clen; i++)
+        {
+            int b = recv_byte_to(RECV_SPIN);
+            if (b < 0) { ok = false; break; }
+            buf[recd + i] = (uint8_t)b;
+            sum += (uint8_t)b;
+        }
+        int csum = ok ? recv_byte_to(RECV_SPIN) : -1;
+        //ACK/NAK are control bytes (0x06/0x15), not printable, so the bridge's
+        //injected text beacons on the return path can't be misread as an ack.
+        if (ok && csum >= 0 && (uint8_t)sum == (uint8_t)csum)
+        {
+            recd += clen;
+            fails = 0;
+            out((char)0x06);
+        }
+        else
+        {
+            //Drain stragglers (short timeout) so the resend re-aligns, then NAK.
+            while (recv_byte_to(200000) >= 0)
+                ;
+            if (++fails > 200)
+                return false;
+            out((char)0x15);
+        }
+    }
+    return true;
 }
 
 static void render_char(char c)
@@ -324,6 +394,96 @@ int debug_shell(char (*input_stream)(), void (*output_stream)(char))
                 {
                     print_hexdump((void *)a, 64);
                 }
+            }
+
+            // load <hexlen> : receive a signed .celf of <hexlen> bytes raw over
+            // serial, then load + relocate it and call its module_init -- so new
+            // debug/experiment code can be pushed and run without reflashing.
+            else if (strncmp(cmd_buf, "load ", 5) == 0)
+            {
+                cmd_fnd = true;
+                //load <hexlen> [hexarg] : stream a .celf and call module_init(arg).
+                //arg is the module_init argument -- e.g. a PCI driver's ECAM
+                //address (the RTL8169 needs 0xe0100000). Defaults to 0 for
+                //no-arg (Sys-style) modules.
+                const char *p = cmd_buf + 5;
+                uint64_t len = dbg_hex(&p);
+                while (*p == ' ') p++;
+                uint64_t arg = (*p) ? dbg_hex(&p) : 0;
+                if (len == 0 || len > sizeof(g_loadbuf))
+                {
+                    print_stream(output_stream, "load: bad length\r\n");
+                }
+                else
+                {
+                    //Signal readiness, then receive len bytes (chunked/acked).
+                    print_stream(output_stream, "load: send now\r\n");
+                    if (!recv_blob(g_loadbuf, len, output_stream))
+                    {
+                        print_stream(output_stream, "load: rx failed\r\n");
+                        clear_buf = true;
+                        goto load_done;
+                    }
+
+                    ModuleHeader *hdr = (ModuleHeader *)g_loadbuf;
+                    if (strncmp(hdr->magic, MODULE_HEADER_MAGIC, 4) != 0)
+                    {
+                        print_stream(output_stream, "load: bad CELF magic\r\n");
+                    }
+                    else
+                    {
+                        int (*entry)() = NULL;
+                        if (elf_load(hdr->data, hdr->uncompressed_len, &entry) || entry == NULL)
+                            print_stream(output_stream, "load: elf_load failed\r\n");
+                        else
+                        {
+                            print_stream(output_stream, "load: calling module_init\r\n");
+                            int r = ((int (*)(void *))entry)((void *)(uintptr_t)arg);
+                            print_stream(output_stream, "load: module_init ret=");
+                            print_uint64((uint64_t)(int64_t)r, 16);
+                            print_stream(output_stream, "\r\n");
+                        }
+                    }
+load_done:;
+                }
+            }
+            // upload <name> <hexlen> : stream <hexlen> raw bytes and register
+            // them as an initrd overlay shadowing file <name>. Any boot file --
+            // a module .celf, devices.txt, a boot script -- can thus be supplied
+            // over serial so the rest of boot uses it, no reflash. Enter the
+            // shell before the consumer runs (servicescript CALLs it before
+            // CoreDriver), set overlays, then `q` to continue.
+            else if (strncmp(cmd_buf, "upload ", 7) == 0)
+            {
+                cmd_fnd = true;
+                const char *p = cmd_buf + 7;
+                char name[100];
+                int n = 0;
+                while (*p == ' ') p++;
+                while (*p && *p != ' ' && n < 99) name[n++] = *p++;
+                name[n] = 0;
+                uint64_t len = dbg_hex(&p);
+                if (name[0] == 0 || len == 0 || len > sizeof(g_loadbuf))
+                {
+                    print_stream(output_stream, "upload: bad name/length\r\n");
+                }
+                else
+                {
+                    print_stream(output_stream, "upload: send now\r\n");
+                    if (!recv_blob(g_loadbuf, len, output_stream))
+                        print_stream(output_stream, "upload: rx failed\r\n");
+                    else if (Initrd_AddOverlay(name, g_loadbuf, len) == 0)
+                        print_stream(output_stream, "upload: overlay added\r\n");
+                    else
+                        print_stream(output_stream, "upload: overlay full\r\n");
+                }
+            }
+            // q : leave the debug shell and let boot continue (so overlaid files
+            // and serial-loaded drivers take effect once boot resumes).
+            else if (cmd_buf[0] == 'q' && (cmd_buf[1] == 0 || cmd_buf[1] == ' '))
+            {
+                print_stream(output_stream, "continuing boot\r\n");
+                return 0;
             }
 
             if (!cmd_fnd)
