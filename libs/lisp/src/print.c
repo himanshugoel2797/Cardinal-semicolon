@@ -95,17 +95,16 @@ static void print_val(sink *s, lisp_value v) {
     }
     if (lisp_is_imm(v)) {
         switch (lisp_imm_subtype(v)) {
-            case LISP_IMM_NIL: emit_cstr(s, "nil"); return;
-            case LISP_IMM_FALSE: emit_cstr(s, "false"); return;
-            case LISP_IMM_TRUE: emit_cstr(s, "true"); return;
+            case LISP_IMM_FALSE: emit_cstr(s, "#f"); return;
+            case LISP_IMM_TRUE: emit_cstr(s, "#t"); return;
             case LISP_IMM_EMPTY: emit_cstr(s, "()"); return;
             case LISP_IMM_EOF: emit_cstr(s, "#<eof>"); return;
             case LISP_IMM_CHAR: {
-                // Reader-faithful \c for printable ASCII; an unambiguous
-                // non-readable form otherwise (UTF-8 encoding is a later phase).
+                // Reader-faithful #\c for printable ASCII; an unambiguous
+                // non-readable form otherwise (named chars / UTF-8 are later).
                 uint32_t cp = lisp_char_val(v);
                 if (cp >= 0x21 && cp <= 0x7e) {
-                    emit_ch(s, '\\');
+                    emit_cstr(s, "#\\");
                     emit_ch(s, (char)cp);
                 } else {
                     emit_cstr(s, "#<char ");
