@@ -15,21 +15,21 @@
 #define IPV4_ADDR(a, b, c, d) \
     ((uint32_t)(a) | ((uint32_t)(b) << 8) | ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
 
-// Default static IPv4 address for an ethernet interface.
-//
-// FIXME(DHCP): hardcoded to 10.43.0.116, a free address on the real test LAN, so
-// the RTL8111G on the AtomicPi answers ARP / replies to ping end-to-end until a
-// DHCP client lands. (Was 10.0.2.15, QEMU slirp's guest address -- restore that,
-// or better, make this per-interface configurable, when wiring DHCP.) Per-
-// interface addressing / DHCP / a config surface remain future work -- see
-// notes/servers/CoreNetwork.md.
-#define NET_DEFAULT_IPV4 IPV4_ADDR(10, 43, 0, 116)
+// Fallback static IPv4 address for an ethernet interface. No longer used on the
+// default path: an interface now runs DHCP unless the cmdline pins a static
+// address with "cardinal.ip=A.B.C.D" (see net_dev.c). Kept as a documented
+// last-resort constant (e.g. for a DHCP-less static build); 10.0.2.15 is QEMU
+// slirp's guest address. See notes/servers/CoreNetwork.md.
+#define NET_DEFAULT_IPV4 IPV4_ADDR(10, 0, 2, 15)
 
 typedef struct {
     network_device_type_t type;
     network_device_desc_t device;
     uint8_t mac[6];
-    uint32_t ip;  // IPv4 address, network byte order (see IPV4_ADDR)
+    uint32_t ip;       // IPv4 address, network byte order (see IPV4_ADDR)
+    uint32_t netmask;  // subnet mask, network byte order (0 = unset)
+    uint32_t gateway;  // default gateway, network byte order (0 = unset)
+    uint32_t dns;      // primary DNS server, network byte order (0 = unset)
     int idx;
 } interface_def_t;
 

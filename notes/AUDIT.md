@@ -541,11 +541,13 @@ behind `CARDFS_SELFTEST` (off). A userspace file-I/O path remains TODO. `intel_w
 `module_init` early-returns before any init. `CoreNetwork` ARP/ICMP/IPv4-rx and a
 minimal tx path are implemented (echo/ARP reply work), and now also a **UDP layer**
 (port bind/unbind + `udp_send_to`) and a general **reliable delivery transport
-(RDT)** over UDP — responder-driven, no device-side timers — plus a `cardinal.ip=`
-cmdline override of the interface address (stepping stone toward DHCP). The new
-`CoreNetDebug` server (cmdline-gated by `cardinal.netdbg`) consumes these to offer
-a UDP echo + reliable named-blob upload for fast, swap-free network debug. See
-`notes/servers/CoreNetwork.md`; TCP and the userspace socket API remain TODO and
+(RDT)** over UDP — responder-driven, no device-side timers — and a **DHCP client**
+(default-on; `cardinal.ip=` forces a static address) that acquires ip/netmask/
+gateway/dns and renews at T1. The new `CoreNetDebug` server (cmdline-gated by
+`cardinal.netdbg`) consumes the UDP/RDT layers to offer a UDP echo + reliable
+named-blob upload for fast, swap-free network debug. See
+`notes/servers/CoreNetwork.md`; TCP, a routing table (the DHCP gateway is stored
+but nothing routes through it yet), and the userspace socket API remain TODO and
 are documented there as deferred design decisions. Matches the README status notes.
 
 ### [FIXED] virtio-net header is 10 bytes but the modern device needs 12

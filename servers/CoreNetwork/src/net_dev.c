@@ -13,21 +13,22 @@
 
 #include "boot_information.h"
 #include "net_priv.h"
+#include "dhcp.h"
 #include "CoreNetwork/driver.h"
+#include "SysTest/test.h"
 
-// Pick the IPv4 address to assign a freshly-registered interface. If the kernel
-// command line carries "cardinal.ip=A.B.C.D", parse and use that; otherwise fall
-// back to NET_DEFAULT_IPV4. This is a small stepping stone toward DHCP/per-
-// interface configuration -- and it lets a QEMU run override the build-time
-// default (e.g. cardinal.ip=10.0.2.15 for slirp) without a rebuild.
-static uint32_t resolve_interface_ip(void) {
+// If the kernel command line pins a static address with "cardinal.ip=A.B.C.D",
+// parse it into *out (network order) and return true; otherwise return false, in
+// which case the interface runs DHCP instead. Every length is validated, so a
+// malformed value falls through to DHCP rather than producing a garbage address.
+static bool cmdline_static_ip(uint32_t *out) {
     CardinalBootInfo *bi = GetBootInfo();
     if (bi == NULL)
-        return NET_DEFAULT_IPV4;
+        return false;
 
     const char *s = strstr(bi->Cmdline, "cardinal.ip=");
     if (s == NULL)
-        return NET_DEFAULT_IPV4;
+        return false;
     s += sizeof("cardinal.ip=") - 1;
 
     uint32_t oct[4] = {0, 0, 0, 0};
@@ -43,7 +44,7 @@ static uint32_t resolve_interface_ip(void) {
             digits++;
         }
         if (v > 255)
-            return NET_DEFAULT_IPV4;  // not a valid octet -> reject the whole quad
+            return false;  // not a valid octet -> reject the whole quad
         oct[n++] = v;
         if (n < 4) {
             if (*s != '.')
@@ -52,8 +53,9 @@ static uint32_t resolve_interface_ip(void) {
         }
     }
     if (n != 4)
-        return NET_DEFAULT_IPV4;  // not a complete dotted quad
-    return IPV4_ADDR(oct[0], oct[1], oct[2], oct[3]);
+        return false;  // not a complete dotted quad
+    *out = IPV4_ADDR(oct[0], oct[1], oct[2], oct[3]);
+    return true;
 }
 
 list_t dev_list;
@@ -86,17 +88,25 @@ int network_register(network_device_desc_t *desc, void **network_handle)
     local_spinlock_unlock(&desc->lock);
     local_spinlock_unlock(&dev_list_lock);
 
+    // A static cmdline address skips DHCP; otherwise the interface comes up at
+    // 0.0.0.0 and a DHCP client (started below, after the list lock is released)
+    // fills in the address/netmask/gateway/DNS.
+    uint32_t static_ip = 0;
+    bool use_dhcp = !cmdline_static_ip(&static_ip);
+
+    interface_def_t *def = (interface_def_t *)malloc(sizeof(interface_def_t));
+    if (def == NULL)
+        return -1;
+
     local_spinlock_lock(&interface_list_lock);
     {
-        interface_def_t *def = (interface_def_t *)malloc(sizeof(interface_def_t));
-        if (def == NULL) {
-            local_spinlock_unlock(&interface_list_lock);
-            return -1;
-        }
         def->type = devType;
         def->device = *desc;
         def->idx = devIDs[def->type]++;
-        def->ip = resolve_interface_ip();
+        def->ip = use_dhcp ? 0 : static_ip;
+        def->netmask = 0;
+        def->gateway = 0;
+        def->dns = 0;
         for (int i = 0; i < 6; i++)
             def->mac[i] = mac[i];
 
@@ -105,6 +115,14 @@ int network_register(network_device_desc_t *desc, void **network_handle)
         list_append(&interface_list, def);
     }
     local_spinlock_unlock(&interface_list_lock);
+
+    // Spawn DHCP outside the list lock (it binds a UDP port and creates a task).
+    // Skipped under SysTest: the mock interfaces registered by the tests must not
+    // spin up a background DHCP task that binds port 68 and races the tests' tx
+    // capture -- the DHCP protocol logic is covered by direct unit tests of the
+    // pure helpers instead.
+    if (use_dhcp && !test_mode_active())
+        dhcp_start(def);
 
     return 0;
 }

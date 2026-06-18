@@ -83,9 +83,10 @@ service to use (public headers in `servers/inc/CoreNetwork/`):
   binds a UDP port and fires `cb` with the assembled blob. Hostile inputs are
   bounded: `RDT_MAX_BLOB` cap on the declared length, a fixed transfer-table size
   with round-robin eviction, and a per-datagram checksum.
-- **Interface address override** (`net_dev.c`): `cardinal.ip=A.B.C.D` on the
-  kernel command line overrides `NET_DEFAULT_IPV4` at registration time — a small
-  stepping stone toward DHCP, and what lets a QEMU run pick the slirp address.
+- **Interface addressing** (`net_dev.c`): an interface runs **DHCP by default**
+  (see below); `cardinal.ip=A.B.C.D` on the kernel command line forces a static
+  address instead and skips DHCP. `NET_DEFAULT_IPV4` is now only a documented
+  last-resort constant, off the default path.
 - **Consumer** (`servers/CoreNetDebug/`): a separate, optional server gated by the
   `cardinal.netdbg` cmdline flag. It binds UDP 1337 (echo, for liveness/latency)
   and `rdt_listen`s 1338 (reliable upload, logging the blob name/len/FNV-1a
@@ -102,6 +103,41 @@ it cannot drive this — a separate driver gap, noted in AUDIT.) The UDP demux,
 checksum, `udp_send_to`, and full RDT state machine (reassembly, cumulative ACK,
 duplicate/out-of-order re-ACK, oversize/bad-magic/bad-csum rejection) are also
 covered by in-OS SysTest loopback tests that craft frames and capture tx.
+
+## DHCP client (`dhcp.c`, `inc/dhcp.h`)
+
+Automatic interface addressing over the UDP layer. Lives in CoreNetwork because
+it sets fields in the private `interface_def_t`; it needs **no outbound ARP** —
+DISCOVER/REQUEST are broadcast, and renewal unicasts to the server's *learned*
+source MAC (the same responder-driven trick the rest of the stack uses).
+
+- **Default-on**: `network_register` brings an interface up at `0.0.0.0` and calls
+  `dhcp_start` unless `cardinal.ip=` pinned a static address. (Skipped under
+  SysTest so mock interfaces don't spawn a background client — the protocol is
+  unit-tested via the pure helpers instead.)
+- **Pure helpers** (unit-tested): `dhcp_build` (DISCOVER/REQUEST — BOOTP header,
+  magic cookie, broadcast flag, options 53/50/54/55), `dhcp_parse` (reply →
+  msg-type/yiaddr/server-id/subnet/router/dns/lease, every option length bounds-
+  checked), `dhcp_apply` (write ip/netmask/gateway/dns into the interface).
+- **Driver**: a per-interface `dhcp_client` task runs the state machine —
+  INIT→SELECTING (broadcast DISCOVER, await OFFER) → REQUESTING (broadcast
+  REQUEST, await ACK/NAK) → BOUND → RENEWING (at T1 = lease/2, **unicast** REQUEST
+  to the learned server MAC). Retransmits with exponential backoff (1–8s),
+  bounded per phase; NAK or renewal failure restarts from DISCOVER with the
+  address cleared. The port-68 rx handler (`dhcp_rx`) only matches the reply to a
+  slot by interface + current xid and stashes it (no sleeping in rx context); the
+  task polls the slot between short `task_sleep`s. A fresh xid per transaction
+  avoids matching stale replies.
+
+### Runtime validation (2026-06, QEMU slirp, virtio-net)
+
+Booting the normal ISO with **no `cardinal.ip`** (just `cardinal.netdbg`) and a
+`virtio-net-pci` on slirp, the guest auto-configured from slirp's DHCP server:
+`[DHCP] bound 10.0.2.15 gw 10.0.2.2 mask 255.255.255.0 lease 86400s`, and
+`cardinal-net.py ping` then got 3/3 echoes on that address — proving it came from
+DHCP, not a static default. `dhcp_build`/`dhcp_parse`/`dhcp_apply` also have
+deterministic in-OS SysTest coverage (field/option layout, OFFER/ACK/NAK parsing,
+wrong-xid / bad-cookie / truncated-option rejection).
 
 ## RX length handling (hardened)
 
@@ -149,11 +185,14 @@ design and should be decided deliberately, in line with the microkernel model:
    (hold the packet, emit an ARP request, retry/timeout on reply). The current
    inline-from-RX send and the broadcast-only `network_tx_packet` are
    placeholders for this.
-3. **Interface addressing / configuration.** The default IP is still build-time
-   (`NET_DEFAULT_IPV4`), now overridable per-boot via the `cardinal.ip=` cmdline.
-   Real addressing still needs per-interface config (registry or userspace) and
-   **DHCP** (RDT-style UDP services make a DHCP client straightforward now).
-   Subnet mask, gateway, and a routing table all live here.
+3. **Interface addressing / configuration.** Addressing is now done by a **DHCP
+   client** (default; `cardinal.ip=` forces static) which learns ip/netmask/
+   gateway/dns and renews at T1. What remains: a routing table (the gateway is
+   stored on the interface but nothing routes through it yet — TCP/off-link TX
+   will need that plus outbound ARP, item 2), a DNS *resolver* (we store the
+   server address but don't query it), and a config/query surface (registry or
+   userspace) for the acquired values. DHCP refinements deferred: ARP-probe
+   duplicate-address detection, RELEASE/DECLINE, and multi-interface fairness.
 4. **IPv4 options / fragmentation / reassembly.** Only `ihl == 5`, unfragmented
    datagrams are meaningfully handled.
 5. **TCP.** Not started; needs the socket API (1) and the tx path (2) first.

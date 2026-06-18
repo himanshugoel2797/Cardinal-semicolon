@@ -20,6 +20,7 @@
 #include "ip.h"
 #include "udp.h"
 #include "icmp.h"
+#include "dhcp.h"
 #include "checksum.h"
 
 // The *_HEADER_LEN constants are what the protocol code uses to size and offset
@@ -719,6 +720,199 @@ static void test_rdt_reject(test_ctx_t *ctx) {
     TEST_CHECK_MSG(ctx, g_rdt_count == 0, "a rejected RDT datagram still delivered a blob");
 }
 
+// --- DHCP (pure helpers: build / parse / apply) -------------------------------
+
+// Find the value bytes of the first option with `code` in a built DHCP message,
+// or NULL. Mirrors the parser's bounds discipline.
+static const uint8_t *dhcp_find_opt(const uint8_t *buf, int len, uint8_t code) {
+    const dhcp_msg_t *m = (const dhcp_msg_t *)buf;
+    const uint8_t *o = m->options;
+    int optlen = len - (int)sizeof(dhcp_msg_t);
+    int off = 0;
+    while (off < optlen) {
+        uint8_t c = o[off++];
+        if (c == DHCP_OPT_END)
+            break;
+        if (c == DHCP_OPT_PAD)
+            continue;
+        if (off >= optlen)
+            break;
+        uint8_t l = o[off++];
+        if (off + (int)l > optlen)
+            break;
+        if (c == code)
+            return o + off;
+        off += l;
+    }
+    return NULL;
+}
+
+// Append a TLV option; returns the new offset.
+static int dhcp_put_opt(uint8_t *o, int off, uint8_t code, uint8_t len, const void *val) {
+    o[off++] = code;
+    o[off++] = len;
+    if (len > 0)
+        memcpy(o + off, val, len);
+    return off + len;
+}
+
+// Build a server reply (OFFER/ACK/NAK) for the parse tests. IPv4 args are network
+// order; lease is host seconds. A zero IPv4 arg omits that option.
+static int build_dhcp_reply(uint8_t *buf, uint32_t xid, const uint8_t *mac,
+                            uint32_t yiaddr, uint8_t msgtype, uint32_t server_id,
+                            uint32_t mask, uint32_t router, uint32_t dns,
+                            uint32_t lease_secs) {
+    dhcp_msg_t *m = (dhcp_msg_t *)buf;
+    memset(m, 0, sizeof(*m));
+    m->op = DHCP_OP_BOOTREPLY;
+    m->htype = DHCP_HTYPE_ETHERNET;
+    m->hlen = DHCP_HLEN_ETHERNET;
+    m->xid = TO_BE_FRM_LE_32(xid);
+    memcpy(m->chaddr, mac, 6);
+    m->yiaddr = yiaddr;
+    m->cookie = TO_BE_FRM_LE_32(DHCP_MAGIC_COOKIE);
+
+    uint8_t *o = m->options;
+    int off = 0;
+    uint8_t mt = msgtype;
+    off = dhcp_put_opt(o, off, DHCP_OPT_MSGTYPE, 1, &mt);
+    if (server_id)
+        off = dhcp_put_opt(o, off, DHCP_OPT_SERVER_ID, 4, &server_id);
+    if (mask)
+        off = dhcp_put_opt(o, off, DHCP_OPT_SUBNET, 4, &mask);
+    if (router)
+        off = dhcp_put_opt(o, off, DHCP_OPT_ROUTER, 4, &router);
+    if (dns)
+        off = dhcp_put_opt(o, off, DHCP_OPT_DNS, 4, &dns);
+    {
+        uint32_t lease_be = TO_BE_FRM_LE_32(lease_secs);
+        off = dhcp_put_opt(o, off, DHCP_OPT_LEASE, 4, &lease_be);
+    }
+    o[off++] = DHCP_OPT_END;
+    return (int)sizeof(dhcp_msg_t) + off;
+}
+
+// dhcp_build must emit a well-formed BOOTREQUEST: right op/htype/hlen, xid,
+// broadcast flag, magic cookie, our MAC, a message-type option, a parameter
+// request list, and (only for a selecting REQUEST) the requested-IP/server-id.
+static void test_dhcp_build(test_ctx_t *ctx) {
+    uint8_t buf[576];
+
+    int n = dhcp_build(buf, sizeof(buf), DHCP_DISCOVER, mock_if_mac, 0xAABBCCDDu,
+                       0, 0, 0, true);
+    TEST_CHECK(ctx, n > 0);
+    dhcp_msg_t *m = (dhcp_msg_t *)buf;
+    TEST_CHECK_EQ_U(ctx, m->op, DHCP_OP_BOOTREQUEST);
+    TEST_CHECK_EQ_U(ctx, m->htype, DHCP_HTYPE_ETHERNET);
+    TEST_CHECK_EQ_U(ctx, m->hlen, DHCP_HLEN_ETHERNET);
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_32(m->xid), 0xAABBCCDDu);
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_16(m->flags), DHCP_FLAG_BROADCAST);
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_32(m->cookie), DHCP_MAGIC_COOKIE);
+    TEST_CHECK(ctx, memcmp(m->chaddr, mock_if_mac, 6) == 0);
+
+    const uint8_t *mt = dhcp_find_opt(buf, n, DHCP_OPT_MSGTYPE);
+    TEST_CHECK(ctx, mt != NULL && mt[0] == DHCP_DISCOVER);
+    TEST_CHECK(ctx, dhcp_find_opt(buf, n, DHCP_OPT_PARAM_LIST) != NULL);
+    // DISCOVER carries no requested-IP / server-id.
+    TEST_CHECK(ctx, dhcp_find_opt(buf, n, DHCP_OPT_REQUESTED_IP) == NULL);
+    TEST_CHECK(ctx, dhcp_find_opt(buf, n, DHCP_OPT_SERVER_ID) == NULL);
+
+    // A selecting REQUEST echoes the offered IP and the server id.
+    uint32_t req_ip = IPV4_ADDR(10, 0, 2, 15);
+    uint32_t srv = IPV4_ADDR(10, 0, 2, 2);
+    n = dhcp_build(buf, sizeof(buf), DHCP_REQUEST, mock_if_mac, 1, 0, req_ip, srv, true);
+    TEST_CHECK(ctx, n > 0);
+    const uint8_t *ri = dhcp_find_opt(buf, n, DHCP_OPT_REQUESTED_IP);
+    TEST_CHECK(ctx, ri != NULL);
+    if (ri != NULL) {
+        uint32_t v;
+        memcpy(&v, ri, 4);
+        TEST_CHECK_EQ_U(ctx, v, req_ip);
+    }
+    const uint8_t *si = dhcp_find_opt(buf, n, DHCP_OPT_SERVER_ID);
+    TEST_CHECK(ctx, si != NULL);
+    if (si != NULL) {
+        uint32_t v;
+        memcpy(&v, si, 4);
+        TEST_CHECK_EQ_U(ctx, v, srv);
+    }
+}
+
+// dhcp_parse must extract type/yiaddr/options from a well-formed reply, classify
+// a NAK, reject a wrong xid / bad cookie, and not run off the end of a truncated
+// option list.
+static void test_dhcp_parse(test_ctx_t *ctx) {
+    uint8_t buf[576];
+    uint32_t xid = 0x12345678u;
+    uint32_t yi = IPV4_ADDR(10, 0, 2, 15);
+    uint32_t sid = IPV4_ADDR(10, 0, 2, 2);
+    uint32_t mask = IPV4_ADDR(255, 255, 255, 0);
+    uint32_t gw = IPV4_ADDR(10, 0, 2, 2);
+    uint32_t dns = IPV4_ADDR(10, 0, 2, 3);
+
+    int n = build_dhcp_reply(buf, xid, mock_if_mac, yi, DHCP_OFFER, sid, mask, gw, dns, 3600);
+    dhcp_result_t r;
+    TEST_CHECK_EQ_U(ctx, dhcp_parse(buf, n, xid, mock_if_mac, &r), 0);
+    TEST_CHECK_EQ_U(ctx, r.msg_type, DHCP_OFFER);
+    TEST_CHECK_EQ_U(ctx, r.yiaddr, yi);
+    TEST_CHECK_EQ_U(ctx, r.server_id, sid);
+    TEST_CHECK_EQ_U(ctx, r.netmask, mask);
+    TEST_CHECK_EQ_U(ctx, r.gateway, gw);
+    TEST_CHECK_EQ_U(ctx, r.dns, dns);
+    TEST_CHECK_EQ_U(ctx, r.lease_secs, 3600);
+
+    // Wrong xid -> rejected.
+    TEST_CHECK(ctx, dhcp_parse(buf, n, xid + 1, mock_if_mac, &r) != 0);
+
+    // Wrong MAC -> rejected.
+    uint8_t other_mac[6] = {0, 1, 2, 3, 4, 5};
+    TEST_CHECK(ctx, dhcp_parse(buf, n, xid, other_mac, &r) != 0);
+
+    // Corrupt magic cookie -> rejected.
+    ((dhcp_msg_t *)buf)->cookie ^= 0xFFu;
+    TEST_CHECK(ctx, dhcp_parse(buf, n, xid, mock_if_mac, &r) != 0);
+    ((dhcp_msg_t *)buf)->cookie ^= 0xFFu;  // restore
+
+    // A NAK is classified as such.
+    n = build_dhcp_reply(buf, xid, mock_if_mac, 0, DHCP_NAK, sid, 0, 0, 0, 0);
+    TEST_CHECK_EQ_U(ctx, dhcp_parse(buf, n, xid, mock_if_mac, &r), 0);
+    TEST_CHECK_EQ_U(ctx, r.msg_type, DHCP_NAK);
+
+    // Truncated option list (length cuts off after the message-type option, no
+    // END): parse must stop cleanly, still reporting the type it did see.
+    n = build_dhcp_reply(buf, xid, mock_if_mac, yi, DHCP_ACK, sid, mask, gw, dns, 100);
+    int cut = (int)sizeof(dhcp_msg_t) + 3;  // header + just the 3-byte msgtype opt
+    TEST_CHECK_EQ_U(ctx, dhcp_parse(buf, cut, xid, mock_if_mac, &r), 0);
+    TEST_CHECK_EQ_U(ctx, r.msg_type, DHCP_ACK);
+    TEST_CHECK_EQ_U(ctx, r.netmask, 0);  // never reached the (cut-off) options
+
+    // Shorter than the fixed header -> rejected, no over-read.
+    TEST_CHECK(ctx, dhcp_parse(buf, (int)sizeof(dhcp_msg_t) - 1, xid, mock_if_mac, &r) != 0);
+}
+
+// dhcp_apply writes the acquired config into the interface.
+static void test_dhcp_apply(test_ctx_t *ctx) {
+    interface_def_t *iface = make_mock_interface(ctx);
+    if (iface == NULL) {
+        TEST_FAIL(ctx, "interface registration failed");
+        return;
+    }
+    dhcp_result_t r;
+    memset(&r, 0, sizeof(r));
+    r.msg_type = DHCP_ACK;
+    r.yiaddr = IPV4_ADDR(192, 168, 1, 50);
+    r.netmask = IPV4_ADDR(255, 255, 255, 0);
+    r.gateway = IPV4_ADDR(192, 168, 1, 1);
+    r.dns = IPV4_ADDR(8, 8, 8, 8);
+    r.lease_secs = 7200;
+
+    dhcp_apply(iface, &r);
+    TEST_CHECK_EQ_U(ctx, iface->ip, r.yiaddr);
+    TEST_CHECK_EQ_U(ctx, iface->netmask, r.netmask);
+    TEST_CHECK_EQ_U(ctx, iface->gateway, r.gateway);
+    TEST_CHECK_EQ_U(ctx, iface->dns, r.dns);
+}
+
 void corenetwork_register_tests(void) {
     if (!test_mode_active())
         return;
@@ -827,6 +1021,39 @@ void corenetwork_register_tests(void) {
             .suite = "CoreNetwork",
             .name = "rdt_reject",
             .fn = test_rdt_reject,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "dhcp_build",
+            .fn = test_dhcp_build,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "dhcp_parse",
+            .fn = test_dhcp_parse,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "dhcp_apply",
+            .fn = test_dhcp_apply,
             .run = TEST_RUN_INLINE,
             .flags = TEST_FLAG_NONE,
         };
