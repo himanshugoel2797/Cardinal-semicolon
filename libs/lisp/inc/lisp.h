@@ -69,7 +69,8 @@ typedef enum {
     LISP_OBJ_ENV = 5,        // lexical environment frame (runtime plumbing)
     LISP_OBJ_CLOSURE = 6,    // lambda: params + body + captured env
     LISP_OBJ_PRIMITIVE = 7,  // built-in procedure backed by a C function
-    // reserved for later phases: VECTOR, MAP, BYTEVECTOR, BOX, ...
+    LISP_OBJ_VECTOR = 8,     // immutable flat vector
+    // reserved for later phases: MAP, BYTEVECTOR, BOX, ...
 } lisp_objtype;
 
 // Header bit layout: [7:0] type, [15:8] gc flags, [63:16] aux (type-specific,
@@ -103,6 +104,11 @@ typedef struct {
     lisp_header h;
     char data[];  // length in header aux (NOT NUL-reliant; may contain NULs)
 } lisp_string;
+
+typedef struct {
+    lisp_header h;
+    lisp_value items[];  // length in header aux
+} lisp_vector;
 
 // --- Tag predicates ---------------------------------------------------------
 
@@ -148,6 +154,7 @@ static inline bool lisp_is_pair(lisp_value v) { return lisp_is_objtype(v, LISP_O
 static inline bool lisp_is_symbol(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_SYMBOL); }
 static inline bool lisp_is_keyword(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_KEYWORD); }
 static inline bool lisp_is_string(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_STRING); }
+static inline bool lisp_is_vector(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_VECTOR); }
 
 static inline lisp_value lisp_car(lisp_value v) { return ((lisp_pair *)lisp_obj(v))->car; }
 static inline lisp_value lisp_cdr(lisp_value v) { return ((lisp_pair *)lisp_obj(v))->cdr; }
@@ -155,9 +162,19 @@ static inline lisp_value lisp_cdr(lisp_value v) { return ((lisp_pair *)lisp_obj(
 // --- Constructors (value.c) -------------------------------------------------
 
 lisp_value lisp_cons(lisp_value car, lisp_value cdr);
+lisp_value lisp_make_string(const char *data, size_t len);
+
+// Symbols and keywords are interned (intern.c): equal names => identical object,
+// so eq? is a pointer compare and dispatch is cheap.
 lisp_value lisp_make_symbol(const char *name, size_t len);
 lisp_value lisp_make_keyword(const char *name, size_t len);
-lisp_value lisp_make_string(const char *data, size_t len);
+
+// Immutable vectors. lisp_vector_set_init is for constructors building a fresh
+// vector only -- there is no vector-set! in the language (immutable values).
+lisp_value lisp_make_vector(size_t len, lisp_value fill);
+size_t lisp_vector_length(lisp_value v);
+lisp_value lisp_vector_ref(lisp_value v, size_t i);
+void lisp_vector_set_init(lisp_value v, size_t i, lisp_value x);
 
 const char *lisp_named_name(lisp_value v);  // symbol/keyword name (NUL-terminated)
 size_t lisp_named_len(lisp_value v);
@@ -186,6 +203,12 @@ bool lisp_env_set(lisp_value env, lisp_value sym, lisp_value val);
 // tail calls in if/begin/let/application are handled by an internal loop (full
 // continuations + an explicit VM stack arrive in Phase 3).
 lisp_value lisp_eval(lisp_value expr, lisp_value env, const char **err);
+
+// Apply an already-evaluated procedure to an argument array. Used by eval and by
+// higher-order primitives (map/for-each/apply). Returns LISP_UNDEF + *err on
+// error. (Unlike eval's application path this does not tail-loop; it is for the
+// bounded call depths of library primitives.)
+lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **err);
 
 // A fresh global environment with the built-in primitives installed.
 lisp_value lisp_default_env(void);

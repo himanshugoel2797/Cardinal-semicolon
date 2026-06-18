@@ -128,6 +128,19 @@ static void print_val(sink *s, lisp_value v) {
             emit(s, lisp_named_name(v), lisp_named_len(v));
             return;
         case LISP_OBJ_STRING: emit_string_literal(s, v); return;
+        case LISP_OBJ_VECTOR: {
+            emit_cstr(s, "#(");
+            size_t n = lisp_vector_length(v);
+            for (size_t i = 0; i < n; i++) {
+                if (i > 0)
+                    emit_ch(s, ' ');
+                print_val(s, lisp_vector_ref(v, i));
+            }
+            emit_ch(s, ')');
+            return;
+        }
+        case LISP_OBJ_CLOSURE: emit_cstr(s, "#<procedure>"); return;
+        case LISP_OBJ_PRIMITIVE: emit_cstr(s, "#<primitive>"); return;
         default: emit_cstr(s, "#<obj>"); return;
     }
 }

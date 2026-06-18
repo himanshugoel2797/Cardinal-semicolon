@@ -319,6 +319,73 @@ tail:
             expr = lisp_car(rest);
             goto tail;
         }
+
+        if (is_form(head, "and")) {
+            // (and) => #t; short-circuit on the first #f; last is in tail pos.
+            if (!lisp_is_pair(rest))
+                return LISP_TRUE;
+            while (lisp_is_pair(lisp_cdr(rest))) {
+                lisp_value v = lisp_eval(lisp_car(rest), env, err);
+                if (v == LISP_UNDEF && err != NULL && *err != NULL)
+                    return LISP_UNDEF;
+                if (!lisp_truthy(v))
+                    return LISP_FALSE;
+                rest = lisp_cdr(rest);
+            }
+            expr = lisp_car(rest);
+            goto tail;
+        }
+
+        if (is_form(head, "or")) {
+            // (or) => #f; return the first truthy value; last is in tail pos.
+            if (!lisp_is_pair(rest))
+                return LISP_FALSE;
+            while (lisp_is_pair(lisp_cdr(rest))) {
+                lisp_value v = lisp_eval(lisp_car(rest), env, err);
+                if (v == LISP_UNDEF && err != NULL && *err != NULL)
+                    return LISP_UNDEF;
+                if (lisp_truthy(v))
+                    return v;
+                rest = lisp_cdr(rest);
+            }
+            expr = lisp_car(rest);
+            goto tail;
+        }
+
+        if (is_form(head, "cond")) {
+            // (cond (test body...) ... (else body...)). A clause with no body
+            // returns its test value; the chosen body's last form is tail.
+            lisp_value clauses = rest;
+            while (lisp_is_pair(clauses)) {
+                lisp_value clause = lisp_car(clauses);
+                if (!lisp_is_pair(clause))
+                    return fail(err, "malformed cond clause");
+                lisp_value test = lisp_car(clause);
+                lisp_value body = lisp_cdr(clause);
+                lisp_value testval = LISP_TRUE;
+                bool take = is_form(test, "else");
+                if (!take) {
+                    testval = lisp_eval(test, env, err);
+                    if (testval == LISP_UNDEF && err != NULL && *err != NULL)
+                        return LISP_UNDEF;
+                    take = lisp_truthy(testval);
+                }
+                if (take) {
+                    if (!lisp_is_pair(body))
+                        return testval;
+                    while (lisp_is_pair(lisp_cdr(body))) {
+                        lisp_eval(lisp_car(body), env, err);
+                        if (err != NULL && *err != NULL)
+                            return LISP_UNDEF;
+                        body = lisp_cdr(body);
+                    }
+                    expr = lisp_car(body);
+                    goto tail;
+                }
+                clauses = lisp_cdr(clauses);
+            }
+            return LISP_UNDEF;  // no clause matched
+        }
     }
 
     // Procedure application: evaluate operator and operands.
@@ -362,6 +429,27 @@ tail:
         }
         expr = lisp_car(body);  // tail call: loop instead of recursing
         goto tail;
+    }
+    return fail(err, "attempt to call a non-procedure");
+}
+
+lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **err) {
+    if (err != NULL)
+        *err = NULL;
+    if (lisp_is_objtype(proc, LISP_OBJ_PRIMITIVE))
+        return ((lisp_prim_t *)lisp_obj(proc))->fn(args, argc, err);
+    if (lisp_is_objtype(proc, LISP_OBJ_CLOSURE)) {
+        lisp_closure_t *c = (lisp_closure_t *)lisp_obj(proc);
+        lisp_value newenv = bind_params(c->params, args, argc, c->env, err);
+        if (newenv == LISP_UNDEF)
+            return LISP_UNDEF;
+        lisp_value result = LISP_UNDEF;  // empty body -> unspecified
+        for (lisp_value body = c->body; lisp_is_pair(body); body = lisp_cdr(body)) {
+            result = lisp_eval(lisp_car(body), newenv, err);
+            if (result == LISP_UNDEF && err != NULL && *err != NULL)
+                return LISP_UNDEF;
+        }
+        return result;
     }
     return fail(err, "attempt to call a non-procedure");
 }
