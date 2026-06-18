@@ -3,40 +3,21 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-// Phase 1: a tree-walking Scheme evaluator with lexical environments and proper
-// tail calls (via an internal loop, not C recursion) for if/begin/let and
-// procedure application. Special forms: quote, if, define, lambda, let, begin,
-// set!. Everything else is procedure application. Full first-class continuations
-// and a bytecode VM are Phase 3; GC is Phase 4 (this phase leaks via malloc).
+// A tree-walking Scheme evaluator with lexical environments and proper tail
+// calls (via an internal loop, not C recursion) for if/begin/let/cond/and/or and
+// procedure application. Special forms: quote, quasiquote, if, define, lambda,
+// let/let*/letrec/named-let, begin, set!, cond, and, or. Everything else is
+// procedure application. Objects are GC-allocated (gc.c); first-class
+// continuations and a bytecode VM are still future work.
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "internal.h"  // env/closure/primitive layouts + lisp_gc_alloc
 #include "lisp.h"
 
-#define MAX_ARGS 64  // Phase 1 cap on call arity; raised when the VM lands.
-
-// --- Heap layouts (private to the evaluator) --------------------------------
-
-typedef struct {
-    lisp_header h;
-    lisp_value parent;    // enclosing env, or LISP_EMPTY at the top level
-    lisp_value bindings;  // assoc list ((sym . val) ...), mutated in place
-} lisp_env_t;
-
-typedef struct {
-    lisp_header h;
-    lisp_value params;  // list of parameter symbols
-    lisp_value body;    // list of body expressions
-    lisp_value env;     // captured definition environment
-} lisp_closure_t;
-
-typedef struct {
-    lisp_header h;
-    lisp_primitive_fn fn;
-    lisp_value name;  // symbol, for diagnostics
-} lisp_prim_t;
+#define MAX_ARGS 64  // cap on call arity (and rest-arg spread); raised with the VM.
 
 // --- Small helpers ----------------------------------------------------------
 
@@ -64,7 +45,7 @@ static bool symbol_eq(lisp_value a, lisp_value b) {
 // --- Constructors -----------------------------------------------------------
 
 lisp_value lisp_make_closure(lisp_value params, lisp_value body, lisp_value env) {
-    lisp_closure_t *c = (lisp_closure_t *)malloc(sizeof(lisp_closure_t));
+    lisp_closure_t *c = (lisp_closure_t *)lisp_gc_alloc(sizeof(lisp_closure_t));
     if (c == NULL)
         return LISP_UNDEF;
     c->h.header = LISP_MK_HEADER(LISP_OBJ_CLOSURE, 0);
@@ -75,23 +56,25 @@ lisp_value lisp_make_closure(lisp_value params, lisp_value body, lisp_value env)
 }
 
 lisp_value lisp_make_primitive(lisp_primitive_fn fn, const char *name) {
-    lisp_prim_t *p = (lisp_prim_t *)malloc(sizeof(lisp_prim_t));
+    lisp_prim_t *p = (lisp_prim_t *)lisp_gc_alloc(sizeof(lisp_prim_t));
     if (p == NULL)
         return LISP_UNDEF;
     p->h.header = LISP_MK_HEADER(LISP_OBJ_PRIMITIVE, 0);
     p->fn = fn;
+    // Initialize name to a non-pointer BEFORE the nested allocation below: that
+    // alloc can trigger a GC which would trace this (already-listed) object and
+    // read p->name. LISP_UNDEF is an immediate, so trace() ignores it.
+    p->name = LISP_UNDEF;
     p->name = lisp_make_symbol(name, strlen(name));
-    if (p->name == LISP_UNDEF) {
-        free(p);
-        return LISP_UNDEF;
-    }
+    if (p->name == LISP_UNDEF)
+        return LISP_UNDEF;  // p is GC-tracked; the collector reclaims it
     return lisp_from_obj(p);
 }
 
 // --- Environments -----------------------------------------------------------
 
 lisp_value lisp_make_env(lisp_value parent) {
-    lisp_env_t *e = (lisp_env_t *)malloc(sizeof(lisp_env_t));
+    lisp_env_t *e = (lisp_env_t *)lisp_gc_alloc(sizeof(lisp_env_t));
     if (e == NULL)
         return LISP_UNDEF;
     e->h.header = LISP_MK_HEADER(LISP_OBJ_ENV, 0);
