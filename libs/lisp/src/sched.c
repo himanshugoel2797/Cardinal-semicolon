@@ -34,6 +34,11 @@ static lisp_value g_current = LISP_EMPTY;  // a context value, or LISP_EMPTY
 
 static lisp_ctx_t *as_ctx(lisp_value v) { return (lisp_ctx_t *)lisp_obj(v); }
 
+// The context currently being resumed (LISP_EMPTY when none). A primitive uses
+// this to refer to "self" -- e.g. to register the running context as the waiter
+// for a hardware event before parking it.
+lisp_value lisp_current_ctx(void) { return g_current; }
+
 // Mutate a pair's cdr (the run queue and mailboxes are evaluator-owned plumbing,
 // not user-visible data; the immutable-pair rule does not apply to them).
 static void set_cdr(lisp_value pair, lisp_value v) {

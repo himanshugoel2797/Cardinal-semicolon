@@ -449,7 +449,26 @@ behind a VM.
   `int64` integer-part cast in the printer). **Deferred to K5:** the native-ISR →
   event → wake-context bridge, which needs the scheduler to be the persistent
   per-core loop (the blocking `recv`/wake software path it rides on is already
-  proven in K2). *(Next: K5 — interpreter-as-scheduler / SysTaskMgr collapse.)*
+  proven in K2).
+- **Persistent Lisp scheduler + ISR-wake bridge** *(in progress — "K5a"; `modules/SysLisp`)*.
+  The runtime is now a **long-lived kernel task** (created by `module_init`) that
+  owns the env + scheduler and runs the Lisp scheduler loop persistently, rather
+  than a one-shot self-test. It runs as a task **alongside** SysTaskMgr (which
+  still schedules the OS's native tasks) — proven by its self-test output
+  interleaving with the boot's driver loads — so the system stays fully bootable
+  while the native task model is dismantled incrementally. The native-ISR → event
+  → wake-context **bridge** is wired: a minimal native ISR (interrupt context, no
+  allocation) bumps an event counter and calls the ISR-safe `lisp_ctx_wake`
+  (a single word write) to mark a parked context runnable; the scheduler task
+  sleeps on the counter via `task_monitor` and re-runs on the event. (The
+  synthetic timer source for the in-OS demo isn't acquirable under QEMU here — the
+  HPET interrupt sub-timers aren't free and the APIC local timer is the OS
+  scheduler's — so the bridge's first real exercise will be a migrated driver's
+  own IRQ.) **Plan (chosen 2026-06): incremental, stays bootable** — turn the
+  drivers off, then migrate them to Lisp contexts one at a time (each driver's IRQ
+  driving its Lisp context through the bridge), and delete SysTaskMgr's native
+  scheduler LAST, once nothing native remains. *(Next: disable drivers → minimal
+  boot into the Lisp runtime → migrate drivers one by one.)*
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against
