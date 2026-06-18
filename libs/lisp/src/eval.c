@@ -1093,13 +1093,19 @@ static lisp_value ctx_alloc(lisp_value expr, lisp_value env) {
     cx->env = env;
     cx->accum = LISP_UNDEF;
     cx->kont = LISP_EMPTY;
+    cx->mailbox = LISP_EMPTY;
     cx->status = LISP_CTX_EVAL;
+    cx->blocked = 0;
     cx->err = NULL;
     cx->budget = 0;
     return lisp_from_obj(cx);
 }
 
 lisp_value lisp_ctx_make(lisp_value expr, lisp_value env) { return ctx_alloc(expr, env); }
+
+lisp_ctx_status lisp_ctx_state(lisp_value ctxv) {
+    return (lisp_ctx_status)((lisp_ctx_t *)lisp_obj(ctxv))->status;
+}
 
 lisp_ctx_status lisp_ctx_resume(lisp_value ctxv, int64_t budget) {
     lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);

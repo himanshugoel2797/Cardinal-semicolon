@@ -404,8 +404,18 @@ behind a VM.
   are now thin wrappers that drive a context to completion, so all existing
   semantics + the host suite/conformance are unchanged. A bytecode VM, if built,
   sits on top as a pure-perf layer; the bytecode itself stays deferred until
-  profiled-necessary. *(Next per the build plan: contexts + a cooperative
-  scheduler, then per-context GC — see the K-staging in the working plan.)*
+  profiled-necessary.
+- **Cooperative scheduler over contexts** *(done — "K2", host-first; `sched.c`)*.
+  A `lisp_sched_t` round-robin scheduler runs contexts as green-thread
+  "processes", each resumed for a reduction slice and preempted at a safe point —
+  so an infinite loop cannot wedge the scheduler. Primitives `spawn`/`yield`/
+  `send`/`recv` give the language-level process model; **copy-on-send** deep-copies
+  messages (shared-nothing IPC; interned symbols are the shared-immutable region,
+  not copied), and `recv` blocks via a Lisp loop over a non-blocking mailbox +
+  `%block`/wake. Kept out of `lisp_default_env` (no scheduler dependency in the
+  base language). The globals (current scheduler/context) become per-core in the
+  kernel. *(Next per the build plan: per-context GC, then kernelization — see the
+  K-staging in the working plan.)*
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against
