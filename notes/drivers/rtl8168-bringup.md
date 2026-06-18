@@ -177,3 +177,61 @@ Confirmed live over the serial bridge using an in-kernel peek/poke debug shell
 - **TX**: wrote a 60-byte frame to the TX buffer, set descriptor 0
   `OWN|FS|LS|len`, kicked TPPoll (`0x38 ← 0x40 NPQ`) → `ISR` TOK set and the
   descriptor's OWN bit cleared. Frame transmitted.
+
+## Driver-path bugs the register-level test didn't catch
+
+Register-level RX/TX worked, but driving it through the interrupt handler +
+CoreNetwork surfaced four more bugs. End state: `ping 10.43.0.116` answered
+(ARP + ICMP) from a same-segment host, RX processed continuously.
+
+1. **TX never kicked TPPoll.** `rtl8169_tx` set the descriptor `OWN=1` but never
+   wrote TPPoll (`0x38`/NPQ), so the NIC never fetched the queued descriptor —
+   the frame sat forever, no TOK, no ARP reply. The 8168 only polls the normal-
+   priority queue when NPQ is written. Fixed: write `TPPOLL_REG = TPPOLL_NPQ`
+   after handing the descriptor over.
+2. **Interrupt never re-armed.** The handler serviced the ISR but never re-enabled
+   the NIC's interrupt mask, so an edge-triggered MSI(-X) stopped firing after the
+   first event and RX piled up in the ring with ROK stuck set. Fixed by following
+   the BSD `re_intr` sequence: mask IMR → ACK the full ISR up front → service →
+   re-enable IMR (the 0→enabled transition re-raises for anything still pending).
+3. **Interrupt-enable race.** The NIC's IMR was enabled during init, *before* the
+   MSI-X table was programmed and the handler registered. A message generated for
+   an already-pending RX before the handler existed was delivered to an
+   unregistered vector and lost; edge-triggered MSI-X then never re-fires, wedging
+   interrupts for the whole boot (intermittent — depends on traffic timing). Fixed
+   by ordering: program MSI-X + register handler (`pci_setup_msi_handler`), start
+   the poll task, then enable the device IMR **last** (`rtl8169_enable_interrupts`).
+4. **Self-deadlock on reply (the one that actually blocked ping).** The poll task
+   held `state->lock` across `network_rx_packet`, which runs the stack
+   synchronously: an ARP/ICMP request → `arp_rx`/`icmp` → `ethernet_tx` →
+   `rtl8169_tx`, and `rtl8169_tx` takes the **same** `state->lock` → the poll task
+   deadlocks the instant a reply-triggering frame arrives (IMR stuck masked, ring
+   fills, no more interrupts). Intermittent because pure broadcast noise doesn't
+   trigger a reply. **Rule:** never hold a driver lock across `network_rx_packet`
+   — the RX ring + IMR/ISR are touched only by the single poll task and need no
+   lock; the lock exists solely to serialise TX. Fixed by dropping the lock from
+   the RX path.
+
+Diagnosing #2–#4 needed an interrupt-independent view: a polled RX-ring observer
+(count `OWN==0` descriptors + ISR/IMR + a serviced-IRQ counter) cleanly
+distinguishes "no interrupts delivered" (ring fills, IRQ count flat) from "frames
+processed" (ring drained, IRQ count climbing) from "nothing received" (empty ring,
+ISR ROK clear). The reusable slice of that — an MSI-X cap/table dump — now lives
+in `libs/pci/pci_debug.h` (`pci_msix_debug_dump`).
+
+## Generalized into libs/pci
+
+The one-off BAR/bridge code in this driver became general PCI infrastructure:
+
+- **`libs/pci/pci_alloc.h`** — `pci_assign_bars(device, ecam)` for devices
+  firmware left unconfigured: 64-bit-aware BAR sizing, places the unassigned
+  memory BARs in a free region above the existing assignments, and opens the
+  forwarding window on **every** bridge between the device and the root bus
+  (`pci_bridge_open_window` walks all bridges whose `[secondary,subordinate]`
+  range contains the device's bus, reading them live from config space — so it
+  handles PCIe root ports and nested bridges, not just one level, and *extends*
+  an already-open window rather than clobbering siblings).
+- **`libs/pci/pci_irq.h`** — `pci_setup_msi_handler` does allocate-vector →
+  register-handler → enable-MSI-X in that order, closing the bug-#3 race for any
+  driver.
+- **`libs/pci/pci_debug.h`** — `pci_msix_debug_dump` (above).
