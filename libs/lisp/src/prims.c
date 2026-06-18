@@ -12,13 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "internal.h"
 #include "lisp.h"
 
 static lisp_value prim_err(const char **err, const char *msg) {
     if (err != NULL)
         *err = msg;
-    lisp_ctl_clear();  // a primitive argument error is a plain error
     return LISP_UNDEF;
 }
 
@@ -985,6 +983,17 @@ static lisp_value prim_newline(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// (error message irritants...) signals an error carrying the message. Without a
+// condition/guard system this simply aborts evaluation with the message (the
+// data is NUL-terminated; the caller reads *err before any further allocation).
+static lisp_value prim_error(lisp_value *a, int n, const char **e) {
+    if (n < 1)
+        return prim_err(e, "error: a message argument is required");
+    if (lisp_is_string(a[0]))
+        return prim_err(e, lisp_string_data(a[0]));
+    return prim_err(e, "error");
+}
+
 // --- Installation -----------------------------------------------------------
 
 static void def(lisp_value env, const char *name, lisp_primitive_fn fn) {
@@ -1080,5 +1089,5 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "display", prim_display);
     def(env, "write", prim_write);
     def(env, "newline", prim_newline);
-    // error / raise / call-cc / values are installed by lisp_install_control.
+    def(env, "error", prim_error);
 }

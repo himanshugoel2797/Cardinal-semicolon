@@ -210,8 +210,6 @@ static void print_val(sink *s, lisp_value v, bool readable) {
         case LISP_OBJ_FLONUM: emit_flonum(s, lisp_flonum_val(v)); return;
         case LISP_OBJ_CLOSURE: emit_cstr(s, "#<procedure>"); return;
         case LISP_OBJ_PRIMITIVE: emit_cstr(s, "#<primitive>"); return;
-        case LISP_OBJ_MACRO: emit_cstr(s, "#<macro>"); return;
-        case LISP_OBJ_CONT: emit_cstr(s, "#<continuation>"); return;
         default: emit_cstr(s, "#<obj>"); return;
     }
 }

@@ -107,15 +107,8 @@ static void trace(lisp_value v) {
         case LISP_OBJ_PRIMITIVE:
             mark_push(((lisp_prim_t *)lisp_obj(v))->name);
             break;
-        case LISP_OBJ_MACRO: {
-            lisp_macro_t *m = (lisp_macro_t *)lisp_obj(v);
-            mark_push(m->literals);
-            mark_push(m->rules);
-            mark_push(m->def_env);
-            break;
-        }
         default:
-            break;  // symbol / keyword / string / flonum / continuation are leaves
+            break;  // symbol / keyword / string / flonum are leaves
     }
 }
 
@@ -196,15 +189,12 @@ void lisp_gc_collect(void) {
     if (!build_set())
         return;  // can't validate roots -> skip this cycle (keep everything)
 
-    // Precise roots: the interned-symbol table, and any in-flight nonlocal-exit
-    // value (a raised condition / continuation value lives only in a control.c
-    // static while unwinding, so it is not on the stack).
+    // Precise roots: the interned-symbol table.
     size_t icap;
     lisp_value *itab = lisp_intern_table(&icap);
     for (size_t i = 0; i < icap; i++)
         if (itab[i] != 0)
             mark_push(itab[i]);
-    mark_push(lisp_ctl_value());  // no-op when inactive (LISP_UNDEF is immediate)
 
     // Conservative roots: callee-saved registers, then the C stack.
     uintptr_t regs[6];
