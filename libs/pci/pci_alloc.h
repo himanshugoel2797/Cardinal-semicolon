@@ -80,7 +80,7 @@ static inline uint64_t pci_mmio_used_top(uint64_t ceiling)
     {
         char idx_str[12];
         char key[64] = "HW/PCI/";
-        char *k = strncat(key, itoa(i, idx_str, 16), 56);  //keys are hex (SysReg/pci.c)
+        char *k = strncat(key, itoa((int)i, idx_str, 16), 56);  //keys are hex (SysReg/pci.c)
 
         uint64_t ecam = 0;
         if (registry_readkey_uint(k, "ECAM_ADDR", &ecam) != CS_OK || ecam == 0)
@@ -146,7 +146,7 @@ static inline bool pci_bridge_open_window(uint64_t dev_ecam, uint64_t base, uint
     {
         char idx_str[12];
         char key[64] = "HW/PCI/";
-        char *k = strncat(key, itoa(i, idx_str, 16), 56);
+        char *k = strncat(key, itoa((int)i, idx_str, 16), 56);
         uint64_t ecam = 0;
         if (registry_readkey_uint(k, "ECAM_ADDR", &ecam) != CS_OK || ecam == 0)
             continue;
@@ -164,14 +164,21 @@ static inline bool pci_bridge_open_window(uint64_t dev_ecam, uint64_t base, uint
         volatile uint16_t *command  = (volatile uint16_t *)(cfg + 0x04);
 
         //Reg layout: bits[15:4] = addr[31:20]; the limit's low 20 bits read as F.
+        //Only union with the existing window if the bridge is ALREADY forwarding
+        //memory (command Memory-Space bit set) AND that window is valid
+        //(base <= limit). A bridge firmware left closed reads base==limit==0 with
+        //decode off; treating that as an open [0,1MiB) window would program the
+        //base to 0 and forward the low MMIO range. When closed, just set ours.
         uint64_t lo = want_lo, hi = want_hi;
-        uint16_t ob = *membase, ol = *memlimit;
-        uint64_t exist_lo = ((uint64_t)(ob & 0xFFF0)) << 16;
-        uint64_t exist_hi = (((uint64_t)(ol & 0xFFF0)) << 16) + PCI_BRIDGE_GRAN;
-        if (exist_lo < exist_hi)                    //existing window is open: union with ours
+        if (*command & 0x2)
         {
-            if (exist_lo < lo) lo = exist_lo;
-            if (exist_hi > hi) hi = exist_hi;
+            uint64_t exist_lo = ((uint64_t)(*membase & 0xFFF0)) << 16;
+            uint64_t exist_hi = (((uint64_t)(*memlimit & 0xFFF0)) << 16) + PCI_BRIDGE_GRAN;
+            if (exist_lo < exist_hi)
+            {
+                if (exist_lo < lo) lo = exist_lo;
+                if (exist_hi > hi) hi = exist_hi;
+            }
         }
 
         *membase  = (uint16_t)((lo >> 16) & 0xFFF0);
@@ -197,12 +204,12 @@ static inline uint64_t pci_assign_bars(pci_config_t *device, uint64_t ecam_phys)
 
     device->command.mem_space = 0;                  //disable decode while reprogramming
 
+    //On any failure below, leave memory decode DISABLED (as set on entry): the
+    //caller aborts the device, and re-enabling decode against unassigned or
+    //partially-assigned BARs would let the device decode MMIO at wrong addresses.
     uint64_t winbase = (pci_mmio_used_top(ceiling) + (PCI_BRIDGE_GRAN - 1)) & ~(PCI_BRIDGE_GRAN - 1);
     if (winbase == 0 || winbase >= ceiling)
-    {
-        device->command.mem_space = 1;
         return 0;
-    }
 
     uint64_t reg_bar = 0;
     uint64_t cursor = winbase;
@@ -214,6 +221,8 @@ static inline uint64_t pci_assign_bars(pci_config_t *device, uint64_t ecam_phys)
         if ((b & 0x0F) == 0)
             continue;                               //empty/unimplemented slot
         bool is64 = ((b & 0x6) == 0x4);
+        if (is64 && i + 1 >= 6)
+            continue;                               //malformed 64-bit BAR in last slot
         uint32_t type_bits = b & 0x0F;
         uint64_t size = pci_bar_getsize((volatile uint32_t *)device->bar, i);
         if (size == 0)
@@ -223,10 +232,7 @@ static inline uint64_t pci_assign_bars(pci_config_t *device, uint64_t ecam_phys)
         }
         uint64_t addr = (cursor + size - 1) & ~(size - 1);   //align to BAR size
         if (addr + size > ceiling)                  //out of the host-bridge aperture
-        {
-            device->command.mem_space = 1;
             return 0;
-        }
         device->bar[i] = (uint32_t)(addr & 0xFFFFFFF0) | type_bits;
         if (is64)
             device->bar[i + 1] = (uint32_t)(addr >> 32);
@@ -238,18 +244,12 @@ static inline uint64_t pci_assign_bars(pci_config_t *device, uint64_t ecam_phys)
     }
 
     if (reg_bar == 0)
-    {
-        device->command.mem_space = 1;
         return 0;
-    }
 
     //Open the forwarding window over the actual assigned extent on every bridge
     //on the path to the root bus.
     if (!pci_bridge_open_window(ecam_phys, winbase, cursor - winbase))
-    {
-        device->command.mem_space = 1;
-        return 0;
-    }
+        return 0;                                   //leave decode disabled (see above)
 
     device->command.mem_space = 1;
     device->command.busmaster = 1;
