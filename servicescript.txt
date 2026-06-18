@@ -7,6 +7,7 @@ LOAD:./CoreAudio.celf
 LOAD:./CoreInput.celf
 LOAD:./ps2.celf
 LOAD:./CoreNetwork.celf
+LOAD:./CoreNetDebug.celf
 LOAD:./CoreUsb.celf
 LOAD:./usb_hid.celf
 LOAD:./usb_storage.celf

@@ -7,11 +7,54 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdlist.h>
 #include <cardinal/local_spinlock.h>
 
+#include "boot_information.h"
 #include "net_priv.h"
 #include "CoreNetwork/driver.h"
+
+// Pick the IPv4 address to assign a freshly-registered interface. If the kernel
+// command line carries "cardinal.ip=A.B.C.D", parse and use that; otherwise fall
+// back to NET_DEFAULT_IPV4. This is a small stepping stone toward DHCP/per-
+// interface configuration -- and it lets a QEMU run override the build-time
+// default (e.g. cardinal.ip=10.0.2.15 for slirp) without a rebuild.
+static uint32_t resolve_interface_ip(void) {
+    CardinalBootInfo *bi = GetBootInfo();
+    if (bi == NULL)
+        return NET_DEFAULT_IPV4;
+
+    const char *s = strstr(bi->Cmdline, "cardinal.ip=");
+    if (s == NULL)
+        return NET_DEFAULT_IPV4;
+    s += sizeof("cardinal.ip=") - 1;
+
+    uint32_t oct[4] = {0, 0, 0, 0};
+    int n = 0;
+    while (n < 4) {
+        if (*s < '0' || *s > '9')
+            break;  // each octet must start with a digit
+        uint32_t v = 0;
+        int digits = 0;
+        while (*s >= '0' && *s <= '9' && digits < 3) {
+            v = v * 10 + (uint32_t)(*s - '0');
+            s++;
+            digits++;
+        }
+        if (v > 255)
+            return NET_DEFAULT_IPV4;  // not a valid octet -> reject the whole quad
+        oct[n++] = v;
+        if (n < 4) {
+            if (*s != '.')
+                break;  // malformed -> reject the whole thing
+            s++;
+        }
+    }
+    if (n != 4)
+        return NET_DEFAULT_IPV4;  // not a complete dotted quad
+    return IPV4_ADDR(oct[0], oct[1], oct[2], oct[3]);
+}
 
 list_t dev_list;
 static int dev_list_lock = 0;
@@ -46,10 +89,14 @@ int network_register(network_device_desc_t *desc, void **network_handle)
     local_spinlock_lock(&interface_list_lock);
     {
         interface_def_t *def = (interface_def_t *)malloc(sizeof(interface_def_t));
+        if (def == NULL) {
+            local_spinlock_unlock(&interface_list_lock);
+            return -1;
+        }
         def->type = devType;
         def->device = *desc;
         def->idx = devIDs[def->type]++;
-        def->ip = NET_DEFAULT_IPV4;
+        def->ip = resolve_interface_ip();
         for (int i = 0; i < 6; i++)
             def->mac[i] = mac[i];
 

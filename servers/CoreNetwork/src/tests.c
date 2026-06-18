@@ -11,6 +11,8 @@
 
 #include "CoreNetwork/driver.h"
 #include "CoreNetwork/net.h"
+#include "CoreNetwork/udp.h"
+#include "CoreNetwork/rdt.h"
 
 #include "net_priv.h"
 #include "arp.h"
@@ -323,15 +325,398 @@ static void test_udp_malformed_drop(test_ctx_t *ctx) {
     udp->len = TO_BE_FRM_LE_16(1);  // malformed: shorter than the UDP header
     udp->csum = 0;
 
-    int rc = udp_ipv4_rx(iface, ip, (int)sizeof(ipv4_t), (int)sizeof(udp_t));
+    int rc = udp_ipv4_rx(iface, peer_mac, ip, (int)sizeof(ipv4_t), (int)sizeof(udp_t));
     TEST_CHECK_EQ_U(ctx, rc, 0);
     TEST_CHECK_MSG(ctx, mock_tx_count == 0,
                    "malformed UDP datagram triggered a transmission");
 
     // Also: a truncated segment (fewer bytes than the UDP header) is dropped.
-    rc = udp_ipv4_rx(iface, ip, (int)sizeof(ipv4_t), (int)sizeof(udp_t) - 1);
+    rc = udp_ipv4_rx(iface, peer_mac, ip, (int)sizeof(ipv4_t), (int)sizeof(udp_t) - 1);
     TEST_CHECK_EQ_U(ctx, rc, 0);
     TEST_CHECK_EQ_U(ctx, mock_tx_count, 0);
+}
+
+// --- UDP send / port-dispatch -------------------------------------------------
+
+// Compute the UDP-over-IPv4 checksum (pseudo-header + segment) the value of
+// which, stored in udp->csum, makes the segment fold to zero. Leaves udp->csum
+// as it found it.
+static uint16_t udp_calc_csum(ipv4_t *ip, udp_t *udp, int seg) {
+    uint16_t save = udp->csum;
+    udp->csum = 0;
+    uint8_t ph[12];
+    memcpy(ph + 0, &ip->src_ip, 4);
+    memcpy(ph + 4, &ip->dst_ip, 4);
+    ph[8] = 0;
+    ph[9] = IP_PROTOCOL_UDP;
+    memcpy(ph + 10, &udp->len, 2);
+    uint32_t s = net_csum_acc(0, ph, sizeof(ph));
+    s = net_csum_acc(s, udp, seg);
+    udp->csum = save;
+    return net_csum_fold(s);
+}
+
+// Build an IPv4+UDP datagram in `backing` (csum=0 -> "no checksum", accepted) and
+// feed it through the real udp_ipv4_rx demux. `backing` must hold
+// sizeof(ipv4_t)+sizeof(udp_t)+plen bytes. dst_ip is the interface IP.
+static void feed_udp(interface_def_t *iface, uint32_t src_ip, uint16_t src_port,
+                     uint16_t dst_port, const void *payload, int plen,
+                     uint8_t *backing) {
+    ipv4_t *ip = (ipv4_t *)backing;
+    memset(ip, 0, sizeof(ipv4_t));
+    ip->version = 4;
+    ip->ihl = 5;
+    ip->protocol = IP_PROTOCOL_UDP;
+    ip->src_ip = src_ip;
+    ip->dst_ip = iface->ip;
+    int seg = (int)sizeof(udp_t) + plen;
+    ip->total_len = TO_BE_FRM_LE_16((uint16_t)((int)sizeof(ipv4_t) + seg));
+
+    udp_t *udp = (udp_t *)ip->body;
+    udp->src_port = TO_BE_FRM_LE_16(src_port);
+    udp->dst_port = TO_BE_FRM_LE_16(dst_port);
+    udp->len = TO_BE_FRM_LE_16((uint16_t)seg);
+    udp->csum = 0;
+    if (plen > 0)
+        memcpy(udp->body, payload, plen);
+
+    udp_ipv4_rx(iface, peer_mac, ip, (int)sizeof(ipv4_t), seg);
+}
+
+static int g_udp_rx_count;
+static uint32_t g_udp_rx_src_ip;
+static uint16_t g_udp_rx_src_port, g_udp_rx_dst_port;
+static int g_udp_rx_len;
+static uint8_t g_udp_rx_buf[64];
+
+static void udp_test_handler(void *c, void *iface, uint32_t src_ip,
+                             const uint8_t *src_mac, uint16_t sp, uint16_t dp,
+                             const void *pl, int len) {
+    (void)c;
+    (void)iface;
+    (void)src_mac;
+    g_udp_rx_count++;
+    g_udp_rx_src_ip = src_ip;
+    g_udp_rx_src_port = sp;
+    g_udp_rx_dst_port = dp;
+    g_udp_rx_len = len;
+    if (len > 0 && len <= (int)sizeof(g_udp_rx_buf))
+        memcpy(g_udp_rx_buf, pl, len);
+}
+
+// udp_send_to must emit a single, well-formed IPv4+UDP frame with valid IPv4 and
+// UDP (pseudo-header) checksums and the requested ports/payload.
+static void test_udp_send_to(test_ctx_t *ctx) {
+    interface_def_t *iface = make_mock_interface(ctx);
+    if (iface == NULL) {
+        TEST_FAIL(ctx, "interface registration failed");
+        return;
+    }
+    reset_tx_capture();
+
+    uint32_t dst_ip = IPV4_ADDR(10, 0, 2, 2);
+    const char *msg = "hello-udp";
+    int mlen = (int)strlen(msg);
+
+    int rc = udp_send_to(iface, dst_ip, peer_mac, 4444, 9999, msg, mlen);
+    TEST_CHECK_EQ_U(ctx, rc, 0);
+    TEST_CHECK_EQ_U(ctx, mock_tx_count, 1);
+
+    int min = (int)(sizeof(ethernet_frame_t) + sizeof(ipv4_t) + sizeof(udp_t)) + mlen;
+    TEST_CHECK(ctx, mock_tx_len >= min);
+    if (mock_tx_len < min)
+        return;
+
+    ethernet_frame_t *eth = (ethernet_frame_t *)mock_tx_frame;
+    TEST_CHECK_EQ_U(ctx, eth->type, ETHERNET_TYPE_IPv4);
+    TEST_CHECK(ctx, memcmp(eth->dst_mac, peer_mac, 6) == 0);
+
+    ipv4_t *ip = (ipv4_t *)eth->body;
+    TEST_CHECK_EQ_U(ctx, ip->protocol, IP_PROTOCOL_UDP);
+    TEST_CHECK_EQ_U(ctx, ip->dst_ip, dst_ip);
+    TEST_CHECK_EQ_U(ctx, ip->src_ip, iface->ip);
+    TEST_CHECK_MSG(ctx, net_checksum16(ip, (int)sizeof(ipv4_t)) == 0,
+                   "udp_send_to produced a bad IPv4 header checksum");
+
+    udp_t *udp = (udp_t *)ip->body;
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_16(udp->src_port), 4444);
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_16(udp->dst_port), 9999);
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_16(udp->len), (uint16_t)((int)sizeof(udp_t) + mlen));
+    TEST_CHECK(ctx, memcmp(udp->body, msg, mlen) == 0);
+    // UDP checksum (with pseudo-header) must validate -> the segment folds to 0.
+    TEST_CHECK_MSG(ctx, udp_calc_csum(ip, udp, (int)sizeof(udp_t) + mlen) == 0 ||
+                            udp->csum != 0,
+                   "udp_send_to left a zero (absent) checksum");
+    {
+        uint8_t ph[12];
+        memcpy(ph + 0, &ip->src_ip, 4);
+        memcpy(ph + 4, &ip->dst_ip, 4);
+        ph[8] = 0;
+        ph[9] = IP_PROTOCOL_UDP;
+        memcpy(ph + 10, &udp->len, 2);
+        uint32_t s = net_csum_acc(0, ph, sizeof(ph));
+        s = net_csum_acc(s, udp, (int)sizeof(udp_t) + mlen);
+        TEST_CHECK_MSG(ctx, net_csum_fold(s) == 0,
+                       "udp_send_to produced a bad UDP checksum");
+    }
+}
+
+// A bound port receives its datagrams (with the sender's ip/ports/payload); a
+// bad UDP checksum is dropped; an unbound port is dropped.
+static void test_udp_rx_dispatch(test_ctx_t *ctx) {
+    interface_def_t *iface = make_mock_interface(ctx);
+    if (iface == NULL) {
+        TEST_FAIL(ctx, "interface registration failed");
+        return;
+    }
+    const uint16_t port = 9001;
+    TEST_CHECK_EQ_U(ctx, udp_bind(port, udp_test_handler, NULL), 0);
+    // Binding the same port twice must fail.
+    TEST_CHECK(ctx, udp_bind(port, udp_test_handler, NULL) != 0);
+
+    uint32_t peer_ip = IPV4_ADDR(10, 0, 2, 77);
+    const char *msg = "ping-payload";
+    int mlen = (int)strlen(msg);
+    uint8_t backing[64];
+
+    g_udp_rx_count = 0;
+    feed_udp(iface, peer_ip, 5555, port, msg, mlen, backing);
+    TEST_CHECK_EQ_U(ctx, g_udp_rx_count, 1);
+    TEST_CHECK_EQ_U(ctx, g_udp_rx_src_ip, peer_ip);
+    TEST_CHECK_EQ_U(ctx, g_udp_rx_src_port, 5555);
+    TEST_CHECK_EQ_U(ctx, g_udp_rx_dst_port, port);
+    TEST_CHECK_EQ_U(ctx, g_udp_rx_len, mlen);
+    TEST_CHECK(ctx, memcmp(g_udp_rx_buf, msg, mlen) == 0);
+
+    // Unbound port -> dropped (handler not called).
+    g_udp_rx_count = 0;
+    feed_udp(iface, peer_ip, 5555, 9002, msg, mlen, backing);
+    TEST_CHECK_EQ_U(ctx, g_udp_rx_count, 0);
+
+    // Non-zero but wrong checksum -> dropped.
+    {
+        ipv4_t *ip = (ipv4_t *)backing;
+        memset(ip, 0, sizeof(ipv4_t));
+        ip->version = 4;
+        ip->ihl = 5;
+        ip->protocol = IP_PROTOCOL_UDP;
+        ip->src_ip = peer_ip;
+        ip->dst_ip = iface->ip;
+        int seg = (int)sizeof(udp_t) + mlen;
+        ip->total_len = TO_BE_FRM_LE_16((uint16_t)((int)sizeof(ipv4_t) + seg));
+        udp_t *udp = (udp_t *)ip->body;
+        udp->src_port = TO_BE_FRM_LE_16(5555);
+        udp->dst_port = TO_BE_FRM_LE_16(port);
+        udp->len = TO_BE_FRM_LE_16((uint16_t)seg);
+        udp->csum = 0;
+        memcpy(udp->body, msg, mlen);
+        uint16_t good = udp_calc_csum(ip, udp, seg);
+        // A value that is neither correct nor zero ("absent") -> must reject.
+        udp->csum = (good == 1) ? 2 : (uint16_t)(good ^ 1);
+
+        g_udp_rx_count = 0;
+        udp_ipv4_rx(iface, peer_mac, ip, (int)sizeof(ipv4_t), seg);
+        TEST_CHECK_MSG(ctx, g_udp_rx_count == 0,
+                       "UDP datagram with a bad checksum was delivered");
+    }
+
+    udp_unbind(port);
+}
+
+// --- RDT reliable transport ---------------------------------------------------
+
+// Build an RDT datagram (header + trailing) into `out`, with a valid checksum,
+// matching servers/inc/CoreNetwork/rdt.h. Returns the total length.
+static int build_rdt(uint8_t *out, uint8_t type, uint8_t flags, uint16_t name_len,
+                     uint32_t xfer_id, uint32_t total_len, uint32_t offset,
+                     uint16_t chunk_len, const void *trailing, int tlen) {
+    rdt_hdr_t *h = (rdt_hdr_t *)out;
+    memset(h, 0, sizeof(*h));
+    h->magic[0] = RDT_MAGIC0;
+    h->magic[1] = RDT_MAGIC1;
+    h->magic[2] = RDT_MAGIC2;
+    h->magic[3] = RDT_MAGIC3;
+    h->type = type;
+    h->flags = flags;
+    h->name_len = TO_BE_FRM_LE_16(name_len);
+    h->xfer_id = TO_BE_FRM_LE_32(xfer_id);
+    h->total_len = TO_BE_FRM_LE_32(total_len);
+    h->offset = TO_BE_FRM_LE_32(offset);
+    h->chunk_len = TO_BE_FRM_LE_16(chunk_len);
+    h->csum = 0;
+    if (trailing != NULL && tlen > 0)
+        memcpy(out + sizeof(rdt_hdr_t), trailing, tlen);
+
+    uint32_t s = net_csum_acc(0, h, (int)sizeof(rdt_hdr_t) - 2);
+    if (trailing != NULL && tlen > 0)
+        s = net_csum_acc(s, out + sizeof(rdt_hdr_t), tlen);
+    h->csum = TO_BE_FRM_LE_16(net_csum_fold(s));
+    return (int)sizeof(rdt_hdr_t) + tlen;
+}
+
+// The most recent ACK the device transmitted (parsed out of the captured frame).
+static rdt_hdr_t *captured_ack(test_ctx_t *ctx) {
+    int off = (int)(sizeof(ethernet_frame_t) + sizeof(ipv4_t) + sizeof(udp_t));
+    if (mock_tx_len < off + (int)sizeof(rdt_hdr_t)) {
+        TEST_FAIL(ctx, "captured frame too short to hold an RDT ACK");
+        return NULL;
+    }
+    return (rdt_hdr_t *)(mock_tx_frame + off);
+}
+
+static int g_rdt_count;
+static int g_rdt_len;
+static uint8_t g_rdt_buf[64];
+static char g_rdt_name[RDT_MAX_NAME];
+
+static void rdt_test_sink(void *c, void *iface, uint32_t src_ip,
+                          const uint8_t *src_mac, uint16_t sp, const char *name,
+                          void *data, int len) {
+    (void)c;
+    (void)iface;
+    (void)src_ip;
+    (void)src_mac;
+    (void)sp;
+    g_rdt_count++;
+    g_rdt_len = len;
+    int i = 0;
+    for (; i < (int)sizeof(g_rdt_name) - 1 && name[i] != '\0'; i++)
+        g_rdt_name[i] = name[i];
+    g_rdt_name[i] = '\0';
+    if (len > 0 && len <= (int)sizeof(g_rdt_buf))
+        memcpy(g_rdt_buf, data, len);
+}
+
+// A full multi-chunk transfer: START handshake, in-order DATA appends with
+// cumulative ACKs, an out-of-order DATA that is re-ACKed (not applied), the
+// completing DATA that fires the sink with the reassembled blob, and a
+// retransmitted final DATA that is idempotently re-ACKed without re-delivering.
+static void test_rdt_transfer(test_ctx_t *ctx) {
+    interface_def_t *iface = make_mock_interface(ctx);
+    if (iface == NULL) {
+        TEST_FAIL(ctx, "interface registration failed");
+        return;
+    }
+    TEST_CHECK_EQ_U(ctx, rdt_listen(9100, rdt_test_sink, NULL), 0);
+
+    uint32_t peer_ip = IPV4_ADDR(10, 0, 2, 88);
+    uint32_t xfer = 0xCAFE1234u;
+    uint8_t data[10];
+    for (int i = 0; i < 10; i++)
+        data[i] = (uint8_t)(0xA0 + i);
+
+    uint8_t pkt[64];
+    uint8_t backing[128];
+    int plen;
+    rdt_hdr_t *ack;
+
+    g_rdt_count = 0;
+    g_rdt_len = -1;
+
+    // START: name "blob", total 10 -> ACK offset 0, no FIN.
+    plen = build_rdt(pkt, RDT_TYPE_START, 0, 4, xfer, 10, 0, 0, "blob", 4);
+    reset_tx_capture();
+    feed_udp(iface, peer_ip, 5000, 9100, pkt, plen, backing);
+    TEST_CHECK_EQ_U(ctx, mock_tx_count, 1);
+    ack = captured_ack(ctx);
+    if (ack == NULL)
+        return;
+    TEST_CHECK_EQ_U(ctx, ack->type, RDT_TYPE_ACK);
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_32(ack->offset), 0);
+    TEST_CHECK(ctx, !(ack->flags & RDT_FLAG_FIN));
+    TEST_CHECK_EQ_U(ctx, g_rdt_count, 0);
+
+    // DATA chunk #0: offset 0, len 4 -> ACK offset 4, no completion.
+    plen = build_rdt(pkt, RDT_TYPE_DATA, 0, 0, xfer, 10, 0, 4, data, 4);
+    reset_tx_capture();
+    feed_udp(iface, peer_ip, 5000, 9100, pkt, plen, backing);
+    ack = captured_ack(ctx);
+    if (ack == NULL)
+        return;
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_32(ack->offset), 4);
+    TEST_CHECK(ctx, !(ack->flags & RDT_FLAG_FIN));
+    TEST_CHECK_EQ_U(ctx, g_rdt_count, 0);
+
+    // Out-of-order DATA (offset 8 while we expect 4) -> re-ACK 4, nothing applied.
+    plen = build_rdt(pkt, RDT_TYPE_DATA, 0, 0, xfer, 10, 8, 2, data + 8, 2);
+    reset_tx_capture();
+    feed_udp(iface, peer_ip, 5000, 9100, pkt, plen, backing);
+    ack = captured_ack(ctx);
+    if (ack == NULL)
+        return;
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_32(ack->offset), 4);
+    TEST_CHECK_EQ_U(ctx, g_rdt_count, 0);
+
+    // DATA chunk #1: offset 4, len 6 -> completes; ACK offset 10 + FIN; sink fires.
+    plen = build_rdt(pkt, RDT_TYPE_DATA, 0, 0, xfer, 10, 4, 6, data + 4, 6);
+    reset_tx_capture();
+    feed_udp(iface, peer_ip, 5000, 9100, pkt, plen, backing);
+    ack = captured_ack(ctx);
+    if (ack == NULL)
+        return;
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_32(ack->offset), 10);
+    TEST_CHECK(ctx, (ack->flags & RDT_FLAG_FIN) != 0);
+    TEST_CHECK_EQ_U(ctx, g_rdt_count, 1);
+    TEST_CHECK_EQ_U(ctx, g_rdt_len, 10);
+    TEST_CHECK_MSG(ctx, memcmp(g_rdt_buf, data, 10) == 0,
+                   "RDT reassembled blob does not match what was sent");
+    TEST_CHECK_MSG(ctx, strcmp(g_rdt_name, "blob") == 0,
+                   "RDT delivered the wrong blob name");
+
+    // Retransmitted final DATA -> idempotent re-ACK with FIN, no second delivery.
+    reset_tx_capture();
+    feed_udp(iface, peer_ip, 5000, 9100, pkt, plen, backing);
+    ack = captured_ack(ctx);
+    if (ack == NULL)
+        return;
+    TEST_CHECK_EQ_U(ctx, TO_LE_FRM_BE_32(ack->offset), 10);
+    TEST_CHECK(ctx, (ack->flags & RDT_FLAG_FIN) != 0);
+    TEST_CHECK_MSG(ctx, g_rdt_count == 1,
+                   "retransmitted final DATA re-delivered the blob");
+}
+
+// Malformed / hostile RDT datagrams must be dropped: an oversized START, a bad
+// magic, and a corrupted checksum all produce no ACK and no delivery.
+static void test_rdt_reject(test_ctx_t *ctx) {
+    interface_def_t *iface = make_mock_interface(ctx);
+    if (iface == NULL) {
+        TEST_FAIL(ctx, "interface registration failed");
+        return;
+    }
+    // Ensure port 9100 is bound to our sink whether or not test_rdt_transfer ran
+    // first: a fresh listen succeeds, a repeat returns -1 but leaves the existing
+    // (identical) binding in place. Either way 9100 is served.
+    rdt_listen(9100, rdt_test_sink, NULL);
+
+    uint32_t peer_ip = IPV4_ADDR(10, 0, 2, 89);
+    uint32_t xfer = 0x0BADBEEFu;
+    uint8_t pkt[64];
+    uint8_t backing[128];
+    int plen;
+
+    g_rdt_count = 0;
+
+    // Oversized START (total_len > RDT_MAX_BLOB) -> dropped, no ACK.
+    plen = build_rdt(pkt, RDT_TYPE_START, 0, 4, xfer, RDT_MAX_BLOB + 1u, 0, 0, "blob", 4);
+    reset_tx_capture();
+    feed_udp(iface, peer_ip, 6000, 9100, pkt, plen, backing);
+    TEST_CHECK_MSG(ctx, mock_tx_count == 0, "oversized START was not rejected");
+
+    // Bad magic -> dropped.
+    plen = build_rdt(pkt, RDT_TYPE_START, 0, 4, xfer, 10, 0, 0, "blob", 4);
+    ((rdt_hdr_t *)pkt)->magic[0] = 'X';
+    reset_tx_capture();
+    feed_udp(iface, peer_ip, 6000, 9100, pkt, plen, backing);
+    TEST_CHECK_MSG(ctx, mock_tx_count == 0, "bad-magic RDT datagram was not rejected");
+
+    // Corrupted checksum (flip a header byte after the csum was computed) -> dropped.
+    plen = build_rdt(pkt, RDT_TYPE_START, 0, 4, xfer, 10, 0, 0, "blob", 4);
+    pkt[5] ^= 0xFF;  // perturb the flags byte; stored csum no longer matches
+    reset_tx_capture();
+    feed_udp(iface, peer_ip, 6000, 9100, pkt, plen, backing);
+    TEST_CHECK_MSG(ctx, mock_tx_count == 0, "bad-checksum RDT datagram was not rejected");
+
+    TEST_CHECK_MSG(ctx, g_rdt_count == 0, "a rejected RDT datagram still delivered a blob");
 }
 
 void corenetwork_register_tests(void) {
@@ -398,6 +783,50 @@ void corenetwork_register_tests(void) {
             .suite = "CoreNetwork",
             .name = "udp_malformed_drop",
             .fn = test_udp_malformed_drop,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "udp_send_to",
+            .fn = test_udp_send_to,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "udp_rx_dispatch",
+            .fn = test_udp_rx_dispatch,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "rdt_transfer",
+            .fn = test_rdt_transfer,
+            .run = TEST_RUN_INLINE,
+            .flags = TEST_FLAG_NONE,
+        };
+        test_register(&t);
+    }
+
+    {
+        test_def_t t = {
+            .suite = "CoreNetwork",
+            .name = "rdt_reject",
+            .fn = test_rdt_reject,
             .run = TEST_RUN_INLINE,
             .flags = TEST_FLAG_NONE,
         };
