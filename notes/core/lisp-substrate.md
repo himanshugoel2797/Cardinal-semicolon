@@ -393,8 +393,19 @@ behind a VM.
 - **Explicit per-context execution state** (trampolined / explicit value +
   continuation stack, not C-stack recursion) — *prerequisite* for the process
   model (safe-point preemption, green-thread suspend/resume, precise per-context
-  GC). A bytecode VM, if built, sits on top as a pure-perf layer; the bytecode
-  itself stays deferred until profiled-necessary.
+  GC). *(done — "K1")* `eval.c` is now an explicit-stack **CEK abstract machine**:
+  the execution state (control expr, env, accumulator, and a heap-linked chain of
+  continuation frames) lives in a `lisp_ctx_t` heap object, not on the C stack.
+  Tail calls keep O(1) frames (the analogue of the old `goto tail`); deep non-tail
+  recursion grows the heap, not the C stack. A per-slice **reduction budget**
+  (charged at every call + loop back-edge) lets a context **suspend at a safe
+  point and resume** (`lisp_ctx_make`/`lisp_ctx_resume`), and its state is a
+  precise GC root (survives collection while parked). `lisp_eval`/`lisp_apply`
+  are now thin wrappers that drive a context to completion, so all existing
+  semantics + the host suite/conformance are unchanged. A bytecode VM, if built,
+  sits on top as a pure-perf layer; the bytecode itself stays deferred until
+  profiled-necessary. *(Next per the build plan: contexts + a cooperative
+  scheduler, then per-context GC — see the K-staging in the working plan.)*
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against

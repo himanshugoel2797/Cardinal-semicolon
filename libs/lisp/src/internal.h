@@ -36,6 +36,34 @@ typedef struct {
     lisp_value name;
 } lisp_prim_t;
 
+// A continuation frame for the explicit-stack (CEK) evaluator. The frames form a
+// heap-linked chain (`next`); a frame's *kind* lives in the header aux byte and
+// selects how `a`/`b`/`c` are interpreted (see the K_* enum in eval.c). `env` is
+// the environment to restore when this frame resumes. Frames are evaluator-owned
+// plumbing (never user-visible) and some are mutated in place while iterating.
+typedef struct {
+    lisp_header h;
+    lisp_value next;  // enclosing frame, or LISP_EMPTY at the bottom
+    lisp_value env;
+    lisp_value a, b, c;
+} lisp_kont_t;
+
+// An execution context: the CEK machine state made explicit and heap-resident so
+// it can be suspended/resumed and precisely traced. `status` is a lisp_ctx_status
+// (EVAL/APPLY/DONE/ERROR); `err` is a static string when status==ERROR; `budget`
+// is the reductions remaining in the current slice. The four lisp_value fields
+// are the machine registers and are the precise GC roots of a suspended context.
+typedef struct {
+    lisp_header h;
+    lisp_value control;  // expression under evaluation (when status==EVAL)
+    lisp_value env;
+    lisp_value accum;    // value being returned (when status==APPLY)
+    lisp_value kont;     // top continuation frame, or LISP_EMPTY
+    uint32_t status;
+    const char *err;
+    int64_t budget;
+} lisp_ctx_t;
+
 // GC-tracked allocation (gc.c). All heap Lisp objects are allocated through this
 // so the collector can find and reclaim them. Returns NULL on OOM.
 void *lisp_gc_alloc(size_t size);

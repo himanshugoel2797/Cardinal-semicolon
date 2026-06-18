@@ -107,6 +107,25 @@ static void trace(lisp_value v) {
         case LISP_OBJ_PRIMITIVE:
             mark_push(((lisp_prim_t *)lisp_obj(v))->name);
             break;
+        case LISP_OBJ_KONT: {
+            lisp_kont_t *k = (lisp_kont_t *)lisp_obj(v);
+            mark_push(k->next);
+            mark_push(k->env);
+            mark_push(k->a);
+            mark_push(k->b);
+            mark_push(k->c);
+            break;
+        }
+        case LISP_OBJ_CTX: {
+            // The four CEK registers are the precise roots of a (possibly
+            // suspended) context; err is a static C string, not traced.
+            lisp_ctx_t *c = (lisp_ctx_t *)lisp_obj(v);
+            mark_push(c->control);
+            mark_push(c->env);
+            mark_push(c->accum);
+            mark_push(c->kont);
+            break;
+        }
         default:
             break;  // symbol / keyword / string / flonum are leaves
     }

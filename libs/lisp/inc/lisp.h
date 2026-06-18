@@ -74,6 +74,8 @@ typedef enum {
     LISP_OBJ_PRIMITIVE = 7,  // built-in procedure backed by a C function
     LISP_OBJ_VECTOR = 8,     // immutable flat vector
     LISP_OBJ_FLONUM = 9,     // heap-boxed double (inexact real)
+    LISP_OBJ_KONT = 10,      // a continuation frame (explicit-stack evaluator)
+    LISP_OBJ_CTX = 11,       // an execution context (the CEK machine state)
     // reserved for later phases: MAP, BYTEVECTOR, BOX, ...
 } lisp_objtype;
 
@@ -219,16 +221,52 @@ void lisp_env_define(lisp_value env, lisp_value sym, lisp_value val);
 bool lisp_env_lookup(lisp_value env, lisp_value sym, lisp_value *out);
 bool lisp_env_set(lisp_value env, lisp_value sym, lisp_value val);
 
-// Evaluate `expr` in `env`. Returns LISP_UNDEF and sets *err on error. Proper
-// tail calls in if/begin/let/application are handled by an internal loop (full
-// continuations + an explicit VM stack arrive in Phase 3).
+// Evaluate `expr` in `env`. Returns LISP_UNDEF and sets *err on error. This is a
+// thin synchronous wrapper that drives an explicit-stack CEK machine (see the
+// execution-context API below) to completion. Proper tail calls use O(1)
+// continuation frames; deep NON-tail recursion grows the heap, not the C stack.
 lisp_value lisp_eval(lisp_value expr, lisp_value env, const char **err);
 
 // Apply an already-evaluated procedure to an argument array. Used by eval and by
 // higher-order primitives (map/for-each/apply). Returns LISP_UNDEF + *err on
-// error. (Unlike eval's application path this does not tail-loop; it is for the
-// bounded call depths of library primitives.)
+// error. Like lisp_eval it runs a transient context to completion (atomic from a
+// scheduler's view -- re-entrant primitives nest one of these).
 lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **err);
+
+// --- Execution contexts (the CEK machine; eval.c) ---------------------------
+//
+// A context is the interpreter's execution state made explicit and heap-resident
+// (control expr, environment, accumulator, and a continuation-frame chain) so it
+// can be suspended at a safe point, resumed, and precisely GC'd. This is the
+// substrate the process model is built on: a "process" is a context. lisp_eval /
+// lisp_apply above are completion-driven wrappers over this same machine.
+typedef enum {
+    LISP_CTX_EVAL = 0,       // internal: about to evaluate `control`
+    LISP_CTX_APPLY = 1,      // internal: feed `accum` to the top frame
+    LISP_CTX_DONE = 2,       // finished; result available via lisp_ctx_value
+    LISP_CTX_ERROR = 3,      // aborted; message via lisp_ctx_error
+    LISP_CTX_SUSPENDED = 4,  // reduction budget exhausted at a safe point; resumable
+} lisp_ctx_status;
+
+// Make a context that will evaluate `expr` in `env`. Returns a context value (a
+// GC-managed object) or LISP_UNDEF on OOM. Hold the returned value as a root for
+// as long as the context is live (it keeps its whole execution state alive).
+lisp_value lisp_ctx_make(lisp_value expr, lisp_value env);
+
+// Run the context for up to `budget` reductions. A reduction is one call or one
+// loop back-edge -- the safe points where the machine can suspend; `budget` thus
+// bounds the calls/loops before suspension, NOT every evaluation step. Call-free
+// work between two safe points (e.g. building a literal, walking a let's bindings)
+// runs uninterrupted, so a slice can exceed `budget` evaluation steps. Returns
+// LISP_CTX_SUSPENDED if the budget ran out mid-computation (call again to
+// continue), or LISP_CTX_DONE / LISP_CTX_ERROR when finished.
+lisp_ctx_status lisp_ctx_resume(lisp_value ctx, int64_t budget);
+
+// Result of a DONE context (LISP_UNDEF otherwise).
+lisp_value lisp_ctx_value(lisp_value ctx);
+
+// Static error message of an ERROR context (NULL otherwise).
+const char *lisp_ctx_error(lisp_value ctx);
 
 // A fresh global environment with the built-in primitives installed.
 lisp_value lisp_default_env(void);
