@@ -50,7 +50,8 @@ static inline int pci_setup_msi_handler(pci_config_t *device, interrupt_flags_t 
         return -1;
 
     int int_val = 0;
-    interrupt_allocate(1, flags, &int_val);
+    if (interrupt_allocate(1, flags, &int_val) < 0)
+        return -1;                                   //don't fall back to vector 0 (reserved)
     interrupt_register_handler(int_val, handler);   //register BEFORE enabling the cap
 
     uintptr_t msi_addr = (uintptr_t)interrupt_msi_register_addr(0);

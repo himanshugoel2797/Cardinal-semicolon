@@ -36,7 +36,9 @@ static inline void pci_msix_debug_dump(pci_config_t *device)
         {
             pci_msix_t *mx = (pci_msix_t *)cap;
             char t[20];
-            int bir = mx->table_off.bir;
+            int bir = mx->table_off.bir;            //3-bit field; only 0..5 are valid BARs
+            if (bir >= 6)
+                return;
             uint64_t bar = device->bar[bir] & 0xFFFFFFF0;
             if ((device->bar[bir] & 0x6) == 0x4)
                 bar |= ((uint64_t)device->bar[bir + 1] << 32);

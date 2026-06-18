@@ -17,7 +17,7 @@
 
 // Default static IPv4 address for an ethernet interface.
 //
-// TEMPORARY: hardcoded to 10.43.0.116, a free address on the real test LAN, so
+// FIXME(DHCP): hardcoded to 10.43.0.116, a free address on the real test LAN, so
 // the RTL8111G on the AtomicPi answers ARP / replies to ping end-to-end until a
 // DHCP client lands. (Was 10.0.2.15, QEMU slirp's guest address -- restore that,
 // or better, make this per-interface configurable, when wiring DHCP.) Per-
