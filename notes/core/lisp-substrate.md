@@ -467,8 +467,25 @@ behind a VM.
   own IRQ.) **Plan (chosen 2026-06): incremental, stays bootable** — turn the
   drivers off, then migrate them to Lisp contexts one at a time (each driver's IRQ
   driving its Lisp context through the bridge), and delete SysTaskMgr's native
-  scheduler LAST, once nothing native remains. *(Next: disable drivers → minimal
-  boot into the Lisp runtime → migrate drivers one by one.)*
+  scheduler LAST, once nothing native remains.
+- **Drivers off → minimal boot** *(done — "K5b")*. `servicescript` stripped to the
+  Lisp runtime; boots on 15 modules (Sys* infra + SysLisp), no native driver tasks.
+- **The interpreter IS the per-core scheduler (single core)** *(done — "K5c")*. The
+  flip: `SysTaskMgr.module_init` does the per-core bring-up (TLS + interrupt stack)
+  then **returns** instead of arming the 50µs preemption timer and handing off to
+  `task_switch_handler`. The boot script then `LOAD`s SysLisp and `CALL`s
+  `lisp_scheduler_enter`, which **never returns** — the boot thread itself becomes
+  the per-core scheduler loop. There is no native task switcher underneath: this
+  one native thread runs Lisp contexts, which context-switch among themselves at
+  safe points via the explicit-stack machine, and FP is safe because nothing
+  preempts to clobber SSE state (exactly the design's claim). SysLisp dropped its
+  dependency on the native task API entirely. The self-test runs in this loop and
+  passes (11/11); the system then idles awaiting events. (The native scheduler code
+  — `select_next`/`task_switch_handler`/`task_yield_stage2`/the per-switch
+  `fxsave`/`cr3` — is now dormant and deleted once nothing native remains.) *(Next:
+  multi-core — one Lisp scheduler loop per core, needing the interning/system-heap
+  lock K3 deferred — then migrate drivers to Lisp one by one, each driver's IRQ
+  driving its context through the ISR-wake bridge.)*
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against

@@ -1,3 +1,1 @@
-LOAD:./SysLisp.celf
-CALL:task_release_aps
-CALL:task_end_syscall
+#servicescript unused under K5: SysLisp is loaded by loadscript and becomes the scheduler

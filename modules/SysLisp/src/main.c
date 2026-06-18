@@ -21,10 +21,11 @@
 
 #include "lisp.h"
 
-#include "SysTaskMgr/task.h"
 #include "SysTimer/timer.h"
 
 // Kernel services resolved at module-load time (this module is already verified).
+// SysLisp no longer depends on the native task API (task_create/yield/monitor):
+// it IS the per-core scheduler loop now, entered via CALL from the boot script.
 int print_str(const char *s);
 uint64_t timer_timestamp_ns(void);
 
@@ -235,6 +236,9 @@ static void run_isr_demo(lisp_value env) {
     lisp_value waiter = lisp_eval_string("waiter", env, &err);
     lisp_value worker = lisp_eval_string("worker", env, &err);
 
+    // Bound the wait with the (counter-based, interrupt-free) timestamp so a timer
+    // ISR that never gets delivered cannot hang the boot.
+    uint64_t deadline = timer_timestamp_ns() + 2000000000ull;  // 2s
     for (;;) {
         uint32_t seen = g_event_count;  // capture BEFORE running, so no wakeup is lost
         lisp_sched_run(&s, 0);          // run all runnable contexts until parked/done
@@ -250,20 +254,33 @@ static void run_isr_demo(lisp_value env) {
             g_event_waiter = 0;  // the waiter is gone; stop the ISR touching it
             return;
         }
-        // The waiter is parked on an event: sleep until the ISR bumps the counter.
-        task_monitor(task_current(), (uint32_t *)&g_event_count, seen);
+        // The waiter is parked on the event: enable interrupts and wait for the
+        // ISR to bump the counter (busy-poll, deadline-bounded so a non-delivered
+        // interrupt can't wedge us). A real driver IRQ uses the same wake path.
+        __asm__ volatile("sti");
+        while (g_event_count == seen && timer_timestamp_ns() < deadline)
+            __asm__ volatile("pause");
+        if (g_event_count == seen) {  // deadline hit without a tick
+            print_str("[SysLisp] (timer ISR not delivered in time; ending ISR demo)\r\n");
+            g_event_waiter = 0;
+            return;
+        }
     }
 }
 
-// The long-lived kernel task that hosts the Lisp runtime. Its frame is the
-// conservative GC's stack base, and it is the only thread that runs Lisp -- so
-// the env/scheduler held in its locals are the runtime's roots.
-static void lisp_scheduler_task(void *arg) {
-    (void)arg;
+// THE PER-CORE SCHEDULER LOOP. Called once via `CALL:lisp_scheduler_enter` at the
+// end of the boot script, on the boot thread itself -- it NEVER returns. This is
+// the K5 flip: the interpreter is the scheduler. There is no native task switcher
+// underneath; this single native thread runs Lisp contexts (which context-switch
+// among themselves at safe points via the explicit-stack machine), and its frame
+// is the conservative GC's stack base. FP is safe with no native preemption to
+// clobber SSE state, exactly as the design intends.
+int lisp_scheduler_enter() {
     lisp_gc_init(__builtin_frame_address(0));
     lisp_set_output(lisp_out, NULL);
 
-    print_str("\r\n[SysLisp] persistent Lisp scheduler task: in-OS bring-up\r\n");
+    print_str("\r\n[SysLisp] Lisp scheduler is the per-core loop "
+              "(native task switcher not started)\r\n");
 
     lisp_value env = lisp_default_env();
     if (env != LISP_UNDEF) {
@@ -281,22 +298,18 @@ static void lisp_scheduler_task(void *arg) {
         print_str("[SysLisp] FAIL: could not build the default environment\r\n");
     }
 
-    // The runtime stays resident (a real per-core scheduler would loop here over
-    // its context set). Nothing else uses it yet, so idle cooperatively.
+    // The runtime stays resident as the per-core loop. With drivers off there are
+    // no persistent Lisp contexts yet, so idle waiting for interrupts; a migrated
+    // driver's IRQ will wake a context here. Never returns.
+    print_str("[SysLisp] idle (no Lisp contexts pending; awaiting events)\r\n");
     for (;;)
-        task_yield();
+        __asm__ volatile("sti; hlt");
+    return 0;  // unreached
 }
 
 int module_init() {
-    cs_id id = 0;
-    if (task_create_kernel("lisp_sched", task_permissions_kernel, &id) != CS_OK) {
-        print_str("[SysLisp] FAIL: could not create the scheduler task\r\n");
-        return -1;
-    }
-    if (task_start_kernel(id, (void *)lisp_scheduler_task, NULL) != CS_OK) {
-        print_str("[SysLisp] FAIL: could not start the scheduler task\r\n");
-        return -1;
-    }
-    print_str("[SysLisp] persistent Lisp scheduler task created\r\n");
+    // The runtime is entered as the per-core scheduler loop by the boot script's
+    // CALL:lisp_scheduler_enter (which never returns), not from here.
+    print_str("[SysLisp] loaded (runtime enters via CALL:lisp_scheduler_enter)\r\n");
     return 0;
 }
