@@ -3,12 +3,12 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-// S-expression / EDN reader. Phase 0 scope: integers (fixnum-range only),
-// symbols, keywords (:foo), nil/true/false, strings, single-character literals
-// (\x; named chars like \newline are deferred), lists, and the quote shorthand
-// '. Commas are whitespace and ; runs to end-of-line, both Clojure-style.
-// Vectors [] and maps {} arrive with the persistent data structures in Phase 2;
-// for now they are reported as errors rather than silently mis-parsed.
+// Scheme s-expression reader. Phase 0 scope: integers (fixnum-range only),
+// symbols, booleans (#t/#f), the empty list (), strings, single-character
+// literals (#\x; named chars like #\newline are deferred), lists, and the quote
+// shorthand '. Commas are whitespace and ; runs to end-of-line. There is no nil.
+// Vectors #(...) arrive with the persistent data structures in Phase 2; for now
+// they are reported as errors rather than silently mis-parsed.
 
 #include <stdint.h>
 #include <string.h>
@@ -120,26 +120,47 @@ static lisp_value read_atom(const char **cur, const char *end, const char **err)
     if (len == 0)
         return fail(err, "empty token");
 
-    // Keyword :foo
-    if (start[0] == ':') {
-        if (len == 1)
-            return fail(err, "bare colon is not a keyword");
-        return lisp_make_keyword(start + 1, len - 1);
-    }
-
-    // Named constants
-    if (len == 3 && memcmp(start, "nil", 3) == 0)
-        return LISP_NIL;
-    if (len == 4 && memcmp(start, "true", 4) == 0)
-        return LISP_TRUE;
-    if (len == 5 && memcmp(start, "false", 5) == 0)
-        return LISP_FALSE;
-
+    // Booleans, the empty list, and chars are #-syntax (handled in read_hash);
+    // there is no nil. A leading ':' is just a symbol constituent in Scheme, so
+    // :foo reads as an ordinary symbol (#:foo keyword syntax is deferred).
     lisp_value num;
     if (parse_int(start, len, &num))
         return num;
 
     return lisp_make_symbol(start, len);
+}
+
+// Parse #-prefixed syntax: #t/#true, #f/#false, and #\<char> literals. Vectors
+// #( and the rest are deferred to later phases.
+static lisp_value read_hash(const char **cur, const char *end, const char **err) {
+    const char *c = *cur + 1;  // skip '#'
+    if (c >= end)
+        return fail(err, "dangling # syntax");
+    if (*c == '\\') {
+        // Character literal. Phase 0: a single character after #\ (named chars
+        // like #\newline are a later phase). One must be present.
+        if (c + 1 >= end)
+            return fail(err, "dangling character literal");
+        uint32_t cp = (uint8_t)c[1];
+        *cur = c + 2;
+        return lisp_char(cp);
+    }
+    if (*c == '(')
+        return fail(err, "vectors not yet supported (Phase 2)");
+    // Boolean token: #t / #true / #f / #false.
+    const char *start = c;
+    while (c < end && !is_delim(*c))
+        c++;
+    size_t len = (size_t)(c - start);
+    if ((len == 1 && start[0] == 't') || (len == 4 && memcmp(start, "true", 4) == 0)) {
+        *cur = c;
+        return LISP_TRUE;
+    }
+    if ((len == 1 && start[0] == 'f') || (len == 5 && memcmp(start, "false", 5) == 0)) {
+        *cur = c;
+        return LISP_FALSE;
+    }
+    return fail(err, "unsupported # syntax");
 }
 
 // Forward decl for recursion.
@@ -216,19 +237,16 @@ lisp_value lisp_read(const char **cursor, const char *end, const char **err) {
                 return fail(err, "out of memory");
             return form;
         }
-        case '\\': {
-            // Character literal. Phase 0: a single character after the backslash
-            // (named chars like \newline are a later phase). Must be present.
-            if (c + 1 >= end)
-                return fail(err, "dangling character literal");
-            uint32_t cp = (uint8_t)c[1];
-            c += 2;
+        case '#': {
+            lisp_value v = read_hash(&c, end, err);
             *cursor = c;
-            return lisp_char(cp);
+            return v;
         }
         case '[':
+        case ']':
         case '{':
-            return fail(err, "vectors/maps not yet supported (Phase 2)");
+        case '}':
+            return fail(err, "[] / {} not supported");
         default: {
             lisp_value v = read_atom(&c, end, err);
             *cursor = c;

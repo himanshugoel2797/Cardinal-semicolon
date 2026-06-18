@@ -5,7 +5,7 @@
  https://opensource.org/licenses/MIT
 -->
 
-# Cardinal; substrate direction: a kernel-resident Lisp
+# Cardinal; substrate direction: a kernel-resident Scheme
 
 This is a whole-system direction note, not just storage — it started as a
 filesystem-design review and converged somewhere much larger. It records the
@@ -40,28 +40,35 @@ simplifications:
    downstream of the OS handling bytes it cannot interpret. The cure is a
    **typed, introspectable object model** as the system lingua franca — a
    language-based OS (Lisp machines, Singularity/Midori).
-6. **A small Clojure-flavored Lisp resident in the kernel** is the chosen
-   substrate, because Clojure's *data philosophy* fits the established goals
-   unusually well (see below). Native code is still allowed but only inside a
-   heavily restricted sandbox (WASM-shaped) with a translation shim.
+6. **A small Scheme resident in the kernel** is the chosen substrate — a clean,
+   minimal, well-specified Lisp that fits the established goals (see below).
+   Native code is still allowed but only inside a heavily restricted sandbox; the
+   sandbox *mechanism* is deferred (hardware-ring isolation is the fallback; a
+   managed-bytecode jail such as WASM is a possible future option, not pursued
+   now).
 
-## Why a Lisp, and why Clojure-flavored specifically
+## Why Scheme
 
-- **Immutable persistent data structures (HAMT/RRB) are the COW idea as the
-  native value model.** Structural sharing ⇒ cheap snapshots ⇒ cheap
-  checkpoints; "versioned data banks" (`Main.md`) become retained old versions
-  for free.
-- **EDN is the self-documenting on-disk/wire format** — the language's data
-  literals *are* the schema-bearing IDL. The "design an IDL" task evaporates.
-- **Keyword-keyed maps subsume kvs / SysReg / SysObj** into one persistent-map
+- **Homoiconicity + `read`/`write` give the self-documenting data format for
+  free.** S-expressions *are* the schema-bearing serialization (no separate IDL,
+  no EDN); the object browser is `write`/inspect on any value; "apps stored as
+  objects" is native (code is data).
+- **Immutability + persistent data structures are a deliberate Cardinal
+  deviation from classic Scheme**, kept because they are *load-bearing for the
+  OS*, not for style: structural sharing ⇒ cheap snapshots ⇒ cheap checkpoints
+  ⇒ "versioned data banks" (`Main.md`) for free, and lock-free reads (see
+  Concurrency). Classic Scheme's `set-car!`/mutable vectors are dropped in favour
+  of persistent structures plus one explicit mutable cell (an *atomic box*).
+- **Symbol-keyed persistent maps subsume kvs / SysReg / SysObj** into one
   abstraction — the "one coherent storage model" the docs kept asking for.
-- **Homoiconicity** makes self-documentation and "apps stored as objects"
-  native; the object browser is `pr-str`/inspect on any value.
+- **W7 is literally a capability-secure Scheme** (see below), so the security
+  model is not bolted on — it is the language's own scoping discipline.
 
-This is **Clojure-flavored, NOT Clojure**: a small Scheme-ish core that borrows
-the data philosophy (persistent structures, keyword maps, EDN, data-first), not
-the JVM host, full numeric tower, STM, or stdlib. The `-mno-sse` (no-FP) kernel
-constraint forces integer/fixnum-centric numerics (soft bignums optional).
+Scope: a small, R7RS-*flavoured* core (not a full R7RS implementation) — Scheme
+syntax and semantics (`#t`/`#f`, `#\char`, `()` with no nil, only `#f` false,
+`define`/`lambda`/`let`/`if`/`quote`/`set!`/`begin`/`cond`), minus a full numeric
+tower. The `-mno-sse` (no-FP) kernel constraint forces integer/fixnum-centric
+numerics (soft bignums/rationals optional, no floats).
 
 ## Security model: lexical scope = capabilities (W7)
 
@@ -73,15 +80,17 @@ its capability set; the per-task descriptor table holds its initial bindings.
 **Reflection is itself a capability** (delightful for the trusted object
 browser, withheld from untrusted code).
 
-## The native-vs-managed split (resolves the WASM question)
+## The native-vs-managed split
 
-- **Lisp = trusted, managed, first-class tier.** Safe *by construction* (no raw
+- **Scheme = trusted, managed, first-class tier.** Safe *by construction* (no raw
   pointers exposed); needs no adversarial verifier — trust comes from "the only
   way to run is through the runtime we own."
-- **WASM (or a hardware-ring jail) = untrusted foreign-native tier.** *That's*
-  where a verifier is needed — use WASM's spec'd one, not a bespoke one. Ported
-  native code runs there, surfaced to Lisp as opaque capability-wrapped objects.
-- Existing C servers/drivers are exposed as **host functions** into the Lisp
+- **Untrusted foreign-native tier = a restricted sandbox.** Mechanism deferred:
+  hardware-ring isolation is the fallback; a managed-bytecode jail (e.g. WASM,
+  whose verifier we'd inherit rather than write) is a *possible future* option,
+  not pursued now. Ported native code is surfaced to Scheme as opaque
+  capability-wrapped objects.
+- Existing C servers/drivers are exposed as **host functions** into the Scheme
   environment and migrated opportunistically — never a big-bang rewrite.
 
 ## Drivers
@@ -108,8 +117,9 @@ does not abolish it — the runtime is native and remains concurrency-critical).
 
 **The universal mutation primitive: the only mutable thing is a single aligned
 pointer; never mutate in place — build a new immutable version (structural
-sharing) and atomically swap the reference (CAS).** This is Clojure
-`atom`/`swap!` and is structurally identical to RCU.
+sharing) and atomically swap the reference (CAS).** Scheme has no `atom`, so this
+is an explicit **atomic box** (a one-slot mutable cell with a CAS update); it is
+structurally identical to RCU.
 
 - Reads are lock-free/wait-free (grab root, traverse immutable structure).
 - Writes are read-copy-CAS, retry on contention.
@@ -140,8 +150,8 @@ Dispatch:
 - **Lexical addressing (De Bruijn) + flat closures** — variable access becomes
   array indexing. This is the perf payoff of the W7 lexical-scope choice.
 - **Open-code primitives** (`+`, `car`, `=`, accessors) to dedicated opcodes.
-- **Inline caches** for protocol/multimethod/keyword-map dispatch (invalidate on
-  redef via an epoch counter).
+- **Inline caches** for generic/record dispatch and map lookup (invalidate on
+  redefinition via an epoch counter).
 
 Allocation:
 - **Tagged immediates / fixnums** — no boxing for integer arithmetic (highest-
@@ -150,11 +160,11 @@ Allocation:
 - **TLAB bump allocation** (lock-free fast path, SMP-friendly). v1 collector is
   **non-moving mark-sweep**; design the object header to allow a generational
   moving nursery later.
-- **Transients** (thread-confined locally-mutable build-then-freeze) — kills the
-  O(n log n) intermediate-version garbage in build-up loops.
-- **Transducers + chunked seqs** — fuse map/filter into one pass, no
-  intermediate sequences.
-- **Small-collection specializations** (array-map/array-vector before HAMT/RRB).
+- **Transient builders** (thread-confined locally-mutable build-then-freeze) —
+  kill the O(n log n) intermediate-version garbage in build-up loops.
+- **Fused iteration** (transducer-style) — map/filter compose into one pass with
+  no intermediate sequences; chunked lazy sequences amortize per-element cost.
+- **Small-collection specializations** (array-backed map/vector before HAMT/RRB).
 
 Hot Lisp approaching native (the driver story):
 - **Optional type hints + `unchecked-` ops** for unboxed inner loops.
@@ -197,28 +207,28 @@ or persistent GC.
 ## Phased plan
 
 - **Phase 0 — Core values + reader/printer (host-built).** Tagged value
-  representation (fixnums/immediates/heap header), s-expr/EDN reader, printer.
-  Milestone: read→print round-trip. *(in progress)*
+  representation (fixnums/immediates/heap header), Scheme s-expr reader, printer.
+  Milestone: read→print round-trip. *(done)*
 - **Phase 1 — Tree-walk evaluator + environments.** Lexical environments,
-  special forms (`quote`/`if`/`fn`/`let`/`def`), closures, primitive ops. Pure,
-  immutable. Milestone: evaluate non-trivial programs; arithmetic; recursion.
-- **Phase 2 — Persistent data structures.** Cons/list, then HAMT map + keyword
-  interning + array-map specialization; transients. Milestone: Clojure-style
-  map/vector ops with structural sharing.
+  special forms (`quote`/`if`/`define`/`lambda`/`let`/`begin`), closures,
+  primitive ops. Milestone: evaluate non-trivial programs; arithmetic; recursion.
+- **Phase 2 — Persistent data structures.** Vector/symbol interning, then a HAMT
+  map + small-collection (array-backed) specialization; transient builders.
+  Milestone: map/vector ops with structural sharing.
 - **Phase 3 — Bytecode compiler + threaded VM.** Lexical addressing, open-coded
   primitives, explicit VM stack, proper tail calls + continuations. Milestone:
   measurable speedup over the tree-walker; deep recursion safe.
 - **Phase 4 — GC.** Non-moving mark-sweep + TLAB allocation. Milestone: runs
   under sustained allocation without leaking; header reserves room for a future
   moving nursery.
-- **Phase 5 — Concurrency primitives.** `atom`/`swap!` (CAS-of-root), the
+- **Phase 5 — Concurrency primitives.** The atomic box (CAS-of-root), the
   one-root coordinated-update discipline; integrate the lock-free reclamation
   story with the GC.
 - **Phase 6 — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against
   `common/`; host-function FFI to expose existing C servers; the native-ISR →
-  Lisp-task event/continuation bridge.
+  Scheme-task event/continuation bridge.
 - **Phase 7+ — Capabilities (W7 environments), driver MMIO/bytevector
-  primitives, the single-level-store persistence layer, WASM jail.**
+  primitives, the single-level-store persistence layer, the foreign-native jail.**
 
 Each phase is independently reviewable. Persistent GC, JIT, and persistence are
 explicitly later phases the earlier ones are designed not to preclude.

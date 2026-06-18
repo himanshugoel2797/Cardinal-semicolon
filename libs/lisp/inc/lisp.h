@@ -10,16 +10,22 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Cardinal; kernel-resident Lisp -- core value representation.
+// Cardinal; kernel-resident Scheme -- core value representation.
 //
-// See notes/core/lisp-substrate.md for the why. This is Phase 0: the tagged
-// value representation plus reader/printer. The representation is the one
-// decision that is painful to retrofit, so it is fixed here deliberately:
+// See notes/core/lisp-substrate.md for the why. This is a Scheme dialect (the
+// reader uses #t/#f, #\char, () with no nil, and Scheme truthiness: only #f is
+// false). It deliberately deviates from classic Scheme in being immutable by
+// default with persistent data structures -- that is load-bearing for the OS
+// (persistence, checkpoints, lock-free concurrency), not a stylistic choice.
+//
+// This is Phase 0: the tagged value representation plus reader/printer. The
+// representation is the one decision that is painful to retrofit, so it is
+// fixed here deliberately:
 //
 //   - A `lisp_value` is one machine word. The low 2 bits are a tag:
 //       00  heap pointer (objects are >= 8-byte aligned, low 3 bits clear)
 //       01  fixnum       (62-bit signed, value = (int64_t)v >> 2)
-//       10  immediate    (singletons + char; subtype in bits [7:2])
+//       10  immediate    (#t/#f, empty list, char, eof; subtype in bits [7:2])
 //       11  reserved      (second immediate space / future use)
 //   - Fixnums are unboxed so integer arithmetic never allocates. The kernel is
 //     -mno-sse (no floating point), so the numeric tower is integer-centric by
@@ -36,18 +42,18 @@ typedef uintptr_t lisp_value;
 #define LISP_TAG_IMM 0x2u
 
 // Immediate subtypes live in bits [7:2]; payload (e.g. a char codepoint) above.
-#define LISP_IMM_NIL 0u
-#define LISP_IMM_FALSE 1u
-#define LISP_IMM_TRUE 2u
-#define LISP_IMM_EMPTY 3u  // the empty list (), distinct from nil (Clojure-style)
-#define LISP_IMM_CHAR 4u
-#define LISP_IMM_EOF 5u    // reader end-of-input sentinel
-#define LISP_IMM_UNDEF 6u  // unspecified / void
+// There is no nil (this is Scheme): booleans #t/#f and the empty list () are
+// distinct values.
+#define LISP_IMM_FALSE 0u
+#define LISP_IMM_TRUE 1u
+#define LISP_IMM_EMPTY 2u  // the empty list ()
+#define LISP_IMM_CHAR 3u
+#define LISP_IMM_EOF 4u    // reader end-of-input sentinel
+#define LISP_IMM_UNDEF 5u  // unspecified / void
 
 #define LISP_MK_IMM(subtype, payload) \
     ((lisp_value)(((uintptr_t)(payload) << 8) | ((uintptr_t)(subtype) << 2) | LISP_TAG_IMM))
 
-#define LISP_NIL LISP_MK_IMM(LISP_IMM_NIL, 0)
 #define LISP_FALSE LISP_MK_IMM(LISP_IMM_FALSE, 0)
 #define LISP_TRUE LISP_MK_IMM(LISP_IMM_TRUE, 0)
 #define LISP_EMPTY LISP_MK_IMM(LISP_IMM_EMPTY, 0)
@@ -103,12 +109,11 @@ static inline bool lisp_is_fixnum(lisp_value v) { return lisp_tag(v) == LISP_TAG
 static inline bool lisp_is_imm(lisp_value v) { return lisp_tag(v) == LISP_TAG_IMM; }
 static inline unsigned lisp_imm_subtype(lisp_value v) { return (unsigned)((v >> 2) & 0x3fu); }
 
-static inline bool lisp_is_nil(lisp_value v) { return v == LISP_NIL; }
 static inline bool lisp_is_empty(lisp_value v) { return v == LISP_EMPTY; }
 static inline bool lisp_is_eof(lisp_value v) { return v == LISP_EOF; }
 
-// Truthiness: only nil and false are falsey (Clojure semantics).
-static inline bool lisp_truthy(lisp_value v) { return v != LISP_NIL && v != LISP_FALSE; }
+// Scheme truthiness: only #f is false; everything else (incl. () and 0) is true.
+static inline bool lisp_truthy(lisp_value v) { return v != LISP_FALSE; }
 
 // --- Fixnums ----------------------------------------------------------------
 
