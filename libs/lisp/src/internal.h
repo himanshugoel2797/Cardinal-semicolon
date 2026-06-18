@@ -75,6 +75,19 @@ typedef struct {
 void *lisp_gc_alloc(size_t size);
 void *lisp_gc_alloc_shared(size_t size);
 
+// Like lisp_gc_alloc_shared but assumes the caller already holds the runtime
+// lock (lisp_rt_lock). intern() uses this: it holds the lock across the whole
+// table read-modify-write and must not re-enter the non-recursive lock.
+void *lisp_gc_alloc_shared_nolock(size_t size);
+
+// The runtime concurrency hooks (gc.c), resolved from what the embedder passed
+// to lisp_set_concurrency. lisp_rt_lock/unlock guard the shared system heap +
+// intern table + GC scratch (no-ops single-threaded); lisp_rt_core returns this
+// core's small index (0 when single-threaded), used to pick per-core slots.
+void lisp_rt_lock(void);
+void lisp_rt_unlock(void);
+int lisp_rt_core(void);
+
 // Make `h` the current allocation target, returning the previous one (so the
 // interpreter loop can switch into a context's heap while it runs and restore
 // afterwards). lisp_heap_wants_gc reports a deferred per-context collection that

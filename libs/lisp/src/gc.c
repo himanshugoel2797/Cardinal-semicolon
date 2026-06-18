@@ -57,10 +57,61 @@ struct lisp_heap {
 
 #define GC_THRESHOLD (256 * 1024)
 
-// The shared system heap, and the heap that lisp_gc_alloc currently targets.
+// The shared system heap.
 static struct lisp_heap g_system = {NULL, 0, 0, 0, GC_THRESHOLD, 0, 0, LISP_EMPTY};
-static struct lisp_heap *g_alloc_heap = &g_system;
 static void *g_stack_base = NULL;  // for the system heap's conservative scan
+
+// The heap each core currently allocates into. PER-CORE: two cores run two
+// contexts (each in its own heap) at once, so a single global target would have
+// them stomp each other's choice. A NULL slot means "the system heap" (so the
+// array needs no run-time initialisation). Indexed by lisp_rt_core().
+static struct lisp_heap *g_alloc_heap[LISP_MAX_CORES] = {0};
+
+// --- concurrency hooks ------------------------------------------------------
+//
+// Installed by the embedder via lisp_set_concurrency; no-ops / core 0 until then
+// (single-threaded host tests and single-core boot). lisp_rt_lock guards the
+// system heap list+counters, the intern table, and the GC mark scratch -- the
+// only state shared between cores. g_multicore freezes the system heap (see
+// lisp_gc_set_multicore): its conservative collector cannot see other cores'
+// stacks, so it must not run once a second core is live.
+static void (*g_lock_fn)(void) = NULL;
+static void (*g_unlock_fn)(void) = NULL;
+static int (*g_core_fn)(void) = NULL;
+static int g_multicore = 0;
+
+void lisp_rt_lock(void) {
+    if (g_lock_fn != NULL)
+        g_lock_fn();
+}
+void lisp_rt_unlock(void) {
+    if (g_unlock_fn != NULL)
+        g_unlock_fn();
+}
+// This core's small index, clamped to a valid per-core array slot. The kernel
+// passes interrupt_get_cpu_idx (the APIC id), which is 0..N-1 dense on the x2APIC
+// /xAPIC parts we target but is NOT guaranteed dense or < 256 on all hardware; a
+// stray id must never index the per-core arrays out of bounds (it would only cost
+// correct per-core isolation for that exotic core, not memory safety).
+int lisp_rt_core(void) {
+    int id = g_core_fn != NULL ? g_core_fn() : 0;
+    return (id >= 0 && id < LISP_MAX_CORES) ? id : 0;
+}
+
+void lisp_set_concurrency(void (*lock)(void), void (*unlock)(void), int (*core_id)(void)) {
+    g_lock_fn = lock;
+    g_unlock_fn = unlock;
+    g_core_fn = core_id;
+}
+
+void lisp_gc_set_multicore(int grow_only_system_heap) { g_multicore = grow_only_system_heap; }
+
+// This core's current allocation-target heap (the system heap if its slot is the
+// default NULL).
+static struct lisp_heap *cur_alloc_heap(void) {
+    struct lisp_heap *h = g_alloc_heap[lisp_rt_core()];
+    return h != NULL ? h : &g_system;
+}
 
 static gc_obj *hdr(lisp_value v) { return (gc_obj *)(uintptr_t)v - 1; }
 
@@ -232,9 +283,17 @@ static void capture_registers(uintptr_t regs[6]) {
 // from the C stack/registers + the intern table; context heaps root precisely
 // from the owning context's CEK registers. Either way only this heap's objects
 // are marked (mark_push gate) and only this heap's list is swept.
-static void collect_heap(struct lisp_heap *h) {
+//
+// PRECONDITION: the caller holds lisp_rt_lock. The shared mark scratch (g_set /
+// g_ms) and -- for the system heap -- the intern table are read/written here, so
+// concurrent collections on two cores would corrupt them. The lock serialises
+// all collection; the public entry points (lisp_gc_collect / lisp_heap_collect)
+// and the allocators take it before calling in.
+static void collect_heap_locked(struct lisp_heap *h) {
     if (h->owner == LISP_EMPTY && g_stack_base == NULL)
         return;  // system heap before init: no roots to scan -> keep everything
+    if (h->owner == LISP_EMPTY && g_multicore)
+        return;  // multi-core: the system heap is frozen (grow-only), never swept
 
     g_mark_oom = 0;
     g_ms_len = 0;
@@ -302,26 +361,8 @@ static void collect_heap(struct lisp_heap *h) {
 
 // --- allocation -------------------------------------------------------------
 
-void *lisp_gc_alloc(size_t size) {
-    struct lisp_heap *h = g_alloc_heap;
-    if (h->enabled && h->bytes_since >= h->threshold) {
-        // The system heap collects in place (its conservative scan covers C
-        // temporaries). A context heap defers: collecting mid-step would miss
-        // values held only in C locals (e.g. a do_call args[] array), so it is
-        // unsafe until the interpreter loop reaches a safe point.
-        if (h->owner == LISP_EMPTY)
-            collect_heap(h);
-        else
-            h->want_gc = 1;
-    }
-    gc_obj *o = (gc_obj *)malloc(sizeof(gc_obj) + size);
-    if (o == NULL) {  // last-ditch: collect what we safely can, then retry
-        if (h->owner == LISP_EMPTY)
-            collect_heap(h);
-        o = (gc_obj *)malloc(sizeof(gc_obj) + size);
-        if (o == NULL)
-            return NULL;
-    }
+// Push a freshly-malloc'd object onto a heap's intrusive list + counters.
+static void *heap_link(struct lisp_heap *h, gc_obj *o, size_t size) {
     o->next = h->all;
     o->mark = 0;
     h->all = o;
@@ -330,22 +371,70 @@ void *lisp_gc_alloc(size_t size) {
     return (void *)(o + 1);
 }
 
+// Allocate into the system heap. PRECONDITION: caller holds lisp_rt_lock (the
+// system heap's list/counters + the conservative-collect scratch are shared). A
+// collection here roots conservatively from the calling core's C stack, which is
+// only sound single-threaded -- collect_heap_locked refuses once g_multicore.
+static void *sys_alloc_locked(size_t size) {
+    struct lisp_heap *h = &g_system;
+    if (h->enabled && h->bytes_since >= h->threshold)
+        collect_heap_locked(h);  // no-op once the heap is frozen (multi-core)
+    gc_obj *o = (gc_obj *)malloc(sizeof(gc_obj) + size);
+    if (o == NULL) {  // last-ditch: collect what we safely can, then retry
+        collect_heap_locked(h);
+        o = (gc_obj *)malloc(sizeof(gc_obj) + size);
+        if (o == NULL)
+            return NULL;
+    }
+    return heap_link(h, o, size);
+}
+
+void *lisp_gc_alloc(size_t size) {
+    struct lisp_heap *h = cur_alloc_heap();
+    if (h->owner == LISP_EMPTY) {  // the shared system heap: serialise
+        lisp_rt_lock();
+        void *p = sys_alloc_locked(size);
+        lisp_rt_unlock();
+        return p;
+    }
+
+    // A per-context heap is touched only by this core, so the fast path is
+    // lock-free. Collecting mid-step would miss values held only in C locals
+    // (e.g. a do_call args[] array), so defer to the next safe point; only the
+    // last-ditch OOM collect runs inline, and it takes the lock for the scratch.
+    if (h->enabled && h->bytes_since >= h->threshold)
+        h->want_gc = 1;
+    gc_obj *o = (gc_obj *)malloc(sizeof(gc_obj) + size);
+    if (o == NULL) {
+        lisp_rt_lock();
+        collect_heap_locked(h);
+        lisp_rt_unlock();
+        o = (gc_obj *)malloc(sizeof(gc_obj) + size);
+        if (o == NULL)
+            return NULL;
+    }
+    return heap_link(h, o, size);
+}
+
 // Allocate into the shared system heap regardless of the current target. Interned
 // symbols use this: they are the shared-immutable region and must never live in a
 // per-context heap (other contexts reference them).
 void *lisp_gc_alloc_shared(size_t size) {
-    struct lisp_heap *prev = g_alloc_heap;
-    g_alloc_heap = &g_system;
-    void *p = lisp_gc_alloc(size);
-    g_alloc_heap = prev;
+    lisp_rt_lock();
+    void *p = sys_alloc_locked(size);
+    lisp_rt_unlock();
     return p;
 }
+
+// Same, but the caller (intern) already holds the lock.
+void *lisp_gc_alloc_shared_nolock(size_t size) { return sys_alloc_locked(size); }
 
 // --- per-context heap API ---------------------------------------------------
 
 struct lisp_heap *lisp_gc_set_alloc_heap(struct lisp_heap *h) {
-    struct lisp_heap *prev = g_alloc_heap;
-    g_alloc_heap = h;
+    int c = lisp_rt_core();
+    struct lisp_heap *prev = g_alloc_heap[c] != NULL ? g_alloc_heap[c] : &g_system;
+    g_alloc_heap[c] = h;
     return prev;
 }
 
@@ -366,7 +455,11 @@ struct lisp_heap *lisp_heap_new(lisp_value owner) {
     return h;
 }
 
-void lisp_heap_collect(struct lisp_heap *h) { collect_heap(h); }
+void lisp_heap_collect(struct lisp_heap *h) {
+    lisp_rt_lock();
+    collect_heap_locked(h);
+    lisp_rt_unlock();
+}
 
 int lisp_heap_wants_gc(struct lisp_heap *h) { return h->want_gc; }
 
@@ -377,8 +470,11 @@ size_t lisp_heap_collections(struct lisp_heap *h) { return h->collections; }
 void lisp_heap_free(struct lisp_heap *h) {
     if (h == NULL)
         return;
-    if (g_alloc_heap == h)  // never leave the allocator targeting a freed heap
-        g_alloc_heap = &g_system;
+    // Never leave a core's allocator targeting a freed heap. A context heap is
+    // only ever the target of the core that runs that context, and that same
+    // core frees it (at a safe point), so resetting this core's slot suffices.
+    if (g_alloc_heap[lisp_rt_core()] == h)
+        g_alloc_heap[lisp_rt_core()] = NULL;
     gc_obj *o = h->all;
     while (o != NULL) {
         gc_obj *next = o->next;
@@ -390,7 +486,11 @@ void lisp_heap_free(struct lisp_heap *h) {
 
 // --- system heap (back-compatible global API) -------------------------------
 
-void lisp_gc_collect(void) { collect_heap(&g_system); }
+void lisp_gc_collect(void) {
+    lisp_rt_lock();
+    collect_heap_locked(&g_system);
+    lisp_rt_unlock();
+}
 
 void lisp_gc_init(void *stack_base) {
     g_stack_base = stack_base;

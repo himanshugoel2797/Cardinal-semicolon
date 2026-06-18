@@ -376,6 +376,29 @@ size_t lisp_display(lisp_value v, char *buf, size_t cap);
 typedef void (*lisp_output_fn)(const char *s, size_t len, void *ctx);
 void lisp_set_output(lisp_output_fn fn, void *ctx);
 
+// --- Multi-core concurrency (gc.c) ------------------------------------------
+//
+// The runtime is single-threaded by default (host tests, the single-core
+// kernel): the lock hooks are no-ops and every core resolves to slot 0. A
+// multi-core embedder installs (1) a lock guarding the three pieces of shared
+// mutable state -- the system heap's object list/counters, the intern table,
+// and the GC mark scratch -- and (2) a function returning a stable small core
+// index (0 <= id < LISP_MAX_CORES), so each core gets its own scheduler slot
+// and allocation-target heap. Per-context heaps need NO lock: each is touched
+// only by the one core running that context (collection aside, which takes the
+// lock for the shared scratch).
+#define LISP_MAX_CORES 256
+void lisp_set_concurrency(void (*lock)(void), void (*unlock)(void), int (*core_id)(void));
+
+// Switch the shared system heap to grow-only. Its collector roots conservatively
+// from the *calling* core's C stack + registers, so once a second core is live
+// it cannot see that core's stack roots and collecting it would free live data.
+// After this call the system heap is never collected (interned symbols are
+// permanent anyway, and post-boot system-heap churn is negligible); per-context
+// heaps keep collecting precisely, per core. Call once, after self-test and
+// before releasing the secondary cores. See notes/core/lisp-substrate.md (K5d).
+void lisp_gc_set_multicore(int grow_only_system_heap);
+
 // --- Garbage collection (gc.c) ----------------------------------------------
 //
 // Non-moving mark-sweep with PER-CONTEXT heaps. There is one shared SYSTEM heap

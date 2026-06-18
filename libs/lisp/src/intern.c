@@ -7,9 +7,11 @@
 // pointer compare and special-form dispatch is cheap. Open-addressed hash table
 // with linear probing, grown at a 0.7 load factor.
 //
-// NOTE: the table is process-global mutable state and is NOT yet thread-safe; a
-// lock arrives with kernelization (Phase 6 / the concurrency phase). Single
-// runtime thread for now.
+// The table is process-global mutable state shared by every core. intern()
+// takes the runtime lock (lisp_rt_lock) across the whole probe/insert/grow so
+// concurrent interning on two cores is safe, and the system-heap collector --
+// which reads the table as a root under the same lock -- never races a grow.
+// Single-threaded embedders install no lock, so this is free there.
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -31,8 +33,10 @@ static uint32_t name_hash(const char *s, size_t len) {
 static lisp_value alloc_named(lisp_objtype type, const char *name, size_t len, uint32_t hash) {
     // Interned symbols/keywords are the shared-immutable region: they must live in
     // the system heap even when a per-context heap is the current target, since
-    // other contexts (and the intern table) reference them.
-    lisp_named *s = (lisp_named *)lisp_gc_alloc_shared(sizeof(lisp_named) + len + 1);
+    // other contexts (and the intern table) reference them. The caller (intern)
+    // already holds the runtime lock, so use the no-lock system allocator -- the
+    // lock is not recursive.
+    lisp_named *s = (lisp_named *)lisp_gc_alloc_shared_nolock(sizeof(lisp_named) + len + 1);
     if (s == NULL)
         return LISP_UNDEF;
     s->h.header = LISP_MK_HEADER(type, len);
@@ -79,24 +83,36 @@ static bool intern_grow(void) {
 }
 
 static lisp_value intern(lisp_objtype type, const char *name, size_t len) {
-    if (g_count * 10 >= g_cap * 7) {  // also covers the initial g_cap == 0 case
-        if (!intern_grow())
-            return LISP_UNDEF;
-    }
     uint32_t hash = name_hash(name, len);
-    size_t mask = g_cap - 1;
-    size_t i = hash & mask;
-    while (g_table[i] != 0) {
-        if (entry_matches(g_table[i], type, name, len, hash))
-            return g_table[i];  // already interned
-        i = (i + 1) & mask;
+    // The whole probe/insert/grow runs under the runtime lock: the table is
+    // shared by every core, and alloc_named below uses the no-lock allocator
+    // since we already hold it (the lock is not recursive).
+    lisp_rt_lock();
+    lisp_value result = LISP_UNDEF;
+    bool ok = true;
+    if (g_count * 10 >= g_cap * 7)  // also covers the initial g_cap == 0 case
+        ok = intern_grow();
+    if (ok) {
+        size_t mask = g_cap - 1;
+        size_t i = hash & mask;
+        while (g_table[i] != 0) {
+            if (entry_matches(g_table[i], type, name, len, hash)) {
+                result = g_table[i];  // already interned
+                break;
+            }
+            i = (i + 1) & mask;
+        }
+        if (result == LISP_UNDEF && g_table[i] == 0) {  // empty slot: insert
+            lisp_value sym = alloc_named(type, name, len, hash);
+            if (sym != LISP_UNDEF) {
+                g_table[i] = sym;
+                g_count++;
+                result = sym;
+            }
+        }
     }
-    lisp_value sym = alloc_named(type, name, len, hash);
-    if (sym == LISP_UNDEF)
-        return LISP_UNDEF;
-    g_table[i] = sym;
-    g_count++;
-    return sym;
+    lisp_rt_unlock();
+    return result;
 }
 
 // Expose the table so the GC can mark interned symbols as roots (they are not
