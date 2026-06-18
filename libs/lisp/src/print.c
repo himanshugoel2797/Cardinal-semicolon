@@ -108,10 +108,16 @@ static void emit_flonum(sink *s, double v) {
     }
 }
 
-static void emit_string_literal(sink *s, lisp_value v) {
-    emit_ch(s, '"');
+// `readable`: true for write (quoted strings, #\c chars -- reads back); false for
+// display (raw string bytes, bare chars -- human output).
+static void emit_string_literal(sink *s, lisp_value v, bool readable) {
     const char *d = lisp_string_data(v);
     size_t len = lisp_string_len(v);
+    if (!readable) {
+        emit(s, d, len);  // display: raw, unquoted
+        return;
+    }
+    emit_ch(s, '"');
     for (size_t i = 0; i < len; i++) {
         char c = d[i];
         switch (c) {
@@ -126,27 +132,27 @@ static void emit_string_literal(sink *s, lisp_value v) {
     emit_ch(s, '"');
 }
 
-static void print_val(sink *s, lisp_value v);
+static void print_val(sink *s, lisp_value v, bool readable);
 
-static void print_list(sink *s, lisp_value v) {
+static void print_list(sink *s, lisp_value v, bool readable) {
     emit_ch(s, '(');
     bool first = true;
     while (lisp_is_pair(v)) {
         if (!first)
             emit_ch(s, ' ');
         first = false;
-        print_val(s, lisp_car(v));
+        print_val(s, lisp_car(v), readable);
         v = lisp_cdr(v);
     }
     // Improper list (dotted tail): print " . tail" for anything not the empty list.
     if (!lisp_is_empty(v)) {
         emit_cstr(s, " . ");
-        print_val(s, v);
+        print_val(s, v, readable);
     }
     emit_ch(s, ')');
 }
 
-static void print_val(sink *s, lisp_value v) {
+static void print_val(sink *s, lisp_value v, bool readable) {
     if (lisp_is_fixnum(v)) {
         emit_int(s, lisp_fixnum_val(v));
         return;
@@ -158,9 +164,13 @@ static void print_val(sink *s, lisp_value v) {
             case LISP_IMM_EMPTY: emit_cstr(s, "()"); return;
             case LISP_IMM_EOF: emit_cstr(s, "#<eof>"); return;
             case LISP_IMM_CHAR: {
-                // Reader-faithful #\c for printable ASCII; an unambiguous
-                // non-readable form otherwise (named chars / UTF-8 are later).
                 uint32_t cp = lisp_char_val(v);
+                if (!readable) {  // display: the bare character
+                    emit_ch(s, (char)cp);
+                    return;
+                }
+                // write: reader-faithful #\c for printable ASCII; an unambiguous
+                // non-readable form otherwise (named chars / UTF-8 are later).
                 if (cp >= 0x21 && cp <= 0x7e) {
                     emit_cstr(s, "#\\");
                     emit_ch(s, (char)cp);
@@ -179,20 +189,20 @@ static void print_val(sink *s, lisp_value v) {
         return;
     }
     switch (LISP_HDR_TYPE(lisp_obj(v))) {
-        case LISP_OBJ_PAIR: print_list(s, v); return;
+        case LISP_OBJ_PAIR: print_list(s, v, readable); return;
         case LISP_OBJ_SYMBOL: emit(s, lisp_named_name(v), lisp_named_len(v)); return;
         case LISP_OBJ_KEYWORD:
             emit_ch(s, ':');
             emit(s, lisp_named_name(v), lisp_named_len(v));
             return;
-        case LISP_OBJ_STRING: emit_string_literal(s, v); return;
+        case LISP_OBJ_STRING: emit_string_literal(s, v, readable); return;
         case LISP_OBJ_VECTOR: {
             emit_cstr(s, "#(");
             size_t n = lisp_vector_length(v);
             for (size_t i = 0; i < n; i++) {
                 if (i > 0)
                     emit_ch(s, ' ');
-                print_val(s, lisp_vector_ref(v, i));
+                print_val(s, lisp_vector_ref(v, i), readable);
             }
             emit_ch(s, ')');
             return;
@@ -204,12 +214,20 @@ static void print_val(sink *s, lisp_value v) {
     }
 }
 
-size_t lisp_print(lisp_value v, char *buf, size_t cap) {
+static size_t print_into(lisp_value v, char *buf, size_t cap, bool readable) {
     sink s = {buf, cap, 0};
-    print_val(&s, v);
+    print_val(&s, v, readable);
     if (cap > 0) {
         size_t term = s.pos < cap ? s.pos : cap - 1;
         buf[term] = '\0';
     }
     return s.pos;
+}
+
+size_t lisp_print(lisp_value v, char *buf, size_t cap) {
+    return print_into(v, buf, cap, true);  // write form (reads back)
+}
+
+size_t lisp_display(lisp_value v, char *buf, size_t cap) {
+    return print_into(v, buf, cap, false);  // human form
 }

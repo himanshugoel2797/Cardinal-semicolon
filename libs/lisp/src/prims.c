@@ -905,6 +905,60 @@ static lisp_value prim_for_each(lisp_value *args, int argc, const char **err) {
     return LISP_UNDEF;
 }
 
+// --- Output (display / write / newline) -------------------------------------
+
+static lisp_output_fn g_out = NULL;
+static void *g_out_ctx = NULL;
+
+void lisp_set_output(lisp_output_fn fn, void *ctx) {
+    g_out = fn;
+    g_out_ctx = ctx;
+}
+
+static void out(const char *s, size_t len) {
+    if (g_out != NULL)
+        g_out(s, len, g_out_ctx);
+}
+
+// Render `v` (write or display form) and push it to the output sink, growing past
+// the stack buffer if needed.
+static lisp_value emit_value(lisp_value v, bool readable, const char **err) {
+    char buf[256];
+    size_t n = readable ? lisp_print(v, buf, sizeof(buf)) : lisp_display(v, buf, sizeof(buf));
+    if (n < sizeof(buf)) {
+        out(buf, n);
+    } else {
+        char *big = (char *)malloc(n + 1);
+        if (big == NULL)
+            return prim_err(err, "out of memory");
+        if (readable)
+            lisp_print(v, big, n + 1);
+        else
+            lisp_display(v, big, n + 1);
+        out(big, n);
+        free(big);
+    }
+    return LISP_UNDEF;  // unspecified
+}
+
+static lisp_value prim_display(lisp_value *a, int n, const char **e) {
+    if (n != 1)
+        return prim_err(e, "display expects one argument");
+    return emit_value(a[0], false, e);
+}
+static lisp_value prim_write(lisp_value *a, int n, const char **e) {
+    if (n != 1)
+        return prim_err(e, "write expects one argument");
+    return emit_value(a[0], true, e);
+}
+static lisp_value prim_newline(lisp_value *a, int n, const char **e) {
+    (void)a;
+    if (n != 0)
+        return prim_err(e, "newline expects no arguments");
+    out("\n", 1);
+    return LISP_UNDEF;
+}
+
 // --- Installation -----------------------------------------------------------
 
 static void def(lisp_value env, const char *name, lisp_primitive_fn fn) {
@@ -994,4 +1048,8 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "apply", prim_apply);
     def(env, "map", prim_map);
     def(env, "for-each", prim_for_each);
+    // Output
+    def(env, "display", prim_display);
+    def(env, "write", prim_write);
+    def(env, "newline", prim_newline);
 }
