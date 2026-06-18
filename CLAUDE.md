@@ -78,7 +78,7 @@ module count in mind when adding/removing modules (the tree currently builds
 | `modules/` | `Sys*` kernel-privileged modules: memory (`SysPhysicalMemory`, `SysVirtualMemory`, `SysMemory`), `SysInterrupts`, `SysMP`, `SysTimer`, `SysFP`, `SysObj` (object model), `SysReg` (registry), `SysUser` (syscalls), `SysTaskMgr` (scheduler), `SysDebug`, `SysGdb` (GDB remote-serial-protocol stub — debug the OS over serial/USB-serial; see `notes/debugging-gdb.md`). |
 | `servers/` | `Core*` OS services: `CoreDisplay`, `CoreAudio`, `CoreInput`, `CoreNetwork` (ARP/ICMP/IPv4), `CoreStorage` (block-device registry + the `cardfs` object-store exploration), `CoreUsb` (controller-agnostic transfer/enumeration + class-driver registration), `CorePower`, `CoreDriver`. |
 | `drivers/` | Device drivers: `virtio` (gpu/net/common), `intel_gfx`, `intel_wifi`, `hdaudio`, `rtl8139`, `rtl8169`, `ahci`, USB host controllers `uhci`/`xhci` (both implement the CoreUsb transfer backend; `ehci` is a stub) + USB class drivers `usb_hid` (kbd/mouse), `usb_storage` (BBB/SCSI block device), `usb_hub`, `usb_serial` (FTDI, routes the GDB stub), `ps2`, `lfb`, `tarfs`. |
-| `libs/` | Static libs linked into modules: `crypto` (sha256/hmac), `miniz`, `module_lib` (CELF header build/verify), `kvs`, `ubsan_handlers`, plus header-only `pci/` and `syscalls/`. |
+| `libs/` | Static libs linked into modules: `crypto` (sha256/hmac), `miniz`, `module_lib` (CELF header build/verify), `kvs`, `ubsan_handlers`, plus header-only `pci/` and `syscalls/`. `pci/` holds `pci.h` (config space, BAR scan), `pci_irq.h` (MSI/MSI-X setup), `pci_alloc.h` (BAR + bridge-window self-assignment for firmware-unconfigured devices), `pci_debug.h` (`pci_msix_debug_dump`). |
 | `common/` | Freestanding mini-libc (`string`, `stdlib`, `stdio`, lists/queues, `time`) + platform type headers. Included as a SYSTEM include everywhere. |
 | `platform/<isa>/<plat>/` | Per-target CMake fragments (`flags.cmake`), `linker.ld`, GRUB configs, and the `image`/`run` custom targets. |
 | `utils/sign_exec/` | **Host** tool that wraps an ELF in a signed `ModuleHeader` → `.celf`. |
@@ -177,7 +177,24 @@ facilities: the **registry** (`SysReg` — a hierarchical key/value store,
 `registry_addkey_*`/`registry_readkey_*`), the **object model** (`SysObj`),
 **syscalls** (`libs/syscalls/cs_syscall.h`, register-based `syscallq`), and
 driver→server registration (e.g. a display driver calls `display_register()`
-to attach to `CoreDisplay`). Debug output is `DEBUG_PRINT(...)` over COM1.
+to attach to `CoreDisplay`, a NIC calls `network_register()` to attach to
+`CoreNetwork`). Debug output is `DEBUG_PRINT(...)` over COM1.
+
+**PCI drivers** receive their device's ECAM (`module_init(void *ecam)`) and map
+it as a `pci_config_t`. The usual path is `pci_first_mmio_bar()` (firmware
+assigned the BARs); a device firmware never used at boot (e.g. an onboard NIC
+behind a PCIe root port) may have *unassigned* BARs and a *closed* bridge window
+— call `pci_assign_bars()` (`libs/pci/pci_alloc.h`) to place its BARs and open
+every bridge window up to the root bus. Set up MSI(-X) with
+`pci_setup_msi_handler()` (`pci_irq.h`), which registers the handler *before*
+enabling the capability; enable the device's own interrupt mask **last**, after
+the handler/poll task exist (otherwise an edge-triggered MSI can fire and be lost
+before anything is listening, wedging interrupts).
+
+**Driver gotcha — RX-handler locking:** `network_rx_packet()` runs the network
+stack synchronously and, for a request that needs a reply (ARP/ICMP), re-enters
+the *same* driver's TX path. Never hold a driver lock across `network_rx_packet`
+or you self-deadlock the moment a reply-triggering frame arrives.
 
 ## Git workflow for this environment
 
