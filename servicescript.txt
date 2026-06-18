@@ -1,3 +1,4 @@
+LOAD:./SysLisp.celf
 LOAD:./CorePower.celf
 LOAD:./CoreStorage.celf
 LOAD:./tarfs.celf

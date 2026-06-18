@@ -431,8 +431,25 @@ behind a VM.
   deep-copied **into the receiver's heap** on send. A context with its own heap
   must therefore treat shared environments as read-only (mutating a shared binding
   is the one unsound operation; the frozen-shared-env of the full process model
-  removes that footgun). *(Next per the build plan: kernelization — see the
-  K-staging in the working plan.)*
+  removes that footgun).
+- **Kernelization — the runtime runs in the OS** *(done — "K4"; `modules/SysLisp`)*.
+  The host-proven runtime is wrapped as a signed `Sys*` module that links the
+  `lisp` static library, points its output sink at the COM1 debug log (`print_str`),
+  and runs an in-OS self-test at load. It loads from **`servicescript`** (which runs
+  as a task) rather than `loadscript`: the boot thread never returns past
+  `SysTaskMgr`'s scheduler handoff, and — per the FP rule — the runtime's hardware
+  doubles are only legal in task context. The self-test exercises the whole stack
+  in the kernel: eval/recursion/higher-order, flonums (proving SSE works in task
+  context), `display`→serial, GC survival, a foreign-function `(uptime-ns)` calling
+  the kernel timer, and the cooperative scheduler + copy-on-send + per-context GC
+  (producer/consumer). Two bare-metal fixes were needed: the SSE TUs build with
+  `-mstackrealign` (the `-mno-sse` kernel call path doesn't keep the 16-byte stack
+  alignment SSE assumes) and avoid aligned `.rodata` SSE constants (the module
+  loader doesn't 16-align sections — kept the flonum path scalar, e.g. a signed
+  `int64` integer-part cast in the printer). **Deferred to K5:** the native-ISR →
+  event → wake-context bridge, which needs the scheduler to be the persistent
+  per-core loop (the blocking `recv`/wake software path it rides on is already
+  proven in K2). *(Next: K5 — interpreter-as-scheduler / SysTaskMgr collapse.)*
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against

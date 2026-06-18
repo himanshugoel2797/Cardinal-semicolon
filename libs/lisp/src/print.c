@@ -68,12 +68,15 @@ static void emit_flonum(sink *s, double v) {
     }
     if (neg)
         emit_ch(s, '-');
-    // Normalize very large magnitudes with a decimal exponent so the integer-
-    // part cast below cannot overflow uint64 (that conversion would be UB). The
-    // exponent is appended as a trailing eN. This path is intentionally coarse;
-    // a shortest-round-trip printer is a later refinement.
+    // Normalize very large magnitudes with a decimal exponent so the integer-part
+    // cast below stays within int64 range (that conversion would otherwise be UB).
+    // ip is kept SIGNED (int64) on purpose: the (double)ip back-conversion below
+    // is then a single cvtsi2sd. An unsigned (uint64)->double would instead lower
+    // to the SSE2 magic-constant sequence (movapd of a 16-byte .rodata constant +
+    // subpd), whose ALIGNED load #GPs because the kernel module loader does not
+    // 16-align section data. The exponent is appended as a trailing eN.
     int e10 = 0;
-    while (v >= 9.223372036854775808e18) {  // 2^63: keep ip in int64 range for emit_int
+    while (v >= 9.223372036854775808e18) {  // 2^63: keep ip in int64 range
         v /= 10.0;
         e10++;
     }
@@ -82,8 +85,8 @@ static void emit_flonum(sink *s, double v) {
     for (int k = 0; k < FRAC; k++)
         rounding /= 10.0;
     v += rounding;  // round at the FRAC-th fractional digit (may carry into ip)
-    uint64_t ip = (uint64_t)v;
-    emit_int(s, (int64_t)ip);
+    int64_t ip = (int64_t)v;
+    emit_int(s, ip);
     emit_ch(s, '.');
     double frac = v - (double)ip;
     char digits[16];
