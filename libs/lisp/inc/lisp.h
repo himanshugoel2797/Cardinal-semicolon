@@ -66,7 +66,10 @@ typedef enum {
     LISP_OBJ_SYMBOL = 2,
     LISP_OBJ_KEYWORD = 3,
     LISP_OBJ_STRING = 4,
-    // reserved for later phases: VECTOR, MAP, CLOSURE, BYTEVECTOR, ...
+    LISP_OBJ_ENV = 5,        // lexical environment frame (runtime plumbing)
+    LISP_OBJ_CLOSURE = 6,    // lambda: params + body + captured env
+    LISP_OBJ_PRIMITIVE = 7,  // built-in procedure backed by a C function
+    // reserved for later phases: VECTOR, MAP, BYTEVECTOR, BOX, ...
 } lisp_objtype;
 
 // Header bit layout: [7:0] type, [15:8] gc flags, [63:16] aux (type-specific,
@@ -160,6 +163,39 @@ const char *lisp_named_name(lisp_value v);  // symbol/keyword name (NUL-terminat
 size_t lisp_named_len(lisp_value v);
 const char *lisp_string_data(lisp_value v);
 size_t lisp_string_len(lisp_value v);
+
+// --- Evaluator (eval.c / prims.c) -------------------------------------------
+
+// A primitive procedure: receives an evaluated argument array. On error it
+// returns LISP_UNDEF and, if `err` is non-NULL, points it at a static message.
+typedef lisp_value (*lisp_primitive_fn)(lisp_value *args, int argc, const char **err);
+
+lisp_value lisp_make_closure(lisp_value params, lisp_value body, lisp_value env);
+lisp_value lisp_make_primitive(lisp_primitive_fn fn, const char *name);
+
+// Lexical environments. A frame holds an assoc list of (symbol . value) bindings
+// and a parent; lookup walks the chain. Environments are deliberately mutable
+// runtime plumbing (define/set! update them in place) -- distinct from the
+// immutable value model the language exposes to programs.
+lisp_value lisp_make_env(lisp_value parent);
+void lisp_env_define(lisp_value env, lisp_value sym, lisp_value val);
+bool lisp_env_lookup(lisp_value env, lisp_value sym, lisp_value *out);
+bool lisp_env_set(lisp_value env, lisp_value sym, lisp_value val);
+
+// Evaluate `expr` in `env`. Returns LISP_UNDEF and sets *err on error. Proper
+// tail calls in if/begin/let/application are handled by an internal loop (full
+// continuations + an explicit VM stack arrive in Phase 3).
+lisp_value lisp_eval(lisp_value expr, lisp_value env, const char **err);
+
+// A fresh global environment with the built-in primitives installed.
+lisp_value lisp_default_env(void);
+
+// Read and evaluate every form in `src`, returning the last result (or
+// LISP_UNDEF + *err on the first failure). Convenience for tests/REPL.
+lisp_value lisp_eval_string(const char *src, lisp_value env, const char **err);
+
+// Install the built-in primitives into `env` (called by lisp_default_env).
+void lisp_install_primitives(lisp_value env);
 
 // --- Reader (reader.c) ------------------------------------------------------
 
