@@ -17,12 +17,13 @@
 
 // Default static IPv4 address for an ethernet interface.
 //
-// NOTE: this is a deliberate placeholder. 10.0.2.15 is the address QEMU's
-// user-mode (slirp) network hands the guest, which makes the default usable for
-// bring-up without any configuration. Per-interface addressing, DHCP, and a
-// configuration surface (registry / userspace) are intentionally left as future
-// work -- see notes/servers/CoreNetwork.md.
-#define NET_DEFAULT_IPV4 IPV4_ADDR(10, 0, 2, 15)
+// TEMPORARY: hardcoded to 10.43.0.116, a free address on the real test LAN, so
+// the RTL8111G on the AtomicPi answers ARP / replies to ping end-to-end until a
+// DHCP client lands. (Was 10.0.2.15, QEMU slirp's guest address -- restore that,
+// or better, make this per-interface configurable, when wiring DHCP.) Per-
+// interface addressing / DHCP / a config surface remain future work -- see
+// notes/servers/CoreNetwork.md.
+#define NET_DEFAULT_IPV4 IPV4_ADDR(10, 43, 0, 116)
 
 typedef struct {
     network_device_type_t type;
