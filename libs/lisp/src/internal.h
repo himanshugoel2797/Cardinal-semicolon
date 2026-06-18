@@ -59,7 +59,9 @@ typedef struct {
     lisp_value env;
     lisp_value accum;    // value being returned (when status==APPLY)
     lisp_value kont;     // top continuation frame, or LISP_EMPTY
+    lisp_value mailbox;  // FIFO list of received messages (K2 scheduler / IPC)
     uint32_t status;
+    uint32_t blocked;    // 1 = parked waiting for a message; the scheduler skips it
     const char *err;
     int64_t budget;
 } lisp_ctx_t;

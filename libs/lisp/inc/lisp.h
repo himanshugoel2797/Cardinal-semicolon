@@ -268,6 +268,40 @@ lisp_value lisp_ctx_value(lisp_value ctx);
 // Static error message of an ERROR context (NULL otherwise).
 const char *lisp_ctx_error(lisp_value ctx);
 
+// Current status of a context (DONE/ERROR once finished, otherwise an internal
+// EVAL/APPLY step). Lets a scheduler tell finished contexts from runnable ones.
+lisp_ctx_status lisp_ctx_state(lisp_value ctx);
+
+// --- Cooperative scheduler (sched.c) ----------------------------------------
+//
+// The contexts above become green-thread "processes" scheduled round-robin: each
+// is resumed for a reduction slice, suspends at a safe point, and is requeued.
+// This is the language-level process model (one scheduler per core in the kernel;
+// a single global one host-side). Isolation is shared-nothing: messages between
+// contexts are deep-copied (copy-on-send), cheap because values are immutable.
+typedef struct {
+    lisp_value queue;  // FIFO list of context values (the run set); a GC root
+    int64_t slice;     // reductions granted per resume
+} lisp_sched_t;
+
+// Initialize a scheduler with the given per-resume reduction slice (<=0 -> a
+// default) and make it the current one (spawn/send/yield/recv act on it). The
+// struct must outlive the run and be reachable by the GC (e.g. a stack local).
+void lisp_sched_init(lisp_sched_t *s, int64_t slice);
+
+// Add an existing context to the run set (FIFO). spawn does this from Lisp.
+// Returns false on OOM (the context was NOT enqueued) so the caller can react.
+bool lisp_sched_add(lisp_sched_t *s, lisp_value ctx);
+
+// Run the scheduler. Each pass resumes every runnable context once. Stops when
+// all contexts have finished, when the remaining ones are all blocked (deadlock),
+// or after `max_passes` passes (<=0 = unbounded). Returns the passes run.
+int lisp_sched_run(lisp_sched_t *s, int max_passes);
+
+// Install the scheduler primitives (spawn, yield, send, recv, ...) into `env`.
+// Kept out of lisp_default_env so the base language has no scheduler dependency.
+void lisp_install_sched(lisp_value env);
+
 // A fresh global environment with the built-in primitives installed.
 lisp_value lisp_default_env(void);
 

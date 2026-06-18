@@ -124,6 +124,7 @@ static void trace(lisp_value v) {
             mark_push(c->env);
             mark_push(c->accum);
             mark_push(c->kont);
+            mark_push(c->mailbox);
             break;
         }
         default:
