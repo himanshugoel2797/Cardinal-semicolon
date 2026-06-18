@@ -141,13 +141,37 @@ static lisp_value prim_div(lisp_value *args, int argc, const char **err) {
     return lisp_make_flonum(acc);
 }
 
+// modulo: result takes the sign of the divisor (R7RS), unlike C's %.
 static lisp_value prim_mod(lisp_value *args, int argc, const char **err) {
     if (argc != 2 || !all_fixnum(args, argc))
         return prim_err(err, "modulo expects two integers");
+    int64_t n = lisp_fixnum_val(args[0]), d = lisp_fixnum_val(args[1]);
+    if (d == 0)
+        return prim_err(err, "division by zero");
+    int64_t r = n % d;
+    if (r != 0 && ((r < 0) != (d < 0)))
+        r += d;
+    return lisp_fixnum(r);
+}
+
+// remainder: takes the sign of the dividend (C's % semantics).
+static lisp_value prim_remainder(lisp_value *args, int argc, const char **err) {
+    if (argc != 2 || !all_fixnum(args, argc))
+        return prim_err(err, "remainder expects two integers");
     int64_t d = lisp_fixnum_val(args[1]);
     if (d == 0)
         return prim_err(err, "division by zero");
     return lisp_fixnum(lisp_fixnum_val(args[0]) % d);
+}
+
+// quotient: truncating integer division.
+static lisp_value prim_quotient(lisp_value *args, int argc, const char **err) {
+    if (argc != 2 || !all_fixnum(args, argc))
+        return prim_err(err, "quotient expects two integers");
+    int64_t d = lisp_fixnum_val(args[1]);
+    if (d == 0)
+        return prim_err(err, "division by zero");
+    return lisp_fixnum(lisp_fixnum_val(args[0]) / d);
 }
 
 // --- Comparison (chained: (< 1 2 3) => #t) ----------------------------------
@@ -959,6 +983,20 @@ static lisp_value prim_newline(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// (error message irritants...) raises an error carrying the message string.
+// The data is NUL-terminated (defensive NUL in lisp_make_string).
+// TODO(GC): *err points into a heap string; once a collector lands, a GC between
+// here and the caller reading *err would dangle it -- copy the message into a
+// persistent buffer (or snapshot at the call site) then. Irritants are not yet
+// rendered; that arrives with condition objects.
+static lisp_value prim_error(lisp_value *a, int n, const char **e) {
+    if (n < 1)
+        return prim_err(e, "error: a message argument is required");
+    if (lisp_is_string(a[0]))
+        return prim_err(e, lisp_string_data(a[0]));
+    return prim_err(e, "error");  // non-string message: generic (until conditions)
+}
+
 // --- Installation -----------------------------------------------------------
 
 static void def(lisp_value env, const char *name, lisp_primitive_fn fn) {
@@ -973,6 +1011,8 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "*", prim_mul);
     def(env, "/", prim_div);
     def(env, "modulo", prim_mod);
+    def(env, "remainder", prim_remainder);
+    def(env, "quotient", prim_quotient);
     def(env, "=", prim_numeq);
     def(env, "<", prim_lt);
     def(env, ">", prim_gt);
@@ -1052,4 +1092,5 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "display", prim_display);
     def(env, "write", prim_write);
     def(env, "newline", prim_newline);
+    def(env, "error", prim_error);
 }
