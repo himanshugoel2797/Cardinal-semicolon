@@ -22,6 +22,9 @@
 #   DISPLAY_MODE=none|gtk|sdl    qemu display backend (default none = headless)
 #   SCREENSHOT=path  after booting, dump the guest screen to a PPM and exit
 #   TIMEOUT=30      seconds before auto-killing the guest (0 = no timeout)
+#   SENDKEY=a[,b..] after SENDKEY_DELAY s, inject these keys via the qemu monitor
+#                   (exercises the PS/2 keyboard IRQ headlessly); serial -> stdout
+#   SENDKEY_DELAY=12  seconds to wait for boot before injecting keys
 #   EXTRA="..."     extra qemu args
 set -euo pipefail
 
@@ -98,6 +101,44 @@ PY
   wait "$qpid" 2>/dev/null || true
   echo "[run-qemu] serial log: /tmp/cardinal-qemu-serial.log"
   ls -l "$SCREENSHOT" 2>/dev/null
+  exit 0
+fi
+
+# Keystroke-injection mode: boot headless with a control monitor, wait for boot,
+# inject keys (firing the PS/2 keyboard IRQ), let it run to TIMEOUT, dump serial.
+if [ -n "${SENDKEY:-}" ]; then
+  command -v python3 >/dev/null || { echo "error: python3 needed for SENDKEY" >&2; exit 1; }
+  sock="$(mktemp -u /tmp/cardinal-qmon.XXXX.sock)"
+  serial="/tmp/cardinal-qemu-serial.log"
+  delay="${SENDKEY_DELAY:-12}"
+  : > "$serial"
+  echo "[run-qemu] booting headless; will inject keys '$SENDKEY' after ${delay}s"
+  # Use a (headless) VNC display rather than -display none: the input subsystem
+  # needs a console to attach the PS/2 keyboard to, or monitor `sendkey` has
+  # nowhere to route and the guest IRQ never fires. No VNC client need connect.
+  timeout --foreground "${TIMEOUT:-30}" \
+    qemu-system-x86_64 "${common_args[@]}" \
+      -serial "file:$serial" \
+      -vnc "127.0.0.1:${SENDKEY_VNC:-31}" \
+      -monitor "unix:$sock,server,nowait" $EXTRA &
+  qpid=$!
+  python3 - "$sock" "$delay" "$SENDKEY" <<'PY'
+import socket, sys, time
+sock, delay, keys = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+for _ in range(100):
+    try:
+        s = socket.socket(socket.AF_UNIX); s.connect(sock); break
+    except OSError: time.sleep(0.2)
+else:
+    print("could not connect to qemu monitor"); sys.exit(1)
+time.sleep(delay)
+for k in keys.split(','):
+    s.sendall(b"sendkey " + k.encode() + b"\n"); time.sleep(0.3)
+s.close()
+PY
+  wait "$qpid" 2>/dev/null || true
+  echo "[run-qemu] ---- serial log ----"
+  cat "$serial"
   exit 0
 fi
 
