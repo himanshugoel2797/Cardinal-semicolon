@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "internal.h"
 #include "lisp.h"
 
 // FNV-1a over the name bytes.
@@ -28,7 +29,7 @@ static uint32_t name_hash(const char *s, size_t len) {
 }
 
 static lisp_value alloc_named(lisp_objtype type, const char *name, size_t len, uint32_t hash) {
-    lisp_named *s = (lisp_named *)malloc(sizeof(lisp_named) + len + 1);
+    lisp_named *s = (lisp_named *)lisp_gc_alloc(sizeof(lisp_named) + len + 1);
     if (s == NULL)
         return LISP_UNDEF;
     s->h.header = LISP_MK_HEADER(type, len);
@@ -93,6 +94,13 @@ static lisp_value intern(lisp_objtype type, const char *name, size_t len) {
     g_table[i] = sym;
     g_count++;
     return sym;
+}
+
+// Expose the table so the GC can mark interned symbols as roots (they are not
+// otherwise reachable, and are intended to persist).
+lisp_value *lisp_intern_table(size_t *cap_out) {
+    *cap_out = g_cap;
+    return g_table;
 }
 
 lisp_value lisp_make_symbol(const char *name, size_t len) {

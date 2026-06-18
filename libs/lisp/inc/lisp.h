@@ -268,4 +268,24 @@ size_t lisp_display(lisp_value v, char *buf, size_t cap);
 typedef void (*lisp_output_fn)(const char *s, size_t len, void *ctx);
 void lisp_set_output(lisp_output_fn fn, void *ctx);
 
+// --- Garbage collection (gc.c) ----------------------------------------------
+//
+// Conservative, non-moving mark-sweep. Roots are the C stack + callee-saved
+// registers (scanned conservatively) plus the interned-symbol table. The
+// collector is DISABLED until lisp_gc_init records a stack base; before that,
+// allocation just grows the heap (so non-GC clients/tests are unaffected).
+//
+// `stack_base` must be an address in the OUTERMOST frame of the thread/task that
+// runs the interpreter (e.g. the address of a local in main, or the task's stack
+// base). The runtime must only allocate from that same thread, and float/GC must
+// not run in ISR/early-boot context (see notes/core/lisp-substrate.md).
+void lisp_gc_init(void *stack_base);
+
+// Force a collection now (no-op if uninitialized). Mainly for tests; normally
+// collection is triggered automatically by allocation pressure.
+void lisp_gc_collect(void);
+
+size_t lisp_gc_live_count(void);    // live object count
+size_t lisp_gc_collections(void);   // collections run so far
+
 #endif

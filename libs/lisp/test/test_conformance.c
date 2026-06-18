@@ -41,6 +41,8 @@ int main(int argc, char **argv) {
     fclose(f);
 
     printf("[lisp conformance] running %s\n", path);
+    uintptr_t stack_base;
+    lisp_gc_init(&stack_base);  // run the whole suite under GC, to stress it
     lisp_set_output(host_out, NULL);
     lisp_value env = lisp_default_env();
     const char *err = NULL;

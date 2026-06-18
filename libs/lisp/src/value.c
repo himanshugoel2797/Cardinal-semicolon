@@ -12,10 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "internal.h"
 #include "lisp.h"
 
 lisp_value lisp_cons(lisp_value car, lisp_value cdr) {
-    lisp_pair *p = (lisp_pair *)malloc(sizeof(lisp_pair));
+    lisp_pair *p = (lisp_pair *)lisp_gc_alloc(sizeof(lisp_pair));
     if (p == NULL)
         return LISP_UNDEF;
     p->h.header = LISP_MK_HEADER(LISP_OBJ_PAIR, 0);
@@ -29,7 +30,7 @@ lisp_value lisp_make_string(const char *data, size_t len) {
     // Over-allocate one byte for a defensive NUL: the length in the header is
     // authoritative (strings may contain embedded NULs), but a sentinel keeps
     // accidental C-string use from running off the end.
-    lisp_string *s = (lisp_string *)malloc(sizeof(lisp_string) + len + 1);
+    lisp_string *s = (lisp_string *)lisp_gc_alloc(sizeof(lisp_string) + len + 1);
     if (s == NULL)
         return LISP_UNDEF;
     s->h.header = LISP_MK_HEADER(LISP_OBJ_STRING, len);
@@ -47,7 +48,7 @@ size_t lisp_string_len(lisp_value v) { return (size_t)LISP_HDR_AUX(lisp_obj(v));
 // vector (copy-on-write of the flat array). Structural-sharing variants (RRB)
 // are a later optimization; flat COW is the small/elegant starting point.
 lisp_value lisp_make_vector(size_t len, lisp_value fill) {
-    lisp_vector *v = (lisp_vector *)malloc(sizeof(lisp_vector) + len * sizeof(lisp_value));
+    lisp_vector *v = (lisp_vector *)lisp_gc_alloc(sizeof(lisp_vector) + len * sizeof(lisp_value));
     if (v == NULL)
         return LISP_UNDEF;
     v->h.header = LISP_MK_HEADER(LISP_OBJ_VECTOR, len);
@@ -65,7 +66,7 @@ void lisp_vector_set_init(lisp_value v, size_t i, lisp_value x) {
 }
 
 lisp_value lisp_make_flonum(double x) {
-    lisp_flonum *f = (lisp_flonum *)malloc(sizeof(lisp_flonum));
+    lisp_flonum *f = (lisp_flonum *)lisp_gc_alloc(sizeof(lisp_flonum));
     if (f == NULL)
         return LISP_UNDEF;
     f->h.header = LISP_MK_HEADER(LISP_OBJ_FLONUM, 0);
