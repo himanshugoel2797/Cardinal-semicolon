@@ -64,11 +64,24 @@ typedef struct {
     uint32_t blocked;    // 1 = parked waiting for a message; the scheduler skips it
     const char *err;
     int64_t budget;
+    lisp_heap_t *heap;   // own per-context heap (K3), or NULL to use the system heap
 } lisp_ctx_t;
 
 // GC-tracked allocation (gc.c). All heap Lisp objects are allocated through this
-// so the collector can find and reclaim them. Returns NULL on OOM.
+// so the collector can find and reclaim them; it targets the current heap (the
+// system heap by default, or a context's own heap while it runs). Returns NULL on
+// OOM. lisp_gc_alloc_shared forces the system heap (for interned symbols, which
+// are the shared-immutable region and must not live in a per-context heap).
 void *lisp_gc_alloc(size_t size);
+void *lisp_gc_alloc_shared(size_t size);
+
+// Make `h` the current allocation target, returning the previous one (so the
+// interpreter loop can switch into a context's heap while it runs and restore
+// afterwards). lisp_heap_wants_gc reports a deferred per-context collection that
+// the loop should run at its next safe point.
+lisp_heap_t *lisp_gc_set_alloc_heap(lisp_heap_t *h);
+lisp_heap_t *lisp_gc_system_heap(void);
+int lisp_heap_wants_gc(lisp_heap_t *h);
 
 // The intern table, exposed so the GC can treat interned symbols as roots
 // (intern.c). Returns the slot array; *cap_out is its length. Slots are 0

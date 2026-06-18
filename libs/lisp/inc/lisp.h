@@ -233,6 +233,10 @@ lisp_value lisp_eval(lisp_value expr, lisp_value env, const char **err);
 // scheduler's view -- re-entrant primitives nest one of these).
 lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **err);
 
+// A garbage-collected heap (gc.c). Opaque: the shared system heap and each
+// context's own heap are both lisp_heap_t. See the GC section below.
+typedef struct lisp_heap lisp_heap_t;
+
 // --- Execution contexts (the CEK machine; eval.c) ---------------------------
 //
 // A context is the interpreter's execution state made explicit and heap-resident
@@ -272,6 +276,28 @@ const char *lisp_ctx_error(lisp_value ctx);
 // EVAL/APPLY step). Lets a scheduler tell finished contexts from runnable ones.
 lisp_ctx_status lisp_ctx_state(lisp_value ctx);
 
+// Give a context its OWN heap, so its transient working data is collected
+// independently and precisely (K3). Without this the context allocates into the
+// shared system heap. Its environment may still reference shared data (the global
+// env, interned symbols) -- those are external roots, never copied or collected by
+// the context's GC. Returns 0 on success, <0 on OOM.
+//
+// CONTRACT (the shared region is immutable): a context with its own heap must
+// treat any environment it did not itself create -- the shared global env and any
+// enclosing frame from another heap -- as READ-ONLY. Its own `define`s land in its
+// own (context-heap) frames, which is fine; but mutating a binding that lives in a
+// shared/system env frame (`set!` of a global, or redefining one) makes a
+// system-heap pair point into the context heap, which the context's GC will later
+// free underneath it. That is unsound and unsupported in this stage; the frozen-
+// shared-env of the full process model removes the footgun. Cross-context data is
+// exchanged only by message passing (deep-copied into the receiver's heap), never
+// by mutating shared state.
+int lisp_ctx_attach_heap(lisp_value ctx);
+
+// Live object count / collections-run of a context's own heap (0 if it has none).
+size_t lisp_ctx_heap_live(lisp_value ctx);
+size_t lisp_ctx_heap_collections(lisp_value ctx);
+
 // --- Cooperative scheduler (sched.c) ----------------------------------------
 //
 // The contexts above become green-thread "processes" scheduled round-robin: each
@@ -280,8 +306,9 @@ lisp_ctx_status lisp_ctx_state(lisp_value ctx);
 // a single global one host-side). Isolation is shared-nothing: messages between
 // contexts are deep-copied (copy-on-send), cheap because values are immutable.
 typedef struct {
-    lisp_value queue;  // FIFO list of context values (the run set); a GC root
-    int64_t slice;     // reductions granted per resume
+    lisp_value queue;       // FIFO list of context values (the run set); a GC root
+    int64_t slice;          // reductions granted per resume
+    int per_context_heaps;  // if nonzero, spawn gives each context its own heap (K3)
 } lisp_sched_t;
 
 // Initialize a scheduler with the given per-resume reduction slice (<=0 -> a
@@ -342,22 +369,34 @@ void lisp_set_output(lisp_output_fn fn, void *ctx);
 
 // --- Garbage collection (gc.c) ----------------------------------------------
 //
-// Conservative, non-moving mark-sweep. Roots are the C stack + callee-saved
-// registers (scanned conservatively) plus the interned-symbol table. The
-// collector is DISABLED until lisp_gc_init records a stack base; before that,
-// allocation just grows the heap (so non-GC clients/tests are unaffected).
+// Non-moving mark-sweep with PER-CONTEXT heaps. There is one shared SYSTEM heap
+// (interned symbols, the global env/prelude, scheduler structures, and the
+// context objects) collected CONSERVATIVELY (C stack + registers + the intern
+// table); the calls below operate on it. A context may additionally own a heap
+// for its transient data, collected PRECISELY from its CEK registers -- see
+// lisp_ctx_attach_heap above and the lisp_heap_* helpers.
 //
-// `stack_base` must be an address in the OUTERMOST frame of the thread/task that
-// runs the interpreter (e.g. the address of a local in main, or the task's stack
-// base). The runtime must only allocate from that same thread, and float/GC must
-// not run in ISR/early-boot context (see notes/core/lisp-substrate.md).
+// The system collector is DISABLED until lisp_gc_init records a stack base;
+// before that, allocation just grows the heap (so non-GC clients/tests are
+// unaffected). `stack_base` must be an address in the OUTERMOST frame of the
+// thread/task that runs the interpreter (e.g. the address of a local in main).
+// The runtime must only allocate from that same thread, and float/GC must not run
+// in ISR/early-boot context (see notes/core/lisp-substrate.md).
 void lisp_gc_init(void *stack_base);
 
-// Force a collection now (no-op if uninitialized). Mainly for tests; normally
-// collection is triggered automatically by allocation pressure.
+// Force a collection of the system heap now (no-op if uninitialized). Mainly for
+// tests; normally collection is triggered automatically by allocation pressure.
 void lisp_gc_collect(void);
 
-size_t lisp_gc_live_count(void);    // live object count
-size_t lisp_gc_collections(void);   // collections run so far
+size_t lisp_gc_live_count(void);    // system-heap live object count
+size_t lisp_gc_collections(void);   // system-heap collections run so far
+
+// Per-context heap helpers. A heap created here is owned by the runtime; it is
+// freed when its context is freed, or explicitly via lisp_heap_free.
+lisp_heap_t *lisp_heap_new(lisp_value owner_ctx);
+void lisp_heap_free(lisp_heap_t *h);
+void lisp_heap_collect(lisp_heap_t *h);   // precise collection from the owner's roots
+size_t lisp_heap_live(lisp_heap_t *h);
+size_t lisp_heap_collections(lisp_heap_t *h);
 
 #endif

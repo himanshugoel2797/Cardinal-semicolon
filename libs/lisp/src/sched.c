@@ -148,13 +148,23 @@ static lisp_value prim_spawn(lisp_value *a, int n, const char **e) {
     lisp_value proc = a[0];
     if (!lisp_is_objtype(proc, LISP_OBJ_CLOSURE) && !lisp_is_objtype(proc, LISP_OBJ_PRIMITIVE))
         return prim_err(e, "spawn: argument must be a procedure");
+    // Build the new context's initial expression (proc) in the SYSTEM heap: it
+    // becomes cx->control of a system-heap context object, so it must not live in
+    // the spawner's own heap (which the spawner's GC would later reclaim under it).
+    lisp_heap_t *prev = lisp_gc_set_alloc_heap(lisp_gc_system_heap());
     lisp_value expr = lisp_cons(proc, LISP_EMPTY);  // the application (proc)
+    lisp_gc_set_alloc_heap(prev);
     if (expr == LISP_UNDEF)
         return prim_err(e, "spawn: out of memory");
     // The closure carries its own defining env; a fresh empty env suffices for
-    // evaluating the (already-value) operator position.
+    // evaluating the (already-value) operator position. The ctx object itself is
+    // allocated in the system heap by lisp_ctx_make.
     lisp_value ctx = lisp_ctx_make(expr, LISP_EMPTY);
     if (ctx == LISP_UNDEF)
+        return prim_err(e, "spawn: out of memory");
+    // Attach the own heap BEFORE enqueueing, so a failure never leaves a context
+    // running in the wrong heap or an un-enqueued handle in the caller's hands.
+    if (g_sched->per_context_heaps && lisp_ctx_attach_heap(ctx) != 0)
         return prim_err(e, "spawn: out of memory");
     if (!lisp_sched_add(g_sched, ctx))  // never return an un-enqueued handle
         return prim_err(e, "spawn: out of memory");
@@ -179,12 +189,19 @@ static lisp_value prim_send(lisp_value *a, int n, const char **e) {
     lisp_value target = a[0];
     if (!lisp_is_objtype(target, LISP_OBJ_CTX))
         return prim_err(e, "send: target is not a context");
-    lisp_value copy = deep_copy(a[1], 0, e);
-    if (copy == LISP_UNDEF && *e != NULL)
-        return LISP_UNDEF;
     lisp_ctx_t *tcx = as_ctx(target);
-    if (!mailbox_push(tcx, copy, e))
-        return LISP_UNDEF;
+    // Copy the message and enqueue it INTO THE RECEIVER's heap, so the receiver
+    // owns its messages and no SENDER-heap pointer survives across the boundary
+    // (shared-nothing). A receiver with no own heap uses the system heap -- never
+    // leave the copy in the sender's heap, or the sender's GC would free it under
+    // the receiver. Always switch (and always restore, including the error path).
+    lisp_heap_t *dst = (tcx->heap != NULL) ? tcx->heap : lisp_gc_system_heap();
+    lisp_heap_t *prev = lisp_gc_set_alloc_heap(dst);
+    lisp_value copy = deep_copy(a[1], 0, e);
+    bool ok = !(copy == LISP_UNDEF && *e != NULL) && mailbox_push(tcx, copy, e);
+    lisp_gc_set_alloc_heap(prev);
+    if (!ok)
+        return LISP_UNDEF;  // deep_copy or mailbox_push set *e
     tcx->blocked = 0;  // a waiting receiver becomes runnable
     return LISP_UNDEF;
 }
@@ -254,11 +271,17 @@ void lisp_install_sched(lisp_value env) {
 void lisp_sched_init(lisp_sched_t *s, int64_t slice) {
     s->queue = LISP_EMPTY;
     s->slice = slice > 0 ? slice : 256;
+    s->per_context_heaps = 0;
     g_sched = s;
 }
 
 bool lisp_sched_add(lisp_sched_t *s, lisp_value ctx) {
+    // The run queue is a system-level structure: its spine must live in the shared
+    // heap even when spawn is called from within a per-context-heap context (a
+    // context's precise GC would otherwise free a cons it cannot see as a root).
+    lisp_heap_t *prev = lisp_gc_set_alloc_heap(lisp_gc_system_heap());
     lisp_value cell = lisp_cons(ctx, LISP_EMPTY);  // ctx stays rooted (caller's C local)
+    lisp_gc_set_alloc_heap(prev);
     if (cell == LISP_UNDEF)
         return false;  // OOM: the caller must not treat the context as scheduled
     if (!lisp_is_pair(s->queue)) {

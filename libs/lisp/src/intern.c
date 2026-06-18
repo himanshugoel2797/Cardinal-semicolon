@@ -29,7 +29,10 @@ static uint32_t name_hash(const char *s, size_t len) {
 }
 
 static lisp_value alloc_named(lisp_objtype type, const char *name, size_t len, uint32_t hash) {
-    lisp_named *s = (lisp_named *)lisp_gc_alloc(sizeof(lisp_named) + len + 1);
+    // Interned symbols/keywords are the shared-immutable region: they must live in
+    // the system heap even when a per-context heap is the current target, since
+    // other contexts (and the intern table) reference them.
+    lisp_named *s = (lisp_named *)lisp_gc_alloc_shared(sizeof(lisp_named) + len + 1);
     if (s == NULL)
         return LISP_UNDEF;
     s->h.header = LISP_MK_HEADER(type, len);

@@ -1067,25 +1067,47 @@ static void step_applyk(lisp_ctx_t *cx) {
 // Drive the machine for up to its current budget. Returns a run result: DONE,
 // ERROR, or SUSPENDED (budget exhausted at a safe point; cx->status retains the
 // pending EVAL/APPLY step so a later call resumes exactly here).
+//
+// If the context owns a heap (K3), it allocates into that heap while running (the
+// switch is restored on exit, so a primitive that nests a synchronous machine
+// keeps allocating into this same heap). Its collection is run HERE, at the top of
+// the loop -- a safe point between reductions where the context's CEK registers
+// are its complete root set and no value is stranded in a C temporary.
 static lisp_ctx_status ctx_run(lisp_ctx_t *cx) {
+    lisp_heap_t *prev = (cx->heap != NULL) ? lisp_gc_set_alloc_heap(cx->heap) : NULL;
+    lisp_ctx_status result;
     for (;;) {
-        if (cx->status == LISP_CTX_DONE)
-            return LISP_CTX_DONE;
-        if (cx->status == LISP_CTX_ERROR)
-            return LISP_CTX_ERROR;
-        if (cx->budget <= 0)
-            return LISP_CTX_SUSPENDED;
+        if (cx->heap != NULL && lisp_heap_wants_gc(cx->heap))
+            lisp_heap_collect(cx->heap);
+        if (cx->status == LISP_CTX_DONE) {
+            result = LISP_CTX_DONE;
+            break;
+        }
+        if (cx->status == LISP_CTX_ERROR) {
+            result = LISP_CTX_ERROR;
+            break;
+        }
+        if (cx->budget <= 0) {
+            result = LISP_CTX_SUSPENDED;
+            break;
+        }
         if (cx->status == LISP_CTX_EVAL)
             step_eval(cx);
         else
             step_applyk(cx);
     }
+    if (cx->heap != NULL)
+        lisp_gc_set_alloc_heap(prev);
+    return result;
 }
 
 // --- Context construction + public API --------------------------------------
 
 static lisp_value ctx_alloc(lisp_value expr, lisp_value env) {
-    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_gc_alloc(sizeof(lisp_ctx_t));
+    // The context object lives in the shared system heap: it is referenced across
+    // contexts (a scheduler queue, a send target handle) and outlives its own
+    // working heap, so it must not live in any per-context heap.
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_gc_alloc_shared(sizeof(lisp_ctx_t));
     if (cx == NULL)
         return LISP_UNDEF;
     cx->h.header = LISP_MK_HEADER(LISP_OBJ_CTX, 0);
@@ -1098,6 +1120,7 @@ static lisp_value ctx_alloc(lisp_value expr, lisp_value env) {
     cx->blocked = 0;
     cx->err = NULL;
     cx->budget = 0;
+    cx->heap = NULL;  // uses the system heap unless given its own (K3)
     return lisp_from_obj(cx);
 }
 
@@ -1105,6 +1128,24 @@ lisp_value lisp_ctx_make(lisp_value expr, lisp_value env) { return ctx_alloc(exp
 
 lisp_ctx_status lisp_ctx_state(lisp_value ctxv) {
     return (lisp_ctx_status)((lisp_ctx_t *)lisp_obj(ctxv))->status;
+}
+
+int lisp_ctx_attach_heap(lisp_value ctxv) {
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    if (cx->heap != NULL)
+        return 0;  // already has one
+    cx->heap = lisp_heap_new(ctxv);
+    return cx->heap != NULL ? 0 : -1;
+}
+
+size_t lisp_ctx_heap_live(lisp_value ctxv) {
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    return cx->heap != NULL ? lisp_heap_live(cx->heap) : 0;
+}
+
+size_t lisp_ctx_heap_collections(lisp_value ctxv) {
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    return cx->heap != NULL ? lisp_heap_collections(cx->heap) : 0;
 }
 
 lisp_ctx_status lisp_ctx_resume(lisp_value ctxv, int64_t budget) {
