@@ -12,11 +12,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "internal.h"
 #include "lisp.h"
 
 static lisp_value prim_err(const char **err, const char *msg) {
     if (err != NULL)
         *err = msg;
+    lisp_ctl_clear();  // a primitive argument error is a plain error
     return LISP_UNDEF;
 }
 
@@ -983,20 +985,6 @@ static lisp_value prim_newline(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
-// (error message irritants...) raises an error carrying the message string.
-// The data is NUL-terminated (defensive NUL in lisp_make_string).
-// TODO(GC): *err points into a heap string; once a collector lands, a GC between
-// here and the caller reading *err would dangle it -- copy the message into a
-// persistent buffer (or snapshot at the call site) then. Irritants are not yet
-// rendered; that arrives with condition objects.
-static lisp_value prim_error(lisp_value *a, int n, const char **e) {
-    if (n < 1)
-        return prim_err(e, "error: a message argument is required");
-    if (lisp_is_string(a[0]))
-        return prim_err(e, lisp_string_data(a[0]));
-    return prim_err(e, "error");  // non-string message: generic (until conditions)
-}
-
 // --- Installation -----------------------------------------------------------
 
 static void def(lisp_value env, const char *name, lisp_primitive_fn fn) {
@@ -1092,5 +1080,5 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "display", prim_display);
     def(env, "write", prim_write);
     def(env, "newline", prim_newline);
-    def(env, "error", prim_error);
+    // error / raise / call-cc / values are installed by lisp_install_control.
 }

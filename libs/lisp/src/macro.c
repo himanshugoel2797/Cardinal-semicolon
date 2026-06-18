@@ -42,6 +42,15 @@ static lisp_value reverse(lisp_value lst) {
     return out;
 }
 
+// Error during expansion: a plain error, so clear any stale nonlocal-exit kind
+// (otherwise an enclosing guard could misclassify it -- see control.c).
+static lisp_value mfail(const char **err, const char *msg) {
+    if (err != NULL)
+        *err = msg;
+    lisp_ctl_clear();
+    return LISP_UNDEF;
+}
+
 static bool sym_named(lisp_value v, const char *name) {
     return lisp_is_symbol(v) && lisp_named_len(v) == strlen(name) &&
            memcmp(lisp_named_name(v), name, strlen(name)) == 0;
@@ -183,11 +192,8 @@ static lisp_value expand_ellipsis(lisp_value tmpl, lisp_value binds, lisp_value 
             int len = list_len(b_val(e));
             if (n < 0)
                 n = len;
-            else if (len != n) {
-                if (err != NULL)
-                    *err = "macro: mismatched ellipsis lengths";
-                return LISP_UNDEF;
-            }
+            else if (len != n)
+                return mfail(err, "macro: mismatched ellipsis lengths");
         }
     }
     if (n < 0)
@@ -217,11 +223,8 @@ static lisp_value expand_ellipsis(lisp_value tmpl, lisp_value binds, lisp_value 
         return LISP_UNDEF;
     for (lisp_value p = results; lisp_is_pair(p); p = lisp_cdr(p)) {
         out = lisp_cons(lisp_car(p), out);
-        if (out == LISP_UNDEF) {
-            if (err != NULL)
-                *err = "out of memory in macro expansion";
-            return LISP_UNDEF;
-        }
+        if (out == LISP_UNDEF)
+            return mfail(err, "out of memory in macro expansion");
     }
     return out;
 }
@@ -232,11 +235,8 @@ static lisp_value instantiate(lisp_value tmpl, lisp_value binds, lisp_value lits
         lisp_value e = b_find(binds, tmpl);
         if (e == LISP_UNDEF)
             return tmpl;  // free identifier inserted as-is (unhygienic)
-        if (b_depth(e) != 0) {  // ellipsis var used without enough ellipses
-            if (err != NULL)
-                *err = "macro: ellipsis variable used at the wrong depth";
-            return LISP_UNDEF;
-        }
+        if (b_depth(e) != 0)  // ellipsis var used without enough ellipses
+            return mfail(err, "macro: ellipsis variable used at the wrong depth");
         return b_val(e);
     }
     if (lisp_is_pair(tmpl)) {
@@ -249,8 +249,8 @@ static lisp_value instantiate(lisp_value tmpl, lisp_value binds, lisp_value lits
         if (d == LISP_UNDEF && err != NULL && *err != NULL)
             return LISP_UNDEF;
         lisp_value c = lisp_cons(a, d);
-        if (c == LISP_UNDEF && err != NULL)
-            *err = "out of memory in macro expansion";
+        if (c == LISP_UNDEF)
+            return mfail(err, "out of memory in macro expansion");
         return c;
     }
     return tmpl;
@@ -288,7 +288,5 @@ lisp_value lisp_macro_expand(lisp_value macro, lisp_value form, const char **err
             match(lisp_cdr(pat), lisp_cdr(form), m->literals, &binds, 0))
             return instantiate(tmpl, binds, m->literals, err);
     }
-    if (err != NULL)
-        *err = "no matching syntax-rules pattern";
-    return LISP_UNDEF;
+    return mfail(err, "no matching syntax-rules pattern");
 }

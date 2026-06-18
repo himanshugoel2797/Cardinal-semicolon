@@ -24,6 +24,7 @@
 static lisp_value fail(const char **err, const char *msg) {
     if (err != NULL)
         *err = msg;
+    lisp_ctl_clear();  // a plain error is not a continuation escape or a raise
     return LISP_UNDEF;
 }
 
@@ -600,6 +601,79 @@ tail:
             }
             return LISP_UNDEF;  // no clause matched
         }
+
+        if (is_form(head, "guard")) {
+            // (guard (var clause ...) body ...). Catches a raise OR a plain
+            // error escaping body (but not a continuation escape); binds var to
+            // the condition and runs the clauses like cond; re-raises if none
+            // match.
+            if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_car(rest)))
+                return fail(err, "malformed guard");
+            lisp_value spec = lisp_car(rest);
+            lisp_value var = lisp_car(spec);
+            lisp_value clauses = lisp_cdr(spec);
+            lisp_value body = lisp_cdr(rest);
+
+            lisp_value result = LISP_UNDEF;
+            for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b)) {
+                result = lisp_eval(lisp_car(b), env, err);
+                if (err != NULL && *err != NULL)
+                    break;
+            }
+            if (err == NULL || *err == NULL)
+                return result;  // body completed normally
+            if (lisp_ctl_kind() == LISP_CTL_CONT)
+                return LISP_UNDEF;  // a continuation is escaping -- not ours to catch
+
+            // Build the condition: the raised value, or an error object wrapping
+            // the plain-error message.
+            lisp_value cond;
+            if (lisp_ctl_kind() == LISP_CTL_RAISE) {
+                cond = lisp_ctl_value();
+            } else {
+                lisp_value msg = lisp_make_string(*err, strlen(*err));
+                cond = lisp_make_error_object(msg, LISP_EMPTY);
+            }
+            lisp_ctl_clear();
+            *err = NULL;
+
+            lisp_value genv = lisp_make_env(env);
+            if (genv == LISP_UNDEF)
+                return fail(err, "out of memory");
+            lisp_env_define(genv, var, cond);
+
+            for (lisp_value cl = clauses; lisp_is_pair(cl); cl = lisp_cdr(cl)) {
+                lisp_value clause = lisp_car(cl);
+                if (!lisp_is_pair(clause))
+                    return fail(err, "malformed guard clause");
+                lisp_value test = lisp_car(clause);
+                lisp_value cbody = lisp_cdr(clause);
+                lisp_value tv = LISP_TRUE;
+                bool take = is_form(test, "else");
+                if (!take) {
+                    tv = lisp_eval(test, genv, err);
+                    if (err != NULL && *err != NULL)
+                        return LISP_UNDEF;
+                    take = lisp_truthy(tv);
+                }
+                if (take) {
+                    if (!lisp_is_pair(cbody))
+                        return tv;  // (test) with no body -> the test value
+                    lisp_value r = LISP_UNDEF;
+                    for (lisp_value bb = cbody; lisp_is_pair(bb); bb = lisp_cdr(bb)) {
+                        r = lisp_eval(lisp_car(bb), genv, err);
+                        if (err != NULL && *err != NULL)
+                            return LISP_UNDEF;
+                    }
+                    return r;
+                }
+            }
+            // No clause matched: re-raise the original condition.
+            lisp_ctl_set_raise(cond);
+            if (err != NULL)
+                *err = "uncaught exception";
+            return LISP_UNDEF;
+        }
     }
 
     // Macro use: if the operator names a syntax-rules macro, expand and re-eval
@@ -656,6 +730,8 @@ tail:
         expr = lisp_car(body);  // tail call: loop instead of recursing
         goto tail;
     }
+    if (lisp_is_objtype(op, LISP_OBJ_CONT))
+        return lisp_cont_invoke(op, argc >= 1 ? args[0] : LISP_UNDEF, err);
     return fail(err, "attempt to call a non-procedure");
 }
 
@@ -677,6 +753,8 @@ lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **
         }
         return result;
     }
+    if (lisp_is_objtype(proc, LISP_OBJ_CONT))
+        return lisp_cont_invoke(proc, argc >= 1 ? args[0] : LISP_UNDEF, err);
     return fail(err, "attempt to call a non-procedure");
 }
 
@@ -684,12 +762,14 @@ lisp_value lisp_default_env(void) {
     lisp_value env = lisp_make_env(LISP_EMPTY);
     if (env != LISP_UNDEF) {
         lisp_install_primitives(env);
-        lisp_load_prelude(env);  // standard library, defined in Scheme
+        lisp_install_control(env);  // call/cc, raise, error, values, ...
+        lisp_load_prelude(env);     // standard library, defined in Scheme
     }
     return env;
 }
 
 lisp_value lisp_eval_string(const char *src, lisp_value env, const char **err) {
+    lisp_ctl_clear();  // no nonlocal exit in flight at the start of a fresh eval
     const char *cur = src;
     const char *end = src + strlen(src);
     lisp_value result = LISP_UNDEF;
