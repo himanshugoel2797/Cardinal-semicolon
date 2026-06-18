@@ -240,6 +240,11 @@ lisp_value lisp_eval_string(const char *src, lisp_value env, const char **err);
 // Install the built-in primitives into `env` (called by lisp_default_env).
 void lisp_install_primitives(lisp_value env);
 
+// Evaluate the Scheme-defined standard prelude into `env` (called by
+// lisp_default_env, after the primitives). Returns 0 on success, <0 if the
+// prelude itself failed to evaluate (a build-time bug).
+int lisp_load_prelude(lisp_value env);
+
 // --- Reader (reader.c) ------------------------------------------------------
 
 // Parse one datum from `*cursor`, advancing it past the consumed text. Returns

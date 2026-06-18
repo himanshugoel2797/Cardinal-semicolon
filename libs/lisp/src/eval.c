@@ -176,6 +176,20 @@ static lisp_value bind_params(lisp_value params, lisp_value *args, int argc,
         params = lisp_cdr(params);
         i++;
     }
+    // A trailing symbol (dotted tail, or a bare symbol param list) is a rest
+    // parameter: it captures the remaining args as a list. (lambda args ...) and
+    // (lambda (a b . rest) ...) both land here.
+    if (lisp_is_symbol(params)) {
+        lisp_value rest = LISP_EMPTY;
+        for (int j = argc - 1; j >= i; j--) {
+            lisp_value cell = lisp_cons(args[j], rest);
+            if (cell == LISP_UNDEF)
+                return fail(err, "out of memory");
+            rest = cell;
+        }
+        lisp_env_define(env, params, rest);
+        return env;
+    }
     if (!lisp_is_empty(params))
         return fail(err, "malformed parameter list");
     if (i != argc)
@@ -653,8 +667,10 @@ lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **
 
 lisp_value lisp_default_env(void) {
     lisp_value env = lisp_make_env(LISP_EMPTY);
-    if (env != LISP_UNDEF)
+    if (env != LISP_UNDEF) {
         lisp_install_primitives(env);
+        lisp_load_prelude(env);  // standard library, defined in Scheme
+    }
     return env;
 }
 
