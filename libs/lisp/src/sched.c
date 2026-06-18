@@ -336,5 +336,9 @@ int lisp_sched_run(lisp_sched_t *s, int max_passes) {
         if (!any_runnable)
             break;  // all remaining contexts are blocked -> deadlock
     }
+    // `s` is typically a caller stack local; do not leave g_sched dangling past
+    // the run. A later spawn/send without a fresh lisp_sched_init is then a clean
+    // "no scheduler" error rather than a use-after-stack-free.
+    g_sched = NULL;
     return passes;
 }
