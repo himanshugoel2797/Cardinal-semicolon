@@ -414,7 +414,24 @@ behind a VM.
   not copied), and `recv` blocks via a Lisp loop over a non-blocking mailbox +
   `%block`/wake. Kept out of `lisp_default_env` (no scheduler dependency in the
   base language). The globals (current scheduler/context) become per-core in the
-  kernel. *(Next per the build plan: per-context GC, then kernelization — see the
+  kernel.
+- **Per-context GC + shared-immutable region** *(done — "K3", host-first; `gc.c`)*.
+  The collector is de-globalized into a `lisp_heap_t`. One shared **system heap**
+  holds the shared-immutable region (interned symbols), the global env/prelude, the
+  scheduler structures, and the context objects; it is collected conservatively
+  (C stack + intern table). A scheduler context may own a heap holding only its
+  transient working data, collected **precisely** from its CEK registers and only
+  at a safe point (the interpreter loop drives it between reductions, where no root
+  is stranded in a C temporary) — so a collection pauses only that one context. The
+  cross-heap firewall: `mark_push` marks only objects of the heap being collected
+  (an external pointer is marked-and-stopped), so a collection never traces or
+  sweeps another heap. Soundness rests on the one-way discipline — a context heap
+  may point into the immutable system heap but never the reverse: symbols and the
+  context/scheduler objects allocate into the system heap, and messages are
+  deep-copied **into the receiver's heap** on send. A context with its own heap
+  must therefore treat shared environments as read-only (mutating a shared binding
+  is the one unsound operation; the frozen-shared-env of the full process model
+  removes that footgun). *(Next per the build plan: kernelization — see the
   K-staging in the working plan.)*
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
