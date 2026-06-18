@@ -35,6 +35,13 @@ static void evals(const char *src, const char *expect) {
 }
 
 int main(void) {
+    // The evaluator is now an explicit-stack machine: a continuation frame is
+    // allocated per reduction, so the unbounded named-let tail loop below relies
+    // on the GC to reclaim per-iteration garbage. Enable it (the real runtime
+    // always runs with the collector on).
+    uintptr_t stack_marker;
+    lisp_gc_init(&stack_marker);
+
     printf("[lisp Phase 3a] binding forms + quasiquote + common special forms\n");
 
     // when / unless / while / case (interpreter special forms, not macros)

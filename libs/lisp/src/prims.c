@@ -984,13 +984,26 @@ static lisp_value prim_newline(lisp_value *a, int n, const char **e) {
 }
 
 // (error message irritants...) signals an error carrying the message. Without a
-// condition/guard system this simply aborts evaluation with the message (the
-// data is NUL-terminated; the caller reads *err before any further allocation).
+// condition/guard system this simply aborts evaluation with the message.
+//
+// *err is a `const char *` that the explicit-stack machine stores in the failing
+// context (lisp_ctx_t::err) and that a scheduler may read AFTER a garbage
+// collection -- so it must not point into the GC heap. The message string IS a
+// heap object, so copy it into a stable buffer. One error is in flight at a time
+// under the cooperative (one-context-at-a-time) scheduler, so a static buffer is
+// sufficient; it is consumed before the next context runs.
 static lisp_value prim_error(lisp_value *a, int n, const char **e) {
     if (n < 1)
         return prim_err(e, "error: a message argument is required");
-    if (lisp_is_string(a[0]))
-        return prim_err(e, lisp_string_data(a[0]));
+    if (lisp_is_string(a[0])) {
+        static char msgbuf[256];
+        size_t len = lisp_string_len(a[0]);
+        if (len >= sizeof(msgbuf))
+            len = sizeof(msgbuf) - 1;
+        memcpy(msgbuf, lisp_string_data(a[0]), len);
+        msgbuf[len] = '\0';
+        return prim_err(e, msgbuf);
+    }
     return prim_err(e, "error");
 }
 

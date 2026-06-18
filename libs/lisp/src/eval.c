@@ -3,12 +3,22 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-// A tree-walking Scheme-inspired Lisp evaluator with lexical environments and
-// proper tail calls (via an internal loop, not C recursion). Special forms:
-// quote, quasiquote, if, define, lambda, let/let*/letrec/named-let, begin, set!,
-// cond, and, or, when, unless, while, case. The common derived forms are kept as
-// interpreter special cases (cheap, and a future JIT can recognize them directly)
-// rather than as a macro engine. Objects are GC-allocated (gc.c).
+// A Scheme-inspired Lisp evaluator built as an explicit-stack CEK abstract
+// machine: the execution state (control expr, environment, accumulator, and a
+// heap-linked chain of continuation frames) lives in a lisp_ctx_t heap object
+// rather than on the C stack. This lets a computation be suspended at a safe
+// point (when a per-slice reduction budget runs out), resumed later, and traced
+// precisely by the GC -- the substrate the process model needs (a "process" is a
+// context). lisp_eval / lisp_apply are thin wrappers that drive a context to
+// completion, preserving their original synchronous contract.
+//
+// Tail calls cost O(1) continuation frames (the analogue of the old `goto tail`):
+// a call in tail position pushes no frame. Deep NON-tail recursion grows the heap
+// chain, not the C stack. Special forms: quote, quasiquote, if, define, lambda,
+// let/let*/letrec/named-let, begin, set!, cond, and, or, when, unless, while,
+// case. The common derived forms are kept as interpreter special cases (cheap,
+// and a future JIT can recognize them directly) rather than as a macro engine.
+// Objects are GC-allocated (gc.c).
 //
 // Deliberately NOT included (cut to keep the substrate small -- see
 // notes/core/lisp-substrate.md): syntax-rules macros and call/cc / the
@@ -19,10 +29,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "internal.h"  // env/closure/primitive layouts + lisp_gc_alloc
+#include "internal.h"  // env/closure/primitive/kont/ctx layouts + lisp_gc_alloc
 #include "lisp.h"
 
 #define MAX_ARGS 64  // cap on call arity (and rest-arg spread); raised with the VM.
+
+// An effectively-unbounded reduction budget for the synchronous wrappers (which
+// run to completion and never suspend). Not INT64_MAX: the freestanding stdint.h
+// in common/ does not define the limit macros.
+#define CTX_BUDGET_UNBOUNDED ((int64_t)0x7fffffffffffffffLL)
 
 // --- Small helpers ----------------------------------------------------------
 
@@ -145,12 +160,10 @@ static bool is_form(lisp_value sym, const char *name) {
     return len == strlen(name) && memcmp(lisp_named_name(sym), name, len) == 0;
 }
 
-// --- Evaluator --------------------------------------------------------------
+// --- Parameter binding ------------------------------------------------------
 
 // Bind a closure's parameter list to evaluated args in a fresh child env.
 // Returns the new env, or LISP_UNDEF (+*err) on arity mismatch / OOM.
-// (On an arity/OOM error this abandons the freshly-allocated env; that leak is
-// intentional for Phase 1 -- the GC arrives in Phase 4.)
 static lisp_value bind_params(lisp_value params, lisp_value *args, int argc,
                               lisp_value parent_env, const char **err) {
     lisp_value env = lisp_make_env(parent_env);
@@ -184,6 +197,12 @@ static lisp_value bind_params(lisp_value params, lisp_value *args, int argc,
         return fail(err, "too many arguments");
     return env;
 }
+
+// --- Quasiquote -------------------------------------------------------------
+// qq_expand stays recursive and atomic: a template's nesting depth is bounded by
+// source text (tiny), and its embedded evaluations go through lisp_eval (which
+// spins a nested completion-driven machine). A future driver DSL could lift it
+// into continuation frames; there is no need yet.
 
 // Build (name x) for the nested-quasiquote rebuild cases.
 static lisp_value qq_wrap(const char *name, lisp_value x, const char **err) {
@@ -277,460 +296,857 @@ static lisp_value qq_expand(lisp_value t, int depth, lisp_value env, const char 
     return cell == LISP_UNDEF ? fail(err, "out of memory") : cell;
 }
 
-lisp_value lisp_eval(lisp_value expr, lisp_value env, const char **err) {
-    if (err != NULL)
-        *err = NULL;
+// --- The CEK machine --------------------------------------------------------
+//
+// Continuation-frame kinds. The kind is stored in the kont header's aux byte and
+// selects how the frame's a/b/c slots are read (see each step_applyk case).
+enum {
+    K_EVAL_OP,     // a=arg-exprs, env=eval env. Awaiting the operator value.
+    K_EVAL_ARGS,   // a=operator, b=reversed evaluated args, c=remaining arg-exprs.
+    K_IF,          // a=then-expr, b=else-branch tail (list, maybe empty).
+    K_SEQ,         // a=remaining body forms (>=1; the last is in tail position).
+    K_DEFINE,      // a=target symbol, env=defining env.
+    K_SET,         // a=target symbol, env=env to mutate.
+    K_AND,         // a=remaining conjuncts (>=1).
+    K_OR,          // a=remaining disjuncts (>=1).
+    K_COND,        // a=clause list (its first clause's test is being evaluated).
+    K_CASE,        // a=clause list. Awaiting the key value.
+    K_WHEN,        // a=body forms, b=wanted truthiness (#t for when, #f for unless).
+    K_WHILE_TEST,  // a=test expr, b=body forms. Awaiting the test value.
+    K_WHILE_BODY,  // a=test expr, b=body forms, c=remaining body forms this pass.
+    K_BIND,        // a=remaining bindings, b=new env, c=body, env=init-eval env.
+};
 
-tail:
+// let-family kinds for let_start.
+enum { LET_PLAIN, LET_STAR, LET_REC };
+
+static lisp_kont_t *kont(lisp_value v) { return (lisp_kont_t *)lisp_obj(v); }
+
+static void ctx_error(lisp_ctx_t *cx, const char *msg) {
+    cx->err = msg;
+    cx->status = LISP_CTX_ERROR;
+}
+
+// Push a fresh continuation frame onto cx->kont. Returns false (and signals an
+// error on cx) on OOM. The a/b/c/env args are kept alive across the allocation by
+// the conservative stack scan (they are live C locals in the caller).
+static bool kont_push(lisp_ctx_t *cx, int kind, lisp_value env,
+                      lisp_value a, lisp_value b, lisp_value c) {
+    lisp_kont_t *k = (lisp_kont_t *)lisp_gc_alloc(sizeof(lisp_kont_t));
+    if (k == NULL) {
+        ctx_error(cx, "out of memory");
+        return false;
+    }
+    k->h.header = LISP_MK_HEADER(LISP_OBJ_KONT, kind);
+    k->next = cx->kont;
+    k->env = env;
+    k->a = a;
+    k->b = b;
+    k->c = c;
+    cx->kont = lisp_from_obj(k);
+    return true;
+}
+
+// Begin evaluating a body (a list of forms) in cx->env: all but the last for
+// effect, the last in tail position (no frame). An empty body yields unspecified.
+static void start_body(lisp_ctx_t *cx, lisp_value forms) {
+    if (!lisp_is_pair(forms)) {
+        cx->accum = LISP_UNDEF;
+        cx->status = LISP_CTX_APPLY;
+        return;
+    }
+    if (lisp_is_pair(lisp_cdr(forms))) {
+        if (!kont_push(cx, K_SEQ, cx->env, lisp_cdr(forms), LISP_EMPTY, LISP_EMPTY))
+            return;
+    }
+    cx->control = lisp_car(forms);
+    cx->status = LISP_CTX_EVAL;
+}
+
+// Apply an operator to an evaluated argument array. Charges one reduction. A
+// closure's body runs in tail position (the K_EVAL_* frames are already popped),
+// so a tail self-call keeps the continuation depth flat.
+static void do_call(lisp_ctx_t *cx, lisp_value op, lisp_value *args, int argc) {
+    cx->budget--;  // a call is a reduction (a safe point / budget charge)
+    if (lisp_is_objtype(op, LISP_OBJ_PRIMITIVE)) {
+        lisp_prim_t *p = (lisp_prim_t *)lisp_obj(op);
+        const char *e = NULL;
+        lisp_value r = p->fn(args, argc, &e);
+        if (r == LISP_UNDEF && e != NULL) {
+            ctx_error(cx, e);
+            return;
+        }
+        cx->accum = r;
+        cx->status = LISP_CTX_APPLY;
+        return;
+    }
+    if (lisp_is_objtype(op, LISP_OBJ_CLOSURE)) {
+        lisp_closure_t *c = (lisp_closure_t *)lisp_obj(op);
+        const char *e = NULL;
+        lisp_value newenv = bind_params(c->params, args, argc, c->env, &e);
+        if (newenv == LISP_UNDEF) {
+            ctx_error(cx, e != NULL ? e : "bad application");
+            return;
+        }
+        cx->env = newenv;
+        start_body(cx, c->body);  // tail
+        return;
+    }
+    ctx_error(cx, "attempt to call a non-procedure");
+}
+
+// --- Special-form starters (the EVAL-state expansions) ----------------------
+
+static void and_start(lisp_ctx_t *cx, lisp_value forms) {
+    if (!lisp_is_pair(forms)) {  // (and) => #t
+        cx->accum = LISP_TRUE;
+        cx->status = LISP_CTX_APPLY;
+        return;
+    }
+    if (lisp_is_pair(lisp_cdr(forms))) {
+        if (!kont_push(cx, K_AND, cx->env, lisp_cdr(forms), LISP_EMPTY, LISP_EMPTY))
+            return;
+    }
+    cx->control = lisp_car(forms);  // single conjunct is in tail position
+    cx->status = LISP_CTX_EVAL;
+}
+
+static void or_start(lisp_ctx_t *cx, lisp_value forms) {
+    if (!lisp_is_pair(forms)) {  // (or) => #f
+        cx->accum = LISP_FALSE;
+        cx->status = LISP_CTX_APPLY;
+        return;
+    }
+    if (lisp_is_pair(lisp_cdr(forms))) {
+        if (!kont_push(cx, K_OR, cx->env, lisp_cdr(forms), LISP_EMPTY, LISP_EMPTY))
+            return;
+    }
+    cx->control = lisp_car(forms);  // single disjunct is in tail position
+    cx->status = LISP_CTX_EVAL;
+}
+
+// Process cond clauses until one's test must be evaluated (or an else/no clause
+// resolves immediately). Does not recurse over clauses in C -- a clause whose
+// test needs evaluating parks in a K_COND frame and the machine resumes here.
+static void cond_start(lisp_ctx_t *cx, lisp_value clauses) {
+    if (!lisp_is_pair(clauses)) {
+        cx->accum = LISP_UNDEF;  // no clause matched
+        cx->status = LISP_CTX_APPLY;
+        return;
+    }
+    lisp_value clause = lisp_car(clauses);
+    if (!lisp_is_pair(clause)) {
+        ctx_error(cx, "malformed cond clause");
+        return;
+    }
+    lisp_value test = lisp_car(clause);
+    if (is_form(test, "else")) {
+        lisp_value body = lisp_cdr(clause);
+        if (!lisp_is_pair(body)) {  // (else) with no body -> #t (matches old testval)
+            cx->accum = LISP_TRUE;
+            cx->status = LISP_CTX_APPLY;
+            return;
+        }
+        start_body(cx, body);  // tail
+        return;
+    }
+    if (!kont_push(cx, K_COND, cx->env, clauses, LISP_EMPTY, LISP_EMPTY))
+        return;
+    cx->control = test;
+    cx->status = LISP_CTX_EVAL;
+}
+
+static void when_start(lisp_ctx_t *cx, lisp_value rest, bool want) {
+    if (!lisp_is_pair(rest)) {
+        ctx_error(cx, "malformed when/unless");
+        return;
+    }
+    if (!kont_push(cx, K_WHEN, cx->env, lisp_cdr(rest), want ? LISP_TRUE : LISP_FALSE,
+                   LISP_EMPTY))
+        return;
+    cx->control = lisp_car(rest);  // the test
+    cx->status = LISP_CTX_EVAL;
+}
+
+static void while_start(lisp_ctx_t *cx, lisp_value rest) {
+    if (!lisp_is_pair(rest)) {
+        ctx_error(cx, "malformed while");
+        return;
+    }
+    lisp_value test = lisp_car(rest);
+    if (!kont_push(cx, K_WHILE_TEST, cx->env, test, lisp_cdr(rest), LISP_EMPTY))
+        return;
+    cx->control = test;
+    cx->status = LISP_CTX_EVAL;
+}
+
+static void case_start(lisp_ctx_t *cx, lisp_value rest) {
+    if (!lisp_is_pair(rest)) {
+        ctx_error(cx, "malformed case");
+        return;
+    }
+    if (!kont_push(cx, K_CASE, cx->env, lisp_cdr(rest), LISP_EMPTY, LISP_EMPTY))
+        return;
+    cx->control = lisp_car(rest);  // the key
+    cx->status = LISP_CTX_EVAL;
+}
+
+// let / let* / letrec share one frame (K_BIND). They differ only in which env the
+// inits evaluate in: outer for let, the new env for let*/letrec; letrec also
+// pre-binds every name to unspecified first (so mutual recursion works).
+static void let_start(lisp_ctx_t *cx, lisp_value rest, int kind) {
+    if (!lisp_is_pair(rest)) {
+        ctx_error(cx, "malformed let / let* / letrec");
+        return;
+    }
+    lisp_value outer = cx->env;
+    lisp_value binds = lisp_car(rest);
+    lisp_value body = lisp_cdr(rest);
+    if (!lisp_is_pair(binds) && !lisp_is_empty(binds)) {
+        ctx_error(cx, "malformed let: bindings must be a list");
+        return;
+    }
+    lisp_value newenv = lisp_make_env(outer);
+    if (newenv == LISP_UNDEF) {
+        ctx_error(cx, "out of memory");
+        return;
+    }
+    if (kind == LET_REC) {
+        for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+            lisp_value bind = lisp_car(b);
+            if (!lisp_is_pair(bind)) {
+                ctx_error(cx, "malformed letrec binding");
+                return;
+            }
+            lisp_env_define(newenv, lisp_car(bind), LISP_UNDEF);
+        }
+    }
+    if (!lisp_is_pair(binds)) {  // no bindings: straight to the body
+        cx->env = newenv;
+        start_body(cx, body);
+        return;
+    }
+    lisp_value b0 = lisp_car(binds);
+    if (!lisp_is_pair(b0) || !lisp_is_pair(lisp_cdr(b0))) {
+        ctx_error(cx, "malformed let binding");
+        return;
+    }
+    lisp_value evalenv = (kind == LET_PLAIN) ? outer : newenv;
+    if (!kont_push(cx, K_BIND, evalenv, binds, newenv, body))
+        return;
+    cx->env = evalenv;
+    cx->control = lisp_car(lisp_cdr(b0));  // first init
+    cx->status = LISP_CTX_EVAL;
+}
+
+// Named let: (let name ((v init)...) body...). Desugar to applying a fresh
+// recursive closure (bound to `name` in its own env) to the evaluated inits --
+// reusing the ordinary K_EVAL_ARGS argument machinery. Inits evaluate in the
+// outer env.
+static void namedlet_start(lisp_ctx_t *cx, lisp_value rest) {
+    lisp_value name = lisp_car(rest);
+    lisp_value rest2 = lisp_cdr(rest);
+    if (!lisp_is_pair(rest2)) {
+        ctx_error(cx, "malformed named let");
+        return;
+    }
+    lisp_value binds = lisp_car(rest2);
+    if (!lisp_is_pair(binds) && !lisp_is_empty(binds)) {
+        ctx_error(cx, "malformed named let: bindings must be a list");
+        return;
+    }
+    lisp_value body = lisp_cdr(rest2);
+    lisp_value params = LISP_EMPTY, ptail = LISP_EMPTY;
+    lisp_value inits = LISP_EMPTY, itail = LISP_EMPTY;
+    for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+        lisp_value bd = lisp_car(b);
+        if (!lisp_is_pair(bd) || !lisp_is_pair(lisp_cdr(bd))) {
+            ctx_error(cx, "malformed named let binding");
+            return;
+        }
+        lisp_value pc = lisp_cons(lisp_car(bd), LISP_EMPTY);
+        lisp_value ic = lisp_cons(lisp_car(lisp_cdr(bd)), LISP_EMPTY);
+        if (pc == LISP_UNDEF || ic == LISP_UNDEF) {
+            ctx_error(cx, "out of memory");
+            return;
+        }
+        if (params == LISP_EMPTY)
+            params = pc;
+        else
+            set_cdr(ptail, pc);
+        ptail = pc;
+        if (inits == LISP_EMPTY)
+            inits = ic;
+        else
+            set_cdr(itail, ic);
+        itail = ic;
+    }
+    lisp_value loopenv = lisp_make_env(cx->env);
+    if (loopenv == LISP_UNDEF) {
+        ctx_error(cx, "out of memory");
+        return;
+    }
+    lisp_value clo = lisp_make_closure(params, body, loopenv);
+    if (clo == LISP_UNDEF) {
+        ctx_error(cx, "out of memory");
+        return;
+    }
+    lisp_env_define(loopenv, name, clo);
+    if (!lisp_is_pair(inits)) {  // no loop variables
+        do_call(cx, clo, NULL, 0);
+        return;
+    }
+    if (!kont_push(cx, K_EVAL_ARGS, cx->env, clo, LISP_EMPTY, lisp_cdr(inits)))
+        return;
+    cx->control = lisp_car(inits);  // inits evaluate in the (current) outer env
+    cx->status = LISP_CTX_EVAL;
+}
+
+// --- The two machine states -------------------------------------------------
+
+// EVAL state: decompose cx->control. Either it finishes immediately (a value),
+// reassigns control for a tail step, or pushes one frame and descends into a
+// subexpression.
+static void step_eval(lisp_ctx_t *cx) {
+    lisp_value e = cx->control;
+
     // Symbols: variable reference.
-    if (lisp_is_symbol(expr)) {
+    if (lisp_is_symbol(e)) {
         lisp_value v;
-        if (!lisp_env_lookup(env, expr, &v))
-            return fail(err, "unbound variable");
-        return v;
+        if (!lisp_env_lookup(cx->env, e, &v)) {
+            ctx_error(cx, "unbound variable");
+            return;
+        }
+        cx->accum = v;
+        cx->status = LISP_CTX_APPLY;
+        return;
     }
-    // Self-evaluating: fixnums, booleans, chars, strings, keywords, eof.
-    if (!lisp_is_pair(expr)) {
-        if (lisp_is_empty(expr))
-            return fail(err, "cannot evaluate empty application ()");
-        return expr;
+    // Self-evaluating: fixnums, booleans, chars, strings, keywords, eof, flonums.
+    if (!lisp_is_pair(e)) {
+        if (lisp_is_empty(e)) {
+            ctx_error(cx, "cannot evaluate empty application ()");
+            return;
+        }
+        cx->accum = e;
+        cx->status = LISP_CTX_APPLY;
+        return;
     }
 
-    // Combination.
-    lisp_value head = lisp_car(expr);
-    lisp_value rest = lisp_cdr(expr);
+    lisp_value head = lisp_car(e);
+    lisp_value rest = lisp_cdr(e);
 
     if (lisp_is_symbol(head)) {
-        if (is_form(head, "quote"))
-            return lisp_is_pair(rest) ? lisp_car(rest) : fail(err, "malformed quote");
-
-        if (is_form(head, "quasiquote")) {
-            if (!lisp_is_pair(rest))
-                return fail(err, "malformed quasiquote");
-            return qq_expand(lisp_car(rest), 1, env, err);
-        }
-
-        if (is_form(head, "if")) {
-            if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_cdr(rest)))
-                return fail(err, "malformed if");
-            lisp_value test = lisp_eval(lisp_car(rest), env, err);
-            if (test == LISP_UNDEF && err != NULL && *err != NULL)
-                return LISP_UNDEF;
-            lisp_value branches = lisp_cdr(rest);
-            if (lisp_truthy(test)) {
-                expr = lisp_car(branches);
-            } else {
-                lisp_value elsebr = lisp_cdr(branches);
-                if (!lisp_is_pair(elsebr))
-                    return LISP_UNDEF;  // (if #f x) with no else -> unspecified
-                expr = lisp_car(elsebr);
+        if (is_form(head, "quote")) {
+            if (!lisp_is_pair(rest)) {
+                ctx_error(cx, "malformed quote");
+                return;
             }
-            goto tail;
+            cx->accum = lisp_car(rest);
+            cx->status = LISP_CTX_APPLY;
+            return;
         }
-
+        if (is_form(head, "quasiquote")) {
+            if (!lisp_is_pair(rest)) {
+                ctx_error(cx, "malformed quasiquote");
+                return;
+            }
+            const char *err = NULL;
+            lisp_value r = qq_expand(lisp_car(rest), 1, cx->env, &err);
+            if (r == LISP_UNDEF && err != NULL) {
+                ctx_error(cx, err);
+                return;
+            }
+            cx->accum = r;
+            cx->status = LISP_CTX_APPLY;
+            return;
+        }
+        if (is_form(head, "if")) {
+            if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_cdr(rest))) {
+                ctx_error(cx, "malformed if");
+                return;
+            }
+            lisp_value branches = lisp_cdr(rest);
+            if (!kont_push(cx, K_IF, cx->env, lisp_car(branches), lisp_cdr(branches),
+                           LISP_EMPTY))
+                return;
+            cx->control = lisp_car(rest);  // the test
+            cx->status = LISP_CTX_EVAL;
+            return;
+        }
         if (is_form(head, "define")) {
-            if (!lisp_is_pair(rest))
-                return fail(err, "malformed define");
+            if (!lisp_is_pair(rest)) {
+                ctx_error(cx, "malformed define");
+                return;
+            }
             lisp_value target = lisp_car(rest);
             if (lisp_is_symbol(target)) {
-                if (!lisp_is_pair(lisp_cdr(rest)))
-                    return fail(err, "malformed define: missing value expression");
-                lisp_value val = lisp_eval(lisp_car(lisp_cdr(rest)), env, err);
-                if (val == LISP_UNDEF && err != NULL && *err != NULL)
-                    return LISP_UNDEF;
-                lisp_env_define(env, target, val);
-                return target;
+                if (!lisp_is_pair(lisp_cdr(rest))) {
+                    ctx_error(cx, "malformed define: missing value expression");
+                    return;
+                }
+                if (!kont_push(cx, K_DEFINE, cx->env, target, LISP_EMPTY, LISP_EMPTY))
+                    return;
+                cx->control = lisp_car(lisp_cdr(rest));
+                cx->status = LISP_CTX_EVAL;
+                return;
             }
             if (lisp_is_pair(target)) {  // (define (f args...) body...)
                 lisp_value name = lisp_car(target);
-                if (!lisp_is_symbol(name))
-                    return fail(err, "define: function name must be a symbol");
-                lisp_value params = lisp_cdr(target);
-                lisp_value fn = lisp_make_closure(params, lisp_cdr(rest), env);
-                if (fn == LISP_UNDEF)
-                    return fail(err, "out of memory");
-                lisp_env_define(env, name, fn);
-                return name;
+                if (!lisp_is_symbol(name)) {
+                    ctx_error(cx, "define: function name must be a symbol");
+                    return;
+                }
+                lisp_value fn = lisp_make_closure(lisp_cdr(target), lisp_cdr(rest), cx->env);
+                if (fn == LISP_UNDEF) {
+                    ctx_error(cx, "out of memory");
+                    return;
+                }
+                lisp_env_define(cx->env, name, fn);
+                cx->accum = name;
+                cx->status = LISP_CTX_APPLY;
+                return;
             }
-            return fail(err, "malformed define");
+            ctx_error(cx, "malformed define");
+            return;
         }
-
         if (is_form(head, "lambda")) {
-            if (!lisp_is_pair(rest))
-                return fail(err, "malformed lambda");
-            lisp_value cl = lisp_make_closure(lisp_car(rest), lisp_cdr(rest), env);
-            if (cl == LISP_UNDEF)
-                return fail(err, "out of memory");
-            return cl;
+            if (!lisp_is_pair(rest)) {
+                ctx_error(cx, "malformed lambda");
+                return;
+            }
+            lisp_value cl = lisp_make_closure(lisp_car(rest), lisp_cdr(rest), cx->env);
+            if (cl == LISP_UNDEF) {
+                ctx_error(cx, "out of memory");
+                return;
+            }
+            cx->accum = cl;
+            cx->status = LISP_CTX_APPLY;
+            return;
         }
-
         if (is_form(head, "set!")) {
-            if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_cdr(rest)))
-                return fail(err, "malformed set!");
-            lisp_value val = lisp_eval(lisp_car(lisp_cdr(rest)), env, err);
-            if (val == LISP_UNDEF && err != NULL && *err != NULL)
-                return LISP_UNDEF;
-            if (!lisp_env_set(env, lisp_car(rest), val))
-                return fail(err, "set! on unbound variable");
-            return LISP_UNDEF;
+            if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_cdr(rest))) {
+                ctx_error(cx, "malformed set!");
+                return;
+            }
+            if (!kont_push(cx, K_SET, cx->env, lisp_car(rest), LISP_EMPTY, LISP_EMPTY))
+                return;
+            cx->control = lisp_car(lisp_cdr(rest));
+            cx->status = LISP_CTX_EVAL;
+            return;
         }
-
         if (is_form(head, "begin")) {
-            if (!lisp_is_pair(rest))
-                return LISP_UNDEF;  // (begin) -> unspecified
-            while (lisp_is_pair(lisp_cdr(rest))) {
-                lisp_eval(lisp_car(rest), env, err);
-                if (err != NULL && *err != NULL)
-                    return LISP_UNDEF;
-                rest = lisp_cdr(rest);
+            if (!lisp_is_pair(rest)) {  // (begin) -> unspecified
+                cx->accum = LISP_UNDEF;
+                cx->status = LISP_CTX_APPLY;
+                return;
             }
-            expr = lisp_car(rest);
-            goto tail;
+            start_body(cx, rest);
+            return;
         }
-
         if (is_form(head, "let")) {
-            if (!lisp_is_pair(rest))
-                return fail(err, "malformed let");
-
-            // Named let: (let name ((v init)...) body...) -- a self-recursive
-            // loop. Build a closure bound to `name` in its own env and apply it.
-            if (lisp_is_symbol(lisp_car(rest))) {
-                lisp_value name = lisp_car(rest);
-                lisp_value rest2 = lisp_cdr(rest);
-                if (!lisp_is_pair(rest2))
-                    return fail(err, "malformed named let");
-                lisp_value binds = lisp_car(rest2);
-                if (!lisp_is_pair(binds) && !lisp_is_empty(binds))
-                    return fail(err, "malformed named let: bindings must be a list");
-                lisp_value body = lisp_cdr(rest2);
-                lisp_value params = LISP_EMPTY, ptail = LISP_EMPTY;
-                lisp_value args[MAX_ARGS];
-                int argc = 0;
-                while (lisp_is_pair(binds)) {
-                    lisp_value b = lisp_car(binds);
-                    if (!lisp_is_pair(b) || !lisp_is_pair(lisp_cdr(b)))
-                        return fail(err, "malformed named let binding");
-                    lisp_value cell = lisp_cons(lisp_car(b), LISP_EMPTY);
-                    if (cell == LISP_UNDEF)
-                        return fail(err, "out of memory");
-                    if (params == LISP_EMPTY)
-                        params = cell;
-                    else
-                        set_cdr(ptail, cell);
-                    ptail = cell;
-                    if (argc >= MAX_ARGS)
-                        return fail(err, "named let: too many bindings");
-                    lisp_value v = lisp_eval(lisp_car(lisp_cdr(b)), env, err);
-                    if (v == LISP_UNDEF && err != NULL && *err != NULL)
-                        return LISP_UNDEF;
-                    args[argc++] = v;
-                    binds = lisp_cdr(binds);
-                }
-                lisp_value loopenv = lisp_make_env(env);
-                if (loopenv == LISP_UNDEF)
-                    return fail(err, "out of memory");
-                lisp_value clo = lisp_make_closure(params, body, loopenv);
-                if (clo == LISP_UNDEF)
-                    return fail(err, "out of memory");
-                lisp_env_define(loopenv, name, clo);
-                lisp_value callenv = bind_params(params, args, argc, loopenv, err);
-                if (callenv == LISP_UNDEF)
-                    return LISP_UNDEF;
-                env = callenv;
-                if (!lisp_is_pair(body))
-                    return LISP_UNDEF;
-                while (lisp_is_pair(lisp_cdr(body))) {
-                    lisp_eval(lisp_car(body), env, err);
-                    if (err != NULL && *err != NULL)
-                        return LISP_UNDEF;
-                    body = lisp_cdr(body);
-                }
-                expr = lisp_car(body);
-                goto tail;
-            }
-
-            // Plain let: (let ((x v) ...) body...) -- inits in the outer env.
-            lisp_value newenv = lisp_make_env(env);
-            if (newenv == LISP_UNDEF)
-                return fail(err, "out of memory");
-            lisp_value binds = lisp_car(rest);
-            while (lisp_is_pair(binds)) {
-                lisp_value b = lisp_car(binds);
-                if (!lisp_is_pair(b) || !lisp_is_pair(lisp_cdr(b)))
-                    return fail(err, "malformed let binding");
-                lisp_value v = lisp_eval(lisp_car(lisp_cdr(b)), env, err);
-                if (v == LISP_UNDEF && err != NULL && *err != NULL)
-                    return LISP_UNDEF;
-                lisp_env_define(newenv, lisp_car(b), v);
-                binds = lisp_cdr(binds);
-            }
-            env = newenv;
-            rest = lisp_cdr(rest);  // body
-            if (!lisp_is_pair(rest))
-                return LISP_UNDEF;
-            while (lisp_is_pair(lisp_cdr(rest))) {
-                lisp_eval(lisp_car(rest), env, err);
-                if (err != NULL && *err != NULL)
-                    return LISP_UNDEF;
-                rest = lisp_cdr(rest);
-            }
-            expr = lisp_car(rest);
-            goto tail;
+            if (lisp_is_pair(rest) && lisp_is_symbol(lisp_car(rest)))
+                namedlet_start(cx, rest);
+            else
+                let_start(cx, rest, LET_PLAIN);
+            return;
         }
-
-        if (is_form(head, "let*") || is_form(head, "letrec")) {
-            // let*: each init sees the previous bindings (sequential, one env).
-            // letrec: all names are in scope for every init (pre-bound), so
-            // mutually-recursive lambdas work. Both share body handling.
-            if (!lisp_is_pair(rest))
-                return fail(err, "malformed let* / letrec");
-            bool rec = is_form(head, "letrec");
-            lisp_value newenv = lisp_make_env(env);
-            if (newenv == LISP_UNDEF)
-                return fail(err, "out of memory");
-            if (rec) {
-                for (lisp_value b = lisp_car(rest); lisp_is_pair(b); b = lisp_cdr(b)) {
-                    lisp_value bind = lisp_car(b);
-                    if (!lisp_is_pair(bind))
-                        return fail(err, "malformed letrec binding");
-                    lisp_env_define(newenv, lisp_car(bind), LISP_UNDEF);
-                }
-            }
-            for (lisp_value b = lisp_car(rest); lisp_is_pair(b); b = lisp_cdr(b)) {
-                lisp_value bind = lisp_car(b);
-                if (!lisp_is_pair(bind) || !lisp_is_pair(lisp_cdr(bind)))
-                    return fail(err, "malformed let* / letrec binding");
-                lisp_value v = lisp_eval(lisp_car(lisp_cdr(bind)), newenv, err);
-                if (v == LISP_UNDEF && err != NULL && *err != NULL)
-                    return LISP_UNDEF;
-                lisp_env_define(newenv, lisp_car(bind), v);
-            }
-            env = newenv;
-            rest = lisp_cdr(rest);  // body
-            if (!lisp_is_pair(rest))
-                return LISP_UNDEF;
-            while (lisp_is_pair(lisp_cdr(rest))) {
-                lisp_eval(lisp_car(rest), env, err);
-                if (err != NULL && *err != NULL)
-                    return LISP_UNDEF;
-                rest = lisp_cdr(rest);
-            }
-            expr = lisp_car(rest);
-            goto tail;
+        if (is_form(head, "let*")) {
+            let_start(cx, rest, LET_STAR);
+            return;
         }
-
+        if (is_form(head, "letrec")) {
+            let_start(cx, rest, LET_REC);
+            return;
+        }
         if (is_form(head, "and")) {
-            // (and) => #t; short-circuit on the first #f; last is in tail pos.
-            if (!lisp_is_pair(rest))
-                return LISP_TRUE;
-            while (lisp_is_pair(lisp_cdr(rest))) {
-                lisp_value v = lisp_eval(lisp_car(rest), env, err);
-                if (v == LISP_UNDEF && err != NULL && *err != NULL)
-                    return LISP_UNDEF;
-                if (!lisp_truthy(v))
-                    return LISP_FALSE;
-                rest = lisp_cdr(rest);
-            }
-            expr = lisp_car(rest);
-            goto tail;
+            and_start(cx, rest);
+            return;
         }
-
         if (is_form(head, "or")) {
-            // (or) => #f; return the first truthy value; last is in tail pos.
-            if (!lisp_is_pair(rest))
-                return LISP_FALSE;
-            while (lisp_is_pair(lisp_cdr(rest))) {
-                lisp_value v = lisp_eval(lisp_car(rest), env, err);
-                if (v == LISP_UNDEF && err != NULL && *err != NULL)
-                    return LISP_UNDEF;
-                if (lisp_truthy(v))
-                    return v;
-                rest = lisp_cdr(rest);
-            }
-            expr = lisp_car(rest);
-            goto tail;
+            or_start(cx, rest);
+            return;
         }
-
         if (is_form(head, "cond")) {
-            // (cond (test body...) ... (else body...)). A clause with no body
-            // returns its test value; the chosen body's last form is tail.
-            lisp_value clauses = rest;
-            while (lisp_is_pair(clauses)) {
-                lisp_value clause = lisp_car(clauses);
-                if (!lisp_is_pair(clause))
-                    return fail(err, "malformed cond clause");
-                lisp_value test = lisp_car(clause);
-                lisp_value body = lisp_cdr(clause);
-                lisp_value testval = LISP_TRUE;
-                bool take = is_form(test, "else");
-                if (!take) {
-                    testval = lisp_eval(test, env, err);
-                    if (testval == LISP_UNDEF && err != NULL && *err != NULL)
-                        return LISP_UNDEF;
-                    take = lisp_truthy(testval);
-                }
-                if (take) {
-                    if (!lisp_is_pair(body))
-                        return testval;
-                    while (lisp_is_pair(lisp_cdr(body))) {
-                        lisp_eval(lisp_car(body), env, err);
-                        if (err != NULL && *err != NULL)
-                            return LISP_UNDEF;
-                        body = lisp_cdr(body);
-                    }
-                    expr = lisp_car(body);
-                    goto tail;
-                }
-                clauses = lisp_cdr(clauses);
-            }
-            return LISP_UNDEF;  // no clause matched
+            cond_start(cx, rest);
+            return;
         }
-
         if (is_form(head, "when") || is_form(head, "unless")) {
-            // (when test body...) / (unless test body...). Common derived forms
-            // kept as interpreter special cases (cheap, and JIT-friendly) rather
-            // than macros.
-            if (!lisp_is_pair(rest))
-                return fail(err, "malformed when/unless");
-            bool want = is_form(head, "when");
-            lisp_value test = lisp_eval(lisp_car(rest), env, err);
-            if (test == LISP_UNDEF && err != NULL && *err != NULL)
-                return LISP_UNDEF;
-            if (lisp_truthy(test) != want)
-                return LISP_UNDEF;  // body not run
-            lisp_value b = lisp_cdr(rest);
-            if (!lisp_is_pair(b))
-                return LISP_UNDEF;
-            while (lisp_is_pair(lisp_cdr(b))) {
-                lisp_eval(lisp_car(b), env, err);
-                if (err != NULL && *err != NULL)
-                    return LISP_UNDEF;
-                b = lisp_cdr(b);
-            }
-            expr = lisp_car(b);
-            goto tail;
+            when_start(cx, rest, is_form(head, "when"));
+            return;
         }
-
         if (is_form(head, "while")) {
-            // (while test body...) -- an imperative loop; returns unspecified.
-            if (!lisp_is_pair(rest))
-                return fail(err, "malformed while");
-            lisp_value test = lisp_car(rest);
-            lisp_value body = lisp_cdr(rest);
-            for (;;) {
-                lisp_value t = lisp_eval(test, env, err);
-                if (t == LISP_UNDEF && err != NULL && *err != NULL)
-                    return LISP_UNDEF;
-                if (!lisp_truthy(t))
-                    return LISP_UNDEF;
-                for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b)) {
-                    lisp_eval(lisp_car(b), env, err);
-                    if (err != NULL && *err != NULL)
-                        return LISP_UNDEF;
-                }
-            }
+            while_start(cx, rest);
+            return;
         }
-
         if (is_form(head, "case")) {
-            // (case key (datums body...) ... (else body...)). Datums match by
-            // eqv? (a word compare -- exact for fixnums/chars/booleans/interned
-            // symbols; identity for other heap values).
-            if (!lisp_is_pair(rest))
-                return fail(err, "malformed case");
-            lisp_value key = lisp_eval(lisp_car(rest), env, err);
-            if (key == LISP_UNDEF && err != NULL && *err != NULL)
-                return LISP_UNDEF;
-            for (lisp_value cl = lisp_cdr(rest); lisp_is_pair(cl); cl = lisp_cdr(cl)) {
+            case_start(cx, rest);
+            return;
+        }
+    }
+
+    // Procedure application: evaluate the operator first, then the operands.
+    if (!kont_push(cx, K_EVAL_OP, cx->env, rest, LISP_EMPTY, LISP_EMPTY))
+        return;
+    cx->control = head;
+    cx->status = LISP_CTX_EVAL;
+}
+
+// APPLY state: a value (cx->accum) has arrived; hand it to the top frame.
+static void step_applyk(lisp_ctx_t *cx) {
+    if (cx->kont == LISP_EMPTY) {
+        cx->status = LISP_CTX_DONE;
+        return;
+    }
+    lisp_kont_t *k = kont(cx->kont);
+    lisp_value V = cx->accum;
+
+    switch ((int)LISP_HDR_AUX(&k->h)) {
+        case K_EVAL_OP: {
+            lisp_value op = V;
+            lisp_value argexprs = k->a;
+            lisp_value evalenv = k->env;
+            cx->kont = k->next;  // pop
+            if (!lisp_is_pair(argexprs)) {
+                if (!lisp_is_empty(argexprs)) {
+                    ctx_error(cx, "improper argument list");
+                    return;
+                }
+                do_call(cx, op, NULL, 0);  // zero-argument call
+                return;
+            }
+            if (!kont_push(cx, K_EVAL_ARGS, evalenv, op, LISP_EMPTY, lisp_cdr(argexprs)))
+                return;
+            cx->env = evalenv;
+            cx->control = lisp_car(argexprs);
+            cx->status = LISP_CTX_EVAL;
+            return;
+        }
+        case K_EVAL_ARGS: {
+            lisp_value op = k->a;
+            lisp_value done = k->b;  // already-evaluated args, in reverse order
+            lisp_value todo = k->c;
+            if (lisp_is_pair(todo)) {
+                lisp_value nd = lisp_cons(V, done);
+                if (nd == LISP_UNDEF) {
+                    ctx_error(cx, "out of memory");
+                    return;
+                }
+                k->b = nd;
+                k->c = lisp_cdr(todo);
+                cx->env = k->env;
+                cx->control = lisp_car(todo);
+                cx->status = LISP_CTX_EVAL;
+                return;
+            }
+            if (!lisp_is_empty(todo)) {
+                ctx_error(cx, "improper argument list");
+                return;
+            }
+            // Last argument is V; flatten (done reversed) + V into an array.
+            lisp_value args[MAX_ARGS];
+            int n = 1;
+            for (lisp_value p = done; lisp_is_pair(p); p = lisp_cdr(p))
+                n++;
+            if (n > MAX_ARGS) {
+                ctx_error(cx, "too many arguments");
+                return;
+            }
+            int argc = n;
+            args[--n] = V;
+            for (lisp_value p = done; lisp_is_pair(p); p = lisp_cdr(p))
+                args[--n] = lisp_car(p);
+            cx->kont = k->next;  // pop before the (possibly tail) call
+            do_call(cx, op, args, argc);
+            return;
+        }
+        case K_IF: {
+            lisp_value thenb = k->a;
+            lisp_value elseb = k->b;
+            cx->kont = k->next;  // pop: the chosen branch runs in tail position
+            cx->env = k->env;
+            if (lisp_truthy(V)) {
+                cx->control = thenb;
+                cx->status = LISP_CTX_EVAL;
+            } else if (lisp_is_pair(elseb)) {
+                cx->control = lisp_car(elseb);
+                cx->status = LISP_CTX_EVAL;
+            } else {  // (if #f x) with no else -> unspecified
+                cx->accum = LISP_UNDEF;
+                cx->status = LISP_CTX_APPLY;
+            }
+            return;
+        }
+        case K_SEQ: {
+            lisp_value forms = k->a;  // remaining forms, >=1; V (prev result) dropped
+            cx->env = k->env;
+            if (lisp_is_pair(lisp_cdr(forms))) {
+                k->a = lisp_cdr(forms);  // keep frame, advance
+            } else {
+                cx->kont = k->next;  // pop before the last form (tail)
+            }
+            cx->control = lisp_car(forms);
+            cx->status = LISP_CTX_EVAL;
+            return;
+        }
+        case K_DEFINE: {
+            lisp_value name = k->a;
+            lisp_env_define(k->env, name, V);
+            cx->kont = k->next;
+            cx->accum = name;  // define returns the bound symbol
+            cx->status = LISP_CTX_APPLY;
+            return;
+        }
+        case K_SET: {
+            if (!lisp_env_set(k->env, k->a, V)) {
+                ctx_error(cx, "set! on unbound variable");
+                return;
+            }
+            cx->kont = k->next;
+            cx->accum = LISP_UNDEF;
+            cx->status = LISP_CTX_APPLY;
+            return;
+        }
+        case K_AND: {
+            if (!lisp_truthy(V)) {  // short-circuit
+                cx->kont = k->next;
+                cx->accum = LISP_FALSE;
+                cx->status = LISP_CTX_APPLY;
+                return;
+            }
+            lisp_value forms = k->a;  // remaining, >=1
+            cx->env = k->env;
+            if (lisp_is_pair(lisp_cdr(forms))) {
+                k->a = lisp_cdr(forms);
+            } else {
+                cx->kont = k->next;  // last conjunct is in tail position
+            }
+            cx->control = lisp_car(forms);
+            cx->status = LISP_CTX_EVAL;
+            return;
+        }
+        case K_OR: {
+            if (lisp_truthy(V)) {  // return the first truthy value
+                cx->kont = k->next;
+                cx->accum = V;
+                cx->status = LISP_CTX_APPLY;
+                return;
+            }
+            lisp_value forms = k->a;
+            cx->env = k->env;
+            if (lisp_is_pair(lisp_cdr(forms))) {
+                k->a = lisp_cdr(forms);
+            } else {
+                cx->kont = k->next;  // last disjunct is in tail position
+            }
+            cx->control = lisp_car(forms);
+            cx->status = LISP_CTX_EVAL;
+            return;
+        }
+        case K_COND: {
+            lisp_value clauses = k->a;
+            lisp_value clause = lisp_car(clauses);
+            lisp_value body = lisp_cdr(clause);
+            cx->kont = k->next;  // pop
+            cx->env = k->env;
+            if (lisp_truthy(V)) {
+                if (!lisp_is_pair(body)) {  // no body -> the test value
+                    cx->accum = V;
+                    cx->status = LISP_CTX_APPLY;
+                } else {
+                    start_body(cx, body);  // tail
+                }
+            } else {
+                cond_start(cx, lisp_cdr(clauses));  // try the next clause
+            }
+            return;
+        }
+        case K_CASE: {
+            lisp_value key = V;
+            cx->kont = k->next;  // pop
+            cx->env = k->env;
+            for (lisp_value cl = k->a; lisp_is_pair(cl); cl = lisp_cdr(cl)) {
                 lisp_value clause = lisp_car(cl);
-                if (!lisp_is_pair(clause))
-                    return fail(err, "malformed case clause");
+                if (!lisp_is_pair(clause)) {
+                    ctx_error(cx, "malformed case clause");
+                    return;
+                }
                 lisp_value datums = lisp_car(clause);
                 bool take = is_form(datums, "else");
                 for (lisp_value d = datums; !take && lisp_is_pair(d); d = lisp_cdr(d))
                     if (lisp_car(d) == key)
                         take = true;
                 if (take) {
-                    lisp_value cbody = lisp_cdr(clause);
-                    if (!lisp_is_pair(cbody))
-                        return LISP_UNDEF;
-                    while (lisp_is_pair(lisp_cdr(cbody))) {
-                        lisp_eval(lisp_car(cbody), env, err);
-                        if (err != NULL && *err != NULL)
-                            return LISP_UNDEF;
-                        cbody = lisp_cdr(cbody);
-                    }
-                    expr = lisp_car(cbody);
-                    goto tail;
+                    start_body(cx, lisp_cdr(clause));  // tail
+                    return;
                 }
             }
-            return LISP_UNDEF;  // no clause matched
+            cx->accum = LISP_UNDEF;  // no clause matched
+            cx->status = LISP_CTX_APPLY;
+            return;
         }
+        case K_WHEN: {
+            lisp_value body = k->a;
+            bool want = (k->b == LISP_TRUE);
+            cx->kont = k->next;  // pop
+            cx->env = k->env;
+            if (lisp_truthy(V) != want) {
+                cx->accum = LISP_UNDEF;  // body not run
+                cx->status = LISP_CTX_APPLY;
+                return;
+            }
+            start_body(cx, body);  // tail
+            return;
+        }
+        case K_WHILE_TEST: {
+            lisp_value test = k->a;
+            lisp_value body = k->b;
+            if (!lisp_truthy(V)) {  // loop done
+                cx->kont = k->next;
+                cx->accum = LISP_UNDEF;
+                cx->status = LISP_CTX_APPLY;
+                return;
+            }
+            cx->env = k->env;
+            if (!lisp_is_pair(body)) {  // empty body: straight back to the test
+                cx->budget--;          // loop back-edge is a safe point
+                cx->control = test;
+                cx->status = LISP_CTX_EVAL;
+                return;
+            }
+            k->h.header = LISP_MK_HEADER(LISP_OBJ_KONT, K_WHILE_BODY);
+            k->c = lisp_cdr(body);  // forms remaining after the one we start now
+            cx->control = lisp_car(body);
+            cx->status = LISP_CTX_EVAL;
+            return;
+        }
+        case K_WHILE_BODY: {
+            lisp_value rem = k->c;  // V (the finished form's value) is discarded
+            cx->env = k->env;
+            if (lisp_is_pair(rem)) {
+                k->c = lisp_cdr(rem);
+                cx->control = lisp_car(rem);
+                cx->status = LISP_CTX_EVAL;
+                return;
+            }
+            // Body exhausted: loop back to the test (a back-edge / safe point).
+            cx->budget--;
+            k->h.header = LISP_MK_HEADER(LISP_OBJ_KONT, K_WHILE_TEST);
+            cx->control = k->a;  // the test
+            cx->status = LISP_CTX_EVAL;
+            return;
+        }
+        case K_BIND: {
+            lisp_value binds = k->a;
+            lisp_value newenv = k->b;
+            lisp_value bind = lisp_car(binds);
+            lisp_env_define(newenv, lisp_car(bind), V);
+            lisp_value restb = lisp_cdr(binds);
+            if (!lisp_is_pair(restb)) {  // all bound: run the body in the new env
+                cx->kont = k->next;
+                cx->env = newenv;
+                start_body(cx, k->c);
+                return;
+            }
+            lisp_value b1 = lisp_car(restb);
+            if (!lisp_is_pair(b1) || !lisp_is_pair(lisp_cdr(b1))) {
+                ctx_error(cx, "malformed let binding");
+                return;
+            }
+            k->a = restb;
+            cx->env = k->env;  // init-eval env (outer for let, newenv for let*/letrec)
+            cx->control = lisp_car(lisp_cdr(b1));
+            cx->status = LISP_CTX_EVAL;
+            return;
+        }
+        default:
+            ctx_error(cx, "internal: bad continuation frame");
+            return;
     }
+}
 
-    // Procedure application: evaluate operator and operands.
-    lisp_value op = lisp_eval(head, env, err);
-    if (op == LISP_UNDEF && err != NULL && *err != NULL)
+// Drive the machine for up to its current budget. Returns a run result: DONE,
+// ERROR, or SUSPENDED (budget exhausted at a safe point; cx->status retains the
+// pending EVAL/APPLY step so a later call resumes exactly here).
+static lisp_ctx_status ctx_run(lisp_ctx_t *cx) {
+    for (;;) {
+        if (cx->status == LISP_CTX_DONE)
+            return LISP_CTX_DONE;
+        if (cx->status == LISP_CTX_ERROR)
+            return LISP_CTX_ERROR;
+        if (cx->budget <= 0)
+            return LISP_CTX_SUSPENDED;
+        if (cx->status == LISP_CTX_EVAL)
+            step_eval(cx);
+        else
+            step_applyk(cx);
+    }
+}
+
+// --- Context construction + public API --------------------------------------
+
+static lisp_value ctx_alloc(lisp_value expr, lisp_value env) {
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_gc_alloc(sizeof(lisp_ctx_t));
+    if (cx == NULL)
         return LISP_UNDEF;
+    cx->h.header = LISP_MK_HEADER(LISP_OBJ_CTX, 0);
+    cx->control = expr;
+    cx->env = env;
+    cx->accum = LISP_UNDEF;
+    cx->kont = LISP_EMPTY;
+    cx->status = LISP_CTX_EVAL;
+    cx->err = NULL;
+    cx->budget = 0;
+    return lisp_from_obj(cx);
+}
 
-    lisp_value args[MAX_ARGS];
-    int argc = 0;
-    lisp_value a = rest;
-    while (lisp_is_pair(a)) {
-        if (argc >= MAX_ARGS)
-            return fail(err, "too many arguments (Phase 1 cap)");
-        lisp_value v = lisp_eval(lisp_car(a), env, err);
-        if (v == LISP_UNDEF && err != NULL && *err != NULL)
-            return LISP_UNDEF;
-        args[argc++] = v;
-        a = lisp_cdr(a);
-    }
-    if (!lisp_is_empty(a))
-        return fail(err, "improper argument list");
+lisp_value lisp_ctx_make(lisp_value expr, lisp_value env) { return ctx_alloc(expr, env); }
 
-    if (lisp_is_objtype(op, LISP_OBJ_PRIMITIVE)) {
-        lisp_prim_t *p = (lisp_prim_t *)lisp_obj(op);
-        return p->fn(args, argc, err);
-    }
-    if (lisp_is_objtype(op, LISP_OBJ_CLOSURE)) {
-        lisp_closure_t *c = (lisp_closure_t *)lisp_obj(op);
-        lisp_value newenv = bind_params(c->params, args, argc, c->env, err);
-        if (newenv == LISP_UNDEF)
-            return LISP_UNDEF;
-        lisp_value body = c->body;
-        if (!lisp_is_pair(body))
-            return LISP_UNDEF;  // empty body -> unspecified
-        env = newenv;
-        while (lisp_is_pair(lisp_cdr(body))) {
-            lisp_eval(lisp_car(body), env, err);
-            if (err != NULL && *err != NULL)
-                return LISP_UNDEF;
-            body = lisp_cdr(body);
-        }
-        expr = lisp_car(body);  // tail call: loop instead of recursing
-        goto tail;
-    }
-    return fail(err, "attempt to call a non-procedure");
+lisp_ctx_status lisp_ctx_resume(lisp_value ctxv, int64_t budget) {
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    cx->budget = budget;
+    return ctx_run(cx);
+}
+
+lisp_value lisp_ctx_value(lisp_value ctxv) { return ((lisp_ctx_t *)lisp_obj(ctxv))->accum; }
+
+const char *lisp_ctx_error(lisp_value ctxv) { return ((lisp_ctx_t *)lisp_obj(ctxv))->err; }
+
+// Drive a transient context to completion with an effectively-unbounded budget.
+// Used by the synchronous wrappers below; never suspends (the budget is re-armed
+// in the unlikely event a single call evaluates ~2^63 reductions).
+static lisp_ctx_status run_to_completion(lisp_ctx_t *cx) {
+    lisp_ctx_status r;
+    do {
+        cx->budget = CTX_BUDGET_UNBOUNDED;
+        r = ctx_run(cx);
+    } while (r == LISP_CTX_SUSPENDED);
+    return r;
+}
+
+lisp_value lisp_eval(lisp_value expr, lisp_value env, const char **err) {
+    if (err != NULL)
+        *err = NULL;
+    lisp_value ctxv = ctx_alloc(expr, env);
+    if (ctxv == LISP_UNDEF)
+        return fail(err, "out of memory");
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    if (run_to_completion(cx) == LISP_CTX_ERROR)
+        return fail(err, cx->err);
+    return cx->accum;
 }
 
 lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **err) {
     if (err != NULL)
         *err = NULL;
-    if (lisp_is_objtype(proc, LISP_OBJ_PRIMITIVE))
-        return ((lisp_prim_t *)lisp_obj(proc))->fn(args, argc, err);
-    if (lisp_is_objtype(proc, LISP_OBJ_CLOSURE)) {
-        lisp_closure_t *c = (lisp_closure_t *)lisp_obj(proc);
-        lisp_value newenv = bind_params(c->params, args, argc, c->env, err);
-        if (newenv == LISP_UNDEF)
-            return LISP_UNDEF;
-        lisp_value result = LISP_UNDEF;  // empty body -> unspecified
-        for (lisp_value body = c->body; lisp_is_pair(body); body = lisp_cdr(body)) {
-            result = lisp_eval(lisp_car(body), newenv, err);
-            if (result == LISP_UNDEF && err != NULL && *err != NULL)
-                return LISP_UNDEF;
-        }
-        return result;
-    }
-    return fail(err, "attempt to call a non-procedure");
+    lisp_value ctxv = ctx_alloc(LISP_UNDEF, LISP_EMPTY);
+    if (ctxv == LISP_UNDEF)
+        return fail(err, "out of memory");
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    cx->budget = CTX_BUDGET_UNBOUNDED;
+    do_call(cx, proc, args, argc);  // sets up control/frames (or signals an error)
+    if (run_to_completion(cx) == LISP_CTX_ERROR)
+        return fail(err, cx->err);
+    return cx->accum;
 }
 
 lisp_value lisp_default_env(void) {

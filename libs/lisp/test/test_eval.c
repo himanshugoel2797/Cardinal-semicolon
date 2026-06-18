@@ -51,6 +51,13 @@ static void evalerr(const char *src) {
 }
 
 int main(void) {
+    // The evaluator is now an explicit-stack machine: a continuation frame is
+    // allocated per reduction, so an unbounded tail loop (below) relies on the
+    // GC to reclaim the per-iteration garbage. Enable it (the real runtime
+    // always runs with the collector on).
+    uintptr_t stack_marker;
+    lisp_gc_init(&stack_marker);
+
     printf("[lisp Phase 1] evaluator\n");
 
     // Self-evaluating + arithmetic
