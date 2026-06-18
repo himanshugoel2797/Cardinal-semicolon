@@ -50,6 +50,64 @@ static void emit_int(sink *s, int64_t v) {
         emit_ch(s, tmp[--n]);
 }
 
+// A simple decimal flonum formatter: sign, integer part, '.', up to 10 rounded
+// fractional digits (trailing zeros trimmed, at least one kept). Not a shortest-
+// round-trip (Ryu/Grisu) printer -- adequate for display; a correctly-rounded
+// version is a later refinement. Non-finite values use the R7RS names.
+static void emit_flonum(sink *s, double v) {
+    if (v != v) {
+        emit_cstr(s, "+nan.0");
+        return;
+    }
+    bool neg = v < 0.0;
+    if (neg)
+        v = -v;
+    if (v - v != 0.0) {  // infinity (v is now +inf)
+        emit_cstr(s, neg ? "-inf.0" : "+inf.0");
+        return;
+    }
+    if (neg)
+        emit_ch(s, '-');
+    // Normalize very large magnitudes with a decimal exponent so the integer-
+    // part cast below cannot overflow uint64 (that conversion would be UB). The
+    // exponent is appended as a trailing eN. This path is intentionally coarse;
+    // a shortest-round-trip printer is a later refinement.
+    int e10 = 0;
+    while (v >= 9.223372036854775808e18) {  // 2^63: keep ip in int64 range for emit_int
+        v /= 10.0;
+        e10++;
+    }
+    const int FRAC = 10;
+    double rounding = 0.5;
+    for (int k = 0; k < FRAC; k++)
+        rounding /= 10.0;
+    v += rounding;  // round at the FRAC-th fractional digit (may carry into ip)
+    uint64_t ip = (uint64_t)v;
+    emit_int(s, (int64_t)ip);
+    emit_ch(s, '.');
+    double frac = v - (double)ip;
+    char digits[16];
+    int nd = 0;
+    for (int k = 0; k < FRAC; k++) {
+        frac *= 10.0;
+        int d = (int)frac;
+        if (d < 0)
+            d = 0;
+        if (d > 9)
+            d = 9;
+        digits[nd++] = (char)('0' + d);
+        frac -= d;
+    }
+    while (nd > 1 && digits[nd - 1] == '0')
+        nd--;
+    for (int k = 0; k < nd; k++)
+        emit_ch(s, digits[k]);
+    if (e10 != 0) {
+        emit_ch(s, 'e');
+        emit_int(s, (int64_t)e10);
+    }
+}
+
 static void emit_string_literal(sink *s, lisp_value v) {
     emit_ch(s, '"');
     const char *d = lisp_string_data(v);
@@ -139,6 +197,7 @@ static void print_val(sink *s, lisp_value v) {
             emit_ch(s, ')');
             return;
         }
+        case LISP_OBJ_FLONUM: emit_flonum(s, lisp_flonum_val(v)); return;
         case LISP_OBJ_CLOSURE: emit_cstr(s, "#<procedure>"); return;
         case LISP_OBJ_PRIMITIVE: emit_cstr(s, "#<primitive>"); return;
         default: emit_cstr(s, "#<obj>"); return;

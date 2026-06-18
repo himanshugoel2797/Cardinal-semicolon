@@ -66,9 +66,23 @@ simplifications:
 
 Scope: a small, R7RS-*flavoured* core (not a full R7RS implementation) — Scheme
 syntax and semantics (`#t`/`#f`, `#\char`, `()` with no nil, only `#f` false,
-`define`/`lambda`/`let`/`if`/`quote`/`set!`/`begin`/`cond`), minus a full numeric
-tower. The `-mno-sse` (no-FP) kernel constraint forces integer/fixnum-centric
-numerics (soft bignums/rationals optional, no floats).
+`define`/`lambda`/`let`/`if`/`quote`/`set!`/`begin`/`cond`). Numerics: unboxed
+fixnums plus heap-boxed flonums (see below); bignums/rationals are optional later.
+
+### Floating point is in scope (corrected)
+
+The kernel avoids FP only in *low-level native code* (`-mno-sse` is blanket
+because boot/ISR/scheduler contexts don't manage FP register state). But the
+**task manager already saves/restores full FP/SSE state per task** on every
+context switch (`SysTaskMgr` `fpu_state` + `fp_platform_get/setstate`), and the
+Scheme runtime always runs in **task context**. So the runtime can use **native
+hardware `double`** — the runtime translation units are compiled with SSE
+enabled (overriding the blanket `-mno-sse`), no soft-float needed. The single
+caveat mirrors the GC-context rule: **no float ops in non-task context** (ISRs,
+early `module_init` before the scheduler) — runtime float arithmetic runs during
+evaluation, which is always task context. Flonums are heap-boxed (a `double`
+does not fit beside the tag bits); int/float arithmetic follows the usual
+contagion (any flonum operand ⇒ flonum result).
 
 ## Security model: lexical scope = capabilities (W7)
 
@@ -237,10 +251,9 @@ explicitly later phases the earlier ones are designed not to preclude.
 
 Beyond the per-phase host harnesses, validate against an external suite once the
 language is rich enough. North star: **chibi-scheme `r7rs-tests.scm`** (the
-portable R7RS-small suite). Caveat: standard suites assume the full numeric
-tower (floats/rationals — we are integer-only by the no-FP constraint) and use
-`define-syntax`/`call/cc` in their own harness, so a full run waits on basic
-`syntax-rules` + `call/cc` + error handling, and the numeric-tower sections are
-expected-skip. Near-term: a thunk-based `(test expr => expected)` harness (no
+portable R7RS-small suite). Caveat: standard suites use `define-syntax`/`call/cc`
+in their own harness, so a full run waits on basic `syntax-rules` + `call/cc` +
+error handling. We have fixnums + flonums; the rational/bignum sections of the
+numeric tower remain expected-skip until those land. Near-term: a thunk-based `(test expr => expected)` harness (no
 macros needed) over a curated subset matching the current feature level, grown
 as features land — failures drive the worklist.

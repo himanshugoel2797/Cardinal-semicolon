@@ -27,9 +27,12 @@
 //       01  fixnum       (62-bit signed, value = (int64_t)v >> 2)
 //       10  immediate    (#t/#f, empty list, char, eof; subtype in bits [7:2])
 //       11  reserved      (second immediate space / future use)
-//   - Fixnums are unboxed so integer arithmetic never allocates. The kernel is
-//     -mno-sse (no floating point), so the numeric tower is integer-centric by
-//     design; there are deliberately no float literals.
+//   - Fixnums are unboxed so integer arithmetic never allocates. Floats are
+//     supported as heap-boxed flonums (a double does not fit beside the tag
+//     bits). The runtime runs in task context, where SysTaskMgr saves/restores
+//     FP state, so it uses native hardware doubles (its TUs are built with SSE,
+//     overriding the kernel's blanket -mno-sse); no float ops in non-task
+//     (ISR/early-boot) context.
 //   - Every heap object begins with a `lisp_header` word whose layout reserves
 //     space for a future GC (mark bits now; forwarding for a moving collector
 //     later). v1 is a non-moving mark-sweep; nothing here precludes a nursery.
@@ -70,6 +73,7 @@ typedef enum {
     LISP_OBJ_CLOSURE = 6,    // lambda: params + body + captured env
     LISP_OBJ_PRIMITIVE = 7,  // built-in procedure backed by a C function
     LISP_OBJ_VECTOR = 8,     // immutable flat vector
+    LISP_OBJ_FLONUM = 9,     // heap-boxed double (inexact real)
     // reserved for later phases: MAP, BYTEVECTOR, BOX, ...
 } lisp_objtype;
 
@@ -109,6 +113,11 @@ typedef struct {
     lisp_header h;
     lisp_value items[];  // length in header aux
 } lisp_vector;
+
+typedef struct {
+    lisp_header h;
+    double val;
+} lisp_flonum;
 
 // --- Tag predicates ---------------------------------------------------------
 
@@ -155,6 +164,15 @@ static inline bool lisp_is_symbol(lisp_value v) { return lisp_is_objtype(v, LISP
 static inline bool lisp_is_keyword(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_KEYWORD); }
 static inline bool lisp_is_string(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_STRING); }
 static inline bool lisp_is_vector(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_VECTOR); }
+static inline bool lisp_is_flonum(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_FLONUM); }
+
+// A number is an exact fixnum or an inexact flonum.
+static inline bool lisp_is_number(lisp_value v) { return lisp_is_fixnum(v) || lisp_is_flonum(v); }
+static inline double lisp_flonum_val(lisp_value v) { return ((lisp_flonum *)(uintptr_t)v)->val; }
+// Widen any number to double (for mixed arithmetic / comparison).
+static inline double lisp_number_to_double(lisp_value v) {
+    return lisp_is_fixnum(v) ? (double)lisp_fixnum_val(v) : lisp_flonum_val(v);
+}
 
 static inline lisp_value lisp_car(lisp_value v) { return ((lisp_pair *)lisp_obj(v))->car; }
 static inline lisp_value lisp_cdr(lisp_value v) { return ((lisp_pair *)lisp_obj(v))->cdr; }
@@ -175,6 +193,8 @@ lisp_value lisp_make_vector(size_t len, lisp_value fill);
 size_t lisp_vector_length(lisp_value v);
 lisp_value lisp_vector_ref(lisp_value v, size_t i);
 void lisp_vector_set_init(lisp_value v, size_t i, lisp_value x);
+
+lisp_value lisp_make_flonum(double x);
 
 const char *lisp_named_name(lisp_value v);  // symbol/keyword name (NUL-terminated)
 size_t lisp_named_len(lisp_value v);

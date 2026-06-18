@@ -63,3 +63,12 @@ lisp_value lisp_vector_ref(lisp_value v, size_t i) {
 void lisp_vector_set_init(lisp_value v, size_t i, lisp_value x) {
     ((lisp_vector *)lisp_obj(v))->items[i] = x;  // for constructors only (see header)
 }
+
+lisp_value lisp_make_flonum(double x) {
+    lisp_flonum *f = (lisp_flonum *)malloc(sizeof(lisp_flonum));
+    if (f == NULL)
+        return LISP_UNDEF;
+    f->h.header = LISP_MK_HEADER(LISP_OBJ_FLONUM, 0);
+    f->val = x;
+    return lisp_from_obj(f);
+}

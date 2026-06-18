@@ -7,6 +7,9 @@ FILE(GLOB LISP_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c)
 ADD_LIBRARY(lisp STATIC ${LISP_SRCS})
 TARGET_INCLUDE_DIRECTORIES(lisp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
 TARGET_INCLUDE_DIRECTORIES(lisp SYSTEM PUBLIC "${KERN_STDLIB_INCLUDE_DIR}")
-# Pin -fno-pic explicitly (load-bearing for the relocatable module model), matching
-# the other static libs rather than relying solely on inherited global flags.
-SET_TARGET_PROPERTIES(lisp PROPERTIES COMPILE_OPTIONS "-fno-pic")
+# -fno-pic is load-bearing for the relocatable module model. SSE is re-enabled
+# here (overriding the kernel's blanket -mno-sse) so the Scheme runtime can use
+# native hardware doubles for flonums: it runs only in task context, where
+# SysTaskMgr saves/restores FP state per context switch. See
+# notes/core/lisp-substrate.md ("Floating point is in scope").
+TARGET_COMPILE_OPTIONS(lisp PRIVATE -fno-pic -msse -msse2)

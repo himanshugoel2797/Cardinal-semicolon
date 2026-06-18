@@ -3,9 +3,10 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-// Phase 1 built-in procedures: integer arithmetic and comparison, list/pair
-// operations, and basic predicates. Integer-only (the kernel is no-FP); overflow
-// past the fixnum range silently wraps for now -- bignums are a later phase.
+// Built-in procedures: numeric arithmetic/comparison (exact fixnums + inexact
+// flonums with the usual contagion), list/pair operations, vectors, predicates,
+// and higher-order map/apply. Integer overflow past the fixnum range still wraps
+// (bignums are a later phase).
 
 #include <stdint.h>
 #include <string.h>
@@ -25,6 +26,13 @@ static bool all_fixnum(lisp_value *args, int argc) {
     return true;
 }
 
+static bool all_number(lisp_value *args, int argc) {
+    for (int i = 0; i < argc; i++)
+        if (!lisp_is_number(args[i]))
+            return false;
+    return true;
+}
+
 // Append a freshly-built cell to a list being constructed in place. Used only on
 // cells this code just allocated, so mutation is safe (not user-visible data).
 static void set_cdr(lisp_value pair, lisp_value v) {
@@ -33,55 +41,103 @@ static void set_cdr(lisp_value pair, lisp_value v) {
 
 // --- Arithmetic -------------------------------------------------------------
 
+// Arithmetic: exact (fixnum) when all operands are fixnums, else inexact
+// (flonum) -- the usual numeric contagion.
 static lisp_value prim_add(lisp_value *args, int argc, const char **err) {
-    if (!all_fixnum(args, argc))
-        return prim_err(err, "+ expects integers");
-    int64_t acc = 0;
+    if (all_fixnum(args, argc)) {
+        int64_t acc = 0;
+        for (int i = 0; i < argc; i++)
+            acc += lisp_fixnum_val(args[i]);
+        return lisp_fixnum(acc);
+    }
+    if (!all_number(args, argc))
+        return prim_err(err, "+ expects numbers");
+    double acc = 0.0;
     for (int i = 0; i < argc; i++)
-        acc += lisp_fixnum_val(args[i]);
-    return lisp_fixnum(acc);
+        acc += lisp_number_to_double(args[i]);
+    return lisp_make_flonum(acc);
 }
 
 static lisp_value prim_mul(lisp_value *args, int argc, const char **err) {
-    if (!all_fixnum(args, argc))
-        return prim_err(err, "* expects integers");
-    int64_t acc = 1;
+    if (all_fixnum(args, argc)) {
+        int64_t acc = 1;
+        for (int i = 0; i < argc; i++)
+            acc *= lisp_fixnum_val(args[i]);
+        return lisp_fixnum(acc);
+    }
+    if (!all_number(args, argc))
+        return prim_err(err, "* expects numbers");
+    double acc = 1.0;
     for (int i = 0; i < argc; i++)
-        acc *= lisp_fixnum_val(args[i]);
-    return lisp_fixnum(acc);
+        acc *= lisp_number_to_double(args[i]);
+    return lisp_make_flonum(acc);
 }
 
 static lisp_value prim_sub(lisp_value *args, int argc, const char **err) {
     if (argc < 1)
         return prim_err(err, "- expects at least one argument");
-    if (!all_fixnum(args, argc))
-        return prim_err(err, "- expects integers");
-    int64_t acc = lisp_fixnum_val(args[0]);
+    if (all_fixnum(args, argc)) {
+        int64_t acc = lisp_fixnum_val(args[0]);
+        if (argc == 1)
+            return lisp_fixnum(-acc);
+        for (int i = 1; i < argc; i++)
+            acc -= lisp_fixnum_val(args[i]);
+        return lisp_fixnum(acc);
+    }
+    if (!all_number(args, argc))
+        return prim_err(err, "- expects numbers");
+    double acc = lisp_number_to_double(args[0]);
     if (argc == 1)
-        return lisp_fixnum(-acc);
+        return lisp_make_flonum(-acc);
     for (int i = 1; i < argc; i++)
-        acc -= lisp_fixnum_val(args[i]);
-    return lisp_fixnum(acc);
+        acc -= lisp_number_to_double(args[i]);
+    return lisp_make_flonum(acc);
 }
 
+// Division: exact only when all operands are fixnums and every step divides
+// evenly; otherwise inexact float division. Division by zero is an error.
 static lisp_value prim_div(lisp_value *args, int argc, const char **err) {
     if (argc < 1)
         return prim_err(err, "/ expects at least one argument");
-    if (!all_fixnum(args, argc))
-        return prim_err(err, "/ expects integers");
-    int64_t acc = lisp_fixnum_val(args[0]);
+    if (!all_number(args, argc))
+        return prim_err(err, "/ expects numbers");
+    if (all_fixnum(args, argc)) {
+        int64_t acc = lisp_fixnum_val(args[0]);
+        bool exact = true;
+        if (argc == 1) {
+            if (acc == 0)
+                return prim_err(err, "division by zero");
+            exact = (acc == 1 || acc == -1);
+            if (exact)
+                acc = 1 / acc;
+        } else {
+            for (int i = 1; i < argc; i++) {
+                int64_t d = lisp_fixnum_val(args[i]);
+                if (d == 0)
+                    return prim_err(err, "division by zero");
+                if (acc % d != 0) {
+                    exact = false;
+                    break;
+                }
+                acc /= d;
+            }
+        }
+        if (exact)
+            return lisp_fixnum(acc);
+    }
+    double acc = lisp_number_to_double(args[0]);
     if (argc == 1) {
-        if (acc == 0)
+        if (acc == 0.0)
             return prim_err(err, "division by zero");
-        return lisp_fixnum(1 / acc);
+        return lisp_make_flonum(1.0 / acc);
     }
     for (int i = 1; i < argc; i++) {
-        int64_t d = lisp_fixnum_val(args[i]);
-        if (d == 0)
+        double d = lisp_number_to_double(args[i]);
+        if (d == 0.0)
             return prim_err(err, "division by zero");
         acc /= d;
     }
-    return lisp_fixnum(acc);
+    return lisp_make_flonum(acc);
 }
 
 static lisp_value prim_mod(lisp_value *args, int argc, const char **err) {
@@ -99,20 +155,33 @@ typedef enum { CMP_EQ, CMP_LT, CMP_GT, CMP_LE, CMP_GE } cmp_op;
 
 static lisp_value compare(lisp_value *args, int argc, const char **err, cmp_op op,
                           const char *name) {
-    if (argc < 1)
+    if (argc < 1 || !all_number(args, argc))
         return prim_err(err, name);
-    if (!all_fixnum(args, argc))
-        return prim_err(err, name);
+    bool fix = all_fixnum(args, argc);  // exact compare when no flonum involved
     for (int i = 0; i + 1 < argc; i++) {  // (< x) is vacuously #t
-        int64_t a = lisp_fixnum_val(args[i]);
-        int64_t b = lisp_fixnum_val(args[i + 1]);
         bool ok;
-        switch (op) {
-            case CMP_EQ: ok = a == b; break;
-            case CMP_LT: ok = a < b; break;
-            case CMP_GT: ok = a > b; break;
-            case CMP_LE: ok = a <= b; break;
-            case CMP_GE: ok = a >= b; break;
+        if (fix) {
+            int64_t a = lisp_fixnum_val(args[i]), b = lisp_fixnum_val(args[i + 1]);
+            switch (op) {
+                case CMP_EQ: ok = a == b; break;
+                case CMP_LT: ok = a < b; break;
+                case CMP_GT: ok = a > b; break;
+                case CMP_LE: ok = a <= b; break;
+                case CMP_GE: ok = a >= b; break;
+            }
+        } else {
+            // Mixed exact/inexact: compare as doubles (R7RS converts the exact
+            // operand to inexact). A fixnum magnitude > 2^53 loses low bits here;
+            // that imprecision is spec-permitted, not a bug.
+            double a = lisp_number_to_double(args[i]);
+            double b = lisp_number_to_double(args[i + 1]);
+            switch (op) {
+                case CMP_EQ: ok = a == b; break;
+                case CMP_LT: ok = a < b; break;
+                case CMP_GT: ok = a > b; break;
+                case CMP_LE: ok = a <= b; break;
+                case CMP_GE: ok = a >= b; break;
+            }
         }
         if (!ok)
             return LISP_FALSE;
@@ -121,19 +190,19 @@ static lisp_value compare(lisp_value *args, int argc, const char **err, cmp_op o
 }
 
 static lisp_value prim_numeq(lisp_value *a, int n, const char **e) {
-    return compare(a, n, e, CMP_EQ, "= expects integers");
+    return compare(a, n, e, CMP_EQ, "= expects numbers");
 }
 static lisp_value prim_lt(lisp_value *a, int n, const char **e) {
-    return compare(a, n, e, CMP_LT, "< expects integers");
+    return compare(a, n, e, CMP_LT, "< expects numbers");
 }
 static lisp_value prim_gt(lisp_value *a, int n, const char **e) {
-    return compare(a, n, e, CMP_GT, "> expects integers");
+    return compare(a, n, e, CMP_GT, "> expects numbers");
 }
 static lisp_value prim_le(lisp_value *a, int n, const char **e) {
-    return compare(a, n, e, CMP_LE, "<= expects integers");
+    return compare(a, n, e, CMP_LE, "<= expects numbers");
 }
 static lisp_value prim_ge(lisp_value *a, int n, const char **e) {
-    return compare(a, n, e, CMP_GE, ">= expects integers");
+    return compare(a, n, e, CMP_GE, ">= expects numbers");
 }
 
 // --- Pairs / lists ----------------------------------------------------------
@@ -190,9 +259,9 @@ static lisp_value prim_not(lisp_value *args, int argc, const char **err) {
 }
 
 static lisp_value prim_zerop(lisp_value *args, int argc, const char **err) {
-    if (argc != 1 || !lisp_is_fixnum(args[0]))
-        return prim_err(err, "zero? expects an integer");
-    return bool_val(lisp_fixnum_val(args[0]) == 0);
+    if (argc != 1 || !lisp_is_number(args[0]))
+        return prim_err(err, "zero? expects a number");
+    return bool_val(lisp_number_to_double(args[0]) == 0.0);
 }
 
 // eq?: identity. Symbols/keywords are interned and immediates/fixnums are
@@ -219,6 +288,8 @@ static bool deep_equal(lisp_value a, lisp_value b) {
             b = lisp_cdr(b);
             continue;
         }
+        if (lisp_is_flonum(a) && lisp_is_flonum(b))
+            return lisp_flonum_val(a) == lisp_flonum_val(b);
         if (lisp_is_string(a) && lisp_is_string(b)) {
             size_t n = lisp_string_len(a);
             return n == lisp_string_len(b) &&
@@ -251,7 +322,51 @@ static lisp_value prim_symbolp(lisp_value *a, int n, const char **e) {
 }
 static lisp_value prim_integerp(lisp_value *a, int n, const char **e) {
     if (n != 1) return prim_err(e, "integer? expects one argument");
+    // Exact integers, plus integral flonums (R7RS: (integer? 2.0) => #t).
+    if (lisp_is_fixnum(a[0]))
+        return LISP_TRUE;
+    if (lisp_is_flonum(a[0])) {
+        double v = lisp_flonum_val(a[0]);
+        if (v != v || v - v != 0.0)
+            return LISP_FALSE;  // nan / inf
+        // |v| >= 2^53 doubles have no fractional bits, so they are integral; for
+        // smaller magnitudes the int64 cast is in range and exact.
+        if (v >= 9.007199254740992e15 || v <= -9.007199254740992e15)
+            return LISP_TRUE;
+        return bool_val((double)(int64_t)v == v);
+    }
+    return LISP_FALSE;
+}
+static lisp_value prim_numberp(lisp_value *a, int n, const char **e) {
+    if (n != 1) return prim_err(e, "number? expects one argument");
+    return bool_val(lisp_is_number(a[0]));
+}
+static lisp_value prim_exactp(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_number(a[0])) return prim_err(e, "exact? expects a number");
     return bool_val(lisp_is_fixnum(a[0]));
+}
+static lisp_value prim_inexactp(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_number(a[0])) return prim_err(e, "inexact? expects a number");
+    return bool_val(lisp_is_flonum(a[0]));
+}
+static lisp_value prim_exact_to_inexact(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_number(a[0])) return prim_err(e, "inexact expects a number");
+    return lisp_is_flonum(a[0]) ? a[0] : lisp_make_flonum(lisp_number_to_double(a[0]));
+}
+static lisp_value prim_inexact_to_exact(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_number(a[0])) return prim_err(e, "exact expects a number");
+    if (lisp_is_fixnum(a[0]))
+        return a[0];
+    double v = lisp_flonum_val(a[0]);
+    if (v != v || v - v != 0.0)
+        return prim_err(e, "exact: not a finite number");
+    // Range-check before the cast (UB otherwise) and before fixnum() (which would
+    // overflow the 62-bit tag); bignums for the rest are a later phase.
+    if (v > (double)LISP_FIXNUM_MAX || v < (double)LISP_FIXNUM_MIN)
+        return prim_err(e, "exact: out of fixnum range (bignums not yet implemented)");
+    if ((double)(int64_t)v != v)
+        return prim_err(e, "exact: not an integer-valued number");
+    return lisp_fixnum((int64_t)v);
 }
 static lisp_value prim_booleanp(lisp_value *a, int n, const char **e) {
     if (n != 1) return prim_err(e, "boolean? expects one argument");
@@ -531,7 +646,14 @@ void lisp_install_primitives(lisp_value env) {
     // Type predicates
     def(env, "symbol?", prim_symbolp);
     def(env, "integer?", prim_integerp);
-    def(env, "number?", prim_integerp);  // integers are the only numbers (no FP)
+    def(env, "number?", prim_numberp);
+    def(env, "real?", prim_numberp);  // all our numbers are real
+    def(env, "exact?", prim_exactp);
+    def(env, "inexact?", prim_inexactp);
+    def(env, "exact->inexact", prim_exact_to_inexact);
+    def(env, "inexact", prim_exact_to_inexact);
+    def(env, "inexact->exact", prim_inexact_to_exact);
+    def(env, "exact", prim_inexact_to_exact);
     def(env, "boolean?", prim_booleanp);
     def(env, "string?", prim_stringp);
     def(env, "char?", prim_charp);
