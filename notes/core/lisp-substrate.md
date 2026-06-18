@@ -220,31 +220,37 @@ or persistent GC.
 
 ## Phased plan
 
-- **Phase 0 — Core values + reader/printer (host-built).** Tagged value
-  representation (fixnums/immediates/heap header), Scheme s-expr reader, printer.
-  Milestone: read→print round-trip. *(done)*
-- **Phase 1 — Tree-walk evaluator + environments.** Lexical environments,
-  special forms (`quote`/`if`/`define`/`lambda`/`let`/`begin`), closures,
-  primitive ops. Milestone: evaluate non-trivial programs; arithmetic; recursion.
-- **Phase 2 — Persistent data structures.** Vector/symbol interning, then a HAMT
-  map + small-collection (array-backed) specialization; transient builders.
-  Milestone: map/vector ops with structural sharing.
-- **Phase 3 — Bytecode compiler + threaded VM.** Lexical addressing, open-coded
-  primitives, explicit VM stack, proper tail calls + continuations. Milestone:
-  measurable speedup over the tree-walker; deep recursion safe.
-- **Phase 4 — GC.** Non-moving mark-sweep + TLAB allocation. Milestone: runs
-  under sustained allocation without leaking; header reserves room for a future
-  moving nursery.
-- **Phase 5 — Concurrency primitives.** The atomic box (CAS-of-root), the
-  one-root coordinated-update discipline; integrate the lock-free reclamation
-  story with the GC.
-- **Phase 6 — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against
-  `common/`; host-function FFI to expose existing C servers; the native-ISR →
-  Scheme-task event/continuation bridge.
-- **Phase 7+ — Capabilities (W7 environments), driver MMIO/bytevector
-  primitives, the single-level-store persistence layer, the foreign-native jail.**
+Reordered in practice from the original sketch: the bytecode VM was deferred
+(pure optimization; the tree-walker has proper tail calls), and a *conservative*
+mark-sweep GC was done directly against the tree-walker instead of a precise GC
+behind a VM.
 
-Each phase is independently reviewable. Persistent GC, JIT, and persistence are
+- **Phase 0 — Core values + reader/printer.** *(done)*
+- **Phase 1 — Tree-walk evaluator + environments.** Lexical envs, closures,
+  special forms, proper tail calls via an internal loop. *(done)*
+- **Phase 2 — Interning + vectors + core library.** Interned symbols (eq? =
+  identity), immutable vectors, equal?, list library, higher-order, cond/and/or.
+  *(done; the HAMT persistent map is deferred until the persistence layer needs
+  it — kept small per guidance.)*
+- **Phase 3 — Core language completion.** let*/letrec/named-let, quasiquote,
+  floats (native hardware doubles), the string/char library, display/write,
+  variadic lambda, error, and a Scheme-defined standard prelude. A curated
+  R7RS-subset conformance suite runs green. *(done)*
+- **Phase 4 — GC.** *Conservative, non-moving mark-sweep* (gc.c): conservative
+  C-stack + register roots, precise heap tracing, threshold-triggered. Runs under
+  sustained allocation without leaking. *(done)* A precise/moving collector would
+  need a VM value stack and is not currently planned.
+- **Bytecode VM — deferred.** Pure optimization; revisit only on a measured need
+  or if a moving GC is wanted.
+- **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against
+  `common/`; wire the output sink to DEBUG_PRINT; host-function FFI to expose
+  existing C servers; the native-ISR → Scheme-task event/continuation bridge.
+- **Then — concurrency primitives** (the atomic box / CAS-of-root), **capabilities**
+  (W7 environments), **macros + call/cc** (unlock the full chibi r7rs suite),
+  **driver MMIO/bytevector primitives**, the **single-level-store persistence
+  layer**, the **foreign-native jail**.
+
+Each phase is independently reviewable. Moving/persistent GC, JIT, and persistence are
 explicitly later phases the earlier ones are designed not to preclude.
 
 ## Conformance testing
