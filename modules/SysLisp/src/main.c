@@ -336,6 +336,53 @@ static void announce_core(int id, const char *err, lisp_value proof) {
     print_str(line);
 }
 
+// --- Servers-as-Lisp: the async input service (first server migration) --------
+//
+// CoreInput becomes a long-lived Lisp CONTEXT instead of a native task with a
+// synchronous callback ABI. Drivers (also contexts) are shared-nothing, so the
+// old re-entrant callbacks become MESSAGES: a driver `send`s
+//   (register <name>)        -- announce itself, and
+//   (event <payload>)        -- one input event,
+// to the coreinput context, which keeps a device table and routes events. There
+// is no synchronous re-entry, so the network-style "rx handler calls back into tx"
+// self-deadlock cannot occur here by construction.
+//
+// The whole thing is set up as ONE expression evaluated in the shared env: it only
+// LOOKS UP names there (spawn/recv/cond/...), never `define`s into it -- mutating
+// the cross-core-shared env after the APs are live would be a data race. The
+// coordinator handle is held in a `let` binding the feeder lambda closes over,
+// not in a global. Slice 1a feeds it from a SYNTHETIC source; slice 1b replaces
+// that source with the migrated ps2 driver (IRQ -> wake -> %ps2-poll -> send).
+static void setup_input_service(void) {
+    const char *err = NULL;
+    lisp_eval_string(
+        "(let ((coreinput"
+        "        (spawn (lambda ()"
+        "          (let loop ((devs '()))"
+        "            (let ((m (recv)))"
+        "              (cond ((eq? (car m) 'register)"
+        "                     (display \"[coreinput] device registered: \")"
+        "                     (display (cadr m)) (newline)"
+        "                     (loop (cons (cadr m) devs)))"
+        "                    ((eq? (car m) 'event)"
+        "                     (display \"[coreinput] event \") (display (cadr m)) (newline)"
+        "                     (loop devs))"
+        "                    (else (loop devs))))))))) "
+        // Slice-1a synthetic feeder (replaced by the ps2 context in 1b):
+        "  (spawn (lambda ()"
+        "    (send coreinput (list 'register 'synthetic-kbd))"
+        "    (send coreinput (list 'event (list 'key 65)))"
+        "    (send coreinput (list 'event (list 'key 66)))"
+        "    (send coreinput (list 'event (list 'key 67)))"
+        "    'fed)))",
+        g_env, &err);
+    if (err != NULL) {
+        print_str("[SysLisp] input service setup error: ");
+        print_str(err);
+        print_str("\r\n");
+    }
+}
+
 // THE PER-CORE SCHEDULER LOOP, run by EVERY core (the BSP at the tail of
 // lisp_scheduler_enter, each AP once released). It NEVER returns. This core
 // runs its OWN scheduler over its OWN contexts (each in its own precisely-
@@ -351,6 +398,12 @@ static void NORETURN lisp_core_loop(void) {
     lisp_sched_t sched;
     lisp_sched_init(&sched, 256);
     sched.per_context_heaps = 1;
+
+    // Long-lived OS services live on the BSP for now (cross-core messaging is a
+    // later step, so a service + its drivers must share one core). Spawn them onto
+    // this scheduler before the proof so they run in the same pass.
+    if (id == 0)
+        setup_input_service();
 
     // Per-core proof of life: spawn a context that does a real (heap-allocating,
     // per-context-GC-exercising) computation in the SHARED environment, run it to
