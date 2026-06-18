@@ -165,6 +165,143 @@ structurally identical to RCU.
 concurrency, versioning, the persistence checkpoint (atomic on-disk root flip),
 and capability environments (immutable binding sets).
 
+Note its role *narrows* under the process model below: within a context,
+execution is single-threaded and cooperative (one reduction at a time → no
+intra-context data races), and *between* contexts the model is shared-nothing +
+copy-on-send (no shared mutable structure at all). So the atomic box is reserved
+for the rare genuinely-shared mutable cell across scheduler cores (e.g. a global
+registry), not the common case.
+
+## Process model & scheduling: the interpreter IS the scheduler
+
+The endpoint of the language-OS direction (Singularity/SIP + Erlang/BEAM): when
+isolation is enforced by the *language* (no raw pointers; capabilities = lexical
+scope, per W7), hardware memory protection is redundant, and the traditional
+per-process OS machinery collapses. This is a **designed-but-unbuilt** model
+(it lands around/after kernelization, task #10) and it pulls back in the
+explicit-execution-state work the bytecode VM was deferring.
+
+### Contexts = processes (works at the language level today)
+
+A "process" is just an **independent root environment** + the capabilities bound
+into it. `lisp_default_env()` already gives a fresh one; `define` mutates only
+that env; closures capture their defining env; you cannot *name* what is not in
+your env. Isolation is lexical, not address-space-based — **no page tables
+required**. (This part exists now; what follows is the runtime that schedules and
+collects them.)
+
+### The interpreter is the scheduler — what collapses
+
+- **No page-table switch / no per-context address space.** One address space;
+  contexts isolated by shared-nothing heaps + capabilities. A switch costs no
+  `cr3` reload, no TLB flush.
+- **No per-context CPU register save/restore.** A context's "registers" *are* its
+  explicit value/continuation stack (see below). The CPU registers belong to the
+  scheduler loop, not to any context, so a switch saves nothing CPU-level — it is
+  a pointer swap + resume of the context's explicit stack. Even FP state is not
+  per-context: a flonum is a heap object, and switches happen at safe points
+  where no SSE temp is live, so no `fxsave`/`xrstor` per switch.
+- **No ring transition for "syscalls".** A context calling an OS service is a
+  primitive/function call inside the interpreter — no `syscall`, no kernel/user
+  crossing. The SysUser syscall-table mechanism becomes function application
+  (closing the loop with "invoke is a call, not read/write").
+- **Switch trigger:** at quantum-end or `yield`, the running reduction returns to
+  the scheduler, which picks the next context and resumes it.
+
+What stays (deliberately thin): **N real OS threads, one per core**, each running
+the interpreter scheduler loop, set up once at boot (SMP parallelism still needs
+real CPUs). A timer survives only as a *backstop* to detect a wedged scheduler
+thread, not as the preemption mechanism. SysTaskMgr shrinks from "manage every
+process (cr3 + fxsave + per-task stack)" to "bring up the per-CPU scheduler
+threads + the timer backstop."
+
+### Safe points & preemption
+
+Every **call and loop back-edge is a safe point.** A reduction counter is
+decremented at each, and the context yields when it hits zero. This requires the
+interpreter to own its execution state **explicitly** (a context-owned
+value/continuation stack, not C-stack recursion) so a context can be suspended,
+resumed, and walked precisely — that is the trampolined/explicit-stack execution
+model (the bytecode VM, if built, sits on top as a perf layer).
+
+Expensive **primitives** are the one gap in "every call + back-edge": a C builtin
+runs to completion without passing a Lisp safe point. They must charge reductions
+too, and if the cost exceeds the remaining quantum, **split** (BEAM "trapping"):
+process a chunk, then return a *trap* carrying partial state (accumulator +
+cursor) so the scheduler parks the context and re-enters the primitive next
+quantum. Two clean ways to make this automatic:
+
+- **(a) Define bulk ops in Lisp** (`map`/`filter`/`fold`): every element step is
+  already a safe point → auto-preemptible, zero trap machinery. This is the
+  default; the prelude already does much of it.
+- **(b) For the few that must be C-fast**, route them through *one* budget-aware
+  iteration combinator that owns the chunk → charge → trap → resume logic, so the
+  fragile resumable convention exists in exactly one place.
+
+A trapped primitive's partial state is a per-context heap value held in the
+context's execution state → it survives the yield and is a precise GC root.
+
+### Per-context GC (no global stop-the-world)
+
+Each context owns its **own heap and collector**; a collection scans only that
+context's roots and objects, pausing only that context — pause time is bounded by
+*one* context's heap, never the whole OS. Soundness requires the cross-heap
+discipline:
+
+- **Shared-nothing between contexts, except a shared *immutable* region.**
+  Cross-heap pointers go one way only, into shared-immutable, which never points
+  back. A context GC treats a shared-region pointer as an external root
+  (mark-and-stop; don't trace/sweep into it).
+- **Interned symbols are the first shared-immutable region** (already global +
+  immutable); interning is the one piece needing a lock (or per-context caches
+  over a shared table).
+- **Copy-on-send messaging.** Sending a value into another context deep-copies it
+  — safe and cheap *because data is immutable* (the Erlang model). **Large
+  immutable blobs** can live in a shared refcounted region to avoid copying.
+
+Because execution within a context is single-threaded and GC runs at
+scheduler-chosen safe points, roots are precisely enumerable and collection never
+races — the per-context GC is the precise collector the conservative single-stack
+one is not.
+
+### Long native ops: async-yield is the universal interface
+
+Native escapes reintroduce real registers/stack, but they are **wrapped in Lisp
+interfaces**, so the fragile machinery is mostly Lisp and the native leaf is a
+single atomic step between two safe points. For a native op that is *long*, the
+interface is **always async-yield** (start it, yield via the interpreter's own
+context switch, resume on a completion event) — never "block the scheduler
+thread". The implementation of the completion source differs by what the op is
+bound on, not the interface:
+
+- **Device / hardware-offloaded** (DMA, disk, NIC, crypto/compression
+  accelerator, GPU) — *pure async, no extra thread*: program the device, yield,
+  and the completion **interrupt** wakes the context (a minimal native ISR posts
+  an event → mark runnable). This is the same path as blocking I/O (blocking I/O
+  *is* a yield) and is most "long native ops" in an OS.
+- **Opaque + CPU-bound + synchronous** foreign code (can't chunk, can't be made
+  natively async) — the one irreducible case: async can't conjure a CPU, so it is
+  *run on a worker OS thread* (a "dirty scheduler") that signals completion. The
+  context still just yields/resumes; a thread is consumed only because CPU work
+  must occupy a CPU. **Deferred** — bring in dirty schedulers (or similar) later;
+  the common hardware-offloaded path needs none.
+
+This yields **one unified completion path** — *event → wake context* — serving
+I/O, DMA, timers, inter-context messages, and the rare CPU-worker done-signal.
+The driver ISR→event→wake primitive is universal.
+
+### Accepted risk
+
+**No hardware memory firewall** (accepted for now). Without page tables, a bug in
+the runtime itself (interpreter/GC) or in native escape code can corrupt any
+context — isolation is only as strong as the runtime's correctness. The safety
+burden therefore concentrates in **(1) the per-context GC's correctness and (2)
+the primitives' bounds checks** — those stand in for the MMU and deserve the
+disproportionate share of review/verification effort. Keeping the runtime small
+(e.g. the macro/`call/cc` cut) directly shrinks this trusted surface. An optional
+hardware-ring boundary for untrusted contexts can be added later without changing
+the common path.
+
 ## Performance: primitives so the interpreted engine is fast (pre-JIT)
 
 Two cost centers: **dispatch** and **allocation** (functional code allocates
@@ -253,16 +390,21 @@ behind a VM.
   C-stack + register roots, precise heap tracing, threshold-triggered. Runs under
   sustained allocation without leaking. *(done)* A precise/moving collector would
   need a VM value stack and is not currently planned.
-- **Bytecode VM — deferred.** Pure optimization; revisit only on a measured need
-  or if a moving GC is wanted.
+- **Explicit per-context execution state** (trampolined / explicit value +
+  continuation stack, not C-stack recursion) — *prerequisite* for the process
+  model (safe-point preemption, green-thread suspend/resume, precise per-context
+  GC). A bytecode VM, if built, sits on top as a pure-perf layer; the bytecode
+  itself stays deferred until profiled-necessary.
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against
   `common/`; wire the output sink to DEBUG_PRINT; host-function FFI to expose
-  existing C servers; the native-ISR → Scheme-task event bridge.
-- **Then — concurrency primitives** (the atomic box / CAS-of-root), **capabilities**
-  (W7-style environments), **driver MMIO/bytevector primitives**, the
-  **single-level-store persistence layer**, the **foreign-native jail**.
+  existing C servers; the native-ISR → event → wake-context bridge.
+- **Then — the process model** (interpreter-as-scheduler, contexts as processes,
+  per-context GC, async-yield for long native ops — see *Process model &
+  scheduling* above), **capabilities** (W7-style environments), the atomic box
+  (for the rare cross-core shared cell), **driver MMIO/bytevector primitives**,
+  the **single-level-store persistence layer**, the **foreign-native jail**.
 
 Each phase is independently reviewable. Moving/persistent GC, JIT, and persistence are
 explicitly later phases the earlier ones are designed not to preclude.
