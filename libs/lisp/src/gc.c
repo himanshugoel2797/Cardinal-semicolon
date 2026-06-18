@@ -196,12 +196,15 @@ void lisp_gc_collect(void) {
     if (!build_set())
         return;  // can't validate roots -> skip this cycle (keep everything)
 
-    // Precise roots: the interned-symbol table.
+    // Precise roots: the interned-symbol table, and any in-flight nonlocal-exit
+    // value (a raised condition / continuation value lives only in a control.c
+    // static while unwinding, so it is not on the stack).
     size_t icap;
     lisp_value *itab = lisp_intern_table(&icap);
     for (size_t i = 0; i < icap; i++)
         if (itab[i] != 0)
             mark_push(itab[i]);
+    mark_push(lisp_ctl_value());  // no-op when inactive (LISP_UNDEF is immediate)
 
     // Conservative roots: callee-saved registers, then the C stack.
     uintptr_t regs[6];
