@@ -276,6 +276,15 @@ const char *lisp_ctx_error(lisp_value ctx);
 // EVAL/APPLY step). Lets a scheduler tell finished contexts from runnable ones.
 lisp_ctx_status lisp_ctx_state(lisp_value ctx);
 
+// The context currently being resumed by the scheduler (LISP_EMPTY when none).
+lisp_value lisp_current_ctx(void);
+
+// Wake / park a context. lisp_ctx_wake is ISR-SAFE (a single word write, no
+// allocation or lock), so a native interrupt handler can wake a Lisp context
+// parked on a hardware event -- the native-ISR -> event -> wake-context bridge.
+void lisp_ctx_wake(lisp_value ctx);
+void lisp_ctx_block(lisp_value ctx);
+
 // Give a context its OWN heap, so its transient working data is collected
 // independently and precisely (K3). Without this the context allocates into the
 // shared system heap. Its environment may still reference shared data (the global

@@ -1130,6 +1130,18 @@ lisp_ctx_status lisp_ctx_state(lisp_value ctxv) {
     return (lisp_ctx_status)((lisp_ctx_t *)lisp_obj(ctxv))->status;
 }
 
+// Mark a parked context runnable again. Deliberately a SINGLE word write (no
+// allocation, no lock) so a native interrupt handler can call it to wake a
+// context parked on a hardware event -- the ISR -> wake-context bridge.
+void lisp_ctx_wake(lisp_value ctxv) { ((lisp_ctx_t *)lisp_obj(ctxv))->blocked = 0; }
+
+// Park a context: skip it in the scheduler and yield at the next safe point.
+void lisp_ctx_block(lisp_value ctxv) {
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    cx->blocked = 1;
+    cx->budget = 0;  // suspend at the next safe point
+}
+
 int lisp_ctx_attach_heap(lisp_value ctxv) {
     lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
     if (cx->heap != NULL)
