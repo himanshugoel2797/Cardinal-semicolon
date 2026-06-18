@@ -1272,13 +1272,13 @@ int module_init()
     //Per-core bring-up for the BSP (run queue + interrupt stack + its idle task)
     task_core_setup();
 
-    //One-time global tasks. Created during single-core boot, so they land on the
-    //BSP's run queue (see pick_target_core).
-    cs_id ss_id = 0;
-    if (task_create_kernel("servicescript", task_permissions_kernel, &ss_id) != CS_OK)
-        PANIC("[SysTaskMgr] Failed to create servicescript task.");
-    if (task_start_kernel(ss_id, servicescript_handler, NULL) != CS_OK)
-        PANIC("[SysTaskMgr] Failed to start servicescript task.");
+    //K5 (interpreter-as-scheduler): the native preemption scheduler is no longer
+    //started here. The boot thread does NOT hand itself off to task_switch_handler;
+    //instead module_init RETURNS and the boot script continues into the Lisp
+    //runtime (LOAD SysLisp + CALL lisp_scheduler_enter), which becomes the per-core
+    //scheduler loop. The native task machinery below (run queues, the idle task,
+    //task_core_arm, the servicescript task) is dormant during this transition and
+    //is removed once nothing native remains. See notes/core/lisp-substrate.md.
 
     syscall_sethandler(1, (void *)nanosleep_syscall);
 
@@ -1304,12 +1304,7 @@ int module_init()
     //hands itself off to the scheduler below.
     systaskmgr_register_tests();
 
-    //Arm the BSP's preemption timer last, so nothing above can be cut short by a tick
-    task_core_arm();
-
-    //The first timer tick abandons this boot thread for a scheduled task.
-    while (true)
-        halt();
-
+    //Return so the boot script continues into the Lisp runtime, which takes over
+    //as the per-core scheduler (the native task_core_arm() handoff is gone).
     return 0;
 }
