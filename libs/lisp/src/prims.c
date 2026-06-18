@@ -25,6 +25,12 @@ static bool all_fixnum(lisp_value *args, int argc) {
     return true;
 }
 
+// Append a freshly-built cell to a list being constructed in place. Used only on
+// cells this code just allocated, so mutation is safe (not user-visible data).
+static void set_cdr(lisp_value pair, lisp_value v) {
+    ((lisp_pair *)lisp_obj(pair))->cdr = v;
+}
+
 // --- Arithmetic -------------------------------------------------------------
 
 static lisp_value prim_add(lisp_value *args, int argc, const char **err) {
@@ -189,23 +195,308 @@ static lisp_value prim_zerop(lisp_value *args, int argc, const char **err) {
     return bool_val(lisp_fixnum_val(args[0]) == 0);
 }
 
-// eq?: identity for heap objects, value-equality for immediates/fixnums (both
-// reduce to comparing the tagged words). Symbols are compared by name as a
-// Phase 1 stand-in -- the language intends them interned, so once symbol
-// interning lands (Phase 2) this reduces to the pure word compare. Deep
-// structural equality (equal?) is a separate, later addition.
+// eq?: identity. Symbols/keywords are interned and immediates/fixnums are
+// unboxed, so a single word compare is correct for all of them. Deep structural
+// equality is equal?, below.
 static lisp_value prim_eqp(lisp_value *args, int argc, const char **err) {
     if (argc != 2)
         return prim_err(err, "eq? expects two arguments");
-    if (args[0] == args[1])
-        return LISP_TRUE;
-    if (lisp_is_symbol(args[0]) && lisp_is_symbol(args[1])) {
-        size_t len = lisp_named_len(args[0]);
-        if (len == lisp_named_len(args[1]) &&
-            memcmp(lisp_named_name(args[0]), lisp_named_name(args[1]), len) == 0)
-            return LISP_TRUE;
+    return bool_val(args[0] == args[1]);
+}
+
+// equal?: deep structural equality over pairs, vectors, and strings; eq? for
+// everything else (interned symbols, immediates, fixnums, procedures).
+static bool deep_equal(lisp_value a, lisp_value b) {
+    // Iterate the cdr spine so a long flat list does not recurse per element;
+    // car/elements still recurse, bounded by nesting depth rather than length.
+    for (;;) {
+        if (a == b)
+            return true;
+        if (lisp_is_pair(a) && lisp_is_pair(b)) {
+            if (!deep_equal(lisp_car(a), lisp_car(b)))
+                return false;
+            a = lisp_cdr(a);
+            b = lisp_cdr(b);
+            continue;
+        }
+        if (lisp_is_string(a) && lisp_is_string(b)) {
+            size_t n = lisp_string_len(a);
+            return n == lisp_string_len(b) &&
+                   memcmp(lisp_string_data(a), lisp_string_data(b), n) == 0;
+        }
+        if (lisp_is_vector(a) && lisp_is_vector(b)) {
+            size_t n = lisp_vector_length(a);
+            if (n != lisp_vector_length(b))
+                return false;
+            for (size_t i = 0; i < n; i++)
+                if (!deep_equal(lisp_vector_ref(a, i), lisp_vector_ref(b, i)))
+                    return false;
+            return true;
+        }
+        return false;
     }
-    return LISP_FALSE;
+}
+
+static lisp_value prim_equalp(lisp_value *args, int argc, const char **err) {
+    if (argc != 2)
+        return prim_err(err, "equal? expects two arguments");
+    return bool_val(deep_equal(args[0], args[1]));
+}
+
+// --- Type predicates --------------------------------------------------------
+
+static lisp_value prim_symbolp(lisp_value *a, int n, const char **e) {
+    if (n != 1) return prim_err(e, "symbol? expects one argument");
+    return bool_val(lisp_is_symbol(a[0]));
+}
+static lisp_value prim_integerp(lisp_value *a, int n, const char **e) {
+    if (n != 1) return prim_err(e, "integer? expects one argument");
+    return bool_val(lisp_is_fixnum(a[0]));
+}
+static lisp_value prim_booleanp(lisp_value *a, int n, const char **e) {
+    if (n != 1) return prim_err(e, "boolean? expects one argument");
+    return bool_val(a[0] == LISP_TRUE || a[0] == LISP_FALSE);
+}
+static lisp_value prim_stringp(lisp_value *a, int n, const char **e) {
+    if (n != 1) return prim_err(e, "string? expects one argument");
+    return bool_val(lisp_is_string(a[0]));
+}
+static lisp_value prim_charp(lisp_value *a, int n, const char **e) {
+    if (n != 1) return prim_err(e, "char? expects one argument");
+    return bool_val(lisp_is_char(a[0]));
+}
+static lisp_value prim_vectorp(lisp_value *a, int n, const char **e) {
+    if (n != 1) return prim_err(e, "vector? expects one argument");
+    return bool_val(lisp_is_vector(a[0]));
+}
+static lisp_value prim_procp(lisp_value *a, int n, const char **e) {
+    if (n != 1) return prim_err(e, "procedure? expects one argument");
+    return bool_val(lisp_is_objtype(a[0], LISP_OBJ_PRIMITIVE) ||
+                    lisp_is_objtype(a[0], LISP_OBJ_CLOSURE));
+}
+
+// --- More list operations ---------------------------------------------------
+
+static lisp_value prim_length(lisp_value *args, int argc, const char **err) {
+    if (argc != 1)
+        return prim_err(err, "length expects one argument");
+    int64_t n = 0;
+    lisp_value p = args[0];
+    while (lisp_is_pair(p)) {
+        n++;
+        p = lisp_cdr(p);
+    }
+    if (!lisp_is_empty(p))
+        return prim_err(err, "length: improper list");
+    return lisp_fixnum(n);
+}
+
+static lisp_value prim_reverse(lisp_value *args, int argc, const char **err) {
+    if (argc != 1)
+        return prim_err(err, "reverse expects one argument");
+    lisp_value out = LISP_EMPTY;
+    lisp_value p = args[0];
+    while (lisp_is_pair(p)) {
+        lisp_value cell = lisp_cons(lisp_car(p), out);
+        if (cell == LISP_UNDEF)
+            return prim_err(err, "out of memory");
+        out = cell;
+        p = lisp_cdr(p);
+    }
+    if (!lisp_is_empty(p))
+        return prim_err(err, "reverse: improper list");
+    return out;
+}
+
+// Copy list `a`, with `tail` as the final cdr (used by append). Iterative so a
+// long list does not recurse per element.
+static lisp_value copy_with_tail(lisp_value a, lisp_value tail, const char **err) {
+    lisp_value head = LISP_EMPTY;
+    lisp_value last = LISP_EMPTY;
+    while (lisp_is_pair(a)) {
+        lisp_value cell = lisp_cons(lisp_car(a), LISP_EMPTY);
+        if (cell == LISP_UNDEF)
+            return prim_err(err, "out of memory");
+        if (head == LISP_EMPTY)
+            head = cell;
+        else
+            set_cdr(last, cell);
+        last = cell;
+        a = lisp_cdr(a);
+    }
+    if (!lisp_is_empty(a))
+        return prim_err(err, "append: improper list");
+    if (head == LISP_EMPTY)
+        return tail;
+    set_cdr(last, tail);
+    return head;
+}
+
+static lisp_value prim_append(lisp_value *args, int argc, const char **err) {
+    if (argc == 0)
+        return LISP_EMPTY;
+    lisp_value acc = args[argc - 1];  // last arg used as-is (may be improper)
+    for (int i = argc - 2; i >= 0; i--) {
+        acc = copy_with_tail(args[i], acc, err);
+        if (acc == LISP_UNDEF && err != NULL && *err != NULL)
+            return LISP_UNDEF;
+    }
+    return acc;
+}
+
+static lisp_value prim_list_ref(lisp_value *args, int argc, const char **err) {
+    if (argc != 2 || !lisp_is_fixnum(args[1]))
+        return prim_err(err, "list-ref expects a list and an index");
+    int64_t k = lisp_fixnum_val(args[1]);
+    if (k < 0)
+        return prim_err(err, "list-ref: negative index");
+    lisp_value p = args[0];
+    while (k > 0 && lisp_is_pair(p)) {
+        p = lisp_cdr(p);
+        k--;
+    }
+    if (!lisp_is_pair(p))
+        return prim_err(err, "list-ref: index out of range");
+    return lisp_car(p);
+}
+
+// --- Vectors ----------------------------------------------------------------
+
+static lisp_value prim_vector(lisp_value *args, int argc, const char **err) {
+    lisp_value v = lisp_make_vector((size_t)argc, LISP_UNDEF);
+    if (v == LISP_UNDEF)
+        return prim_err(err, "out of memory");
+    for (int i = 0; i < argc; i++)
+        lisp_vector_set_init(v, (size_t)i, args[i]);
+    return v;
+}
+
+static lisp_value prim_make_vector(lisp_value *args, int argc, const char **err) {
+    if (argc < 1 || argc > 2 || !lisp_is_fixnum(args[0]))
+        return prim_err(err, "make-vector expects a length and optional fill");
+    int64_t n = lisp_fixnum_val(args[0]);
+    if (n < 0)
+        return prim_err(err, "make-vector: negative length");
+    lisp_value fill = argc == 2 ? args[1] : LISP_FALSE;
+    lisp_value v = lisp_make_vector((size_t)n, fill);
+    if (v == LISP_UNDEF)
+        return prim_err(err, "out of memory");
+    return v;
+}
+
+static lisp_value prim_vector_ref(lisp_value *args, int argc, const char **err) {
+    if (argc != 2 || !lisp_is_vector(args[0]) || !lisp_is_fixnum(args[1]))
+        return prim_err(err, "vector-ref expects a vector and an index");
+    int64_t i = lisp_fixnum_val(args[1]);
+    if (i < 0 || (size_t)i >= lisp_vector_length(args[0]))
+        return prim_err(err, "vector-ref: index out of range");
+    return lisp_vector_ref(args[0], (size_t)i);
+}
+
+static lisp_value prim_vector_length(lisp_value *args, int argc, const char **err) {
+    if (argc != 1 || !lisp_is_vector(args[0]))
+        return prim_err(err, "vector-length expects a vector");
+    return lisp_fixnum((int64_t)lisp_vector_length(args[0]));
+}
+
+static lisp_value prim_vector_to_list(lisp_value *args, int argc, const char **err) {
+    if (argc != 1 || !lisp_is_vector(args[0]))
+        return prim_err(err, "vector->list expects a vector");
+    size_t n = lisp_vector_length(args[0]);
+    lisp_value out = LISP_EMPTY;
+    for (size_t i = n; i > 0; i--) {
+        lisp_value cell = lisp_cons(lisp_vector_ref(args[0], i - 1), out);
+        if (cell == LISP_UNDEF)
+            return prim_err(err, "out of memory");
+        out = cell;
+    }
+    return out;
+}
+
+static lisp_value prim_list_to_vector(lisp_value *args, int argc, const char **err) {
+    if (argc != 1)
+        return prim_err(err, "list->vector expects one argument");
+    int64_t n = 0;
+    for (lisp_value p = args[0]; lisp_is_pair(p); p = lisp_cdr(p))
+        n++;
+    lisp_value v = lisp_make_vector((size_t)n, LISP_UNDEF);
+    if (v == LISP_UNDEF)
+        return prim_err(err, "out of memory");
+    size_t i = 0;
+    for (lisp_value p = args[0]; lisp_is_pair(p); p = lisp_cdr(p))
+        lisp_vector_set_init(v, i++, lisp_car(p));
+    return v;
+}
+
+// --- Higher-order -----------------------------------------------------------
+
+#define PRIM_MAX_ARGS 64
+
+static lisp_value prim_apply(lisp_value *args, int argc, const char **err) {
+    if (argc < 2)
+        return prim_err(err, "apply expects a procedure and an argument list");
+    lisp_value last = args[argc - 1];
+    int extra = 0;
+    lisp_value p = last;
+    for (; lisp_is_pair(p); p = lisp_cdr(p))
+        extra++;
+    if (!lisp_is_empty(p))
+        return prim_err(err, "apply: last argument must be a proper list");
+    int total = (argc - 2) + extra;
+    if (total > PRIM_MAX_ARGS)
+        return prim_err(err, "apply: too many arguments");
+    lisp_value call[PRIM_MAX_ARGS];
+    int idx = 0;
+    for (int i = 1; i < argc - 1; i++)
+        call[idx++] = args[i];
+    for (lisp_value p = last; lisp_is_pair(p); p = lisp_cdr(p))
+        call[idx++] = lisp_car(p);
+    return lisp_apply(args[0], call, total, err);
+}
+
+static lisp_value prim_map(lisp_value *args, int argc, const char **err) {
+    if (argc != 2)
+        return prim_err(err, "map expects a procedure and one list");
+    // Build the result forward (head/tail) rather than recursing per element --
+    // each step also nests a full lisp_eval, so recursion would blow the kernel
+    // stack on modest lists.
+    lisp_value head = LISP_EMPTY;
+    lisp_value last = LISP_EMPTY;
+    lisp_value lst = args[1];
+    while (lisp_is_pair(lst)) {
+        lisp_value arg = lisp_car(lst);
+        lisp_value r = lisp_apply(args[0], &arg, 1, err);
+        if (r == LISP_UNDEF && err != NULL && *err != NULL)
+            return LISP_UNDEF;
+        lisp_value cell = lisp_cons(r, LISP_EMPTY);
+        if (cell == LISP_UNDEF)
+            return prim_err(err, "out of memory");
+        if (head == LISP_EMPTY)
+            head = cell;
+        else
+            set_cdr(last, cell);
+        last = cell;
+        lst = lisp_cdr(lst);
+    }
+    if (!lisp_is_empty(lst))
+        return prim_err(err, "map: improper list");
+    return head;
+}
+
+static lisp_value prim_for_each(lisp_value *args, int argc, const char **err) {
+    if (argc != 2)
+        return prim_err(err, "for-each expects a procedure and one list");
+    lisp_value lst = args[1];
+    while (lisp_is_pair(lst)) {
+        lisp_value arg = lisp_car(lst);
+        lisp_value r = lisp_apply(args[0], &arg, 1, err);
+        if (r == LISP_UNDEF && err != NULL && *err != NULL)
+            return LISP_UNDEF;
+        lst = lisp_cdr(lst);
+    }
+    if (!lisp_is_empty(lst))
+        return prim_err(err, "for-each: improper list");
+    return LISP_UNDEF;
 }
 
 // --- Installation -----------------------------------------------------------
@@ -236,4 +527,30 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "not", prim_not);
     def(env, "zero?", prim_zerop);
     def(env, "eq?", prim_eqp);
+    def(env, "equal?", prim_equalp);
+    // Type predicates
+    def(env, "symbol?", prim_symbolp);
+    def(env, "integer?", prim_integerp);
+    def(env, "number?", prim_integerp);  // integers are the only numbers (no FP)
+    def(env, "boolean?", prim_booleanp);
+    def(env, "string?", prim_stringp);
+    def(env, "char?", prim_charp);
+    def(env, "vector?", prim_vectorp);
+    def(env, "procedure?", prim_procp);
+    // List library
+    def(env, "length", prim_length);
+    def(env, "reverse", prim_reverse);
+    def(env, "append", prim_append);
+    def(env, "list-ref", prim_list_ref);
+    // Vectors
+    def(env, "vector", prim_vector);
+    def(env, "make-vector", prim_make_vector);
+    def(env, "vector-ref", prim_vector_ref);
+    def(env, "vector-length", prim_vector_length);
+    def(env, "vector->list", prim_vector_to_list);
+    def(env, "list->vector", prim_list_to_vector);
+    // Higher-order
+    def(env, "apply", prim_apply);
+    def(env, "map", prim_map);
+    def(env, "for-each", prim_for_each);
 }

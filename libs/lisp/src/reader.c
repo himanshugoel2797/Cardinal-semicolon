@@ -130,8 +130,28 @@ static lisp_value read_atom(const char **cur, const char *end, const char **err)
     return lisp_make_symbol(start, len);
 }
 
-// Parse #-prefixed syntax: #t/#true, #f/#false, and #\<char> literals. Vectors
-// #( and the rest are deferred to later phases.
+static lisp_value read_list(const char **cur, const char *end, const char **err);
+
+// Convert a proper list to an immutable vector (for #(...) literals). A dotted
+// tail (#(1 . 2)) is a read error, not a silent truncation.
+static lisp_value list_to_vector(lisp_value lst, const char **err) {
+    size_t n = 0;
+    lisp_value p = lst;
+    for (; lisp_is_pair(p); p = lisp_cdr(p))
+        n++;
+    if (!lisp_is_empty(p))
+        return fail(err, "vector literal must be a proper list");
+    lisp_value v = lisp_make_vector(n, LISP_UNDEF);
+    if (v == LISP_UNDEF)
+        return fail(err, "out of memory");
+    size_t i = 0;
+    for (lisp_value p = lst; lisp_is_pair(p); p = lisp_cdr(p))
+        lisp_vector_set_init(v, i++, lisp_car(p));
+    return v;
+}
+
+// Parse #-prefixed syntax: #t/#true, #f/#false, #\<char> literals, and #(...)
+// vectors.
 static lisp_value read_hash(const char **cur, const char *end, const char **err) {
     const char *c = *cur + 1;  // skip '#'
     if (c >= end)
@@ -145,8 +165,13 @@ static lisp_value read_hash(const char **cur, const char *end, const char **err)
         *cur = c + 2;
         return lisp_char(cp);
     }
-    if (*c == '(')
-        return fail(err, "vectors not yet supported (Phase 2)");
+    if (*c == '(') {  // #(...) vector literal
+        lisp_value lst = read_list(&c, end, err);
+        if (lst == LISP_UNDEF)
+            return LISP_UNDEF;
+        *cur = c;
+        return list_to_vector(lst, err);
+    }
     // Boolean token: #t / #true / #f / #false.
     const char *start = c;
     while (c < end && !is_delim(*c))
@@ -176,6 +201,26 @@ static lisp_value read_list(const char **cur, const char *end, const char **err)
         if (c >= end)
             return fail(err, "unterminated list");
         if (*c == ')') {
+            c++;
+            *cur = c;
+            return head;
+        }
+        // Dotted tail: a lone '.' (followed by a delimiter) sets the final cdr.
+        if (*c == '.' && (c + 1 >= end || is_delim(c[1]))) {
+            if (head == LISP_EMPTY)
+                return fail(err, "nothing before . in list");
+            c++;  // skip the dot
+            const char *sub = c;
+            lisp_value tailv = lisp_read(&sub, end, err);
+            if (tailv == LISP_UNDEF)
+                return LISP_UNDEF;
+            if (tailv == LISP_EOF)
+                return fail(err, "missing element after . in list");
+            c = sub;
+            ((lisp_pair *)lisp_obj(tail))->cdr = tailv;
+            skip_ws(&c, end);
+            if (c >= end || *c != ')')
+                return fail(err, "expected ) after dotted tail");
             c++;
             *cur = c;
             return head;
