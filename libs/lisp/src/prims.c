@@ -9,6 +9,7 @@
 // (bignums are a later phase).
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "lisp.h"
@@ -543,6 +544,296 @@ static lisp_value prim_list_to_vector(lisp_value *args, int argc, const char **e
     return v;
 }
 
+// --- Strings ----------------------------------------------------------------
+
+static lisp_value prim_string_length(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_string(a[0]))
+        return prim_err(e, "string-length expects a string");
+    return lisp_fixnum((int64_t)lisp_string_len(a[0]));
+}
+
+static lisp_value prim_string_ref(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_string(a[0]) || !lisp_is_fixnum(a[1]))
+        return prim_err(e, "string-ref expects a string and an index");
+    int64_t i = lisp_fixnum_val(a[1]);
+    if (i < 0 || (size_t)i >= lisp_string_len(a[0]))
+        return prim_err(e, "string-ref: index out of range");
+    return lisp_char((uint8_t)lisp_string_data(a[0])[i]);
+}
+
+static lisp_value prim_substring(lisp_value *a, int n, const char **e) {
+    if (n != 3 || !lisp_is_string(a[0]) || !lisp_is_fixnum(a[1]) || !lisp_is_fixnum(a[2]))
+        return prim_err(e, "substring expects a string and two indices");
+    int64_t start = lisp_fixnum_val(a[1]), end = lisp_fixnum_val(a[2]);
+    size_t len = lisp_string_len(a[0]);
+    if (start < 0 || end < start || (size_t)end > len)
+        return prim_err(e, "substring: indices out of range");
+    return lisp_make_string(lisp_string_data(a[0]) + start, (size_t)(end - start));
+}
+
+static lisp_value prim_string_append(lisp_value *args, int argc, const char **err) {
+    size_t total = 0;
+    for (int i = 0; i < argc; i++) {
+        if (!lisp_is_string(args[i]))
+            return prim_err(err, "string-append expects strings");
+        total += lisp_string_len(args[i]);
+    }
+    char *tmp = (char *)malloc(total ? total : 1);
+    if (tmp == NULL)
+        return prim_err(err, "out of memory");
+    size_t off = 0;
+    for (int i = 0; i < argc; i++) {
+        size_t l = lisp_string_len(args[i]);
+        memcpy(tmp + off, lisp_string_data(args[i]), l);
+        off += l;
+    }
+    lisp_value r = lisp_make_string(tmp, total);
+    free(tmp);
+    return r == LISP_UNDEF ? prim_err(err, "out of memory") : r;
+}
+
+// Lexicographic compare of two strings: <0, 0, >0.
+static int string_cmp(lisp_value x, lisp_value y) {
+    size_t lx = lisp_string_len(x), ly = lisp_string_len(y);
+    size_t m = lx < ly ? lx : ly;
+    int c = memcmp(lisp_string_data(x), lisp_string_data(y), m);
+    if (c != 0)
+        return c;
+    return lx < ly ? -1 : (lx > ly ? 1 : 0);
+}
+
+static lisp_value prim_string_eq(lisp_value *a, int n, const char **e) {
+    for (int i = 0; i < n; i++)
+        if (!lisp_is_string(a[i]))
+            return prim_err(e, "string=? expects strings");
+    for (int i = 0; i + 1 < n; i++)
+        if (string_cmp(a[i], a[i + 1]) != 0)
+            return LISP_FALSE;
+    return LISP_TRUE;
+}
+
+static lisp_value prim_string_lt(lisp_value *a, int n, const char **e) {
+    for (int i = 0; i < n; i++)
+        if (!lisp_is_string(a[i]))
+            return prim_err(e, "string<? expects strings");
+    for (int i = 0; i + 1 < n; i++)
+        if (string_cmp(a[i], a[i + 1]) >= 0)
+            return LISP_FALSE;
+    return LISP_TRUE;
+}
+
+static lisp_value prim_string_to_list(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_string(a[0]))
+        return prim_err(e, "string->list expects a string");
+    const char *d = lisp_string_data(a[0]);
+    size_t len = lisp_string_len(a[0]);
+    lisp_value out = LISP_EMPTY;
+    for (size_t i = len; i > 0; i--) {
+        lisp_value cell = lisp_cons(lisp_char((uint8_t)d[i - 1]), out);
+        if (cell == LISP_UNDEF)
+            return prim_err(e, "out of memory");
+        out = cell;
+    }
+    return out;
+}
+
+// Collect a list/array of char values into a freshly-allocated string. `list`
+// (when not LISP_UNDEF) must be a proper list of characters; a non-list or
+// improper/non-char element is an error (not silently truncated).
+static lisp_value chars_to_string(lisp_value *items, int count, lisp_value list,
+                                  const char **err) {
+    size_t n = (size_t)count;
+    if (list != LISP_UNDEF) {
+        lisp_value p = list;
+        for (; lisp_is_pair(p); p = lisp_cdr(p))
+            n++;
+        if (!lisp_is_empty(p))
+            return prim_err(err, "list->string: not a proper list of characters");
+    }
+    char *tmp = (char *)malloc(n ? n : 1);
+    if (tmp == NULL)
+        return prim_err(err, "out of memory");
+    size_t idx = 0;
+    for (int i = 0; i < count; i++) {
+        if (!lisp_is_char(items[i])) {
+            free(tmp);
+            return prim_err(err, "expected characters");
+        }
+        tmp[idx++] = (char)lisp_char_val(items[i]);
+    }
+    if (list != LISP_UNDEF)
+        for (lisp_value p = list; lisp_is_pair(p); p = lisp_cdr(p)) {
+            if (!lisp_is_char(lisp_car(p))) {
+                free(tmp);
+                return prim_err(err, "list->string: expected characters");
+            }
+            tmp[idx++] = (char)lisp_char_val(lisp_car(p));
+        }
+    lisp_value r = lisp_make_string(tmp, n);
+    free(tmp);
+    return r == LISP_UNDEF ? prim_err(err, "out of memory") : r;
+}
+
+static lisp_value prim_list_to_string(lisp_value *a, int n, const char **e) {
+    if (n != 1)
+        return prim_err(e, "list->string expects one argument");
+    return chars_to_string(NULL, 0, a[0], e);
+}
+
+static lisp_value prim_string(lisp_value *a, int n, const char **e) {
+    return chars_to_string(a, n, LISP_UNDEF, e);
+}
+
+static lisp_value prim_make_string(lisp_value *a, int n, const char **e) {
+    if (n < 1 || n > 2 || !lisp_is_fixnum(a[0]))
+        return prim_err(e, "make-string expects a length and optional char");
+    int64_t len = lisp_fixnum_val(a[0]);
+    if (len < 0)
+        return prim_err(e, "make-string: negative length");
+    char fill = ' ';
+    if (n == 2) {
+        if (!lisp_is_char(a[1]))
+            return prim_err(e, "make-string: fill must be a character");
+        fill = (char)lisp_char_val(a[1]);
+    }
+    char *tmp = (char *)malloc(len ? (size_t)len : 1);
+    if (tmp == NULL)
+        return prim_err(e, "out of memory");
+    for (int64_t i = 0; i < len; i++)
+        tmp[i] = fill;
+    lisp_value r = lisp_make_string(tmp, (size_t)len);
+    free(tmp);
+    return r == LISP_UNDEF ? prim_err(e, "out of memory") : r;
+}
+
+static lisp_value prim_symbol_to_string(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_symbol(a[0]))
+        return prim_err(e, "symbol->string expects a symbol");
+    return lisp_make_string(lisp_named_name(a[0]), lisp_named_len(a[0]));
+}
+
+static lisp_value prim_string_to_symbol(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_string(a[0]))
+        return prim_err(e, "string->symbol expects a string");
+    return lisp_make_symbol(lisp_string_data(a[0]), lisp_string_len(a[0]));
+}
+
+static lisp_value prim_number_to_string(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_number(a[0]))
+        return prim_err(e, "number->string expects a number");
+    char buf[512];
+    size_t len = lisp_print(a[0], buf, sizeof(buf));
+    if (len >= sizeof(buf))
+        len = sizeof(buf) - 1;
+    return lisp_make_string(buf, len);
+}
+
+static lisp_value prim_string_to_number(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_string(a[0]))
+        return prim_err(e, "string->number expects a string");
+    const char *cur = lisp_string_data(a[0]);
+    const char *end = cur + lisp_string_len(a[0]);
+    const char *rerr = NULL;
+    lisp_value v = lisp_read(&cur, end, &rerr);
+    if (v == LISP_UNDEF || v == LISP_EOF || !lisp_is_number(v))
+        return LISP_FALSE;  // not a number -> #f (per R7RS), not an error
+    while (cur < end && (*cur == ' ' || *cur == '\t' || *cur == '\n' || *cur == '\r'))
+        cur++;
+    return cur == end ? v : LISP_FALSE;  // the whole string must be the number
+}
+
+// --- Characters -------------------------------------------------------------
+
+static lisp_value prim_char_to_integer(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_char(a[0]))
+        return prim_err(e, "char->integer expects a character");
+    return lisp_fixnum((int64_t)lisp_char_val(a[0]));
+}
+
+static lisp_value prim_integer_to_char(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]))
+        return prim_err(e, "integer->char expects an integer");
+    int64_t cp = lisp_fixnum_val(a[0]);
+    if (cp < 0 || cp > 0x10FFFF)
+        return prim_err(e, "integer->char: out of range");
+    return lisp_char((uint32_t)cp);
+}
+
+typedef enum { CC_EQ, CC_LT, CC_GT, CC_LE, CC_GE } char_cmp;
+
+static lisp_value char_compare(lisp_value *a, int n, const char **e, char_cmp op,
+                               const char *name) {
+    for (int i = 0; i < n; i++)
+        if (!lisp_is_char(a[i]))
+            return prim_err(e, name);
+    for (int i = 0; i + 1 < n; i++) {
+        uint32_t x = lisp_char_val(a[i]), y = lisp_char_val(a[i + 1]);
+        bool ok;
+        switch (op) {
+            case CC_EQ: ok = x == y; break;
+            case CC_LT: ok = x < y; break;
+            case CC_GT: ok = x > y; break;
+            case CC_LE: ok = x <= y; break;
+            case CC_GE: ok = x >= y; break;
+        }
+        if (!ok)
+            return LISP_FALSE;
+    }
+    return LISP_TRUE;
+}
+
+static lisp_value prim_char_eq(lisp_value *a, int n, const char **e) {
+    return char_compare(a, n, e, CC_EQ, "char=? expects characters");
+}
+static lisp_value prim_char_lt(lisp_value *a, int n, const char **e) {
+    return char_compare(a, n, e, CC_LT, "char<? expects characters");
+}
+static lisp_value prim_char_gt(lisp_value *a, int n, const char **e) {
+    return char_compare(a, n, e, CC_GT, "char>? expects characters");
+}
+static lisp_value prim_char_le(lisp_value *a, int n, const char **e) {
+    return char_compare(a, n, e, CC_LE, "char<=? expects characters");
+}
+static lisp_value prim_char_ge(lisp_value *a, int n, const char **e) {
+    return char_compare(a, n, e, CC_GE, "char>=? expects characters");
+}
+
+static lisp_value prim_char_upcase(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_char(a[0]))
+        return prim_err(e, "char-upcase expects a character");
+    uint32_t c = lisp_char_val(a[0]);
+    if (c >= 'a' && c <= 'z')
+        c -= 32;
+    return lisp_char(c);
+}
+static lisp_value prim_char_downcase(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_char(a[0]))
+        return prim_err(e, "char-downcase expects a character");
+    uint32_t c = lisp_char_val(a[0]);
+    if (c >= 'A' && c <= 'Z')
+        c += 32;
+    return lisp_char(c);
+}
+
+static lisp_value prim_char_alphabeticp(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_char(a[0]))
+        return prim_err(e, "char-alphabetic? expects a character");
+    uint32_t c = lisp_char_val(a[0]);
+    return bool_val((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+}
+static lisp_value prim_char_numericp(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_char(a[0]))
+        return prim_err(e, "char-numeric? expects a character");
+    uint32_t c = lisp_char_val(a[0]);
+    return bool_val(c >= '0' && c <= '9');
+}
+static lisp_value prim_char_whitespacep(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_char(a[0]))
+        return prim_err(e, "char-whitespace? expects a character");
+    uint32_t c = lisp_char_val(a[0]);
+    return bool_val(c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f');
+}
+
 // --- Higher-order -----------------------------------------------------------
 
 #define PRIM_MAX_ARGS 64
@@ -671,6 +962,34 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "vector-length", prim_vector_length);
     def(env, "vector->list", prim_vector_to_list);
     def(env, "list->vector", prim_list_to_vector);
+    // Strings
+    def(env, "string-length", prim_string_length);
+    def(env, "string-ref", prim_string_ref);
+    def(env, "substring", prim_substring);
+    def(env, "string-append", prim_string_append);
+    def(env, "string=?", prim_string_eq);
+    def(env, "string<?", prim_string_lt);
+    def(env, "string->list", prim_string_to_list);
+    def(env, "list->string", prim_list_to_string);
+    def(env, "string", prim_string);
+    def(env, "make-string", prim_make_string);
+    def(env, "symbol->string", prim_symbol_to_string);
+    def(env, "string->symbol", prim_string_to_symbol);
+    def(env, "number->string", prim_number_to_string);
+    def(env, "string->number", prim_string_to_number);
+    // Characters
+    def(env, "char->integer", prim_char_to_integer);
+    def(env, "integer->char", prim_integer_to_char);
+    def(env, "char=?", prim_char_eq);
+    def(env, "char<?", prim_char_lt);
+    def(env, "char>?", prim_char_gt);
+    def(env, "char<=?", prim_char_le);
+    def(env, "char>=?", prim_char_ge);
+    def(env, "char-upcase", prim_char_upcase);
+    def(env, "char-downcase", prim_char_downcase);
+    def(env, "char-alphabetic?", prim_char_alphabeticp);
+    def(env, "char-numeric?", prim_char_numericp);
+    def(env, "char-whitespace?", prim_char_whitespacep);
     // Higher-order
     def(env, "apply", prim_apply);
     def(env, "map", prim_map);
