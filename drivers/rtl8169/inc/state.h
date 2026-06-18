@@ -119,6 +119,7 @@ typedef struct
 } rtl8169_state_t;
 
 void rtl8169_intr_handler(rtl8169_state_t *state);
+void rtl8169_enable_interrupts(rtl8169_state_t *state);
 void rtl8169_intr_routine(int isr);
 int rtl8169_init(rtl8169_state_t *state);
 
