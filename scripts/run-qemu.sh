@@ -11,6 +11,7 @@
 # Env overrides:
 #   ISO=path        ISO to boot      (default build/ISO/os.iso)
 #   MEM=512         guest RAM (MiB)
+#   SMP=2           number of guest CPUs (BSP + APs; each runs a Lisp scheduler)
 #   MACHINE=q35     qemu machine     (q35 has PCIe + an ACPI MCFG table, which
 #                                     the PCI registration code needs; the older
 #                                     i440fx "pc" machine has no MCFG)
@@ -27,6 +28,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ISO="${ISO:-$REPO_ROOT/build/ISO/os.iso}"
 MEM="${MEM:-512}"
+SMP="${SMP:-2}"
 MACHINE="${MACHINE:-q35}"
 ACCEL="${ACCEL:-auto}"
 GPU="${GPU:-none}"
@@ -61,7 +63,7 @@ fi
 common_args=(
   -machine "$MACHINE"
   "${accel_args[@]}"
-  -m "$MEM" -smp 2
+  -m "$MEM" -smp "$SMP"
   -cdrom "$ISO" -boot d
   "${vga_arg[@]}"
   "${gpu_args[@]}"

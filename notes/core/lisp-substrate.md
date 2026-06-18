@@ -482,10 +482,37 @@ behind a VM.
   dependency on the native task API entirely. The self-test runs in this loop and
   passes (11/11); the system then idles awaiting events. (The native scheduler code
   — `select_next`/`task_switch_handler`/`task_yield_stage2`/the per-switch
-  `fxsave`/`cr3` — is now dormant and deleted once nothing native remains.) *(Next:
-  multi-core — one Lisp scheduler loop per core, needing the interning/system-heap
-  lock K3 deferred — then migrate drivers to Lisp one by one, each driver's IRQ
-  driving its context through the ISR-wake bridge.)*
+  `fxsave`/`cr3` — is now dormant and deleted once nothing native remains.)
+- **One Lisp scheduler loop per core (multi-core)** *(done — "K5d")*. The BSP does
+  the one-time global runtime init (concurrency hooks + GC + shared env) **single-
+  core**, runs the self-test while the system collector is still live, then goes
+  multi-core: it **freezes** the shared system heap (`lisp_gc_set_multicore(1)` —
+  its conservative collector can't see another core's stack, so it becomes grow-
+  only; interned symbols are permanent anyway and post-boot system-heap churn is
+  negligible) and releases the APs via `mp_set_ap_entry` into a Lisp entry that
+  sets an interrupt stack and runs the **same** per-core scheduler loop. Each core
+  runs its own scheduler over its own contexts in their own **precisely-collected
+  per-context heaps**; the only cross-core shared state — the system heap's object
+  list/counters, the intern table, and the GC mark scratch — is guarded by one
+  runtime lock (a plain spinlock: only the task-context scheduler loops take it,
+  never the event ISR). The lock + core-id are injected into the lib via
+  `lisp_set_concurrency(lock, unlock, core_id)`, keeping the lib freestanding and
+  host-testable (`test_smp.c`); `g_sched`/`g_current`/`g_alloc_heap` became per-core
+  arrays indexed by the core id (APIC id in the kernel, 0 host-side). Cores are
+  independent islands — cross-core messaging is deliberately out of scope here
+  (a context handle never crosses cores, so `send` can't target another core's
+  context). Verified booting 2 and 4 cores under QEMU: every core comes online,
+  runs a real GC-exercising computation on its own scheduler to the correct result,
+  and idles cleanly; the self-test still passes 11/11 in the single-core phase.
+  **Known first-cut limitations** (correctness is solid; these are performance, per
+  the plan's "global lock first, revisit if contention shows"): (1) the one runtime
+  lock also guards the GC scratch, so per-context collections *serialise* across
+  cores though the heaps are disjoint — per-core scratch would parallelise them;
+  (2) the kernel allocator (`SysMemory`) is O(n) best-fit with no free-list
+  coalescing (`mem_compact` is a TODO), so heavy multi-core GC churn degrades
+  super-linearly. *(Next: migrate drivers to Lisp one by one, each driver's IRQ
+  driving its context through the ISR-wake bridge; delete the dormant native
+  scheduler; later, per-core GC scratch + cross-core messaging.)*
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against

@@ -4,30 +4,62 @@
 // https://opensource.org/licenses/MIT
 
 // SysLisp -- the kernel-resident Scheme runtime, folded into the OS. K4 wrapped
-// the host-proven runtime (interpreter + scheduler + per-context GC) as a signed
-// module that self-tested on boot. K5 (step 1) makes it a PERSISTENT runtime: a
-// long-lived kernel task runs the Lisp scheduler, and a native interrupt handler
-// drives Lisp contexts through the native-ISR -> event -> wake-context bridge.
+// the host-proven runtime as a signed module that self-tested on boot; K5c made
+// it the per-core scheduler loop (the boot thread CALLs lisp_scheduler_enter and
+// never returns -- the interpreter IS the scheduler). K5d takes it MULTI-CORE:
+// one Lisp scheduler loop per CPU.
 //
-// This is the mechanism the "interpreter IS the scheduler" end state is built on;
-// it runs as a task ALONGSIDE SysTaskMgr (which still schedules the OS's native
-// tasks) so the system stays fully bootable while drivers are migrated to Lisp
-// one at a time. Replacing SysTaskMgr's native scheduler outright is the last
-// step, once nothing native remains.
+// Each core runs its own scheduler over its own contexts (in their own precisely-
+// collected per-context heaps). The only state shared between cores is the
+// interned-symbol table and the system heap, guarded by a single runtime lock
+// installed below; once the secondary cores are released the system heap is
+// FROZEN (grow-only) because its conservative collector cannot see another core's
+// stack roots (see notes/core/lisp-substrate.md, K5d). Cores are otherwise
+// independent islands -- cross-core messaging is a later step.
+//
+// KNOWN FIRST-CUT LIMITATIONS (correctness is solid; these are performance, and
+// are deferred -- the plan's "global lock first, revisit if contention shows"):
+//   - The single runtime lock also guards the GC mark scratch, so per-context
+//     collections SERIALISE across cores even though the heaps are disjoint.
+//     Per-core scratch would let them run in parallel.
+//   - The kernel allocator (modules/SysMemory) is O(n) best-fit with no free-list
+//     coalescing (mem_compact is a TODO), so heavy GC churn from many cores
+//     degrades super-linearly. A big proof loop (n>>1e4) at 4 cores can take many
+//     seconds; the per-core proof below is deliberately kept modest.
 
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
+#include <cardinal/local_spinlock.h>
+
 #include "lisp.h"
 
 #include "SysTimer/timer.h"
+#include "SysMP/mp.h"
+#include "SysInterrupts/interrupts.h"
 
 // Kernel services resolved at module-load time (this module is already verified).
 // SysLisp no longer depends on the native task API (task_create/yield/monitor):
 // it IS the per-core scheduler loop now, entered via CALL from the boot script.
 int print_str(const char *s);
 uint64_t timer_timestamp_ns(void);
+
+// --- Runtime lock + shared environment ----------------------------------------
+
+// The single lock guarding the runtime's cross-core shared state (system heap +
+// intern table + GC scratch). A plain spinlock is sufficient: only the per-core
+// scheduler loops (task context) take it, never the event ISR -- which does just
+// an ISR-safe word write via lisp_ctx_wake -- so it can't be re-entered from an
+// interrupt and needs no cli().
+static int g_runtime_lock = 0;
+static void lisp_lock(void) { local_spinlock_lock(&g_runtime_lock); }
+static void lisp_unlock(void) { local_spinlock_unlock(&g_runtime_lock); }
+
+// The one shared global environment, built once on the BSP and read (never
+// mutated) by every core's contexts. Living in the frozen system heap, it is a
+// permanent root; per-context heaps mark-stop at it.
+static lisp_value g_env = LISP_EMPTY;
 
 // --- Output sink: route (display)/(write)/(newline) to the debug log ----------
 
@@ -73,7 +105,11 @@ static lisp_value prim_uptime_ns(lisp_value *a, int n, const char **e) {
 // completions, timers, and inter-context messages).
 
 static volatile uint32_t g_event_count = 0;     // bumped by the ISR; the scheduler monitors it
-static volatile lisp_value g_event_waiter = 0;  // the parked context to wake (0 = none)
+// The single parked context to wake (0 = none). One slot is fine today: %event-wait
+// is used only by run_isr_demo in the single-core phase. TODO(multi-core): when a
+// migrated driver parks contexts from multiple cores, replace this with a per-core
+// (or per-IRQ) waiter table so two waiters can't race the one slot.
+static volatile lisp_value g_event_waiter = 0;
 
 static void lisp_event_isr(int irq) {
     (void)irq;
@@ -268,42 +304,139 @@ static void run_isr_demo(lisp_value env) {
     }
 }
 
-// THE PER-CORE SCHEDULER LOOP. Called once via `CALL:lisp_scheduler_enter` at the
-// end of the boot script, on the boot thread itself -- it NEVER returns. This is
-// the K5 flip: the interpreter is the scheduler. There is no native task switcher
-// underneath; this single native thread runs Lisp contexts (which context-switch
-// among themselves at safe points via the explicit-stack machine), and its frame
-// is the conservative GC's stack base. FP is safe with no native preemption to
-// clobber SSE state, exactly as the design intends.
+// --- The per-core scheduler loop ----------------------------------------------
+
+// Build "[SysLisp] core <id> online: ... proof -> <result>" in one buffer and
+// emit it with a single print_str, so concurrent cores' lines never interleave
+// (one print_str call is atomic on COM1) and we avoid nesting the serial lock
+// inside the runtime lock. `append` truncates safely on overflow.
+static void announce_core(int id, const char *err, lisp_value proof) {
+    char line[160];
+    char num[24];
+    size_t p = 0;
+#define APP(s)                                              \
+    do {                                                    \
+        const char *x_ = (s);                               \
+        while (*x_ != '\0' && p + 1 < sizeof line)          \
+            line[p++] = *x_++;                              \
+    } while (0)
+    APP("[SysLisp] core ");
+    lisp_print(lisp_fixnum(id), num, sizeof num);
+    APP(num);
+    APP(" online: lisp scheduler running, proof -> ");
+    if (err == NULL && proof != LISP_UNDEF) {
+        lisp_print(lisp_ctx_value(proof), num, sizeof num);
+        APP(num);
+    } else {
+        APP("ERROR");
+    }
+    APP("\r\n");
+#undef APP
+    line[p] = '\0';
+    print_str(line);
+}
+
+// THE PER-CORE SCHEDULER LOOP, run by EVERY core (the BSP at the tail of
+// lisp_scheduler_enter, each AP once released). It NEVER returns. This core
+// runs its OWN scheduler over its OWN contexts (each in its own precisely-
+// collected heap); the shared system heap + intern table are guarded by the
+// runtime lock. There is no native task switcher underneath -- one native thread
+// per core runs Lisp contexts that context-switch among themselves at safe
+// points. FP is safe with no native preemption to clobber SSE state.
+static void NORETURN lisp_core_loop(void) {
+    int id = interrupt_get_cpu_idx();
+
+    // This core's scheduler. A stack local (its run queue is a GC root reachable
+    // from this frame); per_context_heaps gives each spawned context its own heap.
+    lisp_sched_t sched;
+    lisp_sched_init(&sched, 256);
+    sched.per_context_heaps = 1;
+
+    // Per-core proof of life: spawn a context that does a real (heap-allocating,
+    // per-context-GC-exercising) computation in the SHARED environment, run it to
+    // completion on THIS core's scheduler, and report the result with the core id.
+    // Kept modest: it's a liveness check, not a benchmark -- per-context GC across
+    // all cores currently serialises on the one runtime lock (see the file header).
+    const char *err = NULL;
+    lisp_value proof = lisp_eval_string(
+        "(spawn (lambda () (let loop ((i 0) (n 2000)) (if (= n 0) i (loop (+ i 1) (- n 1))))))",
+        g_env, &err);
+    lisp_sched_run(&sched, 0);
+
+    // Announce on a single line, built in a local buffer and emitted with ONE
+    // print_str. print_str itself serialises a whole call on COM1, so distinct
+    // cores' announcements don't interleave -- and crucially we do NOT hold the
+    // runtime lock across print_str (which takes its own serial lock under cli());
+    // nesting those two locks would impose a fragile g_runtime_lock -> serial-lock
+    // ordering.
+    announce_core(id, err, proof);
+
+    // Resident scheduler loop: run any runnable contexts, then idle until an
+    // interrupt (a migrated driver's IRQ wakes a parked context via the ISR
+    // bridge). With drivers off there are no persistent contexts yet, so this
+    // simply idles. Never returns.
+    for (;;) {
+        lisp_sched_run(&sched, 64);
+        __asm__ volatile("sti; hlt");
+    }
+}
+
+// Each application processor, parked in mp_signalready() since boot, is released
+// straight into lisp_core_loop and joins as another Lisp scheduler core. It needs
+// no extra per-core hardware bring-up: apscript already ran intr_mp_init (which
+// allocates this core's GDT/TSS and the exception IST stacks via gdt_init) and
+// fp_mp_init, and a ring-0-only Lisp core never uses TSS rsp0 (that is only the
+// ring3->ring0 stack). No native run queue / idle task / preemption timer either
+// -- that machinery is dormant under the interpreter-as-scheduler model. The
+// system heap is already frozen and per-context heaps are precise, so an AP also
+// needs no GC stack base.
+
+// THE ENTRY POINT, called once via `CALL:lisp_scheduler_enter` at the end of the
+// boot script, on the BSP boot thread -- it NEVER returns. It performs the one-
+// time global runtime init (single-core, so the system collector is live for the
+// self-test), then goes multi-core: freeze the system heap, release the APs into
+// lisp_core_loop, and run this (BSP) core's own scheduler loop.
 int lisp_scheduler_enter() {
+    // Install the concurrency hooks FIRST, so all subsequent interning/allocation
+    // is already lock-guarded (uncontended while single-core) and every core
+    // resolves to its own per-core scheduler slot by APIC id.
+    lisp_set_concurrency(lisp_lock, lisp_unlock, interrupt_get_cpu_idx);
     lisp_gc_init(__builtin_frame_address(0));
     lisp_set_output(lisp_out, NULL);
 
-    print_str("\r\n[SysLisp] Lisp scheduler is the per-core loop "
-              "(native task switcher not started)\r\n");
+    print_str("\r\n[SysLisp] interpreter-as-scheduler, multi-core bring-up\r\n");
 
-    lisp_value env = lisp_default_env();
-    if (env != LISP_UNDEF) {
-        lisp_install_sched(env);
-        lisp_env_define(env, lisp_make_symbol("uptime-ns", 9),
-                        lisp_make_primitive(prim_uptime_ns, "uptime-ns"));
-        lisp_env_define(env, lisp_make_symbol("%event-count", 12),
-                        lisp_make_primitive(prim_event_count, "%event-count"));
-        lisp_env_define(env, lisp_make_symbol("%event-wait", 11),
-                        lisp_make_primitive(prim_event_wait, "%event-wait"));
-
-        run_self_test(env);
-        run_isr_demo(env);
-    } else {
+    g_env = lisp_default_env();
+    if (g_env == LISP_UNDEF) {
         print_str("[SysLisp] FAIL: could not build the default environment\r\n");
+        for (;;)
+            __asm__ volatile("cli; hlt");
     }
+    lisp_install_sched(g_env);
+    lisp_env_define(g_env, lisp_make_symbol("uptime-ns", 9),
+                    lisp_make_primitive(prim_uptime_ns, "uptime-ns"));
+    lisp_env_define(g_env, lisp_make_symbol("%event-count", 12),
+                    lisp_make_primitive(prim_event_count, "%event-count"));
+    lisp_env_define(g_env, lisp_make_symbol("%event-wait", 11),
+                    lisp_make_primitive(prim_event_wait, "%event-wait"));
 
-    // The runtime stays resident as the per-core loop. With drivers off there are
-    // no persistent Lisp contexts yet, so idle waiting for interrupts; a migrated
-    // driver's IRQ will wake a context here. Never returns.
-    print_str("[SysLisp] idle (no Lisp contexts pending; awaiting events)\r\n");
-    for (;;)
-        __asm__ volatile("sti; hlt");
+    // Single-core phase: self-test + the ISR-bridge demo run with the system
+    // collector still active (the BSP is the only core building shared state).
+    run_self_test(g_env);
+    run_isr_demo(g_env);
+
+    // Go multi-core: freeze the (now fully-built) shared system heap -- its
+    // conservative collector can't see other cores' stacks -- then release the
+    // APs. They were parked in mp_signalready() since boot; each now runs
+    // lisp_core_loop and becomes another Lisp scheduler core. (lisp_core_loop is
+    // NORETURN; the cast to the plain ap-entry pointer type drops only that
+    // attribute.)
+    lisp_gc_set_multicore(1);
+    print_str("[SysLisp] system heap frozen; releasing APs as Lisp cores\r\n");
+    mp_set_ap_entry((void (*)(void))lisp_core_loop);
+
+    // The BSP becomes its own Lisp scheduler core. Never returns.
+    lisp_core_loop();
     return 0;  // unreached
 }
 

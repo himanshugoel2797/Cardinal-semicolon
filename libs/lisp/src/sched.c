@@ -27,17 +27,28 @@
 #include "internal.h"  // lisp_ctx_t internals (status/blocked/mailbox)
 #include "lisp.h"
 
-// The active scheduler and the context currently being resumed. One of each
-// host-side (a single scheduler thread); per-core in the kernel later.
-static lisp_sched_t *g_sched = NULL;
-static lisp_value g_current = LISP_EMPTY;  // a context value, or LISP_EMPTY
+// The active scheduler and the context currently being resumed -- PER-CORE, so
+// two cores each running their own scheduler loop don't stomp each other's
+// "current". Indexed by lisp_rt_core() (slot 0 single-threaded). g_sched defaults
+// to NULL ("no scheduler"); g_current defaults to 0 ("none"), which the accessor
+// maps to LISP_EMPTY (a real context is a non-zero pointer, LISP_EMPTY is not 0,
+// so 0 is unambiguously the never-set state).
+static lisp_sched_t *g_sched[LISP_MAX_CORES] = {0};
+static lisp_value g_current[LISP_MAX_CORES] = {0};
+
+static lisp_sched_t *cur_sched(void) { return g_sched[lisp_rt_core()]; }
+static void set_sched(lisp_sched_t *s) { g_sched[lisp_rt_core()] = s; }
+static void set_current(lisp_value v) { g_current[lisp_rt_core()] = v; }
 
 static lisp_ctx_t *as_ctx(lisp_value v) { return (lisp_ctx_t *)lisp_obj(v); }
 
 // The context currently being resumed (LISP_EMPTY when none). A primitive uses
 // this to refer to "self" -- e.g. to register the running context as the waiter
 // for a hardware event before parking it.
-lisp_value lisp_current_ctx(void) { return g_current; }
+lisp_value lisp_current_ctx(void) {
+    lisp_value v = g_current[lisp_rt_core()];
+    return v == 0 ? LISP_EMPTY : v;
+}
 
 // Mutate a pair's cdr (the run queue and mailboxes are evaluator-owned plumbing,
 // not user-visible data; the immutable-pair rule does not apply to them).
@@ -146,7 +157,8 @@ static bool mailbox_push(lisp_ctx_t *tcx, lisp_value msg, const char **err) {
 // (spawn thunk) -- create a context that evaluates (thunk), enqueue it, and
 // return its handle (a context value, usable as a send target).
 static lisp_value prim_spawn(lisp_value *a, int n, const char **e) {
-    if (g_sched == NULL)
+    lisp_sched_t *s = cur_sched();
+    if (s == NULL)
         return prim_err(e, "spawn: no scheduler is running");
     if (n != 1)
         return prim_err(e, "spawn expects one argument (a thunk)");
@@ -169,9 +181,9 @@ static lisp_value prim_spawn(lisp_value *a, int n, const char **e) {
         return prim_err(e, "spawn: out of memory");
     // Attach the own heap BEFORE enqueueing, so a failure never leaves a context
     // running in the wrong heap or an un-enqueued handle in the caller's hands.
-    if (g_sched->per_context_heaps && lisp_ctx_attach_heap(ctx) != 0)
+    if (s->per_context_heaps && lisp_ctx_attach_heap(ctx) != 0)
         return prim_err(e, "spawn: out of memory");
-    if (!lisp_sched_add(g_sched, ctx))  // never return an un-enqueued handle
+    if (!lisp_sched_add(s, ctx))  // never return an un-enqueued handle
         return prim_err(e, "spawn: out of memory");
     return ctx;
 }
@@ -180,9 +192,10 @@ static lisp_value prim_spawn(lisp_value *a, int n, const char **e) {
 static lisp_value prim_yield(lisp_value *a, int n, const char **e) {
     (void)a;
     (void)n;
-    if (g_current == LISP_EMPTY)
+    lisp_value self = lisp_current_ctx();
+    if (self == LISP_EMPTY)
         return prim_err(e, "yield: not running under a scheduler");
-    as_ctx(g_current)->budget = 0;  // suspend at the next safe point
+    as_ctx(self)->budget = 0;  // suspend at the next safe point
     return LISP_UNDEF;
 }
 
@@ -215,18 +228,20 @@ static lisp_value prim_send(lisp_value *a, int n, const char **e) {
 static lisp_value prim_mailbox_empty(lisp_value *a, int n, const char **e) {
     (void)a;
     (void)n;
-    if (g_current == LISP_EMPTY)
+    lisp_value self = lisp_current_ctx();
+    if (self == LISP_EMPTY)
         return prim_err(e, "recv: not running under a scheduler");
-    return lisp_is_pair(as_ctx(g_current)->mailbox) ? LISP_FALSE : LISP_TRUE;
+    return lisp_is_pair(as_ctx(self)->mailbox) ? LISP_FALSE : LISP_TRUE;
 }
 
 // (%mailbox-pop) -- remove and return the oldest message of the current context.
 static lisp_value prim_mailbox_pop(lisp_value *a, int n, const char **e) {
     (void)a;
     (void)n;
-    if (g_current == LISP_EMPTY)
+    lisp_value self = lisp_current_ctx();
+    if (self == LISP_EMPTY)
         return prim_err(e, "recv: not running under a scheduler");
-    lisp_ctx_t *cx = as_ctx(g_current);
+    lisp_ctx_t *cx = as_ctx(self);
     if (!lisp_is_pair(cx->mailbox))
         return prim_err(e, "recv: mailbox is empty");
     lisp_value msg = lisp_car(cx->mailbox);
@@ -239,9 +254,10 @@ static lisp_value prim_mailbox_pop(lisp_value *a, int n, const char **e) {
 static lisp_value prim_block(lisp_value *a, int n, const char **e) {
     (void)a;
     (void)n;
-    if (g_current == LISP_EMPTY)
+    lisp_value self = lisp_current_ctx();
+    if (self == LISP_EMPTY)
         return prim_err(e, "recv: not running under a scheduler");
-    lisp_ctx_t *cx = as_ctx(g_current);
+    lisp_ctx_t *cx = as_ctx(self);
     cx->blocked = 1;
     cx->budget = 0;
     return LISP_UNDEF;
@@ -277,7 +293,7 @@ void lisp_sched_init(lisp_sched_t *s, int64_t slice) {
     s->queue = LISP_EMPTY;
     s->slice = slice > 0 ? slice : 256;
     s->per_context_heaps = 0;
-    g_sched = s;
+    set_sched(s);
 }
 
 bool lisp_sched_add(lisp_sched_t *s, lisp_value ctx) {
@@ -305,7 +321,7 @@ static bool ctx_finished(lisp_ctx_t *cx) {
 }
 
 int lisp_sched_run(lisp_sched_t *s, int max_passes) {
-    g_sched = s;
+    set_sched(s);
     int passes = 0;
     for (;;) {
         if (max_passes > 0 && passes >= max_passes)
@@ -327,9 +343,9 @@ int lisp_sched_run(lisp_sched_t *s, int max_passes) {
                     /* parked waiting for a message */
                 } else {
                     any_runnable = true;
-                    g_current = cxv;
+                    set_current(cxv);
                     lisp_ctx_resume(cxv, s->slice);  // runs until budget/yield/done/error
-                    g_current = LISP_EMPTY;
+                    set_current(LISP_EMPTY);
                 }
             }
             if (p == pass_end)
@@ -341,9 +357,9 @@ int lisp_sched_run(lisp_sched_t *s, int max_passes) {
         if (!any_runnable)
             break;  // all remaining contexts are blocked -> deadlock
     }
-    // `s` is typically a caller stack local; do not leave g_sched dangling past
-    // the run. A later spawn/send without a fresh lisp_sched_init is then a clean
-    // "no scheduler" error rather than a use-after-stack-free.
-    g_sched = NULL;
+    // `s` is typically a caller stack local; do not leave this core's g_sched
+    // dangling past the run. A later spawn/send without a fresh lisp_sched_init is
+    // then a clean "no scheduler" error rather than a use-after-stack-free.
+    set_sched(NULL);
     return passes;
 }
