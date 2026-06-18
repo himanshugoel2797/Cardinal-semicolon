@@ -183,6 +183,98 @@ static lisp_value bind_params(lisp_value params, lisp_value *args, int argc,
     return env;
 }
 
+// Build (name x) for the nested-quasiquote rebuild cases.
+static lisp_value qq_wrap(const char *name, lisp_value x, const char **err) {
+    lisp_value sym = lisp_make_symbol(name, strlen(name));
+    lisp_value rest = lisp_cons(x, LISP_EMPTY);
+    if (sym == LISP_UNDEF || rest == LISP_UNDEF)
+        return fail(err, "out of memory");
+    lisp_value f = lisp_cons(sym, rest);
+    return f == LISP_UNDEF ? fail(err, "out of memory") : f;
+}
+
+// Copy list `lst`, appending `tail` as the final cdr (for unquote-splicing).
+static lisp_value qq_append(lisp_value lst, lisp_value tail, const char **err) {
+    lisp_value head = LISP_EMPTY, last = LISP_EMPTY;
+    while (lisp_is_pair(lst)) {
+        lisp_value cell = lisp_cons(lisp_car(lst), LISP_EMPTY);
+        if (cell == LISP_UNDEF)
+            return fail(err, "out of memory");
+        if (head == LISP_EMPTY)
+            head = cell;
+        else
+            set_cdr(last, cell);
+        last = cell;
+        lst = lisp_cdr(lst);
+    }
+    if (!lisp_is_empty(lst))
+        return fail(err, "unquote-splicing: not a proper list");
+    if (head == LISP_EMPTY)
+        return tail;
+    set_cdr(last, tail);
+    return head;
+}
+
+// Expand a quasiquote template at the given nesting depth. depth 1 means an
+// unquote here is live; deeper unquotes are rebuilt with their depth reduced.
+static lisp_value qq_expand(lisp_value t, int depth, lisp_value env, const char **err) {
+    if (!lisp_is_pair(t))
+        return t;  // atoms (and, for now, vectors) are literal
+    lisp_value head = lisp_car(t);
+
+    if (is_form(head, "unquote")) {
+        if (!lisp_is_pair(lisp_cdr(t)) || !lisp_is_empty(lisp_cdr(lisp_cdr(t))))
+            return fail(err, "malformed unquote");
+        lisp_value x = lisp_car(lisp_cdr(t));
+        if (depth == 1)
+            return lisp_eval(x, env, err);
+        lisp_value inner = qq_expand(x, depth - 1, env, err);
+        if (inner == LISP_UNDEF && err != NULL && *err != NULL)
+            return LISP_UNDEF;
+        return qq_wrap("unquote", inner, err);
+    }
+    if (is_form(head, "quasiquote")) {
+        if (!lisp_is_pair(lisp_cdr(t)))
+            return fail(err, "malformed quasiquote");
+        lisp_value inner = qq_expand(lisp_car(lisp_cdr(t)), depth + 1, env, err);
+        if (inner == LISP_UNDEF && err != NULL && *err != NULL)
+            return LISP_UNDEF;
+        return qq_wrap("quasiquote", inner, err);
+    }
+    // (unquote-splicing x) in car position splices into the result list.
+    if (lisp_is_pair(head) && is_form(lisp_car(head), "unquote-splicing")) {
+        if (!lisp_is_pair(lisp_cdr(head)) || !lisp_is_empty(lisp_cdr(lisp_cdr(head))))
+            return fail(err, "malformed unquote-splicing");
+        lisp_value x = lisp_car(lisp_cdr(head));
+        lisp_value rest = qq_expand(lisp_cdr(t), depth, env, err);
+        if (rest == LISP_UNDEF && err != NULL && *err != NULL)
+            return LISP_UNDEF;
+        if (depth == 1) {
+            lisp_value spliced = lisp_eval(x, env, err);
+            if (spliced == LISP_UNDEF && err != NULL && *err != NULL)
+                return LISP_UNDEF;
+            return qq_append(spliced, rest, err);
+        }
+        lisp_value inner = qq_expand(x, depth - 1, env, err);
+        if (inner == LISP_UNDEF && err != NULL && *err != NULL)
+            return LISP_UNDEF;
+        lisp_value newhead = qq_wrap("unquote-splicing", inner, err);
+        if (newhead == LISP_UNDEF && err != NULL && *err != NULL)
+            return LISP_UNDEF;
+        lisp_value cell = lisp_cons(newhead, rest);
+        return cell == LISP_UNDEF ? fail(err, "out of memory") : cell;
+    }
+    // Default: rebuild car and cdr.
+    lisp_value a = qq_expand(head, depth, env, err);
+    if (a == LISP_UNDEF && err != NULL && *err != NULL)
+        return LISP_UNDEF;
+    lisp_value d = qq_expand(lisp_cdr(t), depth, env, err);
+    if (d == LISP_UNDEF && err != NULL && *err != NULL)
+        return LISP_UNDEF;
+    lisp_value cell = lisp_cons(a, d);
+    return cell == LISP_UNDEF ? fail(err, "out of memory") : cell;
+}
+
 lisp_value lisp_eval(lisp_value expr, lisp_value env, const char **err) {
     if (err != NULL)
         *err = NULL;
@@ -209,6 +301,12 @@ tail:
     if (lisp_is_symbol(head)) {
         if (is_form(head, "quote"))
             return lisp_is_pair(rest) ? lisp_car(rest) : fail(err, "malformed quote");
+
+        if (is_form(head, "quasiquote")) {
+            if (!lisp_is_pair(rest))
+                return fail(err, "malformed quasiquote");
+            return qq_expand(lisp_car(rest), 1, env, err);
+        }
 
         if (is_form(head, "if")) {
             if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_cdr(rest)))
@@ -289,9 +387,67 @@ tail:
         }
 
         if (is_form(head, "let")) {
-            // (let ((x v) ...) body...) -- bindings evaluated in the outer env.
             if (!lisp_is_pair(rest))
                 return fail(err, "malformed let");
+
+            // Named let: (let name ((v init)...) body...) -- a self-recursive
+            // loop. Build a closure bound to `name` in its own env and apply it.
+            if (lisp_is_symbol(lisp_car(rest))) {
+                lisp_value name = lisp_car(rest);
+                lisp_value rest2 = lisp_cdr(rest);
+                if (!lisp_is_pair(rest2))
+                    return fail(err, "malformed named let");
+                lisp_value binds = lisp_car(rest2);
+                if (!lisp_is_pair(binds) && !lisp_is_empty(binds))
+                    return fail(err, "malformed named let: bindings must be a list");
+                lisp_value body = lisp_cdr(rest2);
+                lisp_value params = LISP_EMPTY, ptail = LISP_EMPTY;
+                lisp_value args[MAX_ARGS];
+                int argc = 0;
+                while (lisp_is_pair(binds)) {
+                    lisp_value b = lisp_car(binds);
+                    if (!lisp_is_pair(b) || !lisp_is_pair(lisp_cdr(b)))
+                        return fail(err, "malformed named let binding");
+                    lisp_value cell = lisp_cons(lisp_car(b), LISP_EMPTY);
+                    if (cell == LISP_UNDEF)
+                        return fail(err, "out of memory");
+                    if (params == LISP_EMPTY)
+                        params = cell;
+                    else
+                        set_cdr(ptail, cell);
+                    ptail = cell;
+                    if (argc >= MAX_ARGS)
+                        return fail(err, "named let: too many bindings");
+                    lisp_value v = lisp_eval(lisp_car(lisp_cdr(b)), env, err);
+                    if (v == LISP_UNDEF && err != NULL && *err != NULL)
+                        return LISP_UNDEF;
+                    args[argc++] = v;
+                    binds = lisp_cdr(binds);
+                }
+                lisp_value loopenv = lisp_make_env(env);
+                if (loopenv == LISP_UNDEF)
+                    return fail(err, "out of memory");
+                lisp_value clo = lisp_make_closure(params, body, loopenv);
+                if (clo == LISP_UNDEF)
+                    return fail(err, "out of memory");
+                lisp_env_define(loopenv, name, clo);
+                lisp_value callenv = bind_params(params, args, argc, loopenv, err);
+                if (callenv == LISP_UNDEF)
+                    return LISP_UNDEF;
+                env = callenv;
+                if (!lisp_is_pair(body))
+                    return LISP_UNDEF;
+                while (lisp_is_pair(lisp_cdr(body))) {
+                    lisp_eval(lisp_car(body), env, err);
+                    if (err != NULL && *err != NULL)
+                        return LISP_UNDEF;
+                    body = lisp_cdr(body);
+                }
+                expr = lisp_car(body);
+                goto tail;
+            }
+
+            // Plain let: (let ((x v) ...) body...) -- inits in the outer env.
             lisp_value newenv = lisp_make_env(env);
             if (newenv == LISP_UNDEF)
                 return fail(err, "out of memory");
@@ -305,6 +461,47 @@ tail:
                     return LISP_UNDEF;
                 lisp_env_define(newenv, lisp_car(b), v);
                 binds = lisp_cdr(binds);
+            }
+            env = newenv;
+            rest = lisp_cdr(rest);  // body
+            if (!lisp_is_pair(rest))
+                return LISP_UNDEF;
+            while (lisp_is_pair(lisp_cdr(rest))) {
+                lisp_eval(lisp_car(rest), env, err);
+                if (err != NULL && *err != NULL)
+                    return LISP_UNDEF;
+                rest = lisp_cdr(rest);
+            }
+            expr = lisp_car(rest);
+            goto tail;
+        }
+
+        if (is_form(head, "let*") || is_form(head, "letrec")) {
+            // let*: each init sees the previous bindings (sequential, one env).
+            // letrec: all names are in scope for every init (pre-bound), so
+            // mutually-recursive lambdas work. Both share body handling.
+            if (!lisp_is_pair(rest))
+                return fail(err, "malformed let* / letrec");
+            bool rec = is_form(head, "letrec");
+            lisp_value newenv = lisp_make_env(env);
+            if (newenv == LISP_UNDEF)
+                return fail(err, "out of memory");
+            if (rec) {
+                for (lisp_value b = lisp_car(rest); lisp_is_pair(b); b = lisp_cdr(b)) {
+                    lisp_value bind = lisp_car(b);
+                    if (!lisp_is_pair(bind))
+                        return fail(err, "malformed letrec binding");
+                    lisp_env_define(newenv, lisp_car(bind), LISP_UNDEF);
+                }
+            }
+            for (lisp_value b = lisp_car(rest); lisp_is_pair(b); b = lisp_cdr(b)) {
+                lisp_value bind = lisp_car(b);
+                if (!lisp_is_pair(bind) || !lisp_is_pair(lisp_cdr(bind)))
+                    return fail(err, "malformed let* / letrec binding");
+                lisp_value v = lisp_eval(lisp_car(lisp_cdr(bind)), newenv, err);
+                if (v == LISP_UNDEF && err != NULL && *err != NULL)
+                    return LISP_UNDEF;
+                lisp_env_define(newenv, lisp_car(bind), v);
             }
             env = newenv;
             rest = lisp_cdr(rest);  // body

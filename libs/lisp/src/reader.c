@@ -16,13 +16,14 @@
 #include "lisp.h"
 
 static bool is_ws(char c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == ',';
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
 }
 
-// A delimiter ends an atom token.
+// A delimiter ends an atom token. In Scheme ` and , are reader macros
+// (quasiquote/unquote), so they delimit too.
 static bool is_delim(char c) {
     return is_ws(c) || c == '(' || c == ')' || c == '[' || c == ']' || c == '{' ||
-           c == '}' || c == '"' || c == ';' || c == '\'';
+           c == '}' || c == '"' || c == ';' || c == '\'' || c == '`' || c == ',';
 }
 
 static void skip_ws(const char **cur, const char *end) {
@@ -241,6 +242,25 @@ static lisp_value read_list(const char **cur, const char *end, const char **err)
     }
 }
 
+// Read the next datum and wrap it as (name datum). Shared by the quote-family
+// reader macros: ' ` , ,@
+static lisp_value read_prefixed(const char *name, size_t nlen, const char **cur,
+                                const char *end, const char **err, const char *empty_msg) {
+    lisp_value datum = lisp_read(cur, end, err);
+    if (datum == LISP_UNDEF)
+        return LISP_UNDEF;
+    if (datum == LISP_EOF)
+        return fail(err, empty_msg);
+    lisp_value sym = lisp_make_symbol(name, nlen);
+    lisp_value rest = lisp_cons(datum, LISP_EMPTY);
+    if (sym == LISP_UNDEF || rest == LISP_UNDEF)
+        return fail(err, "out of memory");
+    lisp_value form = lisp_cons(sym, rest);
+    if (form == LISP_UNDEF)
+        return fail(err, "out of memory");
+    return form;
+}
+
 lisp_value lisp_read(const char **cursor, const char *end, const char **err) {
     if (err != NULL)
         *err = NULL;
@@ -266,21 +286,38 @@ lisp_value lisp_read(const char **cursor, const char *end, const char **err) {
             return v;
         }
         case '\'': {
-            c++;  // skip quote
-            lisp_value quoted = lisp_read(&c, end, err);
-            if (quoted == LISP_UNDEF)
+            c++;  // skip '
+            lisp_value v = read_prefixed("quote", 5, &c, end, err, "nothing to quote");
+            if (v == LISP_UNDEF)
                 return LISP_UNDEF;
-            if (quoted == LISP_EOF)
-                return fail(err, "nothing to quote");
             *cursor = c;
-            lisp_value sym = lisp_make_symbol("quote", 5);
-            lisp_value rest = lisp_cons(quoted, LISP_EMPTY);
-            if (sym == LISP_UNDEF || rest == LISP_UNDEF)
-                return fail(err, "out of memory");
-            lisp_value form = lisp_cons(sym, rest);
-            if (form == LISP_UNDEF)
-                return fail(err, "out of memory");
-            return form;
+            return v;
+        }
+        case '`': {
+            c++;  // skip `
+            lisp_value v =
+                read_prefixed("quasiquote", 10, &c, end, err, "nothing to quasiquote");
+            if (v == LISP_UNDEF)
+                return LISP_UNDEF;
+            *cursor = c;
+            return v;
+        }
+        case ',': {
+            c++;  // skip ,
+            const char *name = "unquote";
+            size_t nlen = 7;
+            const char *empty = "nothing to unquote";
+            if (c < end && *c == '@') {  // ,@
+                c++;
+                name = "unquote-splicing";
+                nlen = 16;
+                empty = "nothing to unquote-splice";
+            }
+            lisp_value v = read_prefixed(name, nlen, &c, end, err, empty);
+            if (v == LISP_UNDEF)
+                return LISP_UNDEF;
+            *cursor = c;
+            return v;
         }
         case '#': {
             lisp_value v = read_hash(&c, end, err);
