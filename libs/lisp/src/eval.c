@@ -350,6 +350,26 @@ tail:
             return fail(err, "malformed define");
         }
 
+        if (is_form(head, "define-syntax")) {
+            if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_cdr(rest)))
+                return fail(err, "malformed define-syntax");
+            lisp_value name = lisp_car(rest);
+            if (!lisp_is_symbol(name))
+                return fail(err, "define-syntax: name must be a symbol");
+            lisp_value spec = lisp_car(lisp_cdr(rest));
+            if (!lisp_is_pair(spec) || !is_form(lisp_car(spec), "syntax-rules"))
+                return fail(err, "define-syntax: only syntax-rules is supported");
+            if (!lisp_is_pair(lisp_cdr(spec)))  // need at least the literals list
+                return fail(err, "malformed syntax-rules");
+            lisp_value lits = lisp_car(lisp_cdr(spec));   // (literal ...)
+            lisp_value rules = lisp_cdr(lisp_cdr(spec));  // ((pat tmpl) ...)
+            lisp_value m = lisp_make_macro(lits, rules, env);
+            if (m == LISP_UNDEF)
+                return fail(err, "out of memory");
+            lisp_env_define(env, name, m);
+            return name;
+        }
+
         if (is_form(head, "lambda")) {
             if (!lisp_is_pair(rest))
                 return fail(err, "malformed lambda");
@@ -579,6 +599,18 @@ tail:
                 clauses = lisp_cdr(clauses);
             }
             return LISP_UNDEF;  // no clause matched
+        }
+    }
+
+    // Macro use: if the operator names a syntax-rules macro, expand and re-eval
+    // the expansion in tail position.
+    if (lisp_is_symbol(head)) {
+        lisp_value mac;
+        if (lisp_env_lookup(env, head, &mac) && lisp_is_objtype(mac, LISP_OBJ_MACRO)) {
+            expr = lisp_macro_expand(mac, expr, err);
+            if (expr == LISP_UNDEF && err != NULL && *err != NULL)
+                return LISP_UNDEF;
+            goto tail;
         }
     }
 
