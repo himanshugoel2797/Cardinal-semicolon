@@ -74,6 +74,8 @@ typedef enum {
     LISP_OBJ_PRIMITIVE = 7,  // built-in procedure backed by a C function
     LISP_OBJ_VECTOR = 8,     // immutable flat vector
     LISP_OBJ_FLONUM = 9,     // heap-boxed double (inexact real)
+    LISP_OBJ_MACRO = 10,     // syntax-rules transformer
+    LISP_OBJ_CONT = 11,      // escape continuation (call/cc)
     // reserved for later phases: MAP, BYTEVECTOR, BOX, ...
 } lisp_objtype;
 

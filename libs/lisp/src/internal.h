@@ -36,6 +36,20 @@ typedef struct {
     lisp_value name;
 } lisp_prim_t;
 
+// A syntax-rules macro transformer.
+typedef struct {
+    lisp_header h;
+    lisp_value literals;  // list of literal identifiers
+    lisp_value rules;     // list of (pattern template)
+    lisp_value def_env;   // definition environment (for future hygiene)
+} lisp_macro_t;
+
+lisp_value lisp_make_macro(lisp_value literals, lisp_value rules, lisp_value def_env);
+
+// Expand one macro use: `form` is the whole (keyword . args) form. Returns the
+// expansion, or LISP_UNDEF + *err if no rule matches.
+lisp_value lisp_macro_expand(lisp_value macro, lisp_value form, const char **err);
+
 // GC-tracked allocation (gc.c). All heap Lisp objects are allocated through this
 // so the collector can find and reclaim them. Returns NULL on OOM.
 void *lisp_gc_alloc(size_t size);

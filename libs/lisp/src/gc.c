@@ -107,8 +107,15 @@ static void trace(lisp_value v) {
         case LISP_OBJ_PRIMITIVE:
             mark_push(((lisp_prim_t *)lisp_obj(v))->name);
             break;
+        case LISP_OBJ_MACRO: {
+            lisp_macro_t *m = (lisp_macro_t *)lisp_obj(v);
+            mark_push(m->literals);
+            mark_push(m->rules);
+            mark_push(m->def_env);
+            break;
+        }
         default:
-            break;  // symbol / keyword / string / flonum are leaves
+            break;  // symbol / keyword / string / flonum / continuation are leaves
     }
 }
 
