@@ -31,40 +31,49 @@ void rtl8169_intr_handler(rtl8169_state_t *state)
 {
     while (true)
     {
-        task_monitor(task_current(), (uint32_t*)&isr_pending, 0);
-        //while (!isr_pending)
-        //    task_yield();  //halt(); //stop after each iteration to allow other tasks to work, swap for yield later
+        task_monitor(task_current(), (uint32_t *)&isr_pending, 0);
+        isr_pending = 0;   //consume the signal; re-arm task_monitor for the next IRQ
 
-        local_spinlock_lock(&state->lock);
-        if (*(uint16_t *)&state->memar[ISR_REG] & INTR_ROK)
+        //Follow the BSD `re` ISR sequence so an edge-triggered MSI(-X) re-arms:
+        //mask the NIC interrupts, ACK the whole status up front, service it, then
+        //re-enable the mask. The IMR 0->enabled transition is what makes the NIC
+        //raise a fresh interrupt for frames that arrived while masked.
+        //
+        //IMPORTANT: do NOT hold state->lock across the RX loop. network_rx_packet
+        //runs the network stack synchronously, and for an ARP/ICMP request it
+        //calls back into rtl8169_tx() to send the reply -- which takes
+        //state->lock. Holding it here self-deadlocks the poll task the instant a
+        //reply-triggering frame arrives (IMR stuck masked, ring fills, no more
+        //interrupts). The RX ring and IMR/ISR registers are touched only by this
+        //single poll task, so they need no lock; the lock serialises TX only.
+        *(uint16_t *)&state->memar[IMR_REG] = 0;
+        uint16_t status = *(uint16_t *)&state->memar[ISR_REG];
+        *(uint16_t *)&state->memar[ISR_REG] = status;   //ack everything
+
+        if (status & INTR_ROK)
         {
-            //Submit the packet to the network stack
-            for (int i = 0; i < RX_DESC_COUNT; i++){
-                //Only handle single descriptor packets
-                bool avl = (state->rx_descs[i].status.own == 0);
-                if (!avl)
+            //Submit each received packet to the network stack, then hand the
+            //descriptor back to the NIC.
+            for (int i = 0; i < RX_DESC_COUNT; i++)
+            {
+                if (state->rx_descs[i].status.own != 0)   //still NIC-owned: empty
                     continue;
 
-                //if (state->rx_descs[i].status.fs && state->rx_descs[i].status.ls)
-                network_rx_packet(state->net_handle, state->rx_buffer + RX_PACKET_SIZE * i, state->rx_descs[i].status.frame_length);
-                
-                //Return this descriptor to the NIC
+                network_rx_packet(state->net_handle,
+                                  state->rx_buffer + RX_PACKET_SIZE * i,
+                                  state->rx_descs[i].status.frame_length);
+
                 state->rx_descs[i].cmd.frame_length = (RX_PACKET_SIZE & 0x3FFF);
                 state->rx_descs[i].cmd.rsvd0 = 0;
                 state->rx_descs[i].cmd.rsvd1 = 0;
                 state->rx_descs[i].cmd.own = 1;
             }
-            //DEBUG_PRINT("[RTL8169] Receive Interrupt\r\n");
-
-            *(uint16_t *)&state->memar[ISR_REG] = INTR_ROK;
         }
 
-        if (*(uint16_t *)&state->memar[ISR_REG] & INTR_TOK)
-        {
-            *(uint16_t *)&state->memar[ISR_REG] = INTR_TOK;
-            DEBUG_PRINT("[RTL8169] Transmit Interrupt\r\n");
-        }
-        local_spinlock_unlock(&state->lock);
+        //TOK: TX completions are reclaimed lazily in rtl8169_tx.
+
+        //Re-enable interrupts -> re-arms MSI(-X) for anything now pending.
+        *(uint16_t *)&state->memar[IMR_REG] = (INTR_ROK | INTR_TOK);
     }
 }
 
@@ -105,7 +114,12 @@ int rtl8169_tx(void *state, void *packet, int len, network_device_tx_flags_t gso
     device->tx_descs[device->free_tx_buf_idx].cmd.frame_length = len;
     device->tx_descs[device->free_tx_buf_idx].cmd.own = 1;
     device->free_tx_buf_idx = (device->free_tx_buf_idx + 1) % TX_DESC_COUNT;
-    
+
+    //Kick the NIC: on the 8168 a queued normal-priority TX descriptor is not
+    //fetched until TPPoll's NPQ bit is written. Without this the frame sits with
+    //OWN=1 forever -- received fine, never transmitted (no TOK, no ARP reply).
+    *(uint8_t *)&device->memar[TPPOLL_REG] = TPPOLL_NPQ;
+
     local_spinlock_unlock(&device->lock);
     return 0;
 }
@@ -153,6 +167,16 @@ static network_device_desc_t device_desc = {
     .spec_features.ether = 0,
     .lock = 0,
 };
+
+//Enable NIC interrupt generation. Call ONLY after the MSI-X table is programmed
+//and the interrupt handler is registered (see the masking note in rtl8169_init)
+//-- otherwise an edge-triggered MSI-X message can be generated and lost before
+//the handler exists, wedging interrupts for the whole boot.
+void rtl8169_enable_interrupts(rtl8169_state_t *state)
+{
+    *(uint16_t *)&state->memar[ISR_REG] = 0xFFFF;          //clear stale causes
+    *(uint16_t *)&state->memar[IMR_REG] = (INTR_ROK | INTR_TOK);
+}
 
 //Setup this device
 int rtl8169_init(rtl8169_state_t *state)
@@ -282,9 +306,15 @@ int rtl8169_init(rtl8169_state_t *state)
         //Start the receiver and transmitter
         state->memar[CMD_REG] = CMD_TX_EN | CMD_RX_EN;
 
-        //Configure interrupts
-        *(uint16_t *)&state->memar[IMR_REG] = (INTR_ROK | INTR_TOK);
-        *(uint16_t *)&state->memar[ISR_REG] = (INTR_ROK | INTR_TOK);
+        //Leave NIC interrupt generation MASKED here. It is enabled (via
+        //rtl8169_enable_interrupts) only after the MSI-X table is programmed AND
+        //the handler is registered. Enabling it now races the setup: the NIC can
+        //fire an edge-triggered MSI-X message for an already-pending RX before
+        //the handler exists; that one message is lost, ROK stays asserted, no new
+        //edge is generated, and interrupts are dead for the whole boot (the
+        //intermittent irqs=0 / ring-fills-up failure).
+        *(uint16_t *)&state->memar[IMR_REG] = 0;
+        *(uint16_t *)&state->memar[ISR_REG] = 0xFFFF;   //clear any pending cause
    
         *(uint32_t *)&state->memar[MISSEDPKT_REG] = 0;
         *(uint16_t *)(&state->memar[MAX_RX_PACKET_SIZE_REG]) = RX_PACKET_SIZE;

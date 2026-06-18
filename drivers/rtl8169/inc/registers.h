@@ -12,6 +12,8 @@
 #define TX_ADDR_REG (0x20)
 #define TX_CFG_REG (0x40)
 #define CMD_REG (0x37)
+#define TPPOLL_REG (0x38)       // transmit-priority poll (8-bit): kick TX queues
+#define TPPOLL_NPQ (0x40)       // poll the Normal Priority (gigE) TX queue
 #define IMR_REG (0x3C)
 #define ISR_REG (0x3E)
 #define RCR_REG (0x44)
