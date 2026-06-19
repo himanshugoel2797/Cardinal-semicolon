@@ -246,11 +246,22 @@ static lisp_value bind_params(lisp_value params, lisp_value *args, int argc,
     lisp_value env = lisp_make_env(parent_env);
     if (env == LISP_UNDEF)
         return fail(err, "out of memory");
+    // A fresh call frame parents on the closure's env, so it is never the
+    // table-backed top-level frame -- prepend bindings straight onto its assoc
+    // list. This skips lisp_env_define's redefine-check (a frame_find scan that,
+    // on a frame being filled left-to-right, is wasted work growing with arity).
+    lisp_env_t *e = (lisp_env_t *)lisp_obj(env);
     int i = 0;
     while (lisp_is_pair(params)) {
         if (i >= argc)
             return fail(err, "too few arguments");
-        lisp_env_define(env, lisp_car(params), args[i]);
+        lisp_value cell = lisp_cons(lisp_car(params), args[i]);
+        if (cell == LISP_UNDEF)
+            return fail(err, "out of memory");
+        lisp_value nb = lisp_cons(cell, e->bindings);
+        if (nb == LISP_UNDEF)
+            return fail(err, "out of memory");
+        e->bindings = nb;
         params = lisp_cdr(params);
         i++;
     }
@@ -265,7 +276,13 @@ static lisp_value bind_params(lisp_value params, lisp_value *args, int argc,
                 return fail(err, "out of memory");
             rest = cell;
         }
-        lisp_env_define(env, params, rest);
+        lisp_value cell = lisp_cons(params, rest);
+        if (cell == LISP_UNDEF)
+            return fail(err, "out of memory");
+        lisp_value nb = lisp_cons(cell, e->bindings);
+        if (nb == LISP_UNDEF)
+            return fail(err, "out of memory");
+        e->bindings = nb;
         return env;
     }
     if (!lisp_is_empty(params))
