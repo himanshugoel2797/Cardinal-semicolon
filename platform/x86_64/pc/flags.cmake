@@ -52,6 +52,14 @@ COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-test.iso" "ISO/isodir"
 COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
 DEPENDS image)
 
+# ISO that boots with "cardinal.repl": the interactive serial REPL over framed
+# CSMUX. Drive it with scripts/csmux-repl.py (demuxes the log + talks to the REPL).
+add_custom_target(repl-image
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub_repl.cfg" "ISO/isodir/boot/grub/grub.cfg"
+COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-repl.iso" "ISO/isodir"
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
+DEPENDS image)
+
 add_custom_target(disk.img
     COMMAND qemu-img create -f raw disk.img 128M)
 

@@ -65,8 +65,9 @@
             (begin
               (console-arm-rx)                     ; enable COM1 RX IRQ now it is routed
               (display "[repl] serial REPL ready on COM1") (newline)
+              (console-flush)                        ; log is batched -- push the banner out now
               (let loop ((seen (irq-count irq)))
                 (let ((in (console-poll)))
                   (if in
-                      (begin (console-write (repl-eval in)) (loop (irq-count irq)))
+                      (begin (console-write (repl-eval in)) (console-flush) (loop (irq-count irq)))
                       (begin (irq-wait irq seen) (loop (irq-count irq)))))))))))) ) ; last ) closes (define-module init ...)
