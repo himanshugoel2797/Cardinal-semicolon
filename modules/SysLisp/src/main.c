@@ -225,14 +225,24 @@ static lisp_value prim_irq_count(lisp_value *a, int n, const char **e) {
     return lisp_fixnum((int64_t)g_irq_lines[slot].count);
 }
 
-// (irq-wait handle seen) -> park the running context until the line's counter
-// passes `seen`; returns immediately (#f) if it already has. cli() closes the
-// check-then-park race against the same-core IRQ (mirrors net-wait). The line is
-// routed to the calling/BSP core, so cli() here masks it; a line re-routed to
-// another core could lose the wake in this window (the cross-core-messaging caveat).
+// The timeout queue (defined with the timer tick, below). A wait primitive with
+// a deadline arg registers a sleeper too, so the tick wakes it if the signal
+// does not arrive in time -- the timer and the signal share one wake.
+static int sleeper_claim(uint64_t deadline, lisp_value ctx);
+static void sleeper_release(int slot);
+static int sleeper_pending(int slot);  // 1 while armed; 0 once the tick fired it
+
+// (irq-wait handle seen [timeout-ns]) -> park the running context until the
+// line's counter passes `seen`; returns immediately (#f) if it already has. With
+// a timeout, also wake after `timeout-ns` (the caller re-checks irq-count to tell
+// signal from timeout). cli() closes the check-then-park race against the
+// same-core IRQ (mirrors msi-wait). The line is routed to the calling/BSP core,
+// so cli() here masks it; a line re-routed to another core could lose the wake in
+// this window (the cross-core-messaging caveat).
 static lisp_value prim_irq_wait(lisp_value *a, int n, const char **e) {
-    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
-        return (*e = "irq-wait: expects (handle seen)"), LISP_UNDEF;
+    if ((n != 2 && n != 3) || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]) ||
+        (n == 3 && (!lisp_is_fixnum(a[2]) || lisp_fixnum_val(a[2]) < 0)))
+        return (*e = "irq-wait: expects (handle seen [timeout-ns])"), LISP_UNDEF;
     int slot = (int)lisp_fixnum_val(a[0]);
     if (slot < 0 || slot >= LISP_MAX_IRQ_LINES || g_irq_lines[slot].vector == 0)
         return (*e = "irq-wait: bad handle"), LISP_UNDEF;
@@ -241,8 +251,19 @@ static lisp_value prim_irq_wait(lisp_value *a, int n, const char **e) {
     if (self == LISP_EMPTY)
         return (*e = "irq-wait: not under the scheduler"), LISP_UNDEF;
     g_irq_lines[slot].waiter = self;
+    int sl = -1;
+    if (n == 3) {
+        sl = sleeper_claim(timer_timestamp_ns() + (uint64_t)lisp_fixnum_val(a[2]), self);
+        if (sl < 0)
+            return (*e = "irq-wait: too many sleepers"), LISP_UNDEF;
+    }
     int cli_state = cli();
     if (g_irq_lines[slot].count != seen) {  // an interrupt already advanced it
+        sti(cli_state);
+        sleeper_release(sl);
+        return LISP_FALSE;
+    }
+    if (n == 3 && !sleeper_pending(sl)) {  // the timeout already elapsed
         sti(cli_state);
         return LISP_FALSE;
     }
@@ -409,12 +430,15 @@ static lisp_value prim_msi_count(lisp_value *a, int n, const char **e) {
     return lisp_fixnum((int64_t)g_msi_lines[slot].count);
 }
 
-// (msi-wait handle seen) -> park the running context until this device's MSI
-// counter passes `seen`, unless it already has (#f). cli() closes the
-// check-then-park race against the same-core MSI (mirrors irq-wait).
+// (msi-wait handle seen [timeout-ns]) -> park the running context until this
+// device's MSI counter passes `seen`, unless it already has (#f). With a timeout,
+// also wake after `timeout-ns` -- the caller re-checks msi-count to tell signal
+// (count advanced) from timeout (it did not). cli() closes the check-then-park
+// race against the same-core MSI (mirrors irq-wait).
 static lisp_value prim_msi_wait(lisp_value *a, int n, const char **e) {
-    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
-        return (*e = "msi-wait: expects (handle seen)"), LISP_UNDEF;
+    if ((n != 2 && n != 3) || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]) ||
+        (n == 3 && (!lisp_is_fixnum(a[2]) || lisp_fixnum_val(a[2]) < 0)))
+        return (*e = "msi-wait: expects (handle seen [timeout-ns])"), LISP_UNDEF;
     int slot = (int)lisp_fixnum_val(a[0]);
     if (slot < 0 || slot >= LISP_MAX_MSI_LINES || g_msi_lines[slot].vector == 0)
         return (*e = "msi-wait: bad handle"), LISP_UNDEF;
@@ -423,8 +447,19 @@ static lisp_value prim_msi_wait(lisp_value *a, int n, const char **e) {
     if (self == LISP_EMPTY)
         return (*e = "msi-wait: not under the scheduler"), LISP_UNDEF;
     g_msi_lines[slot].waiter = self;
+    int sl = -1;
+    if (n == 3) {
+        sl = sleeper_claim(timer_timestamp_ns() + (uint64_t)lisp_fixnum_val(a[2]), self);
+        if (sl < 0)
+            return (*e = "msi-wait: too many sleepers"), LISP_UNDEF;
+    }
     int cli_state = cli();
     if (g_msi_lines[slot].count != seen) {  // an interrupt already advanced it
+        sti(cli_state);
+        sleeper_release(sl);
+        return LISP_FALSE;
+    }
+    if (n == 3 && !sleeper_pending(sl)) {  // the timeout already elapsed
         sti(cli_state);
         return LISP_FALSE;
     }
@@ -447,6 +482,105 @@ static lisp_value prim_pci_assign_bars(lisp_value *a, int n, const char **e) {
         vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     uint64_t base = pci_assign_bars(dev, ecam);
     return base == 0 ? LISP_FALSE : lisp_fixnum((int64_t)base);
+}
+
+// --- timed wakeups: a software timeout queue over one periodic tick -----------
+//
+// A context yields for a duration the same way it waits for a device: it parks
+// (lisp_ctx_block) and is woken (lisp_ctx_wake -- one word, ISR-safe) by an
+// interrupt. The wake source for a timeout is a periodic local-APIC tick (the
+// exact timer the old preemptive scheduler used, idle under K5) that scans this
+// small table and wakes every context whose deadline has passed. `deadline == 0`
+// marks a free slot (timer_timestamp_ns is always > 0 a few ns into boot). This
+// lets a timeout COMPOSE with a device signal: a context registers a sleeper AND
+// a signal waiter, parks, and whichever ISR fires first wakes it -- the basis for
+// "wait for the IRQ, but give up after N ms".
+#define LISP_MAX_SLEEPERS 32
+static struct lisp_sleeper {
+    volatile uint64_t deadline;  // ns (timer_timestamp_ns clock); 0 = free
+    volatile lisp_value ctx;     // context to wake at the deadline
+} g_sleepers[LISP_MAX_SLEEPERS];
+
+// The periodic tick (interrupt context: no alloc). Wakes every past-deadline
+// sleeper and frees its slot. O(table) per tick; the table is tiny.
+static void lisp_timer_tick(int irq) {
+    (void)irq;
+    uint64_t now = timer_timestamp_ns();
+    for (int i = 0; i < LISP_MAX_SLEEPERS; i++) {
+        uint64_t d = g_sleepers[i].deadline;
+        if (d != 0 && now >= d) {
+            lisp_value c = g_sleepers[i].ctx;
+            g_sleepers[i].deadline = 0;  // free + never double-wake
+            if (c != 0)
+                lisp_ctx_wake(c);
+        }
+    }
+}
+
+// Claim a sleeper slot for ctx at `deadline`. cli-guarded against the same-core
+// tick. Returns the slot, or -1 if the table is full.
+static int sleeper_claim(uint64_t deadline, lisp_value ctx) {
+    int cli_state = cli();
+    int slot = -1;
+    for (int i = 0; i < LISP_MAX_SLEEPERS; i++)
+        if (g_sleepers[i].deadline == 0) {
+            slot = i;
+            break;
+        }
+    if (slot >= 0) {
+        g_sleepers[slot].ctx = ctx;
+        g_sleepers[slot].deadline = deadline;  // publish last
+    }
+    sti(cli_state);
+    return slot;
+}
+
+static void sleeper_release(int slot) {
+    if (slot >= 0 && slot < LISP_MAX_SLEEPERS)
+        g_sleepers[slot].deadline = 0;
+}
+
+// 1 while the slot is still armed; 0 once the tick has fired (and freed) it. A
+// timeout-capable wait checks this under cli() to avoid parking after its
+// deadline already elapsed (a lost-timeout race, the mirror of the count check).
+static int sleeper_pending(int slot) {
+    return slot >= 0 && slot < LISP_MAX_SLEEPERS && g_sleepers[slot].deadline != 0;
+}
+
+// Arm the periodic tick on the CURRENT core (local timer -> per-core). The same
+// 50us tick the native preemptive scheduler ran; harmless and idle otherwise.
+static void lisp_arm_timer_tick(void) {
+    timer_request(timer_features_periodic | timer_features_local, 50000, lisp_timer_tick);
+}
+
+// (sleep ns) -> deschedule the running context for about `ns` nanoseconds, then
+// resume. Yields the core (it runs other contexts / idles) -- not a busy-wait.
+// Resolution is the tick (~50us), so sub-tick sleeps round up to one tick.
+static lisp_value prim_sleep(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]) || lisp_fixnum_val(a[0]) < 0)
+        return (*e = "sleep: expects (nanoseconds)"), LISP_UNDEF;
+    uint64_t deadline = timer_timestamp_ns() + (uint64_t)lisp_fixnum_val(a[0]);
+    lisp_value self = lisp_current_ctx();
+    if (self == LISP_EMPTY) {
+        // No scheduler context to yield TO (a boot-time direct eval -- driver
+        // bring-up before the per-core loop, or a self-test): nothing else is
+        // runnable on this core, so there is nothing to yield to. Wait the
+        // duration out on the counter. A driver that runs its bring-up inside a
+        // spawned context instead gets the real yield below.
+        while (timer_timestamp_ns() < deadline)
+            __asm__ volatile("pause");
+        return LISP_UNDEF;
+    }
+    int slot = sleeper_claim(deadline, self);
+    if (slot < 0)
+        return (*e = "sleep: too many sleepers"), LISP_UNDEF;
+    int cli_state = cli();
+    // If the tick already fired and freed our slot (a sub-tick deadline), don't
+    // park -- the deadline has passed. Otherwise block; a later tick wakes us.
+    if (g_sleepers[slot].deadline != 0)
+        lisp_ctx_block(self);
+    sti(cli_state);
+    return LISP_UNDEF;
 }
 
 // Legacy port I/O. (in-uN port) -> value; (out-uN port value) -> unspecified.
@@ -1097,6 +1231,49 @@ static void check_network(lisp_value env) {
     }
 }
 
+// (sleep ns) under the real wake path: a context records uptime, sleeps ~20ms,
+// records uptime again, and returns the elapsed time. The context PARKS on the
+// timeout queue -- it is woken by the periodic tick, not a busy-wait -- so this
+// also verifies the tick is actually delivered (if it were not, the context would
+// never wake and the deadline-bounded harness below would report a hang). The
+// harness mirrors run_isr_demo: run the scheduler, then sti+hlt to take the tick,
+// until the sleeper finishes or a 2s wall-clock bound elapses.
+static void check_sleep(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 2000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(define slept (spawn (lambda () (let ((a (uptime-ns)))"
+        "                                  (sleep 20000000) (- (uptime-ns) a)))))",
+        env, &err);
+    lisp_value slept = lisp_eval_string("slept", env, &err);
+    uint64_t deadline = timer_timestamp_ns() + 2000000000ull;  // 2s safety bound
+    while (lisp_ctx_state(slept) != LISP_CTX_DONE &&
+           timer_timestamp_ns() < deadline) {
+        lisp_sched_run(&s, 0);                 // run until the context parks (or done)
+        if (lisp_ctx_state(slept) == LISP_CTX_DONE)
+            break;
+        __asm__ volatile("sti; hlt");          // wait for the next tick, then retry
+    }
+    __asm__ volatile("cli");                   // restore the phase's interrupts-off
+    lisp_value v = lisp_ctx_value(slept);
+    // The 20ms sleep should elapse roughly on time -- allow a wide band for tick
+    // granularity and a slow emulator, but it must be in the ballpark, not 0.
+    if (err == NULL && lisp_ctx_state(slept) == LISP_CTX_DONE && lisp_is_fixnum(v) &&
+        lisp_fixnum_val(v) >= 15000000 && lisp_fixnum_val(v) <= 500000000) {
+        char nb[24];
+        lisp_print(v, nb, sizeof nb);
+        print_str("[SysLisp]  ok  (sleep) parks and a timer tick wakes it -> ");
+        print_str(nb);
+        print_str(" ns\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL (sleep) -- the periodic tick did not wake it\r\n");
+        g_fail++;
+    }
+}
+
 static void run_self_test(lisp_value env) {
     check(env, "(+ 1 2 3)", "6");
     check(env, "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 6)", "720");
@@ -1216,6 +1393,7 @@ static void run_self_test(lisp_value env) {
     check_power(env);
     check_storage(env);
     check_network(env);
+    check_sleep(env);
     // sys-debug through the capability path: a module imports the reflective
     // debugger and single-steps a sub-context to completion (Lisp debugging Lisp).
     check(env, "(begin"
@@ -1360,6 +1538,13 @@ static void announce_core(int id, const char *err, lisp_value proof) {
 static void NORETURN lisp_core_loop(void) {
     int id = interrupt_get_cpu_idx();
 
+    // The timeout-queue tick is per-core (timer_features_local). The BSP armed its
+    // own in lisp_scheduler_enter; each AP arms its here so a context sleeping /
+    // waiting-with-timeout on this core is woken. (Re-arming on the BSP would be
+    // harmless, but it is already done.)
+    if (id != 0)
+        lisp_arm_timer_tick();
+
     // This core's scheduler. A stack local (its run queue is a GC root reachable
     // from this frame); per_context_heaps gives each spawned context its own heap.
     lisp_sched_t sched;
@@ -1471,6 +1656,14 @@ int lisp_scheduler_enter() {
     lisp_install_sched(g_env);
     lisp_env_define(g_env, lisp_make_symbol("uptime-ns", 9),
                     lisp_make_primitive(prim_uptime_ns, "uptime-ns"));
+    // (sleep ns): yield the running context for a duration. Ambient like uptime-ns
+    // -- any context may deschedule itself; it bears no hardware authority. Backed
+    // by the timeout queue + the periodic tick armed below.
+    lisp_env_define(g_env, lisp_make_symbol("sleep", 5),
+                    lisp_make_primitive(prim_sleep, "sleep"));
+    // Arm the periodic tick on the BSP now, so a (sleep)/timeout wait works during
+    // the single-core self-test phase too (each AP arms its own in lisp_core_loop).
+    lisp_arm_timer_tick();
     lisp_env_define(g_env, lisp_make_symbol("%event-count", 12),
                     lisp_make_primitive(prim_event_count, "%event-count"));
     lisp_env_define(g_env, lisp_make_symbol("%event-wait", 11),

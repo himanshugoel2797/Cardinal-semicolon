@@ -15,17 +15,18 @@
 
   (define (nth lst k) (if (= k 0) (car lst) (nth (cdr lst) (- k 1))))
 
-  ;; Busy-wait (counter-paced via uptime-ns) until `pred` is true, or `timeout-ns`
-  ;; elapses; returns #t if pred became true, #f on timeout. The device-bring-up
-  ;; analogue of the C drivers' timer_timeout loops (reset/link settle polls).
-  ;; NB: a cooperative Lisp context busy-waits here -- fine for short boot-time
-  ;; settles (us..ms), not for long sleeps (those want an interrupt-driven park).
+  ;; Poll `pred` until it is true, or `timeout-ns` elapses; #t if it became true,
+  ;; #f on timeout. The device-bring-up analogue of the C drivers' timer_timeout
+  ;; loops (reset/link settle polls). It YIELDS between polls via (sleep): under
+  ;; the scheduler the core runs other contexts while we wait; only a boot-time
+  ;; direct eval (no context to yield to) falls back to a counter wait. The poll
+  ;; interval bounds how often pred is checked -- ~200us, fine for ms-scale waits.
   (define (wait-until pred timeout-ns)
     (let ((deadline (+ (uptime-ns) timeout-ns)))
       (let loop ()
         (cond ((pred) #t)
               ((> (uptime-ns) deadline) #f)
-              (else (loop))))))
+              (else (sleep 200000) (loop))))))
 
   ;; Copy `len` bytes out of `src` starting at `off` into a fresh owned buffer.
   ;; The NIC RX path needs this: the device's receive buffer is recycled, so a
