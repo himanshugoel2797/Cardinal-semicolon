@@ -82,6 +82,11 @@ struct lisp_heap {
 };
 
 #define GC_THRESHOLD (256 * 1024)
+// Adaptive threshold: after a collection, allow the heap to allocate roughly as
+// many bytes as are live before the next collection (heap size ~2x live), so a
+// large live structure is not re-scanned on every 256KB. Live bytes are
+// estimated from the live object count (objects average well under this).
+#define GC_BYTES_PER_OBJ 64
 
 // The shared system heap. Everything else (counters, free lists, slabs) is
 // zero/NULL -> an empty pool, as required.
@@ -418,6 +423,11 @@ static void collect_heap_locked(struct lisp_heap *h) {
     h->bytes_since = 0;
     h->want_gc = 0;
     h->collections++;
+    // Scale the next trigger to the surviving live set: collect again only after
+    // allocating about as much as is currently live (>= the base threshold).
+    h->threshold = h->live * GC_BYTES_PER_OBJ;
+    if (h->threshold < GC_THRESHOLD)
+        h->threshold = GC_THRESHOLD;
 }
 
 // --- allocation -------------------------------------------------------------
