@@ -476,6 +476,17 @@ lisp_value lisp_read(const char **cursor, const char *end, const char **err);
 // NULL. If `base`/`pos` are NULL or pos<=base, reports line 1, column 1.
 void lisp_source_location(const char *base, const char *pos, int *line, int *col);
 
+// --- REPL engine (repl.c) ---------------------------------------------------
+
+// Read every datum in [in, in+len), evaluate each in `env` (a persistent REPL
+// environment, so definitions carry across calls), and write a human-readable
+// transcript -- each value on its own line, or "error: <msg>" (a reader error
+// also carrying "(line L, column C)") -- into `out` (NUL-terminated, capacity
+// `cap`; truncates rather than overflowing). Returns the number of forms
+// evaluated, or -1 if a reader error stopped the chunk. The serial shell is this
+// engine wired to a CSMUX channel; it is also unit-tested standalone.
+int lisp_repl_eval(const char *in, size_t len, lisp_value env, char *out, size_t cap);
+
 // --- Printer (print.c) ------------------------------------------------------
 
 // Write a canonical (reader-faithful) textual form of `v` into `buf` (capacity
