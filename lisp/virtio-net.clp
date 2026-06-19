@@ -188,11 +188,8 @@
   (notify-queue! notify mult txq))
 
 ;; --- Ethernet + ARP (network byte order, written byte-wise) -----------------
-
-;; Write a big-endian u16 as two bytes at off.
-(define (put-be16! b off v)
-  (bytes-u8-set! b off       (bit-extract v 8 8))
-  (bytes-u8-set! b (+ off 1) (bit-extract v 0 8)))
+;; put-be16! (big-endian u16 store) comes from driver-util now, shared with the
+;; rest of the networking stack.
 
 ;; Copy a 6-byte MAC (a list of bytes) into b at off.
 (define (put-mac! b off mac)

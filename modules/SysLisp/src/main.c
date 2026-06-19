@@ -429,6 +429,61 @@ static lisp_value prim_out_u32(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// --- sys-cmdline: read the kernel command line (boot policy in Lisp) -----------
+//
+// The kernel command line (GetBootInfo()->Cmdline) carries boot-time policy flags
+// (cardinal.repl, cardinal.test, cardinal.netdbg, ...). Exposing it as a
+// capability lets the privileged `init` module gate features in Lisp rather than
+// hardcoding strstr() calls in C -- e.g. a Lisp network-debug server brings itself
+// up only under cardinal.netdbg. Read-only: a context can observe the cmdline but
+// never change it.
+
+// Copy a Lisp string argument into a NUL-terminated C buffer; returns -1 (and
+// sets *e) if it is not a string or does not fit. strstr needs a terminated
+// needle, and Lisp strings are length-counted, not NUL-terminated.
+static int cmdline_arg(lisp_value v, char *buf, size_t cap, const char **e) {
+    if (!lisp_is_string(v))
+        return (*e = "expects a string"), -1;
+    size_t ln = lisp_string_len(v);
+    if (ln >= cap)
+        return (*e = "string too long"), -1;
+    memcpy(buf, lisp_string_data(v), ln);
+    buf[ln] = '\0';
+    return (int)ln;
+}
+
+// (cmdline-has? "substr") -> #t if substr occurs in the kernel command line.
+static lisp_value prim_cmdline_has(lisp_value *a, int n, const char **e) {
+    char needle[128];
+    if (n != 1 || cmdline_arg(a[0], needle, sizeof needle, e) < 0)
+        return (*e = *e ? *e : "cmdline-has?: expects (string)"), LISP_UNDEF;
+    CardinalBootInfo *bi = GetBootInfo();
+    if (bi == NULL)
+        return LISP_FALSE;
+    return strstr(bi->Cmdline, needle) != NULL ? LISP_TRUE : LISP_FALSE;
+}
+
+// (cmdline-get "key=") -> the token following the first occurrence of "key=", up
+// to the next whitespace or end, as a string; #f if the key is absent. Lets a
+// Lisp server read a parameter (e.g. (cmdline-get "cardinal.ip=") -> "10.0.2.15").
+static lisp_value prim_cmdline_get(lisp_value *a, int n, const char **e) {
+    char key[128];
+    int kl = (n == 1) ? cmdline_arg(a[0], key, sizeof key, e) : -1;
+    if (kl < 0)
+        return (*e = *e ? *e : "cmdline-get: expects (string)"), LISP_UNDEF;
+    CardinalBootInfo *bi = GetBootInfo();
+    if (bi == NULL)
+        return LISP_FALSE;
+    const char *p = strstr(bi->Cmdline, key);
+    if (p == NULL)
+        return LISP_FALSE;
+    p += kl;
+    const char *q = p;
+    while (*q != '\0' && *q != ' ' && *q != '\t')
+        q++;
+    return lisp_make_string(p, (size_t)(q - p));
+}
+
 // The capability-bearing driver primitives, grouped into named modules instead
 // of dumped into the global env. A Lisp driver gains an authority only by
 // importing its module -- (import sys-mmio) to map device memory, (import sys-io)
@@ -451,6 +506,9 @@ static const lisp_builtin_export sys_irq_exports[] = {
     {"irq-register", prim_irq_register}, {"irq-count", prim_irq_count},
     {"irq-wait", prim_irq_wait},
 };
+static const lisp_builtin_export sys_cmdline_exports[] = {
+    {"cmdline-has?", prim_cmdline_has}, {"cmdline-get", prim_cmdline_get},
+};
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -464,6 +522,7 @@ static void register_driver_modules(lisp_value env) {
         {"sys-mmio", sys_mmio_exports, ARRAY_LEN(sys_mmio_exports)},
         {"sys-pci", sys_pci_exports, ARRAY_LEN(sys_pci_exports)},
         {"sys-irq", sys_irq_exports, ARRAY_LEN(sys_irq_exports)},
+        {"sys-cmdline", sys_cmdline_exports, ARRAY_LEN(sys_cmdline_exports)},
     };
     for (size_t i = 0; i < ARRAY_LEN(mods); i++)
         // Only OOM can fail this, and only at boot with a fresh heap -- but a
@@ -781,6 +840,34 @@ static void run_self_test(lisp_value env) {
                // in the shared env (a common name a later driver might want).
                "  (import (dma-probe (prefix dp:)))"
                "  (dp:run))",
+          "#t");
+    // sys-cmdline through the capability path: the mechanism, asserted without
+    // depending on any boot-specific flag so it holds on every boot (cardinal.test
+    // or not). The empty substring is always "present" (strstr returns the string);
+    // a guaranteed-absent flag is not; and an absent key reads back #f.
+    check(env, "(begin"
+               "  (define-module cmdline-probe (export run)"
+               "    (import sys-cmdline)"
+               "    (define (run)"
+               "      (and (cmdline-has? \"\")"
+               "           (not (cmdline-has? \"zzqq.absent.flag\"))"
+               "           (eq? (cmdline-get \"zzqq.absent.key=\") #f))))"
+               "  (import (cmdline-probe (prefix cl:)))"
+               "  (cl:run))",
+          "#t");
+    // driver-util byte-order helpers: a big-endian u32 round-trips, and the bytes
+    // land MSB-first (the network order the IP/UDP/ARP layers depend on).
+    check(env, "(begin"
+               "  (define-module du-probe (export run)"
+               "    (import driver-util)"
+               "    (define (run)"
+               "      (let ((b (make-bytes 4)))"
+               "        (put-be32! b 0 305419896)"            // 0x12345678
+               "        (and (= (get-be32 b 0) 305419896)"
+               "             (= (bytes-u8-ref b 0) 18)"       // 0x12 = MSB first
+               "             (= (get-be16 b 0) 4660)))))"     // 0x1234
+               "  (import (du-probe (prefix du:)))"
+               "  (du:run))",
           "#t");
     check_scheduler(env);
     check_capabilities(env);

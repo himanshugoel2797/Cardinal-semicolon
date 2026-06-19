@@ -16,35 +16,24 @@
 
 (define-module init
   (export system-init start-repl)
-  (import ps2 virtio-net)
+  (import coreinput ps2 virtio-net)
 
-  ;; The async input service: a long-lived context owning a device table and
-  ;; routing input events. Drivers `send` it (register <name>) and (event
-  ;; <payload>); there is no synchronous re-entry, so the network-style "rx
-  ;; handler calls back into tx" self-deadlock cannot arise here by construction.
-  ;; Returns the coreinput handle the keyboard driver sends to.
-  (define (start-input-service)
-    (let ((coreinput
-            (spawn-restricted '()
-              (lambda ()
-                (let loop ((devs '()))
-                  (let ((m (recv)))
-                    (cond ((eq? (car m) 'register)
-                           (display "[coreinput] device registered: ")
-                           (display (cadr m)) (newline)
-                           (loop (cons (cadr m) devs)))
-                          ((eq? (car m) 'event)
-                           (display "[coreinput] event ") (display (cadr m)) (newline)
-                           (loop devs))
-                          (else (loop devs)))))))))
-      (ps2-init)                  ; i8042 bring-up runs here, in the root init context
-      (spawn-restricted '()       ; the keyboard pump needs no import authority
-        (lambda () (ps2-keyboard-driver coreinput)))
-      coreinput))
+  ;; Bring up keyboard input: start the generic input service (coreinput, a
+  ;; reusable server module -- mechanism), run i8042 bring-up here in the root
+  ;; init context (ps2-init wants port-I/O authority, which init has and the
+  ;; restricted pump does not need to repeat), then spawn the keyboard pump as a
+  ;; restricted context that feeds the service. This wiring -- WHICH driver backs
+  ;; the input service -- is policy, so it lives in init, not in coreinput.
+  (define (setup-input)
+    (let ((input (start-input-service)))   ; the async device-table server
+      (ps2-init)                           ; i8042 controller + keyboard bring-up
+      (spawn-restricted '()                ; the keyboard pump needs no import authority
+        (lambda () (ps2-keyboard-driver input)))
+      input))
 
   ;; The system entry point: called once on the BSP after the scheduler is live.
   (define (system-init)
-    (start-input-service)
+    (setup-input)
     (virtio-net-init)             ; brings up the NIC (no-op if absent); spawns its own RX context
     'system-up)
 

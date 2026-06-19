@@ -8,10 +8,44 @@
 ;; the mutable store the driver substrate needs).
 
 (define-module driver-util
-  (export nth make-cell cell-ref cell-set!)
+  (export nth make-cell cell-ref cell-set!
+          put-be16! get-be16 put-be32! get-be32
+          serve)
 
   (define (nth lst k) (if (= k 0) (car lst) (nth (cdr lst) (- k 1))))
 
   (define (make-cell v) (let ((b (make-bytes 8))) (bytes-u64-set! b 0 v) b))
   (define (cell-ref c)  (bytes-u64-ref c 0))
-  (define (cell-set! c v) (bytes-u64-set! c 0 v)))
+  (define (cell-set! c v) (bytes-u64-set! c 0 v))
+
+  ;; Network byte order (big-endian) read/write into a byte buffer. The volatile
+  ;; byte accessors are little-endian-native, so protocol headers (which are
+  ;; big-endian) are laid out a byte at a time. virtio-net grew its own copies of
+  ;; these; they live here now so every networking module shares one definition.
+  (define (put-be16! b off v)
+    (bytes-u8-set! b off       (bit-extract v 8 8))
+    (bytes-u8-set! b (+ off 1) (bit-extract v 0 8)))
+  (define (get-be16 b off)
+    (bitwise-or (arithmetic-shift (bytes-u8-ref b off) 8)
+                (bytes-u8-ref b (+ off 1))))
+  (define (put-be32! b off v)
+    (put-be16! b off       (bit-extract v 16 16))
+    (put-be16! b (+ off 2) (bit-extract v 0 16)))
+  (define (get-be32 b off)
+    (bitwise-or (arithmetic-shift (get-be16 b off) 16)
+                (get-be16 b (+ off 2))))
+
+  ;; The server mold. Cardinal's OS services are long-lived restricted contexts
+  ;; that own some state and a message loop: `send` to them, never call them
+  ;; synchronously, so the rx-handler-re-enters-tx self-deadlock that plagued the
+  ;; C servers cannot arise. `serve` captures that shape once: it spawns a context
+  ;; with the empty capability grant (a wedged/compromised service can't acquire
+  ;; new authority -- the least-privilege posture) running a loop that threads
+  ;; `state`: each message m becomes (step state m) -> next-state. The handler
+  ;; closes over whatever capabilities its defining module imported. Returns the
+  ;; context handle callers `send` to.
+  (define (serve init step)
+    (spawn-restricted '()
+      (lambda ()
+        (let loop ((state init))
+          (loop (step state (recv))))))))
