@@ -379,6 +379,39 @@ void lisp_install_primitives(lisp_value env);
 // prelude itself failed to evaluate (a build-time bug).
 int lisp_load_prelude(lisp_value env);
 
+// --- Modules (module.c) -----------------------------------------------------
+//
+// Multi-file programs use two special forms (always recognized by the
+// evaluator):
+//
+//   (define-module NAME (export a b ...) body...)
+//       Evaluate `body` in a FRESH environment parented on the global env, so
+//       its internal defines are private; then publish the listed bindings as
+//       NAME's exports. NAME is a symbol; a file is normally exactly one such
+//       form.
+//
+//   (import SPEC ...)
+//       Load each module once (idempotent) and bind its chosen exports into the
+//       calling environment. A SPEC is `name`, `(name (prefix p:))`, or
+//       `(name (only a b ...))`. A module is located by NAME through the loader
+//       hook below; loading a not-yet-seen module evaluates its source, which is
+//       expected to (define-module NAME ...).
+//
+// The module registry lives inside the global environment (a hidden binding),
+// so it is rooted by the GC for free; loading MUST therefore happen in the
+// single-core boot window (before lisp_gc_set_multicore freezes the system
+// heap), the same constraint top-level driver loading already has. A partially
+// loaded module is marked so a circular import is reported rather than looping.
+
+// Resolve a module NAME (as written in import/define-module) to its source
+// bytes [*src, *src + *len). Return true if found. The bytes must remain valid
+// for the duration of the load (embedder-owned, e.g. a pointer into the
+// persistent initrd); NUL-termination is NOT required (the reader is bounded).
+// The kernel maps NAME -> an initrd path; host tests map it to a file.
+typedef bool (*lisp_module_loader_fn)(const char *name, const char **src,
+                                      size_t *len, void *ctx);
+void lisp_set_module_loader(lisp_module_loader_fn fn, void *ctx);
+
 // --- Reader (reader.c) ------------------------------------------------------
 
 // Parse one datum from `*cursor`, advancing it past the consumed text. Returns
