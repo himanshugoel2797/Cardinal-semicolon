@@ -27,7 +27,8 @@
 #include <stddef.h>
 
 #define CSMUX_CH_LOG 0u  // human-readable debug log (print_str)
-#define CSMUX_CH_CTRL 1u // test harness control protocol (text messages)
+#define CSMUX_CH_CTRL 1u // auxiliary output/log channel (no inbound ring) -- the
+                         // REPL subsumed what the old control protocol drove
 #define CSMUX_CH_REPL 2u // the interactive Lisp REPL (replaced the GDB tunnel)
 
 #define CSMUX_MAX_PAYLOAD 1024u
@@ -70,7 +71,7 @@ bool csmux_xport_heavy(void);
 // csmux_log_flush(). print_str routes the log here once CSMUX is active.
 void csmux_log_append(const void *buf, uint32_t len);
 
-// Flush any buffered log now (e.g. periodically, and before a death is reported).
+// Flush any buffered log now (e.g. periodically, before idling).
 void csmux_log_flush(void);
 
 // Send one whole frame on `chan`. Emitted atomically with respect to other
@@ -79,10 +80,8 @@ void csmux_log_flush(void);
 //
 // Re-entrancy caveat: csmux_send takes a TX spinlock under cli(). A CPU exception
 // taken WHILE this core already holds that lock (i.e. a fault from inside a
-// csmux_send / print_str frame) and then trying to send again would self-
-// deadlock. The death-test hooks call csmux_send from the fault/PANIC path, so a
-// death-test body must not be invoked while the TX lock is held -- in practice it
-// never is (test bodies run from the runner, not from inside print_str).
+// csmux_send / print_str frame) would self-deadlock if it tried to send again, so
+// a fault/PANIC path must not re-enter csmux_send while the TX lock is held.
 int csmux_send(uint8_t chan, const void *buf, uint32_t len);
 
 // Unframed write over the active link, serialised by the same lock as
@@ -103,11 +102,5 @@ int csmux_chan_read(uint8_t chan, void *buf, uint32_t cap);
 // Number of bytes currently waiting on `chan` (pumps first), without consuming
 // them. Used by the REPL's non-blocking input poll.
 int csmux_chan_avail(uint8_t chan);
-
-// Install a hook invoked at the top of debug_handle_trap() (the PANIC path),
-// before the interactive debug shell. Used by SysTest so a PANIC during a death
-// test reports the death and resets instead of dropping into the shell. The hook
-// returns normally when it decides not to act. Resolved by name from SysTest.
-void debug_set_trap_hook(void (*hook)(void));
 
 #endif

@@ -124,18 +124,9 @@ void print_stream(void (*output_stream)(char) NONNULL,
     }
 }
 
-// Hook invoked at the top of debug_handle_trap (the PANIC path) before the
-// interactive shell. SysTest installs one so a PANIC during a death test reports
-// the death and resets instead of hanging in the shell; it returns normally when
-// it decides not to act. NULL on a normal boot.
-static void (*g_trap_hook)(void) = NULL;
-void debug_set_trap_hook(void (*hook)(void)) { g_trap_hook = hook; }
-
 static char priv_s[2048];
 int WEAK debug_handle_trap()
 {
-    if (g_trap_hook != NULL)
-        g_trap_hook(); // death-test path: may report + reset (never returns) when armed
     const char *p = priv_s;
     print_str(p);
     debug_shell(serial_input, serial_output);

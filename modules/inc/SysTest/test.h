@@ -46,30 +46,10 @@ typedef struct {
     test_fn_t   fn;
     test_run_t  run;     // execution context (default TEST_RUN_INLINE == 0)
     uint32_t    flags;   // see TEST_FLAG_*
-    // Death tests only (TEST_FLAG_DEATH). The CPU exception vector the lethal op
-    // is expected to raise (e.g. 14 for #PF, 13 for #GP, 6 for #UD), or -1 for
-    // "any death" (any fault, or a PANIC). Ignored unless TEST_FLAG_DEATH is set.
-    // Trailing field: existing (designated/partial) initializers stay valid and
-    // zero-fill it -- so set it explicitly (or use TEST_DEATH) for death tests.
-    int32_t     expect_vector;
 } test_def_t;
 
 #define TEST_FLAG_NONE 0u
 #define TEST_FLAG_SKIP (1u << 0) // registered but not executed (reported as skipped)
-// A death test: fn is expected to KILL the kernel (fault/PANIC). It runs only
-// under a harness-driven local run (see priv_test.h); in plain test mode it is
-// reported skipped. If fn returns without dying, the test FAILS ("survived").
-#define TEST_FLAG_DEATH (1u << 1)
-
-// Expected-fault sentinel for "any death is acceptable".
-#define TEST_DEATH_ANY (-1)
-
-// Convenience registrar for a death test. `vec` is the expected CPU vector
-// (or TEST_DEATH_ANY). Death tests run inline (they are not meant to return).
-#define TEST_DEATH_DEF(suite_, name_, fn_, vec_)                       \
-    ((test_def_t){.suite = (suite_), .name = (name_), .fn = (fn_),     \
-                  .run = TEST_RUN_INLINE, .flags = TEST_FLAG_DEATH,    \
-                  .expect_vector = (vec_)})
 
 // Register a test. Safe to call from any module_init. The def is copied, so a
 // stack/temporary is fine. Returns CS_OK, or CS_OUTOFMEM / CS_INVALIDARG.

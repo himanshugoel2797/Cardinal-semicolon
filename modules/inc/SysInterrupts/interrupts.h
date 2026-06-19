@@ -61,14 +61,6 @@ void interrupt_register_handler(int irq, InterruptHandler handler);
 
 void interrupt_unregister_handler(int irq, InterruptHandler handler);
 
-// Install a hook consulted on an UNHANDLED CPU exception (vector < 32), just
-// before the trap frame is dumped and the kernel panics. SysTest uses this so a
-// CPU fault triggered by a death test reports the fault vector and reboots
-// instead of panicking into the debug shell. The hook is passed the vector and
-// returns normally when it chooses not to act (e.g. no death test armed); pass
-// NULL to clear. Resolved by name from SysTest.
-void interrupt_set_death_hook(void (*hook)(int vector));
-
 cs_error interrupt_allocate(int cnt, interrupt_flags_t flags, int *base);
 
 void interrupt_mapinterrupt(uint32_t line, int irq, bool active_low, bool level_trig);
