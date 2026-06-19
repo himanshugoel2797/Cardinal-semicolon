@@ -937,22 +937,39 @@ static void check_network(lisp_value env) {
         "(define netC (start-network-service (list 10 0 2 15)))"
         "(send netC (list 'register-nic (list 2 0 0 0 0 1) wire))"
         "(define pl (make-bytes 1)) (bytes-u8-set! pl 0 222)"
-        "(send netC (list 'udp-send (list 10 0 2 20) (list 2 0 0 0 0 2) 1111 9999 pl))",
+        "(send netC (list 'udp-send (list 10 0 2 20) (list 2 0 0 0 0 2) 1111 9999 pl))"
+        // (3) Robustness: a crafted IPv4 frame with a lying ihl (=15 -> 60-byte
+        // header) that runs off a short frame must NOT kill the service -- the
+        // checksum read past the buffer would error and terminate the context if
+        // unbounded. Feed netD the bad frame, then a valid ARP who-has; netD must
+        // survive and still emit the ARP reply.
+        "(define dinfo (spawn (lambda () (let ((m (recv))) (get-be16 (cadr m) 20)))))"
+        "(define netD (start-network-service (list 10 0 2 15)))"
+        "(send netD (list 'register-nic (list 2 0 0 0 0 1) dinfo))"
+        "(define bad (make-bytes 40))"                 // shorter than ihl=15 claims
+        "(put-be16! bad 12 2048) (bytes-u8-set! bad 14 79)"  // IPv4 ethertype; byte14=0x4F (v4,ihl15)
+        "(send netD (list 'rx bad 40))"                // must be ignored, not fatal
+        "(send netD (list 'rx areq 42))",              // then a valid ARP -> reply
         env, &err);
     lisp_value arp = lisp_eval_string("arp-info", env, &err);
     lisp_value udp = lisp_eval_string("udp-got", env, &err);
+    lisp_value robust = lisp_eval_string("dinfo", env, &err);
     lisp_sched_run(&s, 0);
-    char ab[64], ub[32];
+    char ab[64], ub[32], rb[32];
     lisp_print(lisp_ctx_value(arp), ab, sizeof ab);
     lisp_print(lisp_ctx_value(udp), ub, sizeof ub);
-    if (err == NULL && strcmp(ab, "(2 10 0 2 15)") == 0 && strcmp(ub, "222") == 0) {
-        print_str("[SysLisp]  ok  network ARP reply + UDP round-trip (ip+udp checksums verify)\r\n");
+    lisp_print(lisp_ctx_value(robust), rb, sizeof rb);
+    if (err == NULL && strcmp(ab, "(2 10 0 2 15)") == 0 && strcmp(ub, "222") == 0 &&
+        strcmp(rb, "2") == 0) {  // ARP reply emitted after the malformed frame
+        print_str("[SysLisp]  ok  network ARP + UDP round-trip + survives malformed IP\r\n");
         g_pass++;
     } else {
         print_str("[SysLisp] FAIL network  arp-> ");
         print_str(ab);
         print_str("  udp-> ");
         print_str(ub);
+        print_str("  robust-> ");
+        print_str(rb);
         print_str("\r\n");
         g_fail++;
     }
