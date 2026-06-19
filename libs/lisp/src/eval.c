@@ -409,6 +409,12 @@ enum {
     K_WHILE_TEST,  // a=test expr, b=body forms. Awaiting the test value.
     K_WHILE_BODY,  // a=test expr, b=body forms, c=remaining body forms this pass.
     K_BIND,        // a=remaining bindings, b=new env, c=body, env=init-eval env.
+    // Fast path for the very common 2-argument call: the evaluated args live in
+    // the frame's own slots instead of a heap-allocated "done" list (one fewer
+    // allocation per call). K_ARGS2_A awaits arg0 (a=op, b=arg1-expr); on its
+    // arrival the frame becomes K_ARGS2_B (a=op, b=arg0-value) awaiting arg1.
+    K_ARGS2_A,
+    K_ARGS2_B,
 };
 
 // let-family kinds for let_start.
@@ -916,7 +922,17 @@ static void step_eval(lisp_ctx_t *cx) {
             do_call(cx, op, NULL, 0);  // zero-argument call
             return;
         }
-        if (!kont_push(cx, K_EVAL_ARGS, cx->env, op, LISP_EMPTY, lisp_cdr(rest)))
+        lisp_value rest2 = lisp_cdr(rest);
+        // Two-argument call: keep the first evaluated arg in the frame's b slot
+        // (K_ARGS2_*) instead of allocating a "done" list.
+        if (lisp_is_pair(rest2) && lisp_is_empty(lisp_cdr(rest2))) {
+            if (!kont_push(cx, K_ARGS2_A, cx->env, op, lisp_car(rest2), LISP_EMPTY))
+                return;
+            cx->control = lisp_car(rest);
+            cx->status = LISP_CTX_EVAL;
+            return;
+        }
+        if (!kont_push(cx, K_EVAL_ARGS, cx->env, op, LISP_EMPTY, rest2))
             return;
         cx->control = lisp_car(rest);
         cx->status = LISP_CTX_EVAL;
@@ -995,6 +1011,21 @@ static void step_applyk(lisp_ctx_t *cx) {
                 args[--n] = lisp_car(p);
             cx->kont = k->next;  // pop before the (possibly tail) call
             do_call(cx, op, args, argc);
+            return;
+        }
+        case K_ARGS2_A: {  // arg0 (V) just arrived; stash it and evaluate arg1
+            cx->control = k->b;  // arg1 expression
+            cx->env = k->env;
+            k->b = V;            // arg0 value, read back in K_ARGS2_B
+            k->h.header = LISP_MK_HEADER(LISP_OBJ_KONT, K_ARGS2_B);
+            cx->status = LISP_CTX_EVAL;
+            return;
+        }
+        case K_ARGS2_B: {  // arg1 (V) just arrived; both args in hand, call
+            lisp_value op = k->a;
+            lisp_value args[2] = {k->b, V};
+            cx->kont = k->next;  // pop before the (possibly tail) call
+            do_call(cx, op, args, 2);
             return;
         }
         case K_IF: {
