@@ -88,6 +88,17 @@ static lisp_value deep_copy(lisp_value v, int depth, const char **err) {
             return lisp_make_string(lisp_string_data(v), lisp_string_len(v));
         case LISP_OBJ_FLONUM:
             return lisp_make_flonum(lisp_flonum_val(v));
+        case LISP_OBJ_BYTES: {
+            // Snapshot the bytes into a fresh OWNED buffer in the receiver's heap
+            // (shared-nothing). A foreign/MMIO region thus sends its current
+            // contents, not the mapping -- device handles are not shared.
+            size_t bn = lisp_bytes_len(v);
+            lisp_value out = lisp_make_bytes(bn);
+            if (out == LISP_UNDEF)
+                return prim_err(err, "send: out of memory");
+            memcpy(lisp_bytes_data(out), lisp_bytes_data(v), bn);
+            return out;
+        }
         case LISP_OBJ_PAIR: {
             // Copy the cdr SPINE iteratively (a long list does not grow the C
             // stack); recurse only into each car. head/tail keep the partial copy

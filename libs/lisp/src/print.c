@@ -213,6 +213,11 @@ static void print_val(sink *s, lisp_value v, bool readable) {
         case LISP_OBJ_FLONUM: emit_flonum(s, lisp_flonum_val(v)); return;
         case LISP_OBJ_CLOSURE: emit_cstr(s, "#<procedure>"); return;
         case LISP_OBJ_PRIMITIVE: emit_cstr(s, "#<primitive>"); return;
+        case LISP_OBJ_BYTES:
+            emit_cstr(s, "#<bytes ");
+            emit_int(s, (int64_t)lisp_bytes_len(v));
+            emit_ch(s, '>');
+            return;
         default: emit_cstr(s, "#<obj>"); return;
     }
 }

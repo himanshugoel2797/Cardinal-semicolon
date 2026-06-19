@@ -39,6 +39,34 @@ lisp_value lisp_make_string(const char *data, size_t len) {
     return lisp_from_obj(s);
 }
 
+// Mutable byte buffers (driver substrate + bulk IPC). lisp_make_bytes owns its
+// inline storage; lisp_make_bytes_foreign wraps external (MMIO/DMA) memory the GC
+// must not free. See lisp_bytes in lisp.h.
+lisp_value lisp_make_bytes(size_t len) {
+    lisp_bytes *b = (lisp_bytes *)lisp_gc_alloc(sizeof(lisp_bytes) + len);
+    if (b == NULL)
+        return LISP_UNDEF;
+    b->h.header = LISP_MK_HEADER(LISP_OBJ_BYTES, 0);
+    b->data = (uint8_t *)(b + 1);  // inline storage trails the header
+    b->len = len;
+    b->phys = 0;
+    b->owned = 1;
+    memset(b->data, 0, len);
+    return lisp_from_obj(b);
+}
+
+lisp_value lisp_make_bytes_foreign(void *ptr, size_t len, uint64_t phys) {
+    lisp_bytes *b = (lisp_bytes *)lisp_gc_alloc(sizeof(lisp_bytes));
+    if (b == NULL)
+        return LISP_UNDEF;
+    b->h.header = LISP_MK_HEADER(LISP_OBJ_BYTES, 0);
+    b->data = (uint8_t *)ptr;  // foreign (MMIO/DMA): never freed by the GC
+    b->len = len;
+    b->phys = phys;
+    b->owned = 0;
+    return lisp_from_obj(b);
+}
+
 const char *lisp_named_name(lisp_value v) { return ((lisp_named *)lisp_obj(v))->name; }
 size_t lisp_named_len(lisp_value v) { return (size_t)LISP_HDR_AUX(lisp_obj(v)); }
 const char *lisp_string_data(lisp_value v) { return ((lisp_string *)lisp_obj(v))->data; }
