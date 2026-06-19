@@ -245,15 +245,13 @@ typedef struct {
 // corrupt it. Distinct from g_tx_lock and never nested with it (the pump never
 // sends, csmux_send never pumps), so no deadlock.
 
-static ring_t g_ctrl_ring;
 static ring_t g_repl_ring;
 
 static ring_t *ring_for(uint8_t chan) {
-    if (chan == CSMUX_CH_CTRL)
-        return &g_ctrl_ring;
     if (chan == CSMUX_CH_REPL)
         return &g_repl_ring;
-    return NULL; // CH_LOG (or unknown) has no inbound ring
+    // CH_LOG and CH_CTRL are output-only (no inbound ring); only the REPL reads.
+    return NULL;
 }
 
 static void ring_push(ring_t *r, const uint8_t *src, uint32_t len) {
