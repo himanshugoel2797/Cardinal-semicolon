@@ -782,6 +782,31 @@ static void step_eval(lisp_ctx_t *cx) {
             case_start(cx, rest);
             return;
         }
+        // Modules (module.c). These run synchronously to completion (they drive
+        // nested evals while loading source), which is fine for a boot-time
+        // configuration step; see notes/core/lisp-substrate.md.
+        if (is_form(head, "define-module")) {
+            const char *err = NULL;
+            lisp_value r = lisp_module_define(e, cx->env, &err);
+            if (err != NULL) {
+                ctx_error(cx, err);
+                return;
+            }
+            cx->accum = r;
+            cx->status = LISP_CTX_APPLY;
+            return;
+        }
+        if (is_form(head, "import")) {
+            const char *err = NULL;
+            lisp_value r = lisp_module_import(e, cx->env, &err);
+            if (err != NULL) {
+                ctx_error(cx, err);
+                return;
+            }
+            cx->accum = r;
+            cx->status = LISP_CTX_APPLY;
+            return;
+        }
     }
 
     // Procedure application: evaluate the operator first, then the operands.

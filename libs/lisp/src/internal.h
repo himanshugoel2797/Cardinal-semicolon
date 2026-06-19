@@ -101,4 +101,11 @@ int lisp_heap_wants_gc(lisp_heap_t *h);
 // (empty) or an interned symbol/keyword value.
 lisp_value *lisp_intern_table(size_t *cap_out);
 
+// Module special forms (module.c), dispatched from eval.c. `form` is the whole
+// (define-module ...) / (import ...) expression and `env` the environment it is
+// evaluated in. Each runs synchronously to completion (nested evals) and returns
+// the result value, or LISP_UNDEF with *err set on failure.
+lisp_value lisp_module_define(lisp_value form, lisp_value env, const char **err);
+lisp_value lisp_module_import(lisp_value form, lisp_value env, const char **err);
+
 #endif
