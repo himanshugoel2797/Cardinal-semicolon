@@ -419,6 +419,27 @@ behind a VM.
     env walk (lexical addressing), not dispatch. `test_dispatch.c` differentially
     checks the id classification against a name oracle and covers the
     form-name-as-variable edge (special only in head position).
+  - **Profile-driven optimization pass** *(done; `eval.c`/`gc.c`/`prims.c`)* — a
+    sweep of measure → edit → test (host bench + suite + memcheck + QEMU boot)
+    iterations against the allocator and the call path, the parts profiling showed
+    actually cost cycles (memory traffic), as opposed to instruction-count hot
+    spots that are cycle-cheap (tag/null checks, a vectorized memset) and were
+    tried and reverted as wall-clock-neutral. Landed, biggest first:
+    (1) **adaptive GC threshold** — scale the next collection to the live-set
+    size instead of a fixed 256KB, so a large live structure isn't re-scanned on
+    every 256KB (a 500k list build went 49s → 3s; a 200k map/fold 13s → 1.4s,
+    ending a near-quadratic blow-up); (2) **all-simple-argument calls evaluated
+    inline** with no continuation frame — when every argument is a symbol or
+    literal (the bulk of calls) there is nothing to suspend, so no `K_EVAL_OP`,
+    `K_EVAL_ARGS`, or "done" list is allocated; (3) a **2-argument fast path**
+    (`K_ARGS2`) that keeps the first evaluated arg in the frame's own slot rather
+    than a heap "done" cons; (4) **skip the operator-eval frame** for symbol-headed
+    calls; (5) **bind parameters directly** (no redefine-check on a fresh frame);
+    (6) **reuse one execution context** across `map`/`for-each` elements instead
+    of one per element. Net on the compute/cons benches: ~2.2× (and the GC-bound
+    workloads far more). The dominant remaining costs are the assoc-list **env
+    lookup** (wants lexical addressing) and **GC marking of live data** (wants a
+    generational collector) — both deliberately deferred as larger changes.
 - **Cooperative scheduler over contexts** *(done — "K2", host-first; `sched.c`)*.
   A `lisp_sched_t` round-robin scheduler runs contexts as green-thread
   "processes", each resumed for a reduction slice and preempted at a safe point —
