@@ -12,10 +12,16 @@
 
 ;; --- small utilities --------------------------------------------------------
 
-;; nth and the mutable word cell (make-cell/cell-ref/cell-set!) are generic
-;; driver helpers, now shared via the driver-util library rather than copied
-;; per driver. This is the first multi-file Lisp program in the OS.
-(import driver-util)
+;; The driver is a module. It imports exactly the capabilities it needs --
+;; sys-mmio (mmio-map/dma-alloc) and sys-pci (pci-find/pci-setup-msi + the MSI
+;; wake bridge net-count/net-wait) -- plus the generic driver-util helpers (nth
+;; and the mutable word cell make-cell/cell-ref/cell-set!). It exports just the
+;; entry point virtio-net-init. The capability prims stay private to this module;
+;; nothing reaches them through `virtio-net`. (Bodies stay at column 0: this is a
+;; pure wrapper over the existing definitions.)
+(define-module virtio-net
+  (export virtio-net-init)
+  (import sys-mmio sys-pci driver-util)
 
 ;; --- PCI config space + virtio capability walk ------------------------------
 
@@ -296,4 +302,4 @@
                             (let ((flen (build-arp-request! txbuf mac our-ip gw-ip)))
                               (tx-frame! txq txbuf notify mult flen))
                             (display "[virtio-net] sent ARP who-has 10.0.2.2") (newline)
-                            'ok)))))))))))
+                            'ok)))))))))))) ; last ) closes (define-module virtio-net ...)

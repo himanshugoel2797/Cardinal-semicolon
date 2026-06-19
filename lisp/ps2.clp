@@ -22,6 +22,15 @@
 
 ;; --- i8042 ports + status bits ----------------------------------------------
 
+;; The driver is a module: it imports exactly the capabilities it needs -- sys-io
+;; (legacy port I/O for the i8042) and sys-irq (the generic ISA-IRQ wake bridge)
+;; -- and exports only its two entry points. The port-I/O and IRQ primitives are
+;; private to this module; code outside cannot reach them through `ps2`. (Bodies
+;; stay at column 0: this is a pure wrapper over the existing definitions.)
+(define-module ps2
+  (export ps2-init ps2-keyboard-driver)
+  (import sys-io sys-irq)
+
 (define PS2-DATA #x60)
 (define PS2-CMD  #x64)          ; write: command; read: status
 
@@ -161,4 +170,4 @@
           (let pump ((seen (irq-count irq)))
             (ps2-drain coreinput)
             (irq-wait irq seen)
-            (pump (irq-count irq)))))))
+            (pump (irq-count irq)))))))) ; last ) closes (define-module ps2 ...)

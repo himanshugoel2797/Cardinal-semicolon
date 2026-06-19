@@ -71,6 +71,30 @@ static bool test_loader(const char *name, const char **src, size_t *len, void *c
     return false;
 }
 
+// --- built-in (C-provided) module exports -----------------------------------
+//
+// Two trivial C primitives published as a built-in module, exercising
+// lisp_register_builtin_module: a later (import ...) must bind them like any
+// source module's exports, and -- crucially -- a context that never imports the
+// module cannot name them (the capability-isolation property).
+
+static lisp_value prim_probe_double(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]))
+        return (*e = "probe-double: expects one integer"), LISP_UNDEF;
+    return lisp_fixnum(2 * lisp_fixnum_val(a[0]));
+}
+static lisp_value prim_probe_tag(lisp_value *a, int n, const char **e) {
+    (void)a;
+    (void)n;
+    (void)e;
+    return lisp_make_symbol("probed", 6);
+}
+
+static const lisp_builtin_export PROBE_EXPORTS[] = {
+    {"probe-double", prim_probe_double},
+    {"probe-tag", prim_probe_tag},
+};
+
 // --- harness ----------------------------------------------------------------
 
 static int failures = 0;
@@ -190,6 +214,94 @@ int main(void) {
             failures++;
         } else {
             printf("  ok   retry-after-failed-load -> both: %s\n", e2);
+        }
+    }
+
+    // --- built-in (C-provided) modules --------------------------------------
+    //
+    // These share one env per block because the registration, the wrapper
+    // module, and the use must all see the same module registry -- unlike
+    // evals/errs above, which build a fresh env each call.
+    printf("[lisp modules] built-in (C-provided) modules\n");
+    const size_t nprobe = sizeof(PROBE_EXPORTS) / sizeof(PROBE_EXPORTS[0]);
+
+    // Registration succeeds, and importing the built-in binds its prims -- note
+    // sys-probe is NOT in the loader's MODULES table, so the import resolving at
+    // all proves the registry shadows the source loader.
+    {
+        checks++;
+        lisp_value env = lisp_default_env();
+        int rc = lisp_register_builtin_module(env, "sys-probe", PROBE_EXPORTS, nprobe);
+        const char *err = NULL;
+        lisp_value v = lisp_eval_string(
+            "(import sys-probe) (list (probe-double 21) (probe-tag))", env, &err);
+        char buf[64];
+        lisp_print(v, buf, sizeof(buf));
+        if (rc != 0 || err != NULL || strcmp(buf, "(42 probed)") != 0) {
+            printf("  FAIL builtin import/use -> rc=%d got '%s' %s\n", rc, buf,
+                   err ? err : "");
+            failures++;
+        } else {
+            printf("  ok   builtin import/use -> %s\n", buf);
+        }
+    }
+
+    // Capability isolation: a registered-but-NOT-imported built-in leaves its
+    // prims unbound -- the authority comes only from importing the module.
+    {
+        checks++;
+        lisp_value env = lisp_default_env();
+        lisp_register_builtin_module(env, "sys-probe", PROBE_EXPORTS, nprobe);
+        const char *err = NULL;
+        lisp_eval_string("(probe-double 1)", env, &err);
+        if (err == NULL || strstr(err, "unbound") == NULL) {
+            printf("  FAIL builtin isolation -> expected unbound, got %s\n",
+                   err ? err : "(no error)");
+            failures++;
+        } else {
+            printf("  ok   builtin isolation (unimported prim unbound)\n");
+        }
+    }
+
+    // A built-in's authority stays PRIVATE to a module that imports it: a
+    // define-module can wrap it and export a safe interface, while an importer
+    // of that wrapper still cannot name the raw prim (one-way module privacy,
+    // identical to source modules -- the basis of the capability model).
+    {
+        lisp_value env = lisp_default_env();
+        lisp_register_builtin_module(env, "sys-probe", PROBE_EXPORTS, nprobe);
+        const char *err = NULL;
+        lisp_eval_string(
+            "(define-module wrap (export tagged)"
+            "  (import sys-probe)"
+            "  (define (tagged) (probe-tag)))"
+            "(import wrap)",
+            env, &err);
+
+        // The exported wrapper works (it closed over the private prim).
+        checks++;
+        const char *e1 = NULL;
+        lisp_value v = lisp_eval_string("(tagged)", env, &e1);
+        char buf[64];
+        lisp_print(v, buf, sizeof(buf));
+        if (err != NULL || e1 != NULL || strcmp(buf, "probed") != 0) {
+            printf("  FAIL builtin wrapper -> got '%s' %s\n", buf,
+                   e1 ? e1 : (err ? err : ""));
+            failures++;
+        } else {
+            printf("  ok   builtin wrapper exports a safe interface -> %s\n", buf);
+        }
+
+        // ...but the raw prim did NOT leak to the importer of `wrap`.
+        checks++;
+        const char *e2 = NULL;
+        lisp_eval_string("(probe-tag)", env, &e2);
+        if (e2 == NULL || strstr(e2, "unbound") == NULL) {
+            printf("  FAIL builtin wrapper privacy -> expected unbound, got %s\n",
+                   e2 ? e2 : "(no error)");
+            failures++;
+        } else {
+            printf("  ok   builtin wrapper keeps the raw prim private\n");
         }
     }
 
