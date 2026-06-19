@@ -3,8 +3,8 @@
 ;; Imported at boot by the `init` module (single-core); init calls (virtio-net-init)
 ;; on the BSP once the scheduler is live. Built on the
 ;; driver substrate: pci-find, mmio-map, dma-alloc, the volatile byte accessors,
-;; the bitwise/bitfield primitives, and the MSI/ISR-wake bridge (pci-setup-msi,
-;; net-count, net-wait).
+;; the bitwise/bitfield primitives, and the MSI/ISR-wake bridge (pci-setup-msi
+;; -> a handle, then msi-count, msi-wait).
 ;;
 ;;   N2: discover, negotiate features, set up the RX/TX virtqueues, DRIVER_OK, MAC.
 ;;   N3: MSI-X -> ISR -> a Lisp RX context draining the used ring.
@@ -14,7 +14,7 @@
 
 ;; The driver is a module. It imports exactly the capabilities it needs --
 ;; sys-mmio (mmio-map/dma-alloc) and sys-pci (pci-find/pci-setup-msi + the MSI
-;; wake bridge net-count/net-wait) -- plus the generic driver-util helpers (nth
+;; wake bridge msi-count/msi-wait) -- plus the generic driver-util helpers (nth
 ;; and the mutable word cell make-cell/cell-ref/cell-set!). It exports just the
 ;; entry point virtio-net-init. The capability prims stay private to this module;
 ;; nothing reaches them through `virtio-net`. (Bodies stay at column 0: this is a
@@ -237,13 +237,13 @@
                       (txq (virtio-setup-queue common 1))
                       (mac (virtio-net-read-mac devcfg)))
                   (bytes-u16-set! common VIRTIO-MSIX-CONFIG 0)    ; config events -> entry 0
-                  (let ((vec (pci-setup-msi ecam)))
-                    (if (not vec)
+                  (let ((msi (pci-setup-msi ecam)))    ; -> a per-device MSI handle
+                    (if (not msi)
                         (begin (display "[virtio-net] MSI-X setup failed") (newline) #f)
                         (begin
                           (virtio-status-set! common VIRTIO-STATUS-DRIVER-OK)
                           (display "[virtio-net] up: mac=") (display mac)
-                          (display " irq-vec=") (display vec) (newline)
+                          (display " msi=") (display msi) (newline)
                           (let ((rxbuf (dma-alloc (* NRX RXSLOT)))
                                 (txbuf (dma-alloc RXSLOT))
                                 (last  (make-cell 0)))
@@ -266,13 +266,13 @@
                               ;; (snapshotted out of the recycled rxbuf) to the
                               ;; network service. Both contexts get the empty grant.
                               (spawn-restricted '() (lambda ()
-                                (let loop ((seen (net-count)))
+                                (let loop ((seen (msi-count msi)))
                                   (rx-drain! rxq rxbuf last notify mult
                                     (lambda (off len)
                                       (send net (list 'rx (copy-bytes rxbuf off len) len))))
-                                  (if (> (net-count) seen)
-                                      (loop (net-count))
-                                      (begin (net-wait seen) (loop (net-count)))))))
+                                  (if (> (msi-count msi) seen)
+                                      (loop (msi-count msi))
+                                      (begin (msi-wait msi seen) (loop (msi-count msi)))))))
                               ;; Announce ourselves to the stack: MAC + the TX context.
                               (send net (list 'register-nic mac tx-ctx))
                               (display "[virtio-net] registered with network stack") (newline)
