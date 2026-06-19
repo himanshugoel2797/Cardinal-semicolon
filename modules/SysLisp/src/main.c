@@ -38,6 +38,8 @@
 #include "SysTimer/timer.h"
 #include "SysMP/mp.h"
 #include "SysInterrupts/interrupts.h"
+#include "SysVirtualMemory/vmem.h"
+#include "SysPhysicalMemory/phys_mem.h"
 
 // Kernel services resolved at module-load time (this module is already verified).
 // SysLisp no longer depends on the native task API (task_create/yield/monitor):
@@ -208,6 +210,95 @@ static lisp_value prim_ps2_wait(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// --- Driver substrate: MMIO / DMA / port I/O (D3) -----------------------------
+//
+// These mint the FOREIGN byte buffers (lisp_make_bytes_foreign) that the D2
+// volatile accessors (bytes-uN-ref/set!) then drive. They are kernel-only (vmem /
+// physmem / port instructions) so they live here, not in the portable lib. NB:
+// they are unrestricted today (any context may map any physical address) -- the
+// capability model that gates them is a later phase.
+
+// (mmio-map phys size) -> a byte buffer over the device's MMIO at physical
+// address `phys`, mapped uncached. Accessors bounds-check against `size`.
+static lisp_value prim_mmio_map(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]) || lisp_fixnum_val(a[1]) <= 0)
+        return (*e = "mmio-map: expects (phys-addr size)"), LISP_UNDEF;
+    intptr_t phys = (intptr_t)lisp_fixnum_val(a[0]);
+    size_t size = (size_t)lisp_fixnum_val(a[1]);
+    intptr_t virt = vmem_phystovirt(phys, size, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    if (virt == 0)
+        return (*e = "mmio-map: mapping failed"), LISP_UNDEF;
+    lisp_value b = lisp_make_bytes_foreign((void *)virt, size, (uint64_t)phys);
+    if (b == LISP_UNDEF)
+        return (*e = "mmio-map: out of memory"), LISP_UNDEF;
+    return b;
+}
+
+// (dma-alloc size) -> a physically-contiguous, zeroed, uncached byte buffer for
+// device DMA. (bytes-phys b) gives the physical address to program into the
+// device; the accessors read/write the CPU-side view.
+static lisp_value prim_dma_alloc(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]) || lisp_fixnum_val(a[0]) <= 0)
+        return (*e = "dma-alloc: expects a positive size"), LISP_UNDEF;
+    size_t size = (size_t)lisp_fixnum_val(a[0]);
+    uintptr_t phys = physmem_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, size);
+    if (phys == PHYSMEM_NO_ALLOC)
+        return (*e = "dma-alloc: out of physical memory"), LISP_UNDEF;
+    intptr_t virt = vmem_phystovirt((intptr_t)phys, size, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    if (virt == 0)
+        return (*e = "dma-alloc: mapping failed"), LISP_UNDEF;
+    lisp_value b = lisp_make_bytes_foreign((void *)virt, size, (uint64_t)phys);
+    if (b == LISP_UNDEF)
+        return (*e = "dma-alloc: out of memory"), LISP_UNDEF;
+    return b;
+}
+
+// Legacy port I/O. (in-uN port) -> value; (out-uN port value) -> unspecified.
+static lisp_value prim_in_u8(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]))
+        return (*e = "in-u8: expects (port)"), LISP_UNDEF;
+    return lisp_fixnum(inb((uint16_t)lisp_fixnum_val(a[0])));
+}
+static lisp_value prim_in_u16(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]))
+        return (*e = "in-u16: expects (port)"), LISP_UNDEF;
+    return lisp_fixnum(inw((uint16_t)lisp_fixnum_val(a[0])));
+}
+static lisp_value prim_in_u32(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]))
+        return (*e = "in-u32: expects (port)"), LISP_UNDEF;
+    return lisp_fixnum((int64_t)inl((uint16_t)lisp_fixnum_val(a[0])));
+}
+static lisp_value prim_out_u8(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "out-u8: expects (port value)"), LISP_UNDEF;
+    outb((uint16_t)lisp_fixnum_val(a[0]), (uint8_t)lisp_fixnum_val(a[1]));
+    return LISP_UNDEF;
+}
+static lisp_value prim_out_u16(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "out-u16: expects (port value)"), LISP_UNDEF;
+    outw((uint16_t)lisp_fixnum_val(a[0]), (uint16_t)lisp_fixnum_val(a[1]));
+    return LISP_UNDEF;
+}
+static lisp_value prim_out_u32(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "out-u32: expects (port value)"), LISP_UNDEF;
+    outl((uint16_t)lisp_fixnum_val(a[0]), (uint32_t)lisp_fixnum_val(a[1]));
+    return LISP_UNDEF;
+}
+
+static void install_driver_prims(lisp_value env) {
+    lisp_env_define(env, lisp_make_symbol("mmio-map", 8), lisp_make_primitive(prim_mmio_map, "mmio-map"));
+    lisp_env_define(env, lisp_make_symbol("dma-alloc", 9), lisp_make_primitive(prim_dma_alloc, "dma-alloc"));
+    lisp_env_define(env, lisp_make_symbol("in-u8", 5), lisp_make_primitive(prim_in_u8, "in-u8"));
+    lisp_env_define(env, lisp_make_symbol("in-u16", 6), lisp_make_primitive(prim_in_u16, "in-u16"));
+    lisp_env_define(env, lisp_make_symbol("in-u32", 6), lisp_make_primitive(prim_in_u32, "in-u32"));
+    lisp_env_define(env, lisp_make_symbol("out-u8", 6), lisp_make_primitive(prim_out_u8, "out-u8"));
+    lisp_env_define(env, lisp_make_symbol("out-u16", 7), lisp_make_primitive(prim_out_u16, "out-u16"));
+    lisp_env_define(env, lisp_make_symbol("out-u32", 7), lisp_make_primitive(prim_out_u32, "out-u32"));
+}
+
 // --- Self-test ----------------------------------------------------------------
 
 static int g_pass = 0;
@@ -289,6 +380,13 @@ static void run_self_test(lisp_value env) {
     lisp_gc_collect();
     check(env, "(apply + keep)", "15");
     check(env, "(> (uptime-ns) 0)", "#t");
+    // Driver substrate: bitfields + a real DMA buffer round-trip (kernel-only --
+    // proves dma-alloc gives a usable, physically-addressed, volatile buffer).
+    check(env, "(bit-insert (bit-insert 0 0 1 1) 4 3 5)", "81");
+    check(env, "(let ((d (dma-alloc 64)))"
+               "  (bytes-u32-set! d 0 305419896)"
+               "  (and (= (bytes-u32-ref d 0) 305419896) (> (bytes-phys d) 0)))",
+          "#t");
     check_scheduler(env);
 
     char num[24];
@@ -549,6 +647,7 @@ int lisp_scheduler_enter() {
                     lisp_make_primitive(prim_ps2_poll, "%ps2-poll"));
     lisp_env_define(g_env, lisp_make_symbol("%ps2-wait", 9),
                     lisp_make_primitive(prim_ps2_wait, "%ps2-wait"));
+    install_driver_prims(g_env);  // mmio-map / dma-alloc / port I/O
     // Route the ps2 keyboard IRQ to wake the (soon-to-be-spawned) ps2 context.
     ps2_set_irq_hook(ps2_wake_hook);
 
