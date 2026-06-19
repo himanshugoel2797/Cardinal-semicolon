@@ -16,7 +16,7 @@
 
 (define-module init
   (export system-init start-repl)
-  (import coreinput ps2 virtio-net)
+  (import coreinput coreaudio corepower ps2 virtio-net)
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -32,8 +32,14 @@
       input))
 
   ;; The system entry point: called once on the BSP after the scheduler is live.
+  ;; Each Core* service is a long-lived context; bring up the ones that exist
+  ;; today (input, audio, power) and the NIC. Audio/power have no drivers feeding
+  ;; them yet -- they idle parked on recv -- but the endpoints are present for the
+  ;; drivers that will attach (the same posture the C servers held).
   (define (system-init)
     (setup-input)
+    (start-audio-service)
+    (start-power-service)
     (virtio-net-init)             ; brings up the NIC (no-op if absent); spawns its own RX context
     'system-up)
 
