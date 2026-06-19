@@ -455,6 +455,10 @@ static bool syslisp_module_loader(const char *name, const char **src, size_t *le
     static const char pre[] = "./lisp/";
     static const char suf[] = ".clp";
     char path[160];
+    // Module names are plain identifiers; a '/' would let a name escape ./lisp/
+    // (e.g. "../evil"). The source tier is trusted, but the guard is free.
+    if (strchr(name, '/') != NULL)
+        return false;
     size_t nlen = strlen(name);
     if ((sizeof(pre) - 1) + nlen + (sizeof(suf) - 1) >= sizeof path)
         return false;  // path too long for the buffer
