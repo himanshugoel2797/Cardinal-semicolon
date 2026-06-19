@@ -380,6 +380,19 @@ static lisp_value prim_block(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// (self) -- the running context's own handle, or #f outside the scheduler. The
+// actor model's self(): lets a context hand its identity to another -- a client
+// passing its reply target into a request, or a service passing itself so a
+// callee can call back (the storage probe/claim and read-completion paths). The
+// handle is a shared system-heap reference, so it survives `send`'s copy intact.
+static lisp_value prim_self(lisp_value *a, int n, const char **e) {
+    (void)a;
+    (void)n;
+    (void)e;
+    lisp_value self = lisp_current_ctx();
+    return self == LISP_EMPTY ? LISP_FALSE : self;
+}
+
 // --- Installation -----------------------------------------------------------
 
 static void def(lisp_value env, const char *name, lisp_primitive_fn fn) {
@@ -394,6 +407,7 @@ void lisp_install_sched(lisp_value env) {
     def(env, "capabilities", prim_capabilities);
     def(env, "yield", prim_yield);
     def(env, "send", prim_send);
+    def(env, "self", prim_self);
     def(env, "%mailbox-empty?", prim_mailbox_empty);
     def(env, "%mailbox-pop", prim_mailbox_pop);
     def(env, "%block", prim_block);

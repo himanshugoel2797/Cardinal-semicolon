@@ -16,7 +16,7 @@
 
 (define-module init
   (export system-init start-repl)
-  (import coreinput coreaudio corepower ps2 virtio-net)
+  (import coreinput coreaudio corepower corestorage ps2 virtio-net)
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -40,6 +40,7 @@
     (setup-input)
     (start-audio-service)
     (start-power-service)
+    (start-storage-service)
     (virtio-net-init)             ; brings up the NIC (no-op if absent); spawns its own RX context
     'system-up)
 
