@@ -95,6 +95,16 @@ static lisp_value deep_copy(lisp_value v, int depth, const char **err) {
         case LISP_OBJ_SYMBOL:
         case LISP_OBJ_KEYWORD:
             return v;  // interned: shared-immutable region, not copied
+        case LISP_OBJ_CTX:
+            // A context handle is a shared REFERENCE -- an actor identity, like an
+            // Erlang PID -- not data. ctx_alloc deliberately puts the context in
+            // the frozen system heap precisely so it can be a cross-context send
+            // target, so it is passed by IDENTITY (never copied), like an interned
+            // symbol. This is what lets a client hand a server its own handle for
+            // callbacks: the power/storage/network fan-out reply path sends to the
+            // registered context. Copying it would hand the server a dead duplicate
+            // that no scheduler ever runs (the bug this case fixes).
+            return v;
         case LISP_OBJ_STRING:
             return lisp_make_string(lisp_string_data(v), lisp_string_len(v));
         case LISP_OBJ_FLONUM:

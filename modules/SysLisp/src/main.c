@@ -809,6 +809,44 @@ static void check_repl(lisp_value env) {
     }
 }
 
+// CorePower-in-Lisp under the real scheduler: register a fake audio device with
+// the power service, fire a class-matching global power event, and confirm the
+// device received it. The device context's return value becomes the p-state it
+// was told to enter, so reading it back proves the (register -> event -> matched
+// fan-out -> per-device send) path -- the message-passing replacement for the C
+// server's synchronous event_g callback. (Class filtering itself is covered by
+// the Lisp dispatch; here a matching class must deliver.)
+static void check_power(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 100000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import corepower)"
+        // A fake power device: parks until the service fans an event out to it,
+        // then returns the p-state from that (pwr-g gstate pstate) message.
+        "(define pdev (spawn (lambda () (let ((m (recv))) (caddr m)))))"
+        "(define psrv (start-power-service))"
+        "(send psrv (list 'register 'fake pwr-audio-out pdev))"
+        "(send psrv (list 'event-g pwr-audio-out 1 7))",
+        env, &err);
+    lisp_value pdev = lisp_eval_string("pdev", env, &err);
+    lisp_sched_run(&s, 0);
+    char buf[64];
+    lisp_print(lisp_ctx_value(pdev), buf, sizeof buf);
+    if (err == NULL && lisp_ctx_state(pdev) == LISP_CTX_DONE && strcmp(buf, "7") == 0) {
+        print_str("[SysLisp]  ok  power-event fan-out (class-matched delivery)  -> ");
+        print_str(buf);
+        print_str("\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL power-event fan-out  -> ");
+        print_str(buf);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 static void run_self_test(lisp_value env) {
     check(env, "(+ 1 2 3)", "6");
     check(env, "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 6)", "720");
@@ -872,6 +910,7 @@ static void run_self_test(lisp_value env) {
     check_scheduler(env);
     check_capabilities(env);
     check_repl(env);
+    check_power(env);
     // sys-debug through the capability path: a module imports the reflective
     // debugger and single-steps a sub-context to completion (Lisp debugging Lisp).
     check(env, "(begin"
