@@ -78,6 +78,18 @@ int main(void) {
     chk("(bytes-u8-ref r -1)", "error: bytes-ref: index out of range");
     chk("(bytes-u8-set! 5 0 0)", "error: bytes-set! expects (bytes index value)");
 
+    // --- register/field DSL (closures over a byte region) ---
+    chk("(define dev (make-bytes 256))", "dev");
+    chk("(define ctrl (register dev 64 4))", "ctrl");          // u32 register at offset 64
+    chk("(begin (ctrl 305419896) (ctrl))", "305419896");       // write then read 0x12345678
+    chk("(define en (field ctrl 0 1))", "en");
+    chk("(define speed (field ctrl 4 3))", "speed");
+    chk("(begin (ctrl 0) (en 1) (speed 5) (ctrl))", "81");     // enable | (speed=5 << 4)
+    chk("(speed)", "5");
+    chk("(en)", "1");
+    chk("(begin (speed 2) (en))", "1");                        // RMW: speed write keeps enable
+    chk("(ctrl)", "33");                                        // en=1 | (speed=2 << 4)
+
     // --- copy-on-send: a byte buffer survives crossing a context boundary ---
     {
         lisp_sched_t s;

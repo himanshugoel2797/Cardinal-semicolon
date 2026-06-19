@@ -72,7 +72,27 @@ static const char *PRELUDE =
 
     // --- misc ---
     "(define (boolean=? a b) (eq? a b))"
-    "(define (identity x) x)";
+    "(define (identity x) x)"
+
+    // --- driver register/field DSL (closures over a byte region) ---
+    // A "region" is a byte buffer (heap, or an MMIO/DMA buffer from mmio-map /
+    // dma-alloc). `register` returns an accessor closure that READS with no args
+    // and WRITES with one, baking in the offset+size; `field` layers a bit range
+    // over a register accessor (read = extract, write = read-modify-write). No
+    // macros: the constants are captured in the closures, so each access is just
+    // a volatile load/store plus a shift/mask.
+    "(define (region-ref region off size)"
+    "  (cond ((= size 1) (bytes-u8-ref region off)) ((= size 2) (bytes-u16-ref region off))"
+    "        ((= size 4) (bytes-u32-ref region off)) (else (bytes-u64-ref region off))))"
+    "(define (region-set! region off size v)"
+    "  (cond ((= size 1) (bytes-u8-set! region off v)) ((= size 2) (bytes-u16-set! region off v))"
+    "        ((= size 4) (bytes-u32-set! region off v)) (else (bytes-u64-set! region off v))))"
+    "(define (register region off size)"
+    "  (lambda args (if (null? args) (region-ref region off size)"
+    "                   (region-set! region off size (car args)))))"
+    "(define (field reg lo width)"
+    "  (lambda args (if (null? args) (bit-extract (reg) lo width)"
+    "                   (reg (bit-insert (reg) lo width (car args))))))";
 
 int lisp_load_prelude(lisp_value env) {
     const char *err = NULL;
