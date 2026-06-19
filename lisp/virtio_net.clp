@@ -12,13 +12,10 @@
 
 ;; --- small utilities --------------------------------------------------------
 
-(define (nth lst k) (if (= k 0) (car lst) (nth (cdr lst) (- k 1))))
-
-;; A mutable word cell, built on a byte buffer (the language's vectors/pairs are
-;; immutable; a 1-element bytes buffer is the mutable primitive).
-(define (make-cell v) (let ((b (make-bytes 8))) (bytes-u64-set! b 0 v) b))
-(define (cell-ref c)  (bytes-u64-ref c 0))
-(define (cell-set! c v) (bytes-u64-set! c 0 v))
+;; nth and the mutable word cell (make-cell/cell-ref/cell-set!) are generic
+;; driver helpers, now shared via the driver-util library rather than copied
+;; per driver. This is the first multi-file Lisp program in the OS.
+(import driver-util)
 
 ;; --- PCI config space + virtio capability walk ------------------------------
 
