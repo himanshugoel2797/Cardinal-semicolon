@@ -611,9 +611,24 @@ behind a VM.
   boundary. Covered by `test_modules.c` (granted/denied import, denied
   define-module, no escalation, introspection, root-unrestricted) and an in-OS
   self-test that gates a real `(import sys-mmio)` under the kernel scheduler.
-  **Next:** move boot policy (which driver is spawned with which grants) out of C
-  into a single privileged `init.clp` (Q3); then the debugger + serial REPL ride
-  this as gated capabilities ([[lisp-debugger-repl-roadmap]]).
+- **Boot policy in Lisp — the privileged `init` module (W7), step 3** *(done;
+  `./lisp/init.clp`, `modules/SysLisp`)*. The boot orchestration — bring up the
+  CoreInput service, spawn the ps2 driver, discover the NIC — used to be hardcoded
+  in C (`setup_input_service`'s inline Lisp string + `discover_nic`). It now lives
+  in one privileged module, `init`, that the kernel loads at boot (`(import init)`,
+  root) and invokes once on the BSP (`(system-init)`) after the scheduler is live.
+  All *policy* — what comes up and with which grants — is Lisp; C only loads and
+  calls. Crucially `init` exercises the capability model it descends from: it runs
+  as root (so its `(import ps2 virtio-net)` succeeds, each driver capturing its
+  sys-* authority into closures at load time) but spawns the long-lived service
+  contexts **restricted** — `(spawn-restricted '() …)` — so a wedged or compromised
+  driver loop has *no* authority to `(import sys-pci)` and reach new hardware; it
+  still works because the module boundary already handed it its primitives
+  lexically. This is the seam the serial REPL plugs into: `init` (root) decides
+  whether a given session is spawned root or with a narrow grant
+  ([[lisp-debugger-repl-roadmap]]). Verified in-OS: ps2 + coreinput run as
+  empty-grant contexts (keyboard IRQ self-test + device registration both pass)
+  and the virtio-net ARP round-trip completes, all driven from `init.clp`.
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against

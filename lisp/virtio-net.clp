@@ -1,7 +1,7 @@
 ;; virtio-net: the first device driver written in Cardinal Lisp.
 ;;
-;; Loaded from the initrd at boot (single-core, into the shared env) as pure
-;; definitions; SysLisp calls (virtio-net-init) later on the BSP. Built on the
+;; Imported at boot by the `init` module (single-core); init calls (virtio-net-init)
+;; on the BSP once the scheduler is live. Built on the
 ;; driver substrate: pci-find, mmio-map, dma-alloc, the volatile byte accessors,
 ;; the bitwise/bitfield primitives, and the MSI/ISR-wake bridge (pci-setup-msi,
 ;; net-count, net-wait).
@@ -286,7 +286,12 @@
                                 (our-ip (list 10 0 2 15))      ; slirp guest
                                 (gw-ip  (list 10 0 2 2)))       ; slirp gateway
                             (rx-populate! rxq rxbuf notify mult)
-                            (spawn (lambda ()
+                            ;; The RX context closes over net-count/net-wait (and
+                            ;; the drain helpers) lexically and imports nothing at
+                            ;; runtime, so spawn it with the empty grant -- the same
+                            ;; least-privilege posture init gives the other service
+                            ;; contexts (a wedged RX loop can't acquire new authority).
+                            (spawn-restricted '() (lambda ()
                               (let loop ((seen (net-count)))
                                 (rx-drain! rxq rxbuf last notify mult
                                   (lambda (off len)
