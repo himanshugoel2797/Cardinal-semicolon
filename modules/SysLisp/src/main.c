@@ -45,6 +45,7 @@
 #include "boot_information.h"  // GetBootInfo()->Cmdline (the cardinal.repl flag)
 #include "pci/pci.h"
 #include "pci/pci_irq.h"
+#include "pci/pci_alloc.h"  // pci_assign_bars (BARs for firmware-unconfigured devices)
 #include <stdlib.h>  // itoa
 
 // Kernel services resolved at module-load time (this module is already verified).
@@ -278,13 +279,15 @@ static lisp_value prim_mmio_map(lisp_value *a, int n, const char **e) {
 // (dma-alloc size) -> a physically-contiguous, zeroed, uncached byte buffer for
 // device DMA. (bytes-phys b) gives the physical address to program into the
 // device; the accessors read/write the CPU-side view.
-static lisp_value prim_dma_alloc(lisp_value *a, int n, const char **e) {
+static lisp_value dma_alloc_impl(lisp_value *a, int n, const char **e,
+                                 physmem_alloc_flags_t extra, const char *who) {
     if (n != 1 || !lisp_is_fixnum(a[0]) || lisp_fixnum_val(a[0]) <= 0)
         return (*e = "dma-alloc: expects a positive size"), LISP_UNDEF;
     size_t size = (size_t)lisp_fixnum_val(a[0]);
-    uintptr_t phys = physmem_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero, size);
+    uintptr_t phys =
+        physmem_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero | extra, size);
     if (phys == PHYSMEM_NO_ALLOC)
-        return (*e = "dma-alloc: out of physical memory"), LISP_UNDEF;
+        return (*e = who), LISP_UNDEF;
     intptr_t virt = vmem_phystovirt((intptr_t)phys, size, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
     // physmem_alloc ignores its flags (incl. _zero), so the pages are NOT zeroed;
     // a DMA descriptor ring needs clean memory, so zero the mapping ourselves.
@@ -295,6 +298,18 @@ static lisp_value prim_dma_alloc(lisp_value *a, int n, const char **e) {
         return (*e = "dma-alloc: out of memory"), LISP_UNDEF;
     }
     return b;
+}
+
+static lisp_value prim_dma_alloc(lisp_value *a, int n, const char **e) {
+    return dma_alloc_impl(a, n, e, 0, "dma-alloc: out of physical memory");
+}
+
+// (dma-alloc-32 size) -> a DMA buffer guaranteed to have a physical address below
+// 4 GiB, for a device that DMAs 32-bit addresses (rtl8139/8169, the USB host
+// controllers). Same as dma-alloc otherwise; (bytes-phys b) fits in 32 bits.
+static lisp_value prim_dma_alloc_32(lisp_value *a, int n, const char **e) {
+    return dma_alloc_impl(a, n, e, physmem_alloc_flags_32bit,
+                          "dma-alloc-32: out of 32-bit physical memory");
 }
 
 // (pci-find vendor-id device-id) -> the ECAM physical address of the first
@@ -326,72 +341,112 @@ static lisp_value prim_pci_find(lisp_value *a, int n, const char **e) {
     return ecam == 0 ? LISP_FALSE : lisp_fixnum((int64_t)ecam);
 }
 
-// --- the driver MSI(-X) -> ISR -> wake-context bridge (N3) ---------------------
+// --- the driver MSI(-X) -> ISR -> wake-context bridge -------------------------
 //
-// A device's MSI(-X) is wired through the SAME minimal-ISR -> wake-a-Lisp-context
-// path the timer demo and ps2 use -- this is its first exercise by a real PCI
-// device. The ISR (interrupt context: no alloc) bumps a counter and wakes the
-// parked driver context; the context drains the device (used ring) in normal
-// task context. The MSI targets CPU 0 (interrupt_msi_register_addr(0)), where the
-// driver context runs, so net-wait's cli() closes the check-then-park window.
-static volatile uint32_t g_net_count = 0;
-static volatile lisp_value g_net_waiter = 0;
+// Each MSI source gets its own slot in a table PARALLEL to g_irq_lines (the ISA
+// lines), so several MSI devices coexist: pci-setup-msi claims a slot and returns
+// a handle, and (msi-count h)/(msi-wait h seen) name exactly that device's
+// interrupt -- the same count-based, never-lost wake the ISA path uses. The ISR
+// (interrupt context: no alloc) dispatches by vector, bumps that slot's counter,
+// and wakes its parked context. The MSI targets CPU 0 (interrupt_msi_register_addr
+// (0)), where the driver contexts run, so msi-wait's cli() closes the
+// check-then-park window. (A single global counter sufficed when virtio-net was
+// the only MSI device; a second MSI driver -- ahci, rtl8169 -- needs its own.)
+#define LISP_MAX_MSI_LINES 8
+static struct lisp_msi_line {
+    volatile int vector;         // allocated vector; 0 = free slot (publish last)
+    volatile uint32_t count;     // bumped on each MSI (count-based wake, never lost)
+    volatile lisp_value waiter;  // parked context to wake (0 = none)
+} g_msi_lines[LISP_MAX_MSI_LINES];
 
-static void net_msi_isr(int vec) {
-    (void)vec;
-    g_net_count++;
-    lisp_value w = g_net_waiter;
-    if (w != 0)
-        lisp_ctx_wake(w);
+static void msi_isr(int vec) {  // interrupt context
+    for (int i = 0; i < LISP_MAX_MSI_LINES; i++) {
+        if (g_msi_lines[i].vector == vec) {
+            g_msi_lines[i].count++;
+            lisp_value w = g_msi_lines[i].waiter;
+            if (w != 0)
+                lisp_ctx_wake(w);  // ISR-safe: a single word write
+            return;
+        }
+    }
 }
 
-// (pci-setup-msi ecam-phys) -> the allocated interrupt vector, or #f. Sets up the
-// device's MSI/MSI-X (whichever it offers) with the wake ISR; the caller (the
-// virtio driver) then points the device's msix vectors at table entry 0.
+// (pci-setup-msi ecam-phys) -> an opaque handle (a small fixnum slot), or #f.
+// Sets up the device's MSI/MSI-X (whichever it offers) with the shared wake ISR
+// and claims a waiter slot; the caller then points the device's vectors at table
+// entry 0 and waits on the handle. _exclusive reserves the allocated vector so
+// nothing else (an ISA line, another MSI device) can land on it.
 static lisp_value prim_pci_setup_msi(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_fixnum(a[0]))
         return (*e = "pci-setup-msi: expects (ecam-phys)"), LISP_UNDEF;
+    int slot = -1;
+    for (int i = 0; i < LISP_MAX_MSI_LINES; i++)
+        if (g_msi_lines[i].vector == 0) {
+            slot = i;
+            break;
+        }
+    if (slot < 0)
+        return (*e = "pci-setup-msi: no free MSI slots"), LISP_UNDEF;
     pci_config_t *dev = (pci_config_t *)vmem_phystovirt(
         (intptr_t)lisp_fixnum_val(a[0]), 0x1000,
         vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-    // _exclusive reserves the allocated vector so nothing else (e.g. an ISA line
-    // claimed via irq-register, which also allocates from this space) can land on
-    // the same vector and share the dispatch slot.
-    int vec = pci_setup_msi_handler(dev, interrupt_flags_exclusive, net_msi_isr);
-    return vec < 0 ? LISP_FALSE : lisp_fixnum(vec);
+    int vec = pci_setup_msi_handler(dev, interrupt_flags_exclusive, msi_isr);
+    if (vec < 0)
+        return LISP_FALSE;
+    g_msi_lines[slot].count = 0;
+    g_msi_lines[slot].waiter = 0;
+    g_msi_lines[slot].vector = vec;  // publish last: ISR ignores the slot until set
+    return lisp_fixnum(slot);
 }
 
-// (net-count) -> the device-interrupt counter (advances on every MSI).
-static lisp_value prim_net_count(lisp_value *a, int n, const char **e) {
-    (void)a;
-    (void)n;
-    (void)e;
-    return lisp_fixnum((int64_t)g_net_count);
-}
-
-// (net-wait seen) -> park the running context until the next device MSI, unless
-// the counter already advanced past `seen` (in which case stay runnable). cli()
-// closes the check-then-park race against the same-core MSI. LOAD-BEARING: the
-// MSI is routed to CPU 0 (interrupt_msi_register_addr(0)) and the driver context
-// runs on the BSP, so cli() here masks it. If the MSI were ever re-routed to
-// another core, the wake could be lost in this window (same caveat as irq-wait);
-// that waits on cross-core messaging.
-static lisp_value prim_net_wait(lisp_value *a, int n, const char **e) {
+// (msi-count handle) -> this device's MSI counter (advances on every MSI).
+static lisp_value prim_msi_count(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_fixnum(a[0]))
-        return (*e = "net-wait: expects (seen-count)"), LISP_UNDEF;
-    uint32_t seen = (uint32_t)lisp_fixnum_val(a[0]);
+        return (*e = "msi-count: expects (handle)"), LISP_UNDEF;
+    int slot = (int)lisp_fixnum_val(a[0]);
+    if (slot < 0 || slot >= LISP_MAX_MSI_LINES || g_msi_lines[slot].vector == 0)
+        return (*e = "msi-count: bad handle"), LISP_UNDEF;
+    return lisp_fixnum((int64_t)g_msi_lines[slot].count);
+}
+
+// (msi-wait handle seen) -> park the running context until this device's MSI
+// counter passes `seen`, unless it already has (#f). cli() closes the
+// check-then-park race against the same-core MSI (mirrors irq-wait).
+static lisp_value prim_msi_wait(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "msi-wait: expects (handle seen)"), LISP_UNDEF;
+    int slot = (int)lisp_fixnum_val(a[0]);
+    if (slot < 0 || slot >= LISP_MAX_MSI_LINES || g_msi_lines[slot].vector == 0)
+        return (*e = "msi-wait: bad handle"), LISP_UNDEF;
+    uint32_t seen = (uint32_t)lisp_fixnum_val(a[1]);
     lisp_value self = lisp_current_ctx();
     if (self == LISP_EMPTY)
-        return (*e = "net-wait: not under the scheduler"), LISP_UNDEF;
-    g_net_waiter = self;
+        return (*e = "msi-wait: not under the scheduler"), LISP_UNDEF;
+    g_msi_lines[slot].waiter = self;
     int cli_state = cli();
-    if (g_net_count != seen) {  // an interrupt already advanced the counter
+    if (g_msi_lines[slot].count != seen) {  // an interrupt already advanced it
         sti(cli_state);
         return LISP_FALSE;
     }
     lisp_ctx_block(self);
     sti(cli_state);
     return LISP_UNDEF;
+}
+
+// (pci-assign-bars ecam-phys) -> the device's first assigned BAR base, or #f.
+// For a device firmware never configured (e.g. an onboard NIC behind a closed
+// PCIe root port): places its BARs above the existing windows and opens every
+// bridge window up to the root bus. SIDE-EFFECTFUL (mutates bridge config), not a
+// query -- call once, before mapping the BAR.
+static lisp_value prim_pci_assign_bars(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]))
+        return (*e = "pci-assign-bars: expects (ecam-phys)"), LISP_UNDEF;
+    uint64_t ecam = (uint64_t)lisp_fixnum_val(a[0]);
+    pci_config_t *dev = (pci_config_t *)vmem_phystovirt(
+        (intptr_t)ecam, 0x1000,
+        vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    uint64_t base = pci_assign_bars(dev, ecam);
+    return base == 0 ? LISP_FALSE : lisp_fixnum((int64_t)base);
 }
 
 // Legacy port I/O. (in-uN port) -> value; (out-uN port value) -> unspecified.
@@ -484,6 +539,48 @@ static lisp_value prim_cmdline_get(lisp_value *a, int n, const char **e) {
     return lisp_make_string(p, (size_t)(q - p));
 }
 
+// --- sys-reg: read the hardware/config registry --------------------------------
+//
+// The kernel registry (SysReg) is a hierarchical key/value store the bus/boot
+// enumeration populates -- e.g. HW/BOOTINFO/FRAMEBUFFER/{ADDR,WIDTH,...} or
+// HW/PCI/<i>/<field>. pci-find already walks it internally; this exposes a direct
+// unsigned read so a Lisp driver (lfb) can find its non-PCI device. Read-only.
+
+// (reg-read-uint "path" "key") -> the unsigned value at path/key, or #f if absent.
+static lisp_value prim_reg_read_uint(lisp_value *a, int n, const char **e) {
+    char path[160], key[64];
+    if (n != 2 || cmdline_arg(a[0], path, sizeof path, e) < 0 ||
+        cmdline_arg(a[1], key, sizeof key, e) < 0)
+        return (*e = *e ? *e : "reg-read-uint: expects (path key) strings"), LISP_UNDEF;
+    uint64_t val = 0;
+    if (registry_readkey_uint(path, key, &val) != CS_OK)
+        return LISP_FALSE;
+    return lisp_fixnum((int64_t)val);
+}
+
+// --- sys-initrd: read a file from the boot initrd ------------------------------
+//
+// The initrd (a tar in the boot image) carries the Lisp source and could carry
+// device firmware blobs. This hands a Lisp driver a file's bytes (copied into an
+// owned buffer, so the driver may keep it past the initrd mapping). Read-only.
+
+// (initrd-file "name") -> a bytes buffer with the file's contents, or #f if not
+// present. The name is the tar path, e.g. "./iwifi_fw/foo.ucode".
+static lisp_value prim_initrd_file(lisp_value *a, int n, const char **e) {
+    char name[192];
+    if (n != 1 || cmdline_arg(a[0], name, sizeof name, e) < 0)
+        return (*e = *e ? *e : "initrd-file: expects (name) string"), LISP_UNDEF;
+    void *loc = NULL;
+    size_t sz = 0;
+    if (!Initrd_GetFile(name, &loc, &sz))
+        return LISP_FALSE;
+    lisp_value b = lisp_make_bytes(sz);
+    if (b == LISP_UNDEF)
+        return (*e = "initrd-file: out of memory"), LISP_UNDEF;
+    memcpy(lisp_bytes_data(b), loc, sz);
+    return b;
+}
+
 // The capability-bearing driver primitives, grouped into named modules instead
 // of dumped into the global env. A Lisp driver gains an authority only by
 // importing its module -- (import sys-mmio) to map device memory, (import sys-io)
@@ -497,10 +594,12 @@ static const lisp_builtin_export sys_io_exports[] = {
 };
 static const lisp_builtin_export sys_mmio_exports[] = {
     {"mmio-map", prim_mmio_map}, {"dma-alloc", prim_dma_alloc},
+    {"dma-alloc-32", prim_dma_alloc_32},
 };
 static const lisp_builtin_export sys_pci_exports[] = {
     {"pci-find", prim_pci_find},   {"pci-setup-msi", prim_pci_setup_msi},
-    {"net-count", prim_net_count}, {"net-wait", prim_net_wait},
+    {"msi-count", prim_msi_count}, {"msi-wait", prim_msi_wait},
+    {"pci-assign-bars", prim_pci_assign_bars},
 };
 static const lisp_builtin_export sys_irq_exports[] = {
     {"irq-register", prim_irq_register}, {"irq-count", prim_irq_count},
@@ -508,6 +607,12 @@ static const lisp_builtin_export sys_irq_exports[] = {
 };
 static const lisp_builtin_export sys_cmdline_exports[] = {
     {"cmdline-has?", prim_cmdline_has}, {"cmdline-get", prim_cmdline_get},
+};
+static const lisp_builtin_export sys_reg_exports[] = {
+    {"reg-read-uint", prim_reg_read_uint},
+};
+static const lisp_builtin_export sys_initrd_exports[] = {
+    {"initrd-file", prim_initrd_file},
 };
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
@@ -523,6 +628,8 @@ static void register_driver_modules(lisp_value env) {
         {"sys-pci", sys_pci_exports, ARRAY_LEN(sys_pci_exports)},
         {"sys-irq", sys_irq_exports, ARRAY_LEN(sys_irq_exports)},
         {"sys-cmdline", sys_cmdline_exports, ARRAY_LEN(sys_cmdline_exports)},
+        {"sys-reg", sys_reg_exports, ARRAY_LEN(sys_reg_exports)},
+        {"sys-initrd", sys_initrd_exports, ARRAY_LEN(sys_initrd_exports)},
     };
     for (size_t i = 0; i < ARRAY_LEN(mods); i++)
         // Only OOM can fail this, and only at boot with a fresh heap -- but a
@@ -1049,6 +1156,27 @@ static void run_self_test(lisp_value env) {
                "             (= (get-be16 b 0) 4660)))))"     // 0x1234
                "  (import (du-probe (prefix du:)))"
                "  (du:run))",
+          "#t");
+    // The driver substrate added for the device-driver port: a sub-4GB DMA buffer
+    // (phys in the 32-bit range), a registry read (a present key -> a number, an
+    // absent one -> #f), an initrd read (init.clp is present and non-empty, a
+    // bogus path -> #f), and the wait-until busy-wait helper (true predicate ->
+    // #t, never-true within the budget -> #f). MSI multiplexing is exercised live
+    // by virtio-net, not here (it needs a device).
+    check(env, "(begin"
+               "  (define-module subst-probe (export run)"
+               "    (import sys-mmio sys-reg sys-initrd driver-util)"
+               "    (define (run)"
+               "      (and (let ((d (dma-alloc-32 64)))"
+               "             (and (> (bytes-phys d) 0) (< (bytes-phys d) 4294967296)))"
+               "           (number? (reg-read-uint \"HW/PCI\" \"COUNT\"))"
+               "           (eq? (reg-read-uint \"HW/NOPE\" \"NOPE\") #f)"
+               "           (> (bytes-length (initrd-file \"./lisp/init.clp\")) 0)"
+               "           (eq? (initrd-file \"./lisp/nope.clp\") #f)"
+               "           (wait-until (lambda () #t) 1000)"
+               "           (not (wait-until (lambda () #f) 1000)))))"
+               "  (import (subst-probe (prefix sp:)))"
+               "  (sp:run))",
           "#t");
     // CoreDisplay's EDID parser (pure): build a synthetic 128-byte EDID with a
     // known digital 8bpc input, one 1920x1080@60 16:9 standard timing, a 1920x1080
