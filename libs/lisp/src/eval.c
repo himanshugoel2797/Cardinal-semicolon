@@ -881,7 +881,31 @@ static void step_eval(lisp_ctx_t *cx) {
         }
     }
 
-    // Procedure application: evaluate the operator first, then the operands.
+    // Procedure application. The operator is almost always a symbol (a variable
+    // reference), which needs no sub-evaluation -- look it up inline and skip the
+    // K_EVAL_OP continuation frame entirely (one fewer allocation per call). A
+    // compound operator expression takes the general K_EVAL_OP path.
+    if (lisp_is_symbol(head)) {
+        lisp_value op;
+        if (!lisp_env_lookup(cx->env, head, &op)) {
+            ctx_error(cx, "unbound variable");
+            return;
+        }
+        if (!lisp_is_pair(rest)) {
+            if (!lisp_is_empty(rest)) {
+                ctx_error(cx, "improper argument list");
+                return;
+            }
+            do_call(cx, op, NULL, 0);  // zero-argument call
+            return;
+        }
+        if (!kont_push(cx, K_EVAL_ARGS, cx->env, op, LISP_EMPTY, lisp_cdr(rest)))
+            return;
+        cx->control = lisp_car(rest);
+        cx->status = LISP_CTX_EVAL;
+        return;
+    }
+    // Compound operator: evaluate it first (K_EVAL_OP), then the operands.
     if (!kont_push(cx, K_EVAL_OP, cx->env, rest, LISP_EMPTY, LISP_EMPTY))
         return;
     cx->control = head;
