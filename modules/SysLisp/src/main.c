@@ -651,6 +651,17 @@ static void run_self_test(lisp_value env) {
           "#t");
     check_scheduler(env);
     check_capabilities(env);
+    // sys-debug through the capability path: a module imports the reflective
+    // debugger and single-steps a sub-context to completion (Lisp debugging Lisp).
+    check(env, "(begin"
+               "  (define-module dbg-probe (export run)"
+               "    (import sys-debug)"
+               "    (define (run)"
+               "      (let ((c (ctx-make (lambda () (* 7 6)))))"
+               "        (let loop () (if (eq? (ctx-step c) 'done) (ctx-value c) (loop))))))"
+               "  (import (dbg-probe (prefix d:)))"
+               "  (d:run))",
+          "42");
 
     char num[24];
     print_str("[SysLisp] ");
@@ -876,6 +887,9 @@ int lisp_scheduler_enter() {
     // Expose the capability-bearing primitives as importable modules (sys-io /
     // sys-mmio / sys-pci / sys-irq) rather than ambient globals.
     register_driver_modules(g_env);
+    // The reflective debugger is a capability too: only a context granted
+    // sys-debug can import ctx-make/ctx-step/... and drive another context.
+    lisp_register_debug_module(g_env);
     // Resolve `import` against the initrd (./lisp/<name>.clp). Must be set before
     // loading any source that imports a library. Module loading shares the same
     // single-core boot window (the registry lives in the shared env, which the

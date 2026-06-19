@@ -123,6 +123,11 @@ lisp_value lisp_module_import(lisp_value form, lisp_value env, const char **err)
 // LISP_UNDEF on OOM; a non-pair (the empty tail) is returned as-is.
 lisp_value lisp_caps_copy_sys(lisp_value l);
 
+// Swap this core's current-context slot, returning the previous value (sched.c).
+// sys-debug's ctx-step uses it to make a stepped context "self" during its nested
+// run so scheduler primitives it calls act on it, not on the driving debugger.
+lisp_value lisp_sched_swap_current(lisp_value v);
+
 // Apply `proc` to args in a caller-owned, reused context (eval.c). Used by the
 // higher-order primitives to avoid one context allocation per applied element.
 lisp_value lisp_apply_reuse(lisp_value ctxv, lisp_value proc, lisp_value *args,

@@ -1388,6 +1388,13 @@ lisp_value lisp_ctx_value(lisp_value ctxv) { return ((lisp_ctx_t *)lisp_obj(ctxv
 // module-name symbols it may import. Read-only; set via lisp_ctx_set_caps.
 lisp_value lisp_ctx_caps(lisp_value ctxv) { return ((lisp_ctx_t *)lisp_obj(ctxv))->caps; }
 
+// The control register: the expression a context (in the EVAL state) is about to
+// evaluate. The sys-debug reflective capability surfaces this so a Lisp debugger
+// can show what a single-stepped context is doing next.
+lisp_value lisp_ctx_control(lisp_value ctxv) {
+    return ((lisp_ctx_t *)lisp_obj(ctxv))->control;
+}
+
 // Set a context's capability set. `caps` is LISP_UNDEF (unrestricted), LISP_EMPTY
 // (no import authority), or a list of interned module-name symbols. The list
 // spine is rebuilt in the system heap so it can never dangle when a per-context
