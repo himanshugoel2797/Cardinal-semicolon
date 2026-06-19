@@ -1311,6 +1311,7 @@ static void check_gpu(lisp_value env) {
         "         (= (bytes-u32-ref dsc 8) 40)"           // desc0 len   = cmd-len
         "         (= (bytes-phys cmd) (bytes-u64-ref dsc 0))"  // desc0 addr = cmd phys
         "         (= (bytes-u16-ref dsc 28) 2)"           // desc1 flags = WRITE
+        "         (= (bytes-phys rsp) (bytes-u64-ref dsc 16))"  // desc1 addr = resp phys
         "         (= (gpu-resp-type r) 4352))))))",       // returned resp = OK_NODATA
         env, &err);
 

@@ -50,13 +50,19 @@
 ;; The framebuffer is a single contiguous dma-alloc. attach-backing here uses one
 ;; mem entry; a chunked (scatter-gather) attach for very large modes is a TODO.
 (define (init-scanout ctrlq notify mult scanout-idx res-id w h)
-  (let ((nbytes (* w h 4)))
-    (gpu-cmd-ok! ctrlq notify mult (make-create-2d res-id GPU-FORMAT-X8R8G8B8 w h) 40 'create-2d)
-    (let ((fb (dma-alloc nbytes)))
-      (if (not fb)
-          (begin (display "[virtio-gpu] framebuffer alloc failed") (newline) #f)
-          (begin
-            (fill-fb! fb nbytes #xFF)
+  (let* ((nbytes (* w h 4))
+         (cr (gpu-cmd-ok! ctrlq notify mult
+                          (make-create-2d res-id GPU-FORMAT-X8R8G8B8 w h) 40 'create-2d)))
+    ;; If create-2d failed (gpu-cmd-ok! already logged it), bail -- the later
+    ;; commands all reference res-id, which the device never created, so they
+    ;; would NACK in a loop and leave the scanout in a confused state.
+    (if (not (and cr (= (gpu-resp-type cr) GPU-RESP-OK-NODATA)))
+        #f
+        (let ((fb (dma-alloc nbytes)))
+          (if (not fb)
+              (begin (display "[virtio-gpu] framebuffer alloc failed") (newline) #f)
+              (begin
+                (fill-fb! fb nbytes #xFF)
             (gpu-cmd-ok! ctrlq notify mult
                          (make-attach-backing res-id (bytes-phys fb) nbytes) 48 'attach-backing)
             (gpu-cmd-ok! ctrlq notify mult
@@ -64,7 +70,7 @@
             (gpu-cmd-ok! ctrlq notify mult
                          (make-transfer-2d res-id 0 0 0 w h) 56 'transfer-2d)
             (gpu-cmd-ok! ctrlq notify mult (make-flush res-id 0 0 w h) 48 'flush)
-            (list scanout-idx res-id w h fb))))))
+            (list scanout-idx res-id w h fb)))))))
 
 ;; The full bring-up: transport bring-up, queues, DRIVER_OK, then read display
 ;; info and initialise every enabled scanout. Returns a device record
