@@ -225,9 +225,10 @@ static lisp_value prim_mmio_map(lisp_value *a, int n, const char **e) {
         return (*e = "mmio-map: expects (phys-addr size)"), LISP_UNDEF;
     intptr_t phys = (intptr_t)lisp_fixnum_val(a[0]);
     size_t size = (size_t)lisp_fixnum_val(a[1]);
+    // vmem_phystovirt PANICs on an out-of-range physical address rather than
+    // returning an error; an unrestricted caller mapping a bad address is a fatal
+    // bug until the capability model gates these prims.
     intptr_t virt = vmem_phystovirt(phys, size, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-    if (virt == 0)
-        return (*e = "mmio-map: mapping failed"), LISP_UNDEF;
     lisp_value b = lisp_make_bytes_foreign((void *)virt, size, (uint64_t)phys);
     if (b == LISP_UNDEF)
         return (*e = "mmio-map: out of memory"), LISP_UNDEF;
@@ -245,11 +246,14 @@ static lisp_value prim_dma_alloc(lisp_value *a, int n, const char **e) {
     if (phys == PHYSMEM_NO_ALLOC)
         return (*e = "dma-alloc: out of physical memory"), LISP_UNDEF;
     intptr_t virt = vmem_phystovirt((intptr_t)phys, size, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-    if (virt == 0)
-        return (*e = "dma-alloc: mapping failed"), LISP_UNDEF;
+    // physmem_alloc ignores its flags (incl. _zero), so the pages are NOT zeroed;
+    // a DMA descriptor ring needs clean memory, so zero the mapping ourselves.
+    memset((void *)virt, 0, size);
     lisp_value b = lisp_make_bytes_foreign((void *)virt, size, (uint64_t)phys);
-    if (b == LISP_UNDEF)
+    if (b == LISP_UNDEF) {  // give the physical pages back rather than leaking them
+        physmem_free(phys, size);
         return (*e = "dma-alloc: out of memory"), LISP_UNDEF;
+    }
     return b;
 }
 
