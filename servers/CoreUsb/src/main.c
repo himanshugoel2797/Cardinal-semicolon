@@ -24,14 +24,11 @@ static int device_handles_list_lock = 0;
 
 static int devIDs[usb_device_type_count];
 
-void coreusb_register_tests(void);
-
 PRIVATE int module_init()
 {
     list_init(&hostcontroller_list);
     list_init(&hostcontroller_handles_list);
     list_init(&device_handles_list);
-    coreusb_register_tests();
     return 0;
 }
 

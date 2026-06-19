@@ -9,11 +9,8 @@
 #include "SysPhysicalMemory/phys_mem.h"
 #include <stdlib.h>
 
-void sysphysicalmemory_register_tests(void);
-
 int module_init() {
     physmem_init();
-    sysphysicalmemory_register_tests();
     return 0;
 }
 

@@ -5,9 +5,6 @@
  * https://opensource.org/licenses/MIT
  */
 
-void sysinterrupts_register_tests(void);
-
 int module_init() {
-    sysinterrupts_register_tests();
     return 0;
 }

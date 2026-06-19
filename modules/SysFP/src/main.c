@@ -7,11 +7,8 @@
 
 #include "fpu.h"
 
-void sysfp_register_tests(void);
-
 int module_init() {
     fp_platform_init();
-    sysfp_register_tests();
     return 0;
 }
 

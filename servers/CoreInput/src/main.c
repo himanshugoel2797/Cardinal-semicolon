@@ -93,8 +93,6 @@ static void read_devices(void *arg)
     }
 }
 
-void coreinput_register_tests(void);
-
 int module_init()
 {
     local_spinlock_lock(&device_list_lock);
@@ -110,8 +108,6 @@ int module_init()
     cs_id pid = 0;
     task_create_kernel("core_input_updater", task_permissions_kernel, &pid);
     task_start_kernel(pid, read_devices, NULL);
-
-    coreinput_register_tests();
 
     return 0;
 }

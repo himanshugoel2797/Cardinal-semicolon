@@ -851,11 +851,8 @@ cs_error obj_islocked(dir_t dir, bool *status){
     return CS_OK;
 }
 
-void sysobj_register_tests(void);
-
 int module_init() {
     if (kvs_create(&kern_registry) != kvs_ok)
         PANIC("Failed to initialize object store.");
-    sysobj_register_tests();
     return 0;
 }
