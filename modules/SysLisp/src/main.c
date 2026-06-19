@@ -638,32 +638,43 @@ static const lisp_builtin_export sys_console_exports[] = {
 static bool syslisp_module_loader(const char *name, const char **src, size_t *len,
                                   void *ctx) {
     (void)ctx;
-    static const char pre[] = "./lisp/";
     static const char suf[] = ".clp";
-    char path[160];
-    // Module names are plain identifiers; a '/' would let a name escape ./lisp/
-    // (e.g. "../evil"). The source tier is trusted, but the guard is free.
+    // A module's source may live directly under ./lisp/ (init) or in one of the
+    // organizational subdirectories (libraries, the Core* servers, the device
+    // drivers). The name stays a plain identifier -- the folder is NOT part of it
+    // -- so imports and (define-module ...) are unchanged by the layout; the
+    // loader searches this fixed, loader-controlled path list and the first hit
+    // wins. Module names cannot contain '/' (a name could otherwise escape the
+    // search dirs, e.g. "../evil"); the subdirs here are the only allowed dirs.
+    static const char *const dirs[] = {
+        "./lisp/", "./lisp/lib/", "./lisp/servers/", "./lisp/drivers/",
+    };
     if (strchr(name, '/') != NULL)
         return false;
     size_t nlen = strlen(name);
-    if ((sizeof(pre) - 1) + nlen + (sizeof(suf) - 1) >= sizeof path)
-        return false;  // path too long for the buffer
-    size_t o = 0;
-    memcpy(path + o, pre, sizeof(pre) - 1);
-    o += sizeof(pre) - 1;
-    memcpy(path + o, name, nlen);
-    o += nlen;
-    memcpy(path + o, suf, sizeof(suf) - 1);
-    o += sizeof(suf) - 1;
-    path[o] = '\0';
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        char path[192];
+        size_t dlen = strlen(dirs[i]);
+        if (dlen + nlen + (sizeof(suf) - 1) >= sizeof path)
+            continue;  // this prefix would overflow; try the next
+        size_t o = 0;
+        memcpy(path + o, dirs[i], dlen);
+        o += dlen;
+        memcpy(path + o, name, nlen);
+        o += nlen;
+        memcpy(path + o, suf, sizeof(suf) - 1);
+        o += sizeof(suf) - 1;
+        path[o] = '\0';
 
-    void *loc = NULL;
-    size_t sz = 0;
-    if (!Initrd_GetFile(path, &loc, &sz))
-        return false;
-    *src = (const char *)loc;
-    *len = sz;
-    return true;
+        void *loc = NULL;
+        size_t sz = 0;
+        if (Initrd_GetFile(path, &loc, &sz)) {
+            *src = (const char *)loc;
+            *len = sz;
+            return true;
+        }
+    }
+    return false;
 }
 
 // --- Self-test ----------------------------------------------------------------
