@@ -59,8 +59,6 @@ int pwr_sendevent_d(device_pwr_class_t pwr_class, device_pwr_state_t state) {
     return 0;
 }
 
-void corepower_register_tests(void);
-
 int module_init() {
     local_spinlock_lock(&devices_lock);
 
@@ -68,6 +66,5 @@ int module_init() {
 
     local_spinlock_unlock(&devices_lock);
 
-    corepower_register_tests();
     return 0;
 }

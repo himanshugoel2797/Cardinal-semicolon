@@ -15,8 +15,6 @@
 #include "initrd.h"
 #include "elf.h"
 
-void coredriver_register_tests(void);
-
 int module_init()
 {
 
@@ -142,6 +140,5 @@ int module_init()
         cursor = newline + 1;
     }
 
-    coredriver_register_tests();
     return 0;
 }
