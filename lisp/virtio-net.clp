@@ -187,44 +187,8 @@
   (avail-push! (q-avail txq) (q-size txq) 0)
   (notify-queue! notify mult txq))
 
-;; --- Ethernet + ARP (network byte order, written byte-wise) -----------------
-;; put-be16! (big-endian u16 store) comes from driver-util now, shared with the
-;; rest of the networking stack.
-
-;; Copy a 6-byte MAC (a list of bytes) into b at off.
-(define (put-mac! b off mac)
-  (let loop ((i 0) (m mac))
-    (if (null? m) 'done (begin (bytes-u8-set! b (+ off i) (car m)) (loop (+ i 1) (cdr m))))))
-
-;; Build an ARP request (who-has target-ip) into txbuf after the VNET header.
-;; our-mac is a list of 6 bytes; ips are lists of 4 bytes. Returns the frame len.
-(define (build-arp-request! txbuf our-mac our-ip target-ip)
-  (let ((o VNET-HDR))               ; ethernet frame starts after the virtio header
-    (put-mac! txbuf (+ o 0) (list #xFF #xFF #xFF #xFF #xFF #xFF))  ; dst = broadcast
-    (put-mac! txbuf (+ o 6) our-mac)                               ; src
-    (put-be16! txbuf (+ o 12) #x0806)                              ; ethertype = ARP
-    (put-be16! txbuf (+ o 14) #x0001)                              ; htype = ethernet
-    (put-be16! txbuf (+ o 16) #x0800)                              ; ptype = IPv4
-    (bytes-u8-set! txbuf (+ o 18) 6)                               ; hlen
-    (bytes-u8-set! txbuf (+ o 19) 4)                               ; plen
-    (put-be16! txbuf (+ o 20) #x0001)                              ; oper = request
-    (put-mac! txbuf (+ o 22) our-mac)                              ; sender hw
-    (put-mac! txbuf (+ o 28) our-ip)                               ; sender proto (4)
-    (put-mac! txbuf (+ o 32) (list 0 0 0 0 0 0))                   ; target hw = 0
-    (put-mac! txbuf (+ o 38) target-ip)                            ; target proto (4)
-    42))                                                          ; 14 eth + 28 arp
-
-;; If the frame at rxbuf+off is an ARP reply, return the sender MAC (6 bytes),
-;; else #f. Ethertype at +12, ARP oper at +20.
-(define (arp-reply-sender rxbuf off len)
-  (if (and (>= len 42)                                 ; 14 eth + 28 arp minimum
-           (= (bytes-u8-ref rxbuf (+ off 12)) #x08)
-           (= (bytes-u8-ref rxbuf (+ off 13)) #x06)
-           (= (bytes-u8-ref rxbuf (+ off 21)) #x02))   ; oper low byte = 2 (reply)
-      (list (bytes-u8-ref rxbuf (+ off 22)) (bytes-u8-ref rxbuf (+ off 23))
-            (bytes-u8-ref rxbuf (+ off 24)) (bytes-u8-ref rxbuf (+ off 25))
-            (bytes-u8-ref rxbuf (+ off 26)) (bytes-u8-ref rxbuf (+ off 27)))
-      #f))
+;; All ethernet/ARP/IP framing now lives in the corenetwork service; this driver
+;; is pure transport. put-be16! and the byte-copy helpers come from driver-util.
 
 ;; --- bring-up ---------------------------------------------------------------
 
@@ -237,7 +201,11 @@
   (list (bytes-u8-ref devcfg 0) (bytes-u8-ref devcfg 1) (bytes-u8-ref devcfg 2)
         (bytes-u8-ref devcfg 3) (bytes-u8-ref devcfg 4) (bytes-u8-ref devcfg 5)))
 
-(define (virtio-net-init)
+;; virtio-net-init takes the corenetwork service handle: the NIC is now pure
+;; transport, so it registers itself with the network stack (handing it the MAC
+;; and a TX context) and forwards every received frame to it, rather than doing
+;; any ethernet/ARP decoding itself.
+(define (virtio-net-init net)
   (let ((ecam (pci-find VIRTIO-NET-VID VIRTIO-NET-DID)))
     (if (not ecam)
         (begin (display "[virtio-net] no device present") (newline) #f)
@@ -276,32 +244,36 @@
                           (virtio-status-set! common VIRTIO-STATUS-DRIVER-OK)
                           (display "[virtio-net] up: mac=") (display mac)
                           (display " irq-vec=") (display vec) (newline)
-                          ;; RX buffers + a spawned RX context, then an ARP probe.
                           (let ((rxbuf (dma-alloc (* NRX RXSLOT)))
                                 (txbuf (dma-alloc RXSLOT))
-                                (last  (make-cell 0))
-                                (our-ip (list 10 0 2 15))      ; slirp guest
-                                (gw-ip  (list 10 0 2 2)))       ; slirp gateway
+                                (last  (make-cell 0)))
                             (rx-populate! rxq rxbuf notify mult)
-                            ;; The RX context closes over net-count/net-wait (and
-                            ;; the drain helpers) lexically and imports nothing at
-                            ;; runtime, so spawn it with the empty grant -- the same
-                            ;; least-privilege posture init gives the other service
-                            ;; contexts (a wedged RX loop can't acquire new authority).
-                            (spawn-restricted '() (lambda ()
-                              (let loop ((seen (net-count)))
-                                (rx-drain! rxq rxbuf last notify mult
-                                  (lambda (off len)
-                                    (let ((sender (arp-reply-sender rxbuf off len)))
-                                      (if sender
-                                          (begin (display "[virtio-net] RX ARP reply: gateway mac=")
-                                                 (display sender) (newline))
-                                          (begin (display "[virtio-net] RX frame, len=")
-                                                 (display len) (newline))))))
-                                (if (> (net-count) seen)
-                                    (loop (net-count))
-                                    (begin (net-wait seen) (loop (net-count)))))))
-                            (let ((flen (build-arp-request! txbuf mac our-ip gw-ip)))
-                              (tx-frame! txq txbuf notify mult flen))
-                            (display "[virtio-net] sent ARP who-has 10.0.2.2") (newline)
-                            'ok)))))))))))) ; last ) closes (define-module virtio-net ...)
+                            ;; TX context: the network service sends (tx frame len);
+                            ;; copy the ethernet frame into txbuf after the VNET
+                            ;; header and post it. (Single TX buffer -> one frame in
+                            ;; flight; fine for the current low-rate control traffic,
+                            ;; a TX ring is a later refinement.)
+                            (let ((tx-ctx
+                                    (spawn-restricted '() (lambda ()
+                                      (let loop ()
+                                        (let ((m (recv)))
+                                          (if (eq? (car m) 'tx)
+                                              (begin
+                                                (bytes-copy-into! txbuf VNET-HDR (cadr m) (caddr m))
+                                                (tx-frame! txq txbuf notify mult (caddr m))))
+                                          (loop)))))))
+                              ;; RX context: drain received frames and forward each
+                              ;; (snapshotted out of the recycled rxbuf) to the
+                              ;; network service. Both contexts get the empty grant.
+                              (spawn-restricted '() (lambda ()
+                                (let loop ((seen (net-count)))
+                                  (rx-drain! rxq rxbuf last notify mult
+                                    (lambda (off len)
+                                      (send net (list 'rx (copy-bytes rxbuf off len) len))))
+                                  (if (> (net-count) seen)
+                                      (loop (net-count))
+                                      (begin (net-wait seen) (loop (net-count)))))))
+                              ;; Announce ourselves to the stack: MAC + the TX context.
+                              (send net (list 'register-nic mac tx-ctx))
+                              (display "[virtio-net] registered with network stack") (newline)
+                              'ok))))))))))))) ; last ) closes (define-module virtio-net ...)
