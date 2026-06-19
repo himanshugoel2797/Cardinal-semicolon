@@ -1231,6 +1231,128 @@ static void check_network(lisp_value env) {
     }
 }
 
+// VirtioGpu-in-Lisp, hardware-free. Three layers, all under the real scheduler:
+//   (1) command-struct LAYOUT: build each control-queue command and assert the
+//       exact little-endian bytes + total length. This is the offset regression
+//       net -- if a field offset drifts from virtio_gpu.h, a byte mismatches.
+//   (2) the ctrlq-cmd! transport: a FAKE virtqueue (make-bytes desc/avail/used
+//       rings + a fake notify) plus a fake "device" context that bumps used.idx.
+//       The test context posts a command via ctrlq-cmd!, which parks on wait-until
+//       until used.idx advances; we assert the descriptor pair (desc0 = readable
+//       command, NEXT->1; desc1 = writable response) is built correctly and that
+//       ctrlq-cmd! returns the response buffer (pre-stamped OK_NODATA).
+//   (3) REGISTRATION: a fake coredisplay context captures the register message and
+//       returns its name -> must be "Virtio GPU Display".
+// Layers (1)/(3) need no timer; (2) parks on wait-until's sleep, so its harness
+// mirrors check_sleep -- run the scheduler, take a tick, until the prober is done.
+static void check_gpu(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 200000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+
+    // (1) Layout: exercise the exported builders and assert byte offsets/lengths.
+    // virtio-gpu exports the builders + response accessors; virtio exports the
+    // ctrlq-cmd! transport helper exercised in layer (2).
+    lisp_eval_string(
+        "(import virtio-gpu virtio)"
+        "(define layout-ok (spawn (lambda ()"
+        "  (let ((c2 (make-create-2d 1 4 1024 768))"
+        "        (ab (make-attach-backing 7 305419896 3145728))"
+        "        (ss (make-set-scanout 2 7 0 0 1024 768))"
+        "        (tr (make-transfer-2d 7 0 0 0 1024 768))"
+        "        (fl (make-flush 7 0 0 1024 768))"
+        "        (di (make-display-info-cmd)))"
+        "    (and"
+        "      (= (bytes-length c2) 40) (= (bytes-u32-ref c2 0) 257)"   // 0x0101
+        "      (= (bytes-u32-ref c2 24) 1) (= (bytes-u32-ref c2 28) 4)"
+        "      (= (bytes-u32-ref c2 32) 1024) (= (bytes-u32-ref c2 36) 768)"
+        "      (= (bytes-length ab) 48) (= (bytes-u32-ref ab 0) 262)"   // 0x0106
+        "      (= (bytes-u32-ref ab 24) 7) (= (bytes-u32-ref ab 28) 1)"
+        "      (= (bytes-u64-ref ab 32) 305419896) (= (bytes-u32-ref ab 40) 3145728)"
+        "      (= (bytes-length ss) 48) (= (bytes-u32-ref ss 0) 259)"   // 0x0103
+        "      (= (bytes-u32-ref ss 32) 1024) (= (bytes-u32-ref ss 36) 768)"
+        "      (= (bytes-u32-ref ss 40) 2) (= (bytes-u32-ref ss 44) 7)"
+        "      (= (bytes-length tr) 56) (= (bytes-u32-ref tr 0) 261)"   // 0x0105
+        "      (= (bytes-u64-ref tr 40) 0) (= (bytes-u32-ref tr 48) 7)"
+        "      (= (bytes-length fl) 48) (= (bytes-u32-ref fl 0) 260)"   // 0x0104
+        "      (= (bytes-u32-ref fl 40) 7)"
+        "      (= (bytes-length di) 24) (= (bytes-u32-ref di 0) 256))))))"  // 0x0100
+        // (3) Registration: a fake coredisplay captures the register message name.
+        "(define reg-name (spawn (lambda () (let ((m (recv))) (cadr m)))))"
+        "(define gpu-reg (spawn (lambda ()"
+        "  (send reg-name (list 'register \"Virtio GPU Display\" 'unknown (self)"
+        "                       (list (list 0 1 1024 768 (make-bytes 16))))) 'sent)))"
+        // (2) ctrlq-cmd! over a fake queue. The rings must be SHARED across the
+        // prober and the fake-device context, so they are dma-alloc buffers
+        // (foreign physical memory -- not copied by the per-context GC, unlike
+        // make-bytes). The fake device bumps used.idx once the prober posts; the
+        // prober's ctrlq-cmd! parks on wait-until until then. import sys-mmio is
+        // legal here because the self-test root env is unrestricted.
+        "(import sys-mmio)"
+        "(define qsz 4)"
+        "(define dsc (dma-alloc (* qsz 16)))"
+        "(define avl (dma-alloc (+ 6 (* 2 qsz))))"
+        "(define usd (dma-alloc (+ 6 (* 8 qsz))))"
+        "(define nfy (dma-alloc 8))"
+        "(define fq (list qsz dsc avl usd 0))"
+        "(define cmd (dma-alloc 40)) (bytes-u32-set! cmd 0 257)"   // a CREATE_2D-typed cmd
+        "(define rsp (dma-alloc 408))"
+        "(bytes-u32-set! rsp 0 4352)"                  // pre-stamp OK_NODATA (0x1100)
+        // fake device: once avail.idx advances (the prober posted), bump used.idx.
+        "(define fdev (spawn (lambda ()"
+        "  (let loop () (if (= (bytes-u16-ref avl 2) 0) (begin (sleep 100000) (loop))"
+        "                   (bytes-u16-set! usd 2 1))))))"
+        "(define ctrl-ok (spawn (lambda ()"
+        "  (let ((r (ctrlq-cmd! fq nfy 1 cmd 40 rsp 408 1000000000)))"
+        "    (and r"
+        "         (= (bytes-u16-ref dsc 12) 1)"           // desc0 flags = NEXT
+        "         (= (bytes-u16-ref dsc 14) 1)"           // desc0 next  = 1
+        "         (= (bytes-u32-ref dsc 8) 40)"           // desc0 len   = cmd-len
+        "         (= (bytes-phys cmd) (bytes-u64-ref dsc 0))"  // desc0 addr = cmd phys
+        "         (= (bytes-u16-ref dsc 28) 2)"           // desc1 flags = WRITE
+        "         (= (gpu-resp-type r) 4352))))))",       // returned resp = OK_NODATA
+        env, &err);
+
+    lisp_value layout = lisp_eval_string("layout-ok", env, &err);
+    lisp_value regn   = lisp_eval_string("reg-name", env, &err);
+    lisp_value ctrl   = lisp_eval_string("ctrl-ok", env, &err);
+
+    // Tick-driven harness (mirrors check_sleep): run the scheduler, take a timer
+    // tick, repeat, until the ctrlq prober finishes or a 2s wall bound elapses.
+    uint64_t deadline = timer_timestamp_ns() + 2000000000ull;
+    while (lisp_ctx_state(ctrl) != LISP_CTX_DONE &&
+           timer_timestamp_ns() < deadline) {
+        lisp_sched_run(&s, 0);
+        if (lisp_ctx_state(ctrl) == LISP_CTX_DONE)
+            break;
+        __asm__ volatile("sti; hlt");
+    }
+    __asm__ volatile("cli");
+
+    char lb[16], rb[48], cb[16];
+    lisp_print(lisp_ctx_value(layout), lb, sizeof lb);
+    lisp_print(lisp_ctx_value(regn), rb, sizeof rb);
+    lisp_print(lisp_ctx_value(ctrl), cb, sizeof cb);
+    if (err == NULL &&
+        lisp_ctx_state(layout) == LISP_CTX_DONE && strcmp(lb, "#t") == 0 &&
+        lisp_ctx_state(regn) == LISP_CTX_DONE &&
+        strcmp(rb, "\"Virtio GPU Display\"") == 0 &&
+        lisp_ctx_state(ctrl) == LISP_CTX_DONE && strcmp(cb, "#t") == 0) {
+        print_str("[SysLisp]  ok  virtio-gpu command layout + ctrlq round-trip + registration\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL virtio-gpu  layout-> ");
+        print_str(lb);
+        print_str("  reg-> ");
+        print_str(rb);
+        print_str("  ctrl-> ");
+        print_str(cb);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // (sleep ns) under the real wake path: a context records uptime, sleeps ~20ms,
 // records uptime again, and returns the elapsed time. The context PARKS on the
 // timeout queue -- it is woken by the periodic tick, not a busy-wait -- so this
@@ -1393,6 +1515,7 @@ static void run_self_test(lisp_value env) {
     check_power(env);
     check_storage(env);
     check_network(env);
+    check_gpu(env);
     check_sleep(env);
     // sys-debug through the capability path: a module imports the reflective
     // debugger and single-steps a sub-context to completion (Lisp debugging Lisp).
