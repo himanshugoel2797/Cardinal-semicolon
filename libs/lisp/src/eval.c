@@ -200,7 +200,7 @@ typedef enum {
     SF_NONE = 0,
     SF_QUOTE, SF_QUASIQUOTE, SF_IF, SF_DEFINE, SF_LAMBDA, SF_SET, SF_BEGIN,
     SF_LET, SF_LET_STAR, SF_LETREC, SF_AND, SF_OR, SF_COND, SF_WHEN, SF_UNLESS,
-    SF_WHILE, SF_CASE, SF_DEFINE_MODULE, SF_IMPORT,
+    SF_WHILE, SF_CASE, SF_DEFINE_MODULE, SF_IMPORT, SF_INCLUDE,
 } special_form_id;
 
 static const struct {
@@ -216,7 +216,7 @@ static const struct {
     {"cond", SF_COND},       {"when", SF_WHEN},
     {"unless", SF_UNLESS},   {"while", SF_WHILE},
     {"case", SF_CASE},       {"define-module", SF_DEFINE_MODULE},
-    {"import", SF_IMPORT},
+    {"import", SF_IMPORT},    {"include", SF_INCLUDE},
 };
 
 // Tag every special form's interned symbol with its dispatch id. Called from
@@ -891,6 +891,17 @@ static void step_eval(lisp_ctx_t *cx) {
         case SF_IMPORT: {
             const char *err = NULL;
             lisp_value r = lisp_module_import(e, cx->env, &err);
+            if (err != NULL) {
+                ctx_error(cx, err);
+                return;
+            }
+            cx->accum = r;
+            cx->status = LISP_CTX_APPLY;
+            return;
+        }
+        case SF_INCLUDE: {
+            const char *err = NULL;
+            lisp_value r = lisp_module_include(e, cx->env, &err);
             if (err != NULL) {
                 ctx_error(cx, err);
                 return;

@@ -649,7 +649,11 @@ static bool syslisp_module_loader(const char *name, const char **src, size_t *le
     static const char *const dirs[] = {
         "./lisp/", "./lisp/lib/", "./lisp/servers/", "./lisp/drivers/",
     };
-    if (strchr(name, '/') != NULL)
+    // An internal '/' is allowed so `include` can request "<module>/<part>" (a
+    // module's parts live in a same-named subdir). But a leading '/' or any ".."
+    // could escape the search dirs, so reject those -- the source tier is trusted,
+    // but the guard is free.
+    if (name[0] == '/' || strstr(name, "..") != NULL)
         return false;
     size_t nlen = strlen(name);
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
