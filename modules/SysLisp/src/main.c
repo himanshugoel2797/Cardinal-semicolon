@@ -898,6 +898,66 @@ static void check_storage(lisp_value env) {
     }
 }
 
+// CoreNetwork-in-Lisp under the real scheduler, driven entirely by Lisp contexts
+// (no NIC). Two scenarios prove the stack end to end:
+//   (1) ARP: a peer ARPs for our IP; a fake NIC captures the frame the service
+//       emits and we assert it is an ARP REPLY (oper 2) advertising our IP.
+//   (2) UDP round-trip: netC builds + sends a UDP datagram; a "wire" context
+//       relays the emitted frame back in as RX to netB, whose bound port-9999
+//       handler receives the payload. This exercises ipv4/udp BUILD and the RX
+//       parse + IP-header and UDP (pseudo-header) checksum VERIFY in one shot --
+//       the handler only fires if every checksum the build path wrote validates.
+static void check_network(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 2000000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import corenetwork driver-util)"
+        // (1) ARP request -> reply, captured by a fake NIC.
+        "(define arp-info (spawn (lambda () (let ((m (recv))) (let ((f (cadr m)))"
+        "  (list (get-be16 f 20) (bytes-u8-ref f 28) (bytes-u8-ref f 29)"
+        "        (bytes-u8-ref f 30) (bytes-u8-ref f 31)))))))"
+        "(define netA (start-network-service (list 10 0 2 15)))"
+        "(send netA (list 'register-nic (list 2 0 0 0 0 1) arp-info))"
+        "(define areq (make-bytes 42))"
+        "(put-list! areq 0 (list 255 255 255 255 255 255))"
+        "(put-list! areq 6 (list 2 0 0 0 0 2))"
+        "(put-be16! areq 12 2054) (put-be16! areq 14 1) (put-be16! areq 16 2048)"
+        "(bytes-u8-set! areq 18 6) (bytes-u8-set! areq 19 4) (put-be16! areq 20 1)"
+        "(put-list! areq 22 (list 2 0 0 0 0 2)) (put-list! areq 28 (list 10 0 2 2))"
+        "(put-list! areq 38 (list 10 0 2 15))"
+        "(send netA (list 'rx areq 42))"
+        // (2) UDP round-trip netC -> wire -> netB:9999.
+        "(define netB (start-network-service (list 10 0 2 20)))"
+        "(define udp-got (spawn (lambda () (let ((m (recv))) (bytes-u8-ref (nth m 4) 0)))))"
+        "(send netB (list 'udp-bind 9999 udp-got))"
+        "(define wire (spawn (lambda () (let loop () (let ((m (recv)))"
+        "  (if (eq? (car m) 'tx) (send netB (list 'rx (cadr m) (caddr m)))) (loop))))))"
+        "(define netC (start-network-service (list 10 0 2 15)))"
+        "(send netC (list 'register-nic (list 2 0 0 0 0 1) wire))"
+        "(define pl (make-bytes 1)) (bytes-u8-set! pl 0 222)"
+        "(send netC (list 'udp-send (list 10 0 2 20) (list 2 0 0 0 0 2) 1111 9999 pl))",
+        env, &err);
+    lisp_value arp = lisp_eval_string("arp-info", env, &err);
+    lisp_value udp = lisp_eval_string("udp-got", env, &err);
+    lisp_sched_run(&s, 0);
+    char ab[64], ub[32];
+    lisp_print(lisp_ctx_value(arp), ab, sizeof ab);
+    lisp_print(lisp_ctx_value(udp), ub, sizeof ub);
+    if (err == NULL && strcmp(ab, "(2 10 0 2 15)") == 0 && strcmp(ub, "222") == 0) {
+        print_str("[SysLisp]  ok  network ARP reply + UDP round-trip (ip+udp checksums verify)\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL network  arp-> ");
+        print_str(ab);
+        print_str("  udp-> ");
+        print_str(ub);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 static void run_self_test(lisp_value env) {
     check(env, "(+ 1 2 3)", "6");
     check(env, "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 6)", "720");
@@ -995,6 +1055,7 @@ static void run_self_test(lisp_value env) {
     check_repl(env);
     check_power(env);
     check_storage(env);
+    check_network(env);
     // sys-debug through the capability path: a module imports the reflective
     // debugger and single-steps a sub-context to completion (Lisp debugging Lisp).
     check(env, "(begin"
