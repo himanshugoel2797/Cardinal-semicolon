@@ -42,6 +42,12 @@ int main(void) {
 
     printf("[lisp driver] bitwise + bitfield + mutable byte buffers\n");
 
+    // --- hex / binary literals (driver-friendly notation) ---
+    chk("#x1af4", "6900");
+    chk("#xFF", "255");
+    chk("#b1010", "10");
+    chk("(bit-extract #xDEADBEEF 4 4)", "14");        // hex in expressions
+
     // --- bitwise / shift ---
     chk("(bitwise-and 12 10)", "8");
     chk("(bitwise-or 12 10)", "14");

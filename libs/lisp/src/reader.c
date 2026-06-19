@@ -252,6 +252,31 @@ static lisp_value read_hash(const char **cur, const char *end, const char **err)
         *cur = c;
         return LISP_FALSE;
     }
+    // Radix integer literals: #x<hex> and #b<binary> -- the natural notation for
+    // register offsets, masks, and addresses in driver code.
+    if (len >= 2 && (start[0] == 'x' || start[0] == 'X')) {
+        int64_t val = 0;
+        for (const char *p = start + 1; p < c; p++) {
+            int d;
+            if (*p >= '0' && *p <= '9') d = *p - '0';
+            else if (*p >= 'a' && *p <= 'f') d = *p - 'a' + 10;
+            else if (*p >= 'A' && *p <= 'F') d = *p - 'A' + 10;
+            else return fail(err, "bad hex literal");
+            val = val * 16 + d;
+        }
+        *cur = c;
+        return lisp_fixnum(val);
+    }
+    if (len >= 2 && (start[0] == 'b' || start[0] == 'B')) {
+        int64_t val = 0;
+        for (const char *p = start + 1; p < c; p++) {
+            if (*p != '0' && *p != '1')
+                return fail(err, "bad binary literal");
+            val = val * 2 + (*p - '0');
+        }
+        *cur = c;
+        return lisp_fixnum(val);
+    }
     return fail(err, "unsupported # syntax");
 }
 

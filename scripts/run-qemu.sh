@@ -19,6 +19,8 @@
 #   GPU=none|virtio|virtio-vga   add a display device for CoreDisplay to bind
 #                                (virtio -> virtio-gpu-pci 1af4:1050, which the
 #                                 VirtioGpu driver matches via devices.txt)
+#   NIC=none|virtio-net          attach a virtio-net-pci NIC (1af4:1041) on slirp
+#   NET_PCAP=path                with NIC set, dump the link to a pcap file
 #   DISPLAY_MODE=none|gtk|sdl    qemu display backend (default none = headless)
 #   SCREENSHOT=path  after booting, dump the guest screen to a PPM and exit
 #   TIMEOUT=30      seconds before auto-killing the guest (0 = no timeout)
@@ -49,6 +51,21 @@ case "$GPU" in
   *) echo "error: unknown GPU=$GPU (none|virtio|virtio-vga)" >&2; exit 1 ;;
 esac
 
+# Optional NIC. NIC=virtio-net attaches a virtio-net-pci (1af4:1041) on a user-mode
+# (slirp) netdev; NET_PCAP=path also captures the link to a pcap for inspection.
+nic_args=()
+case "${NIC:-none}" in
+  none) ;;
+  virtio-net)
+    # disable-legacy=on forces a MODERN virtio device (device id 1af4:1041, the
+    # PCI-capability layout); the transitional default would enumerate as the
+    # legacy 1af4:1000 with an I/O-port BAR.
+    nic_args=(-netdev "user,id=n0" -device "virtio-net-pci,disable-legacy=on,netdev=n0")
+    [ -n "${NET_PCAP:-}" ] && nic_args+=(-object "filter-dump,id=d0,netdev=n0,file=$NET_PCAP")
+    ;;
+  *) echo "error: unknown NIC=$NIC (none|virtio-net)" >&2; exit 1 ;;
+esac
+
 [ -f "$ISO" ] || { echo "error: ISO not found: $ISO (run the 'image' target first)" >&2; exit 1; }
 command -v qemu-system-x86_64 >/dev/null || { echo "error: qemu-system-x86_64 not installed" >&2; exit 1; }
 
@@ -70,6 +87,7 @@ common_args=(
   -cdrom "$ISO" -boot d
   "${vga_arg[@]}"
   "${gpu_args[@]}"
+  "${nic_args[@]}"
   -no-reboot -no-shutdown
   -d guest_errors
 )

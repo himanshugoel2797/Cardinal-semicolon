@@ -40,6 +40,8 @@
 #include "SysInterrupts/interrupts.h"
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
+#include "SysReg/registry.h"
+#include <stdlib.h>  // itoa
 
 // Kernel services resolved at module-load time (this module is already verified).
 // SysLisp no longer depends on the native task API (task_create/yield/monitor):
@@ -257,6 +259,35 @@ static lisp_value prim_dma_alloc(lisp_value *a, int n, const char **e) {
     return b;
 }
 
+// (pci-find vendor-id device-id) -> the ECAM physical address of the first
+// matching PCI function, or #f. The PCI bus is enumerated into the registry at
+// boot (HW/PCI/COUNT + HW/PCI/<hex-idx>/{VENDOR_ID,DEVICE_ID,ECAM_ADDR,...}); a
+// Lisp driver finds its device here, then mmio-maps the ECAM to read config space.
+static uint64_t pci_find_ecam(uint32_t vid, uint32_t did) {
+    uint64_t count = 0;
+    if (registry_readkey_uint("HW/PCI", "COUNT", &count) != CS_OK)
+        return 0;
+    for (uint64_t i = 0; i < count; i++) {
+        char key[64] = "HW/PCI/";
+        char num[16];
+        strncat(key, itoa((int)i, num, 16), sizeof(key) - 8);
+        uint64_t v = 0, d = 0, ecam = 0;
+        if (registry_readkey_uint(key, "VENDOR_ID", &v) != CS_OK) continue;
+        if (registry_readkey_uint(key, "DEVICE_ID", &d) != CS_OK) continue;
+        if (v == vid && d == did &&
+            registry_readkey_uint(key, "ECAM_ADDR", &ecam) == CS_OK)
+            return ecam;
+    }
+    return 0;
+}
+
+static lisp_value prim_pci_find(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "pci-find: expects (vendor-id device-id)"), LISP_UNDEF;
+    uint64_t ecam = pci_find_ecam((uint32_t)lisp_fixnum_val(a[0]), (uint32_t)lisp_fixnum_val(a[1]));
+    return ecam == 0 ? LISP_FALSE : lisp_fixnum((int64_t)ecam);
+}
+
 // Legacy port I/O. (in-uN port) -> value; (out-uN port value) -> unspecified.
 static lisp_value prim_in_u8(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_fixnum(a[0]))
@@ -295,6 +326,7 @@ static lisp_value prim_out_u32(lisp_value *a, int n, const char **e) {
 static void install_driver_prims(lisp_value env) {
     lisp_env_define(env, lisp_make_symbol("mmio-map", 8), lisp_make_primitive(prim_mmio_map, "mmio-map"));
     lisp_env_define(env, lisp_make_symbol("dma-alloc", 9), lisp_make_primitive(prim_dma_alloc, "dma-alloc"));
+    lisp_env_define(env, lisp_make_symbol("pci-find", 8), lisp_make_primitive(prim_pci_find, "pci-find"));
     lisp_env_define(env, lisp_make_symbol("in-u8", 5), lisp_make_primitive(prim_in_u8, "in-u8"));
     lisp_env_define(env, lisp_make_symbol("in-u16", 6), lisp_make_primitive(prim_in_u16, "in-u16"));
     lisp_env_define(env, lisp_make_symbol("in-u32", 6), lisp_make_primitive(prim_in_u32, "in-u32"));
@@ -558,6 +590,28 @@ static void setup_input_service(void) {
     }
 }
 
+// First step of the Lisp NIC driver (virtio-net): find the device via the PCI
+// registry, map its config space, and confirm the vendor/device id read back
+// through the byte accessors. Proves pci-find + mmio-map + config reads on a real
+// PCI device. (The virtqueue/RX/TX stages build on this.) No-op if no NIC.
+static void discover_nic(void) {
+    const char *err = NULL;
+    lisp_eval_string(
+        "(let ((ecam (pci-find #x1af4 #x1041)))"          // virtio-net-pci (modern)
+        "  (if ecam"
+        "      (let ((cfg (mmio-map ecam #x1000)))"
+        "        (display \"[net] virtio-net found: ecam=\") (display ecam)"
+        "        (display \" vid=\") (display (bytes-u16-ref cfg 0))"
+        "        (display \" did=\") (display (bytes-u16-ref cfg 2)) (newline))"
+        "      (begin (display \"[net] no virtio-net device present\") (newline))))",
+        g_env, &err);
+    if (err != NULL) {
+        print_str("[net] discovery error: ");
+        print_str(err);
+        print_str("\r\n");
+    }
+}
+
 // THE PER-CORE SCHEDULER LOOP, run by EVERY core (the BSP at the tail of
 // lisp_scheduler_enter, each AP once released). It NEVER returns. This core
 // runs its OWN scheduler over its OWN contexts (each in its own precisely-
@@ -577,8 +631,10 @@ static void NORETURN lisp_core_loop(void) {
     // Long-lived OS services live on the BSP for now (cross-core messaging is a
     // later step, so a service + its drivers must share one core). Spawn them onto
     // this scheduler before the proof so they run in the same pass.
-    if (id == 0)
+    if (id == 0) {
         setup_input_service();
+        discover_nic();
+    }
 
     // Per-core proof of life: spawn a context that does a real (heap-allocating,
     // per-context-GC-exercising) computation in the SHARED environment, run it to
