@@ -41,6 +41,8 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysReg/registry.h"
+#include "pci/pci.h"
+#include "pci/pci_irq.h"
 #include <stdlib.h>  // itoa
 
 // Kernel services resolved at module-load time (this module is already verified).
@@ -289,6 +291,67 @@ static lisp_value prim_pci_find(lisp_value *a, int n, const char **e) {
     return ecam == 0 ? LISP_FALSE : lisp_fixnum((int64_t)ecam);
 }
 
+// --- the driver MSI(-X) -> ISR -> wake-context bridge (N3) ---------------------
+//
+// A device's MSI(-X) is wired through the SAME minimal-ISR -> wake-a-Lisp-context
+// path the timer demo and ps2 use -- this is its first exercise by a real PCI
+// device. The ISR (interrupt context: no alloc) bumps a counter and wakes the
+// parked driver context; the context drains the device (used ring) in normal
+// task context. The MSI targets CPU 0 (interrupt_msi_register_addr(0)), where the
+// driver context runs, so net-wait's cli() closes the check-then-park window.
+static volatile uint32_t g_net_count = 0;
+static volatile lisp_value g_net_waiter = 0;
+
+static void net_msi_isr(int vec) {
+    (void)vec;
+    g_net_count++;
+    lisp_value w = g_net_waiter;
+    if (w != 0)
+        lisp_ctx_wake(w);
+}
+
+// (pci-setup-msi ecam-phys) -> the allocated interrupt vector, or #f. Sets up the
+// device's MSI/MSI-X (whichever it offers) with the wake ISR; the caller (the
+// virtio driver) then points the device's msix vectors at table entry 0.
+static lisp_value prim_pci_setup_msi(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]))
+        return (*e = "pci-setup-msi: expects (ecam-phys)"), LISP_UNDEF;
+    pci_config_t *dev = (pci_config_t *)vmem_phystovirt(
+        (intptr_t)lisp_fixnum_val(a[0]), 0x1000,
+        vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    int vec = pci_setup_msi_handler(dev, interrupt_flags_none, net_msi_isr);
+    return vec < 0 ? LISP_FALSE : lisp_fixnum(vec);
+}
+
+// (net-count) -> the device-interrupt counter (advances on every MSI).
+static lisp_value prim_net_count(lisp_value *a, int n, const char **e) {
+    (void)a;
+    (void)n;
+    (void)e;
+    return lisp_fixnum((int64_t)g_net_count);
+}
+
+// (net-wait seen) -> park the running context until the next device MSI, unless
+// the counter already advanced past `seen` (in which case stay runnable). cli()
+// closes the check-then-park race against the same-core (CPU 0) MSI.
+static lisp_value prim_net_wait(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]))
+        return (*e = "net-wait: expects (seen-count)"), LISP_UNDEF;
+    uint32_t seen = (uint32_t)lisp_fixnum_val(a[0]);
+    lisp_value self = lisp_current_ctx();
+    if (self == LISP_EMPTY)
+        return (*e = "net-wait: not under the scheduler"), LISP_UNDEF;
+    g_net_waiter = self;
+    int cli_state = cli();
+    if (g_net_count != seen) {  // an interrupt already advanced the counter
+        sti(cli_state);
+        return LISP_FALSE;
+    }
+    lisp_ctx_block(self);
+    sti(cli_state);
+    return LISP_UNDEF;
+}
+
 // Legacy port I/O. (in-uN port) -> value; (out-uN port value) -> unspecified.
 static lisp_value prim_in_u8(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_fixnum(a[0]))
@@ -328,6 +391,9 @@ static void install_driver_prims(lisp_value env) {
     lisp_env_define(env, lisp_make_symbol("mmio-map", 8), lisp_make_primitive(prim_mmio_map, "mmio-map"));
     lisp_env_define(env, lisp_make_symbol("dma-alloc", 9), lisp_make_primitive(prim_dma_alloc, "dma-alloc"));
     lisp_env_define(env, lisp_make_symbol("pci-find", 8), lisp_make_primitive(prim_pci_find, "pci-find"));
+    lisp_env_define(env, lisp_make_symbol("pci-setup-msi", 13), lisp_make_primitive(prim_pci_setup_msi, "pci-setup-msi"));
+    lisp_env_define(env, lisp_make_symbol("net-count", 9), lisp_make_primitive(prim_net_count, "net-count"));
+    lisp_env_define(env, lisp_make_symbol("net-wait", 8), lisp_make_primitive(prim_net_wait, "net-wait"));
     lisp_env_define(env, lisp_make_symbol("in-u8", 5), lisp_make_primitive(prim_in_u8, "in-u8"));
     lisp_env_define(env, lisp_make_symbol("in-u16", 6), lisp_make_primitive(prim_in_u16, "in-u16"));
     lisp_env_define(env, lisp_make_symbol("in-u32", 6), lisp_make_primitive(prim_in_u32, "in-u32"));

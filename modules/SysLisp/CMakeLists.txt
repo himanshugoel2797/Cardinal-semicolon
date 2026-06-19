@@ -16,7 +16,7 @@ ADD_CUSTOM_TARGET(${CELF_NAME}.celf ALL
 )
 
 SET_TARGET_PROPERTIES(${CELF_NAME}.elf PROPERTIES COMPILE_OPTIONS "-fno-pic")
-TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf PRIVATE "inc" "../inc" "../../kernel/inc" "${LIBS_DIR}/lisp/inc" "${LIBS_DIR}/syscalls")
+TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf PRIVATE "inc" "../inc" "../../kernel/inc" "${LIBS_DIR}/lisp/inc" "${LIBS_DIR}/syscalls" "${LIBS_DIR}")
 TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf SYSTEM PUBLIC "${KERN_STDLIB_INCLUDE_DIR}")
 # Links the kernel-resident Scheme runtime (built freestanding with SSE re-enabled
 # for its hardware-double flonums) plus the UBSan handlers used across modules.
