@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "internal.h"  // lisp_apply_reuse for the higher-order primitives
 #include "lisp.h"
 
 static lisp_value prim_err(const char **err, const char *msg) {
@@ -896,13 +897,17 @@ static lisp_value prim_map(lisp_value *args, int argc, const char **err) {
         return prim_err(err, "map expects a procedure and one list");
     // Build the result forward (head/tail) rather than recursing per element --
     // each step also nests a full lisp_eval, so recursion would blow the kernel
-    // stack on modest lists.
+    // stack on modest lists. One reused context applies the procedure to every
+    // element (lisp_apply_reuse), instead of allocating a context per element.
+    lisp_value ctxv = lisp_ctx_make(LISP_UNDEF, LISP_EMPTY);
+    if (ctxv == LISP_UNDEF)
+        return prim_err(err, "out of memory");
     lisp_value head = LISP_EMPTY;
     lisp_value last = LISP_EMPTY;
     lisp_value lst = args[1];
     while (lisp_is_pair(lst)) {
         lisp_value arg = lisp_car(lst);
-        lisp_value r = lisp_apply(args[0], &arg, 1, err);
+        lisp_value r = lisp_apply_reuse(ctxv, args[0], &arg, 1, err);
         if (r == LISP_UNDEF && err != NULL && *err != NULL)
             return LISP_UNDEF;
         lisp_value cell = lisp_cons(r, LISP_EMPTY);
@@ -923,10 +928,13 @@ static lisp_value prim_map(lisp_value *args, int argc, const char **err) {
 static lisp_value prim_for_each(lisp_value *args, int argc, const char **err) {
     if (argc != 2)
         return prim_err(err, "for-each expects a procedure and one list");
+    lisp_value ctxv = lisp_ctx_make(LISP_UNDEF, LISP_EMPTY);
+    if (ctxv == LISP_UNDEF)
+        return prim_err(err, "out of memory");
     lisp_value lst = args[1];
     while (lisp_is_pair(lst)) {
         lisp_value arg = lisp_car(lst);
-        lisp_value r = lisp_apply(args[0], &arg, 1, err);
+        lisp_value r = lisp_apply_reuse(ctxv, args[0], &arg, 1, err);
         if (r == LISP_UNDEF && err != NULL && *err != NULL)
             return LISP_UNDEF;
         lst = lisp_cdr(lst);

@@ -1414,6 +1414,27 @@ lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **
     return cx->accum;
 }
 
+// Like lisp_apply, but runs in a caller-owned context reused across calls. A
+// higher-order primitive that applies a procedure to every element of a list
+// (map/for-each) allocates ONE context (lisp_ctx_make(LISP_UNDEF, LISP_EMPTY))
+// and reuses it here, rather than allocating a fresh context per element. The
+// caller must keep `ctxv` reachable (a GC root) for the whole loop. The context
+// is reset to a clean slate each call (its kont is empty after a completion).
+lisp_value lisp_apply_reuse(lisp_value ctxv, lisp_value proc, lisp_value *args,
+                            int argc, const char **err) {
+    if (err != NULL)
+        *err = NULL;
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    cx->kont = LISP_EMPTY;
+    cx->accum = LISP_UNDEF;
+    cx->err = NULL;
+    cx->budget = CTX_BUDGET_UNBOUNDED;
+    do_call(cx, proc, args, argc);
+    if (run_to_completion(cx) == LISP_CTX_ERROR)
+        return fail(err, cx->err);
+    return cx->accum;
+}
+
 lisp_value lisp_default_env(void) {
     lisp_value env = lisp_make_env(LISP_EMPTY);
     if (env != LISP_UNDEF) {

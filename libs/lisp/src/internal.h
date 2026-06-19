@@ -114,4 +114,9 @@ lisp_value *lisp_intern_table(size_t *cap_out);
 lisp_value lisp_module_define(lisp_value form, lisp_value env, const char **err);
 lisp_value lisp_module_import(lisp_value form, lisp_value env, const char **err);
 
+// Apply `proc` to args in a caller-owned, reused context (eval.c). Used by the
+// higher-order primitives to avoid one context allocation per applied element.
+lisp_value lisp_apply_reuse(lisp_value ctxv, lisp_value proc, lisp_value *args,
+                            int argc, const char **err);
+
 #endif
