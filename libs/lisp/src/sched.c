@@ -190,6 +190,15 @@ static lisp_value prim_spawn(lisp_value *a, int n, const char **e) {
     lisp_value ctx = lisp_ctx_make(expr, LISP_EMPTY);
     if (ctx == LISP_UNDEF)
         return prim_err(e, "spawn: out of memory");
+    // Propagate the spawner's restriction: a child cannot exceed its parent's
+    // authority. A root (unrestricted) spawner yields a root child (caps==UNDEF,
+    // as ctx_alloc set); a restricted spawner's child INHERITS the same grant.
+    // Without this, a sandbox could escalate by spawning an unrestricted worker.
+    // The parent's caps list already lives in the system heap (immutable), so the
+    // child safely shares the pointer -- no copy. Use spawn-restricted to NARROW.
+    lisp_value self = lisp_current_ctx();
+    if (self != LISP_EMPTY)
+        as_ctx(ctx)->caps = as_ctx(self)->caps;
     // Attach the own heap BEFORE enqueueing, so a failure never leaves a context
     // running in the wrong heap or an un-enqueued handle in the caller's hands.
     if (s->per_context_heaps && lisp_ctx_attach_heap(ctx) != 0)
@@ -197,6 +206,82 @@ static lisp_value prim_spawn(lisp_value *a, int n, const char **e) {
     if (!lisp_sched_add(s, ctx))  // never return an un-enqueued handle
         return prim_err(e, "spawn: out of memory");
     return ctx;
+}
+
+// Is `sym` present in capability list `caps`? Capability symbols are interned
+// (read or copied from interned), so identity compare suffices.
+static bool cap_in_list(lisp_value sym, lisp_value caps) {
+    for (lisp_value l = caps; lisp_is_pair(l); l = lisp_cdr(l))
+        if (lisp_car(l) == sym)
+            return true;
+    return false;
+}
+
+// (spawn-restricted caps thunk) -- like spawn, but the new context is RESTRICTED:
+// it may (import ...) only the modules named in `caps` (a list of symbols), only
+// ones already loaded, and may not define-module. This is the W7 grant: authority
+// travels with the spawned computation, and you cannot grant what you lack --
+// every requested capability must be in the spawner's own set (an unrestricted /
+// root spawner may grant anything). The grant is the capability: a context's
+// reach is exactly the modules it was handed.
+static lisp_value prim_spawn_restricted(lisp_value *a, int n, const char **e) {
+    lisp_sched_t *s = cur_sched();
+    if (s == NULL)
+        return prim_err(e, "spawn-restricted: no scheduler is running");
+    if (n != 2)
+        return prim_err(e, "spawn-restricted expects (caps thunk)");
+    lisp_value caps = a[0];
+    lisp_value proc = a[1];
+    if (caps != LISP_EMPTY && !lisp_is_pair(caps))
+        return prim_err(e, "spawn-restricted: caps must be a list of module names");
+    if (!lisp_is_objtype(proc, LISP_OBJ_CLOSURE) && !lisp_is_objtype(proc, LISP_OBJ_PRIMITIVE))
+        return prim_err(e, "spawn-restricted: second argument must be a procedure");
+    for (lisp_value l = caps; lisp_is_pair(l); l = lisp_cdr(l))
+        if (!lisp_is_symbol(lisp_car(l)))
+            return prim_err(e, "spawn-restricted: caps must be module-name symbols");
+    // No escalation: if the spawner is itself restricted, every requested cap
+    // must be in its set. An unrestricted (caps==UNDEF) spawner may grant any.
+    lisp_value self = lisp_current_ctx();
+    if (self != LISP_EMPTY) {
+        lisp_value mine = as_ctx(self)->caps;
+        if (mine != LISP_UNDEF)
+            for (lisp_value l = caps; lisp_is_pair(l); l = lisp_cdr(l))
+                if (!cap_in_list(lisp_car(l), mine))
+                    return prim_err(e, "spawn-restricted: cannot grant a capability you lack");
+    }
+    // The context object lives in the system heap, so both its initial expression
+    // and its caps spine must too (never the spawner's own heap -- its GC would
+    // reclaim them under the child). Symbols are interned, so only the spine is
+    // copied. Build both under the system heap, then restore.
+    lisp_heap_t *prev = lisp_gc_set_alloc_heap(lisp_gc_system_heap());
+    lisp_value expr = lisp_cons(proc, LISP_EMPTY);
+    lisp_value capcopy = (expr == LISP_UNDEF) ? LISP_UNDEF : lisp_caps_copy_sys(caps);
+    lisp_gc_set_alloc_heap(prev);
+    if (expr == LISP_UNDEF || capcopy == LISP_UNDEF)
+        return prim_err(e, "spawn-restricted: out of memory");
+    lisp_value ctx = lisp_ctx_make(expr, LISP_EMPTY);
+    if (ctx == LISP_UNDEF)
+        return prim_err(e, "spawn-restricted: out of memory");
+    as_ctx(ctx)->caps = capcopy;
+    if (s->per_context_heaps && lisp_ctx_attach_heap(ctx) != 0)
+        return prim_err(e, "spawn-restricted: out of memory");
+    if (!lisp_sched_add(s, ctx))
+        return prim_err(e, "spawn-restricted: out of memory");
+    return ctx;
+}
+
+// (capabilities) -- the running context's grant: #t if unrestricted (root),
+// else the list of module-name symbols it may import. Lets code (a REPL, a test)
+// see its own authority.
+static lisp_value prim_capabilities(lisp_value *a, int n, const char **e) {
+    (void)a;
+    (void)n;
+    (void)e;
+    lisp_value self = lisp_current_ctx();
+    if (self == LISP_EMPTY)
+        return LISP_TRUE;  // boot / no scheduler == root
+    lisp_value c = as_ctx(self)->caps;
+    return c == LISP_UNDEF ? LISP_TRUE : c;
 }
 
 // (yield) -- give up the rest of this slice; resume right after the call.
@@ -284,6 +369,8 @@ static void def(lisp_value env, const char *name, lisp_primitive_fn fn) {
 
 void lisp_install_sched(lisp_value env) {
     def(env, "spawn", prim_spawn);
+    def(env, "spawn-restricted", prim_spawn_restricted);
+    def(env, "capabilities", prim_capabilities);
     def(env, "yield", prim_yield);
     def(env, "send", prim_send);
     def(env, "%mailbox-empty?", prim_mailbox_empty);

@@ -141,6 +141,45 @@ static void errs(const char *src, const char *needle) {
     }
 }
 
+// Check a finished context reached DONE with the expected printed value.
+static void ctx_done(lisp_value ctx, const char *expect, const char *label) {
+    checks++;
+    if (lisp_ctx_state(ctx) != LISP_CTX_DONE) {
+        printf("  FAIL %-46s -> not DONE (state %d) err=%s\n", label,
+               lisp_ctx_state(ctx),
+               lisp_ctx_error(ctx) ? lisp_ctx_error(ctx) : "(none)");
+        failures++;
+        return;
+    }
+    char buf[64];
+    lisp_print(lisp_ctx_value(ctx), buf, sizeof(buf));
+    if (strcmp(buf, expect) != 0) {
+        printf("  FAIL %-46s -> got '%s' want '%s'\n", label, buf, expect);
+        failures++;
+    } else {
+        printf("  ok   %-46s -> %s\n", label, buf);
+    }
+}
+
+// Check a context ended in ERROR with a message containing `needle`.
+static void ctx_errs(lisp_value ctx, const char *needle, const char *label) {
+    checks++;
+    if (lisp_ctx_state(ctx) != LISP_CTX_ERROR) {
+        printf("  FAIL %-46s -> expected ERROR, state %d\n", label,
+               lisp_ctx_state(ctx));
+        failures++;
+        return;
+    }
+    const char *m = lisp_ctx_error(ctx);
+    if (m == NULL || strstr(m, needle) == NULL) {
+        printf("  FAIL %-46s -> error '%s' lacks '%s'\n", label, m ? m : "(none)",
+               needle);
+        failures++;
+    } else {
+        printf("  ok   %-46s -> error: %s\n", label, m);
+    }
+}
+
 int main(void) {
     uintptr_t stack_marker;
     lisp_gc_init(&stack_marker);  // run under the collector, as the real runtime does
@@ -303,6 +342,79 @@ int main(void) {
         } else {
             printf("  ok   builtin wrapper keeps the raw prim private\n");
         }
+    }
+
+    // --- capability-gated import (W7 step 2) --------------------------------
+    //
+    // A restricted context may import only the modules in its grant; an
+    // unrestricted (root) context imports freely. Gating keys on the *running*
+    // context, so these run under a scheduler. sys-probe and sys-secret are two
+    // built-in modules with identical exports -- the only difference is which one
+    // a context was granted.
+    printf("[lisp modules] capability-gated import\n");
+    {
+        lisp_value env = lisp_default_env();
+        lisp_install_sched(env);
+        lisp_register_builtin_module(env, "sys-probe", PROBE_EXPORTS, nprobe);
+        lisp_register_builtin_module(env, "sys-secret", PROBE_EXPORTS, nprobe);
+
+        lisp_sched_t s;
+        lisp_sched_init(&s, 100000);
+        s.per_context_heaps = 0;  // share the system heap; simpler for the test
+
+        const char *err = NULL;
+        lisp_eval_string(
+            // granted module -> import + use works
+            "(define ok-ctx (spawn-restricted '(sys-probe)"
+            "  (lambda () (import sys-probe) (probe-double 21))))"
+            // ungranted module -> import denied (context errors)
+            "(define denied-ctx (spawn-restricted '(sys-probe)"
+            "  (lambda () (import sys-secret) 'LEAKED)))"
+            // a restricted context cannot define-module
+            "(define dm-ctx (spawn-restricted '(sys-probe)"
+            "  (lambda () (define-module sneaky (export x) (define x 1)) 'MADE)))"
+            // no privilege escalation: cannot grant a cap you lack
+            "(define esc-ctx (spawn-restricted '(sys-probe)"
+            "  (lambda () (spawn-restricted '(sys-secret) (lambda () 1)) 'GRANTED)))"
+            // no escalation via plain spawn either: the child INHERITS the
+            // parent's restriction, so the spawned worker is still denied
+            // sys-secret. We read the child's state back through a cell.
+            "(define spawn-child #f)"
+            "(define spawn-parent (spawn-restricted '(sys-probe)"
+            "  (lambda () (set! spawn-child"
+            "               (spawn (lambda () (import sys-secret) 'LEAKED))))))"
+            // introspection: a restricted context sees its own grant
+            "(define caps-ctx (spawn-restricted '(sys-probe) (lambda () (capabilities))))"
+            // root (plain spawn) imports anything and is unrestricted
+            "(define root-ctx (spawn (lambda ()"
+            "  (import sys-secret) (list (probe-double 5) (capabilities)))))",
+            env, &err);
+        lisp_value ok_ctx = lisp_eval_string("ok-ctx", env, &err);
+        lisp_value denied_ctx = lisp_eval_string("denied-ctx", env, &err);
+        lisp_value dm_ctx = lisp_eval_string("dm-ctx", env, &err);
+        lisp_value esc_ctx = lisp_eval_string("esc-ctx", env, &err);
+        lisp_value caps_ctx = lisp_eval_string("caps-ctx", env, &err);
+        lisp_value root_ctx = lisp_eval_string("root-ctx", env, &err);
+        if (err != NULL) {
+            printf("  FAIL capability test setup -> %s\n", err);
+            failures++;
+        }
+        lisp_sched_run(&s, 0);
+
+        ctx_done(ok_ctx, "42", "restricted: import of GRANTED module");
+        ctx_errs(denied_ctx, "capability not granted",
+                 "restricted: import of ungranted module denied");
+        ctx_errs(dm_ctx, "restricted context", "restricted: define-module denied");
+        ctx_errs(esc_ctx, "cannot grant", "restricted: no privilege escalation");
+        ctx_done(caps_ctx, "(sys-probe)", "restricted: (capabilities) reports grant");
+        ctx_done(root_ctx, "(10 #t)", "root: imports freely, (capabilities) = #t");
+
+        // The plain-spawn child was created during the run; read its handle now
+        // and confirm it INHERITED the restriction (denied sys-secret), closing
+        // the escalation-via-spawn hole.
+        lisp_value spawn_child = lisp_eval_string("spawn-child", env, &err);
+        ctx_errs(spawn_child, "capability not granted",
+                 "restricted: plain spawn cannot escalate child");
     }
 
     printf("\n[lisp modules] %d checks, %d failures\n", checks, failures);

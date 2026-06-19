@@ -59,6 +59,24 @@ static bool fail_b(const char **err, const char *msg) {
     return false;
 }
 
+// The capability gate (W7 step 2). If the running context is RESTRICTED -- it
+// has a non-UNDEF capability set -- report true and hand back that set (the
+// module names it may import). A context with caps==UNDEF, or no running context
+// at all (boot / direct eval, before or outside the scheduler), is unrestricted
+// (root) and reports false. import/define-module consult this to gate module
+// acquisition and module creation; an unrestricted caller behaves exactly as
+// before, so nothing pre-existing is affected.
+static bool current_restriction(lisp_value *caps) {
+    lisp_value cur = lisp_current_ctx();
+    if (cur == LISP_EMPTY)
+        return false;
+    lisp_value c = ((lisp_ctx_t *)lisp_obj(cur))->caps;
+    if (c == LISP_UNDEF)
+        return false;
+    *caps = c;
+    return true;
+}
+
 // Mutate a registry cell in place (evaluator-owned structure, never user data).
 static void set_car(lisp_value pair, lisp_value v) {
     ((lisp_pair *)lisp_obj(pair))->car = v;
@@ -173,6 +191,13 @@ static bool reg_set(lisp_value genv, lisp_value name, lisp_value record,
 
 // (define-module NAME (export a b ...) body...)
 lisp_value lisp_module_define(lisp_value form, lisp_value env, const char **err) {
+    // Defining a module mutates the shared registry and could shadow a built-in
+    // capability module (sys-*), so it is a root-only operation: a restricted
+    // context may neither create modules nor redefine existing ones.
+    lisp_value caps;
+    if (current_restriction(&caps))
+        return fail(err, "define-module: not permitted in a restricted context");
+
     lisp_value rest = lisp_cdr(form);
     if (!lisp_is_pair(rest))
         return fail(err, "define-module: missing name");
@@ -366,6 +391,21 @@ lisp_value lisp_module_import(lisp_value form, lisp_value env, const char **err)
             clauses = lisp_cdr(spec);
         } else {
             return fail(err, "import: bad import spec");
+        }
+        // Capability gate: a restricted context may import only the modules in
+        // its grant, and only ones ALREADY loaded -- it cannot cause new source
+        // to be loaded (that would run an arbitrary module body, with its own
+        // transitive imports, under the sandbox). Granting a module name conveys
+        // exactly the authority that module's exports encapsulate, no more: e.g.
+        // a context granted `virtio-net` gets virtio-net-init (which internally
+        // holds MMIO), but still cannot name mmio-map itself.
+        lisp_value caps;
+        if (current_restriction(&caps)) {
+            if (!name_in_list(name, caps))
+                return fail(err, "import: capability not granted");
+            lisp_value cell = reg_find(genv, name);
+            if (!lisp_is_pair(cell) || is_loading(lisp_cdr(cell)))
+                return fail(err, "import: restricted context may not load new modules");
         }
         lisp_value exports = ensure_loaded(genv, name, err);
         if (exports == LISP_UNDEF && err != NULL && *err != NULL)

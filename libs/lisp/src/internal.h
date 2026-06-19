@@ -66,6 +66,9 @@ typedef struct {
     lisp_value accum;    // value being returned (when status==APPLY)
     lisp_value kont;     // top continuation frame, or LISP_EMPTY
     lisp_value mailbox;  // FIFO list of received messages (K2 scheduler / IPC)
+    lisp_value caps;     // capability set: the module names this context may
+                         // (import ...); LISP_UNDEF = unrestricted (root). A GC
+                         // root (traced in gc.c); lives in the system heap.
     uint32_t status;
     uint32_t blocked;    // 1 = parked waiting for a message; the scheduler skips it
     const char *err;
@@ -113,6 +116,12 @@ lisp_value *lisp_intern_table(size_t *cap_out);
 // the result value, or LISP_UNDEF with *err set on failure.
 lisp_value lisp_module_define(lisp_value form, lisp_value env, const char **err);
 lisp_value lisp_module_import(lisp_value form, lisp_value env, const char **err);
+
+// Copy a proper-list spine into the CURRENT allocation heap, sharing the
+// (interned-symbol) elements (eval.c). Used to relocate a capability list into
+// the system heap so it can safely root a system-heap context. Returns
+// LISP_UNDEF on OOM; a non-pair (the empty tail) is returned as-is.
+lisp_value lisp_caps_copy_sys(lisp_value l);
 
 // Apply `proc` to args in a caller-owned, reused context (eval.c). Used by the
 // higher-order primitives to avoid one context allocation per applied element.
