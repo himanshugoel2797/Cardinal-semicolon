@@ -1,147 +1,23 @@
 ;; virtio-net: the first device driver written in Cardinal Lisp.
 ;;
 ;; Imported at boot by the `init` module (single-core); init calls (virtio-net-init)
-;; on the BSP once the scheduler is live. Built on the
-;; driver substrate: pci-find, mmio-map, dma-alloc, the volatile byte accessors,
-;; the bitwise/bitfield primitives, and the MSI/ISR-wake bridge (pci-setup-msi
-;; -> a handle, then msi-count, msi-wait).
+;; on the BSP once the scheduler is live. The device-agnostic virtio 1.0 transport
+;; (the PCI capability walk, the status/feature handshake, split virtqueue setup,
+;; the notify kick) now lives in the shared `virtio` library; this module is the
+;; net-SPECIFIC half: the F_MAC feature, the virtio-net header, the RX/TX ring
+;; population, and the contexts that pump frames to/from the network service.
 ;;
 ;;   N2: discover, negotiate features, set up the RX/TX virtqueues, DRIVER_OK, MAC.
 ;;   N3: MSI-X -> ISR -> a Lisp RX context draining the used ring.
 ;;   N4: TX an ARP request and recognise the reply -> both directions end-to-end.
 
-;; --- small utilities --------------------------------------------------------
-
-;; The driver is a module. It imports exactly the capabilities it needs --
-;; sys-mmio (mmio-map/dma-alloc) and sys-pci (pci-find/pci-setup-msi + the MSI
-;; wake bridge msi-count/msi-wait) -- plus the generic driver-util helpers (nth
-;; and the mutable word cell make-cell/cell-ref/cell-set!). It exports just the
-;; entry point virtio-net-init. The capability prims stay private to this module;
-;; nothing reaches them through `virtio-net`. (Bodies stay at column 0: this is a
-;; pure wrapper over the existing definitions.)
+;; The driver imports exactly the capabilities it needs -- sys-mmio (mmio-map/
+;; dma-alloc) and sys-pci (pci-find/pci-setup-msi + the MSI wake bridge msi-count/
+;; msi-wait) -- plus the generic driver-util helpers and the shared virtio
+;; transport. It exports just the entry point virtio-net-init.
 (define-module virtio-net
   (export virtio-net-init)
-  (import sys-mmio sys-pci driver-util)
-
-;; --- PCI config space + virtio capability walk ------------------------------
-
-(define PCI-COMMAND  #x04)   ; u16: bit1 = memory space, bit2 = bus master
-(define PCI-CAP-PTR  #x34)   ; u8 : offset of the first capability
-(define PCI-CAP-VNDR #x09)   ; vendor-specific capability id (virtio uses this)
-
-(define VIRTIO-CFG-COMMON 1)
-(define VIRTIO-CFG-NOTIFY 2)
-(define VIRTIO-CFG-DEVICE 4)
-
-;; Find the virtio capability of a given cfg-type; returns its config offset or #f.
-(define (find-virtio-cap cfg cfg-type)
-  (let loop ((ptr (bytes-u8-ref cfg PCI-CAP-PTR)))
-    (if (= ptr 0)
-        #f
-        (if (and (= (bytes-u8-ref cfg ptr) PCI-CAP-VNDR)
-                 (= (bytes-u8-ref cfg (+ ptr 3)) cfg-type))
-            ptr
-            (loop (bytes-u8-ref cfg (+ ptr 1)))))))
-
-;; Resolve a BAR's base physical address (handles 64-bit memory BARs).
-(define (bar-base cfg bar-idx)
-  (let* ((off (+ #x10 (* bar-idx 4)))
-         (lo  (bytes-u32-ref cfg off)))
-    (if (= (bit-extract lo 1 2) 2)
-        (+ (bitwise-and lo #xFFFFFFF0)
-           (arithmetic-shift (bytes-u32-ref cfg (+ off 4)) 32))
-        (bitwise-and lo #xFFFFFFF0))))
-
-;; Map the BAR window a capability points at, returning a byte region over it.
-(define (map-cap cfg cap-off)
-  (let ((bar (bytes-u8-ref cfg (+ cap-off 4)))
-        (off (bytes-u32-ref cfg (+ cap-off 8)))
-        (len (bytes-u32-ref cfg (+ cap-off 12))))
-    (mmio-map (+ (bar-base cfg bar) off) len)))
-
-;; --- virtio common-config registers (offsets within the COMMON region) ------
-
-(define VIRTIO-DEVICE-FEATURE-SELECT 0)
-(define VIRTIO-DEVICE-FEATURE        4)
-(define VIRTIO-DRIVER-FEATURE-SELECT 8)
-(define VIRTIO-DRIVER-FEATURE       12)
-(define VIRTIO-MSIX-CONFIG          16)   ; u16
-(define VIRTIO-DEVICE-STATUS        20)   ; u8
-(define VIRTIO-QUEUE-SELECT         22)   ; u16
-(define VIRTIO-QUEUE-SIZE           24)   ; u16
-(define VIRTIO-QUEUE-MSIX           26)   ; u16
-(define VIRTIO-QUEUE-ENABLE         28)   ; u16
-(define VIRTIO-QUEUE-NOTIFY-OFF     30)   ; u16
-(define VIRTIO-QUEUE-DESC           32)   ; u64
-(define VIRTIO-QUEUE-DRIVER         40)   ; u64
-(define VIRTIO-QUEUE-DEVICE         48)   ; u64
-
-(define VIRTIO-STATUS-ACK          1)
-(define VIRTIO-STATUS-DRIVER       2)
-(define VIRTIO-STATUS-DRIVER-OK    4)
-(define VIRTIO-STATUS-FEATURES-OK  8)
-
-(define (virtio-status-set! common bits)
-  (bytes-u8-set! common VIRTIO-DEVICE-STATUS
-                 (bitwise-or (bytes-u8-ref common VIRTIO-DEVICE-STATUS) bits)))
-
-(define (virtio-features-offered common select)
-  (bytes-u32-set! common VIRTIO-DEVICE-FEATURE-SELECT select)
-  (bytes-u32-ref common VIRTIO-DEVICE-FEATURE))
-
-(define (virtio-features-accept! common select val)
-  (bytes-u32-set! common VIRTIO-DRIVER-FEATURE-SELECT select)
-  (bytes-u32-set! common VIRTIO-DRIVER-FEATURE val))
-
-;; --- split virtqueue ---------------------------------------------------------
-;; Layouts: descriptor = addr(u64) len(u32) flags(u16) next(u16) [16 bytes].
-;; avail   = flags(u16) idx(u16) ring[size](u16). used = flags(u16) idx(u16)
-;; ring[size]{id(u32) len(u32)}.
-
-(define VIRTQ-DESC-F-NEXT  1)
-(define VIRTQ-DESC-F-WRITE 2)
-
-(define (desc-set! desc i addr len flags next)
-  (let ((o (* i 16)))
-    (bytes-u64-set! desc o addr)
-    (bytes-u32-set! desc (+ o 8) len)
-    (bytes-u16-set! desc (+ o 12) flags)
-    (bytes-u16-set! desc (+ o 14) next)))
-
-;; Publish descriptor d into the avail ring and bump the free-running 16-bit idx.
-(define (avail-push! avail qsize d)
-  (let ((idx (bytes-u16-ref avail 2)))
-    (bytes-u16-set! avail (+ 4 (* 2 (modulo idx qsize))) d)
-    (bytes-u16-set! avail 2 (bitwise-and (+ idx 1) #xFFFF))))
-
-;; A queue record: (size desc avail used notify-off). Accessors by position.
-(define (q-size q)  (nth q 0))
-(define (q-desc q)  (nth q 1))
-(define (q-avail q) (nth q 2))
-(define (q-used q)  (nth q 3))
-(define (q-noff q)  (nth q 4))
-
-;; Select queue qidx, allocate its rings, hand the device their physical
-;; addresses, point its MSI-X vector at table entry 0, enable it.
-(define (virtio-setup-queue common qidx)
-  (bytes-u16-set! common VIRTIO-QUEUE-SELECT qidx)
-  (let ((qsize (bytes-u16-ref common VIRTIO-QUEUE-SIZE)))
-    (if (= qsize 0)
-        #f
-        (let ((desc  (dma-alloc (* qsize 16)))
-              (avail (dma-alloc (+ 6 (* 2 qsize))))
-              (used  (dma-alloc (+ 6 (* 8 qsize))))
-              (noff  (bytes-u16-ref common VIRTIO-QUEUE-NOTIFY-OFF)))
-          (bytes-u64-set! common VIRTIO-QUEUE-DESC   (bytes-phys desc))
-          (bytes-u64-set! common VIRTIO-QUEUE-DRIVER (bytes-phys avail))
-          (bytes-u64-set! common VIRTIO-QUEUE-DEVICE (bytes-phys used))
-          (bytes-u16-set! common VIRTIO-QUEUE-MSIX 0)     ; interrupts -> MSI-X entry 0
-          (bytes-u16-set! common VIRTIO-QUEUE-ENABLE 1)
-          (list qsize desc avail used noff)))))
-
-;; Notify the device that queue qidx has new avail entries.
-(define (notify-queue! notify mult q)
-  (bytes-u16-set! notify (* (q-noff q) mult) 0))   ; value is ignored by the device
+  (import sys-mmio sys-pci driver-util virtio)
 
 ;; --- RX -------------------------------------------------------------------
 ;; One contiguous RX buffer holds NRX slots of RXSLOT bytes; descriptor i points
@@ -195,7 +71,6 @@
 (define VIRTIO-NET-VID #x1af4)
 (define VIRTIO-NET-DID #x1041)
 (define VIRTIO-NET-F-MAC-BIT 5)
-(define VIRTIO-F-VERSION-1-BIT 0)
 
 (define (virtio-net-read-mac devcfg)
   (list (bytes-u8-ref devcfg 0) (bytes-u8-ref devcfg 1) (bytes-u8-ref devcfg 2)
@@ -209,26 +84,14 @@
   (let ((ecam (pci-find VIRTIO-NET-VID VIRTIO-NET-DID)))
     (if (not ecam)
         (begin (display "[virtio-net] no device present") (newline) #f)
-        (let ((cfg (mmio-map ecam #x1000)))
-          (bytes-u16-set! cfg PCI-COMMAND (bitwise-or (bytes-u16-ref cfg PCI-COMMAND) #x6))
-          (let* ((common  (map-cap cfg (find-virtio-cap cfg VIRTIO-CFG-COMMON)))
-                 (devcfg  (map-cap cfg (find-virtio-cap cfg VIRTIO-CFG-DEVICE)))
-                 (ncap    (find-virtio-cap cfg VIRTIO-CFG-NOTIFY))
-                 (notify  (map-cap cfg ncap))
-                 (mult    (bytes-u32-ref cfg (+ ncap 16))))   ; notify_off_multiplier
-            (bytes-u8-set! common VIRTIO-DEVICE-STATUS 0)
-            (virtio-status-set! common VIRTIO-STATUS-ACK)
-            (virtio-status-set! common VIRTIO-STATUS-DRIVER)
-            (let ((f-lo (virtio-features-offered common 0))
-                  (f-hi (virtio-features-offered common 1)))
-              (virtio-features-accept! common 0
-                (bitwise-and f-lo (arithmetic-shift 1 VIRTIO-NET-F-MAC-BIT)))
-              (virtio-features-accept! common 1
-                (bitwise-and f-hi (arithmetic-shift 1 VIRTIO-F-VERSION-1-BIT))))
-            (virtio-status-set! common VIRTIO-STATUS-FEATURES-OK)
-            (if (= 0 (bitwise-and (bytes-u8-ref common VIRTIO-DEVICE-STATUS)
-                                  VIRTIO-STATUS-FEATURES-OK))
-                (begin (display "[virtio-net] device rejected FEATURES_OK") (newline) #f)
+        ;; Common transport bring-up: accept F_MAC (lo) + VERSION_1 (hi).
+        (let ((dev (virtio-bringup ecam
+                     (arithmetic-shift 1 VIRTIO-NET-F-MAC-BIT)
+                     (arithmetic-shift 1 VIRTIO-F-VERSION-1-BIT))))
+          (if (not dev)
+              (begin (display "[virtio-net] device rejected FEATURES_OK") (newline) #f)
+              (let ((common (nth dev 0)) (devcfg (nth dev 1))
+                    (notify (nth dev 2)) (mult (nth dev 3)))
                 ;; Set up the queues first -- virtio-setup-queue programs each
                 ;; queue_msix_vector -- then msix_config, and only THEN enable the
                 ;; MSI-X capability (pci-setup-msi): the spec wants virtio's vector

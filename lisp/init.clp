@@ -17,7 +17,7 @@
 (define-module init
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
-          ps2 virtio-net)
+          ps2 virtio-net virtio-gpu)
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -42,7 +42,12 @@
     (start-audio-service)
     (start-power-service)
     (start-storage-service)
-    (start-display-service)
+    ;; Bring up the display registry, then the GPU driver, which brings the
+    ;; virtio-gpu device to DRIVER_OK, paints a framebuffer, and registers itself
+    ;; with the display service. Guarded: with no GPU present it just logs and
+    ;; returns, so a headless smoke boot is unaffected.
+    (let ((display-svc (start-display-service)))
+      (virtio-gpu-init display-svc))
     ;; Bring up the network stack, then the NIC, which registers itself with the
     ;; stack and forwards frames to it. Prime the ARP cache with a who-has for the
     ;; slirp gateway -- the reply exercises NIC RX -> service demux -> ARP cache
