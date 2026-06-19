@@ -1,0 +1,50 @@
+;; corenetwork/service: the long-lived network service loop -- the one exported
+;; entry point. State is (ip mac nic-tx arp-cache udp-binds); `serve` threads it.
+
+(define (start-network-service our-ip)
+  (serve (list our-ip #f #f '() '())
+    (lambda (st m)
+      (let ((ip (nth st 0)) (mac (nth st 1)) (tx (nth st 2))
+            (cache (nth st 3)) (binds (nth st 4)))
+        (cond
+          ((eq? (car m) 'register-nic)         ; (register-nic mac tx-ctx)
+           (display "[corenetwork] nic registered, mac=")
+           (display (cadr m)) (newline)
+           (list ip (cadr m) (caddr m) cache binds))
+          ((eq? (car m) 'rx)                   ; (rx frame len)
+           (let ((frame (cadr m)) (len (caddr m)))
+             (if (< len 14)
+                 st
+                 (let ((etype (get-be16 frame 12)))
+                   (cond
+                     ((= etype ETH-ARP)
+                      (list ip mac tx (handle-arp ip mac tx cache frame len) binds))
+                     ((= etype ETH-IPV4)
+                      (handle-ip ip mac tx cache binds frame len)
+                      st)
+                     (else st))))))
+          ((eq? (car m) 'arp-request)          ; (arp-request ip)
+           (if (and mac tx)
+               (eth-tx tx mac BROADCAST ETH-ARP
+                       (build-arp 1 mac ip (list 0 0 0 0 0 0) (cadr m)) 28))
+           st)
+          ((eq? (car m) 'arp-lookup)           ; (arp-lookup ip reply)
+           (send (caddr m) (cache-get cache (cadr m)))
+           st)
+          ((eq? (car m) 'udp-bind)             ; (udp-bind port handler)
+           (display "[corenetwork] udp port bound: ")
+           (display (cadr m)) (newline)
+           (list ip mac tx cache (cons (cons (cadr m) (caddr m)) binds)))
+          ((eq? (car m) 'udp-send)             ; (udp-send dst-ip dst-mac sport dport payload)
+           (if (and mac tx)
+               (udp-send ip mac tx (cadr m) (caddr m) (cadddr m)
+                         (nth m 4) (nth m 5) (bytes-length (nth m 5))))
+           st)
+          ((eq? (car m) 'ping)                 ; (ping dst-ip dst-mac id seq)
+           (if (and mac tx)
+               (eth-tx tx mac (caddr m) ETH-IPV4
+                       (build-ipv4 ip (cadr m) IP-ICMP
+                                   (build-icmp-echo 8 (cadddr m) (nth m 4)) 8)
+                       28))
+           st)
+          (else st))))))

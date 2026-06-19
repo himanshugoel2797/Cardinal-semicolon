@@ -116,6 +116,12 @@ lisp_value *lisp_intern_table(size_t *cap_out);
 // the result value, or LISP_UNDEF with *err set on failure.
 lisp_value lisp_module_define(lisp_value form, lisp_value env, const char **err);
 lisp_value lisp_module_import(lisp_value form, lisp_value env, const char **err);
+// (include part ...) -- splice sibling source files into the CURRENT module's
+// scope. Only valid inside a (define-module ...) body; each `part` resolves to
+// the file "<module-name>/<part>.clp" through the loader, and its top-level forms
+// are evaluated into the module's private env. The parts are not modules and
+// export nothing on their own.
+lisp_value lisp_module_include(lisp_value form, lisp_value env, const char **err);
 
 // Copy a proper-list spine into the CURRENT allocation heap, sharing the
 // (interned-symbol) elements (eval.c). Used to relocate a capability list into

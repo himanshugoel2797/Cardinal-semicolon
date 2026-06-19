@@ -39,6 +39,15 @@
 static lisp_module_loader_fn g_loader = NULL;
 static void *g_loader_ctx = NULL;
 
+// The module whose body is currently being evaluated, so `include` can resolve a
+// part file relative to it ("<module>/<part>"). LISP_EMPTY outside a module body.
+// Saved/restored around each define-module body (below), so a nested load -- an
+// import inside a module body that loads another source module -- restores the
+// outer module correctly. It only ever holds the `name` symbol that is live on
+// the C stack in lisp_module_define for the duration of that synchronous body
+// eval, so it is rooted while set and never outlives that frame.
+static lisp_value g_cur_module = LISP_EMPTY;
+
 void lisp_set_module_loader(lisp_module_loader_fn fn, void *ctx) {
     g_loader = fn;
     g_loader_ctx = ctx;
@@ -221,12 +230,19 @@ lisp_value lisp_module_define(lisp_value form, lisp_value env, const char **err)
     if (modenv == LISP_UNDEF)
         return fail(err, "out of memory");
 
+    // Track which module we are loading so an `include` in the body can resolve
+    // its parts relative to it; restore the previous on every exit path.
+    lisp_value prev_module = g_cur_module;
+    g_cur_module = name;
     for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b)) {
         const char *e = NULL;
         lisp_eval(lisp_car(b), modenv, &e);
-        if (e != NULL)
+        if (e != NULL) {
+            g_cur_module = prev_module;
             return fail(err, e);
+        }
     }
+    g_cur_module = prev_module;
 
     // Harvest the exported bindings (must be the module's own top-level defines).
     lisp_value alist = LISP_EMPTY;
@@ -412,6 +428,70 @@ lisp_value lisp_module_import(lisp_value form, lisp_value env, const char **err)
             return LISP_UNDEF;
         if (!bind_exports(env, exports, clauses, err))
             return LISP_UNDEF;
+    }
+    return LISP_UNDEF;  // unspecified
+}
+
+// --- include ----------------------------------------------------------------
+
+// (include part ...) -- splice sibling source files into the current module's
+// scope. Each `part` resolves to "<current-module>/<part>" through the same
+// loader as import, so a module M's parts live alongside it under lisp/.../M/.
+// The part source is read and evaluated directly into the module's private env
+// (`env`), so its defines are visible to the rest of the module and to one
+// another, but the part is NOT a module and exports nothing -- it cannot be
+// imported on its own, so a component's internals never enter the W7 grant set.
+lisp_value lisp_module_include(lisp_value form, lisp_value env, const char **err) {
+    // Like define-module, include loads and runs source: root-only.
+    lisp_value caps;
+    if (current_restriction(&caps))
+        return fail(err, "include: not permitted in a restricted context");
+    if (!lisp_is_symbol(g_cur_module))
+        return fail(err, "include: only valid inside a module body");
+    if (g_loader == NULL)
+        return fail(err, "include: no module loader installed");
+
+    const char *modname = lisp_named_name(g_cur_module);
+    size_t modlen = lisp_named_len(g_cur_module);
+    for (lisp_value parts = lisp_cdr(form); lisp_is_pair(parts);
+         parts = lisp_cdr(parts)) {
+        lisp_value p = lisp_car(parts);
+        if (!lisp_is_symbol(p))
+            return fail(err, "include: part names must be symbols");
+        // Compose "<module>/<part>" -- bound every operand so an untrusted source
+        // length cannot wrap and slip past the buffer check.
+        char qual[160];
+        size_t plen = lisp_named_len(p);
+        if (modlen >= sizeof qual || plen >= sizeof qual ||
+            modlen + 1 + plen >= sizeof qual)
+            return fail(err, "include: composed part name too long");
+        size_t o = 0;
+        memcpy(qual + o, modname, modlen);
+        o += modlen;
+        qual[o++] = '/';
+        memcpy(qual + o, lisp_named_name(p), plen);
+        o += plen;
+        qual[o] = '\0';
+
+        const char *src = NULL;
+        size_t len = 0;
+        if (!g_loader(qual, &src, &len, g_loader_ctx))
+            return fail(err, "include: part file not found");
+
+        // Evaluate the part's top-level forms straight into the module env.
+        const char *cur = src;
+        const char *end = src + len;
+        for (;;) {
+            const char *e = NULL;
+            lisp_value f = lisp_read(&cur, end, &e);
+            if (f == LISP_EOF)
+                break;
+            if (f == LISP_UNDEF)
+                return fail(err, e != NULL ? e : "include: source read error");
+            lisp_eval(f, env, &e);
+            if (e != NULL)
+                return fail(err, e);
+        }
     }
     return LISP_UNDEF;  // unspecified
 }
