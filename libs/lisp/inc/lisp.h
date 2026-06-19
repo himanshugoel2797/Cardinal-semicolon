@@ -309,6 +309,17 @@ lisp_ctx_status lisp_ctx_state(lisp_value ctx);
 // The context currently being resumed by the scheduler (LISP_EMPTY when none).
 lisp_value lisp_current_ctx(void);
 
+// A context's capability set: LISP_UNDEF (unrestricted/root) or a list of the
+// module-name symbols it may (import …). A restricted context can import only
+// those modules, only ones already loaded, and cannot define-module. Set caps to
+// launch a sandboxed context (e.g. a non-root serial REPL) from C; the spine is
+// copied into the system heap. lisp_ctx_set_caps returns 0, or -1 on OOM (in
+// which case it fails CLOSED -- caps is left granting NOTHING, never root). From
+// Lisp, `(spawn-restricted caps thunk)` grants a subset of the spawner's own set
+// and `(capabilities)` reports the running context's grant (#t when root).
+lisp_value lisp_ctx_caps(lisp_value ctx);
+int lisp_ctx_set_caps(lisp_value ctx, lisp_value caps);
+
 // Wake / park a context. lisp_ctx_wake is ISR-SAFE (a single word write, no
 // allocation or lock), so a native interrupt handler can wake a Lisp context
 // parked on a hardware event -- the native-ISR -> event -> wake-context bridge.

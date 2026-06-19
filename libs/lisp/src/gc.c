@@ -306,6 +306,7 @@ static void trace(lisp_value v) {
             mark_push(c->accum);
             mark_push(c->kont);
             mark_push(c->mailbox);
+            mark_push(c->caps);  // the context's capability list (system heap)
             break;
         }
         default:
@@ -394,6 +395,9 @@ static void collect_heap_locked(struct lisp_heap *h) {
         mark_push(o->accum);
         mark_push(o->kont);
         mark_push(o->mailbox);
+        mark_push(o->caps);  // caps live in the system heap (external here), but
+                             // marking is a no-op past the firewall and keeps the
+                             // ctx-root set in one place
     }
 
     while (g_ms_len > 0)

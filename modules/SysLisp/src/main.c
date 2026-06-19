@@ -578,6 +578,45 @@ static void check_scheduler(lisp_value env) {
     }
 }
 
+// Capability gate (W7 step 2) under the real kernel scheduler, against the real
+// sys-mmio module: a context GRANTED sys-mmio may import it and allocate DMA; a
+// context granted something else is DENIED the import (its context errors). This
+// is the knob the serial REPL will ride -- root when debugging the OS, sandboxed
+// otherwise.
+static void check_capabilities(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 1000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(define cap-ok"
+        "  (spawn-restricted '(sys-mmio)"
+        "    (lambda () (import sys-mmio) (> (bytes-phys (dma-alloc 32)) 0))))"
+        "(define cap-deny"
+        "  (spawn-restricted '(sys-irq)"
+        "    (lambda () (import sys-mmio) 'leaked)))",
+        env, &err);
+    lisp_value ok = lisp_eval_string("cap-ok", env, &err);
+    lisp_value deny = lisp_eval_string("cap-deny", env, &err);
+    lisp_sched_run(&s, 0);
+
+    char buf[64];
+    lisp_print(lisp_ctx_value(ok), buf, sizeof buf);
+    bool ok_pass = err == NULL && lisp_ctx_state(ok) == LISP_CTX_DONE &&
+                   strcmp(buf, "#t") == 0;
+    bool deny_pass = lisp_ctx_state(deny) == LISP_CTX_ERROR;
+    if (ok_pass && deny_pass) {
+        print_str("[SysLisp]  ok  capability gate (granted imports, ungranted denied)\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL capability gate  granted-> ");
+        print_str(buf);
+        print_str(deny_pass ? "  ungranted=denied" : "  ungranted=LEAKED");
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 static void run_self_test(lisp_value env) {
     check(env, "(+ 1 2 3)", "6");
     check(env, "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 6)", "720");
@@ -611,6 +650,7 @@ static void run_self_test(lisp_value env) {
                "  (dp:run))",
           "#t");
     check_scheduler(env);
+    check_capabilities(env);
 
     char num[24];
     print_str("[SysLisp] ");

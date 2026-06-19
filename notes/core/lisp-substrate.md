@@ -587,13 +587,33 @@ behind a VM.
   primitive is now **private to the driver module that imported it** — a context
   that imports none of them cannot even *name* `mmio-map`/`out-u8`/`pci-find`.
   This is the first half of the W7 model (lexical scope = capability list): the
-  authorities are no longer ambient. The second half — gating *who* may import
-  each `sys-*` module (today any code can), and moving the boot policy (which
-  driver is spawned with which grants) out of C and into a single privileged
-  `init.clp` — is the next step. `test_modules.c` covers the mechanism on the
+  authorities are no longer ambient. `test_modules.c` covers the mechanism on the
   host (registration + use, isolation of an unimported prim, one-way privacy of a
   wrapping module); the OS self-test reaches `dma-alloc` only through an
   `(import sys-mmio)` module, proving the path end-to-end at boot.
+- **Capability-gated import (W7), step 2** *(done; `module.c`, `sched.c`)*. Step 1
+  made the authorities non-ambient but left `import` itself ungated — anyone could
+  still `(import sys-mmio)`. Now a context carries a **capability set** (a new
+  `caps` field on `lisp_ctx_t`, a GC root: `LISP_UNDEF` = unrestricted/root, else
+  a list of grantable module names). `import` consults the *running* context: a
+  restricted one may import only modules in its grant, and only ones already
+  loaded — it cannot trigger loading new source (which would run an arbitrary
+  module body under the sandbox), and it cannot `define-module` (registry mutation
+  / `sys-*` shadowing is root-only). An unrestricted caller is unchanged, so all
+  pre-existing code (boot loads at root, with no scheduler context) is unaffected.
+  `(spawn-restricted caps thunk)` is the **grant** operation — authority travels
+  with the spawned computation and you cannot grant what you lack (no escalation);
+  `(capabilities)` reports the running grant; C gets `lisp_ctx_set_caps`/`_caps`
+  for launching a sandboxed context (e.g. a non-root serial REPL). Granting a
+  *module name* conveys exactly the authority its exports encapsulate and no more:
+  a context granted `virtio-net` gets `virtio-net-init` (which internally holds
+  MMIO) but still cannot name `mmio-map` — the module boundary is the capability
+  boundary. Covered by `test_modules.c` (granted/denied import, denied
+  define-module, no escalation, introspection, root-unrestricted) and an in-OS
+  self-test that gates a real `(import sys-mmio)` under the kernel scheduler.
+  **Next:** move boot policy (which driver is spawned with which grants) out of C
+  into a single privileged `init.clp` (Q3); then the debugger + serial REPL ride
+  this as gated capabilities ([[lisp-debugger-repl-roadmap]]).
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against

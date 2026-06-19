@@ -1309,6 +1309,15 @@ static lisp_ctx_status ctx_run(lisp_ctx_t *cx) {
 
 // --- Context construction + public API --------------------------------------
 
+lisp_value lisp_caps_copy_sys(lisp_value l) {
+    if (!lisp_is_pair(l))
+        return l;  // empty tail
+    lisp_value rest = lisp_caps_copy_sys(lisp_cdr(l));
+    if (rest == LISP_UNDEF)
+        return LISP_UNDEF;  // OOM propagates
+    return lisp_cons(lisp_car(l), rest);
+}
+
 static lisp_value ctx_alloc(lisp_value expr, lisp_value env) {
     // The context object lives in the shared system heap: it is referenced across
     // contexts (a scheduler queue, a send target handle) and outlives its own
@@ -1322,6 +1331,7 @@ static lisp_value ctx_alloc(lisp_value expr, lisp_value env) {
     cx->accum = LISP_UNDEF;
     cx->kont = LISP_EMPTY;
     cx->mailbox = LISP_EMPTY;
+    cx->caps = LISP_UNDEF;  // unrestricted by default; spawn-restricted narrows it
     cx->status = LISP_CTX_EVAL;
     cx->blocked = 0;
     cx->err = NULL;
@@ -1373,6 +1383,36 @@ lisp_ctx_status lisp_ctx_resume(lisp_value ctxv, int64_t budget) {
 }
 
 lisp_value lisp_ctx_value(lisp_value ctxv) { return ((lisp_ctx_t *)lisp_obj(ctxv))->accum; }
+
+// The capability set of a context: LISP_UNDEF (unrestricted) or a list of the
+// module-name symbols it may import. Read-only; set via lisp_ctx_set_caps.
+lisp_value lisp_ctx_caps(lisp_value ctxv) { return ((lisp_ctx_t *)lisp_obj(ctxv))->caps; }
+
+// Set a context's capability set. `caps` is LISP_UNDEF (unrestricted), LISP_EMPTY
+// (no import authority), or a list of interned module-name symbols. The list
+// spine is rebuilt in the system heap so it can never dangle when a per-context
+// heap is collected (symbols are interned there already). Returns 0, or -1 on
+// OOM (leaving the prior caps in place). The embedder uses this to launch a
+// sandboxed context (e.g. a non-root serial REPL) from C.
+int lisp_ctx_set_caps(lisp_value ctxv, lisp_value caps) {
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    if (!lisp_is_pair(caps)) {  // LISP_UNDEF or LISP_EMPTY: store as-is
+        cx->caps = caps;
+        return 0;
+    }
+    lisp_heap_t *prev = lisp_gc_set_alloc_heap(lisp_gc_system_heap());
+    lisp_value copy = lisp_caps_copy_sys(caps);
+    lisp_gc_set_alloc_heap(prev);
+    if (copy == LISP_UNDEF) {
+        // Fail CLOSED: grant no authority rather than leaving the context root
+        // (its caps may still be the UNDEF default). A caller that ignores the -1
+        // then gets a context that can import nothing, never an escalation.
+        cx->caps = LISP_EMPTY;
+        return -1;
+    }
+    cx->caps = copy;
+    return 0;
+}
 
 const char *lisp_ctx_error(lisp_value ctxv) { return ((lisp_ctx_t *)lisp_obj(ctxv))->err; }
 
