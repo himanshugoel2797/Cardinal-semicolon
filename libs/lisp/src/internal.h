@@ -15,10 +15,16 @@
 #include "lisp.h"
 
 // Lexical environment frame (see eval.c). Deliberately mutable runtime plumbing.
+// A small (per-call) frame keeps its bindings in `bindings` as an assoc list. The
+// top-level frame holds hundreds of bindings (every primitive + prelude + global
+// define) and is looked up on every global reference, so it is instead backed by
+// `table` -- a vector of hash buckets -- making those lookups O(1). Exactly one
+// is non-empty: `table` for the top-level frame, `bindings` for all others.
 typedef struct {
     lisp_header h;
     lisp_value parent;    // enclosing env, or LISP_EMPTY at the top level
     lisp_value bindings;  // assoc list ((sym . val) ...), mutated in place
+    lisp_value table;     // vector of hash buckets (top-level frame), else LISP_EMPTY
 } lisp_env_t;
 
 // A lambda: parameter list + body + captured definition environment.
