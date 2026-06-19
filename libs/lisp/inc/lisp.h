@@ -454,8 +454,16 @@ int lisp_register_builtin_module(lisp_value env, const char *name,
 
 // Parse one datum from `*cursor`, advancing it past the consumed text. Returns
 // LISP_EOF at end of input. On a parse error returns LISP_UNDEF and, if `err`
-// is non-NULL, points it at a static message. `end` bounds the buffer.
+// is non-NULL, points it at a static message; `*cursor` is left at the offending
+// byte (for an unterminated list/string, at the '(' / '"' that was never closed)
+// so the caller can report where. `end` bounds the buffer.
 lisp_value lisp_read(const char **cursor, const char *end, const char **err);
+
+// Compute the 1-based line and column of `pos` within the buffer that starts at
+// `base` (counting '\n' as the line break). Pair with lisp_read's error cursor to
+// turn a parse failure into a "line L, column C" diagnostic. `line`/`col` may be
+// NULL. If `base`/`pos` are NULL or pos<=base, reports line 1, column 1.
+void lisp_source_location(const char *base, const char *pos, int *line, int *col);
 
 // --- Printer (print.c) ------------------------------------------------------
 
