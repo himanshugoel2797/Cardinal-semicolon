@@ -333,7 +333,11 @@ static lisp_value prim_net_count(lisp_value *a, int n, const char **e) {
 
 // (net-wait seen) -> park the running context until the next device MSI, unless
 // the counter already advanced past `seen` (in which case stay runnable). cli()
-// closes the check-then-park race against the same-core (CPU 0) MSI.
+// closes the check-then-park race against the same-core MSI. LOAD-BEARING: the
+// MSI is routed to CPU 0 (interrupt_msi_register_addr(0)) and the driver context
+// runs on the BSP, so cli() here masks it. If the MSI were ever re-routed to
+// another core, the wake could be lost in this window (same caveat as %ps2-wait);
+// that waits on cross-core messaging.
 static lisp_value prim_net_wait(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_fixnum(a[0]))
         return (*e = "net-wait: expects (seen-count)"), LISP_UNDEF;

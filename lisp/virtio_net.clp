@@ -150,9 +150,10 @@
 
 ;; Fill the RX descriptors (device-writable) and make them all available.
 (define (rx-populate! rxq rxbuf notify mult)
-  (let ((base (bytes-phys rxbuf)) (desc (q-desc rxq)) (avail (q-avail rxq)))
+  (let ((base (bytes-phys rxbuf)) (desc (q-desc rxq)) (avail (q-avail rxq))
+        (n (if (< (q-size rxq) NRX) (q-size rxq) NRX)))   ; never exceed the ring
     (let loop ((i 0))
-      (if (= i NRX)
+      (if (= i n)
           (begin (notify-queue! notify mult rxq) 'done)
           (begin
             (desc-set! desc i (+ base (* i RXSLOT)) RXSLOT VIRTQ-DESC-F-WRITE 0)
@@ -178,11 +179,10 @@
 ;; A single TX buffer: [VNET-HDR zero bytes][ethernet frame]. Post on descriptor 0.
 
 (define (tx-frame! txq txbuf notify mult frame-len)
-  (let ((i 0))
-    (let loop ((k 0)) (if (< k VNET-HDR) (begin (bytes-u8-set! txbuf k 0) (loop (+ k 1))) 'z))
-    (desc-set! (q-desc txq) 0 (bytes-phys txbuf) (+ VNET-HDR frame-len) 0 0)
-    (avail-push! (q-avail txq) (q-size txq) 0)
-    (notify-queue! notify mult txq)))
+  (let loop ((k 0)) (if (< k VNET-HDR) (begin (bytes-u8-set! txbuf k 0) (loop (+ k 1))) 'z))
+  (desc-set! (q-desc txq) 0 (bytes-phys txbuf) (+ VNET-HDR frame-len) 0 0)
+  (avail-push! (q-avail txq) (q-size txq) 0)
+  (notify-queue! notify mult txq))
 
 ;; --- Ethernet + ARP (network byte order, written byte-wise) -----------------
 
@@ -216,8 +216,9 @@
 
 ;; If the frame at rxbuf+off is an ARP reply, return the sender MAC (6 bytes),
 ;; else #f. Ethertype at +12, ARP oper at +20.
-(define (arp-reply-sender rxbuf off)
-  (if (and (= (bytes-u8-ref rxbuf (+ off 12)) #x08)
+(define (arp-reply-sender rxbuf off len)
+  (if (and (>= len 42)                                 ; 14 eth + 28 arp minimum
+           (= (bytes-u8-ref rxbuf (+ off 12)) #x08)
            (= (bytes-u8-ref rxbuf (+ off 13)) #x06)
            (= (bytes-u8-ref rxbuf (+ off 21)) #x02))   ; oper low byte = 2 (reply)
       (list (bytes-u8-ref rxbuf (+ off 22)) (bytes-u8-ref rxbuf (+ off 23))
@@ -260,35 +261,42 @@
             (if (= 0 (bitwise-and (bytes-u8-ref common VIRTIO-DEVICE-STATUS)
                                   VIRTIO-STATUS-FEATURES-OK))
                 (begin (display "[virtio-net] device rejected FEATURES_OK") (newline) #f)
-                (let ((vec (pci-setup-msi ecam)))
+                ;; Set up the queues first -- virtio-setup-queue programs each
+                ;; queue_msix_vector -- then msix_config, and only THEN enable the
+                ;; MSI-X capability (pci-setup-msi): the spec wants virtio's vector
+                ;; registers configured before the cap is enabled.
+                (let ((rxq (virtio-setup-queue common 0))
+                      (txq (virtio-setup-queue common 1))
+                      (mac (virtio-net-read-mac devcfg)))
                   (bytes-u16-set! common VIRTIO-MSIX-CONFIG 0)    ; config events -> entry 0
-                  (let ((rxq (virtio-setup-queue common 0))
-                        (txq (virtio-setup-queue common 1))
-                        (mac (virtio-net-read-mac devcfg)))
-                    (virtio-status-set! common VIRTIO-STATUS-DRIVER-OK)
-                    (display "[virtio-net] up: mac=") (display mac)
-                    (display " irq-vec=") (display vec) (newline)
-                    ;; RX buffers + a spawned RX context, then an ARP probe.
-                    (let ((rxbuf (dma-alloc (* NRX RXSLOT)))
-                          (txbuf (dma-alloc RXSLOT))
-                          (last  (make-cell 0))
-                          (our-ip (list 10 0 2 15))      ; slirp guest
-                          (gw-ip  (list 10 0 2 2)))       ; slirp gateway
-                      (rx-populate! rxq rxbuf notify mult)
-                      (spawn (lambda ()
-                        (let loop ((seen (net-count)))
-                          (rx-drain! rxq rxbuf last notify mult
-                            (lambda (off len)
-                              (let ((sender (arp-reply-sender rxbuf off)))
-                                (if sender
-                                    (begin (display "[virtio-net] RX ARP reply: gateway mac=")
-                                           (display sender) (newline))
-                                    (begin (display "[virtio-net] RX frame, len=")
-                                           (display len) (newline))))))
-                          (if (> (net-count) seen)
-                              (loop (net-count))
-                              (begin (net-wait seen) (loop (net-count)))))))
-                      (let ((flen (build-arp-request! txbuf mac our-ip gw-ip)))
-                        (tx-frame! txq txbuf notify mult flen))
-                      (display "[virtio-net] sent ARP who-has 10.0.2.2") (newline)
-                      'ok)))))))))
+                  (let ((vec (pci-setup-msi ecam)))
+                    (if (not vec)
+                        (begin (display "[virtio-net] MSI-X setup failed") (newline) #f)
+                        (begin
+                          (virtio-status-set! common VIRTIO-STATUS-DRIVER-OK)
+                          (display "[virtio-net] up: mac=") (display mac)
+                          (display " irq-vec=") (display vec) (newline)
+                          ;; RX buffers + a spawned RX context, then an ARP probe.
+                          (let ((rxbuf (dma-alloc (* NRX RXSLOT)))
+                                (txbuf (dma-alloc RXSLOT))
+                                (last  (make-cell 0))
+                                (our-ip (list 10 0 2 15))      ; slirp guest
+                                (gw-ip  (list 10 0 2 2)))       ; slirp gateway
+                            (rx-populate! rxq rxbuf notify mult)
+                            (spawn (lambda ()
+                              (let loop ((seen (net-count)))
+                                (rx-drain! rxq rxbuf last notify mult
+                                  (lambda (off len)
+                                    (let ((sender (arp-reply-sender rxbuf off len)))
+                                      (if sender
+                                          (begin (display "[virtio-net] RX ARP reply: gateway mac=")
+                                                 (display sender) (newline))
+                                          (begin (display "[virtio-net] RX frame, len=")
+                                                 (display len) (newline))))))
+                                (if (> (net-count) seen)
+                                    (loop (net-count))
+                                    (begin (net-wait seen) (loop (net-count)))))))
+                            (let ((flen (build-arp-request! txbuf mac our-ip gw-ip)))
+                              (tx-frame! txq txbuf notify mult flen))
+                            (display "[virtio-net] sent ARP who-has 10.0.2.2") (newline)
+                            'ok)))))))))))
