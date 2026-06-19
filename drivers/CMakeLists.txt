@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
-ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/ps2)
+# ps2 was retired: the i8042 keyboard driver is now Lisp (lisp/ps2.clp), driven by
+# SysLisp over the generic ISA-IRQ + port-I/O primitives. No native module remains.
 
 ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/rtl8139)
 ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/rtl8169)
