@@ -45,46 +45,53 @@ static void set_cdr(lisp_value pair, lisp_value v) {
 // Arithmetic: exact (fixnum) when all operands are fixnums, else inexact
 // (flonum) -- the usual numeric contagion.
 static lisp_value prim_add(lisp_value *args, int argc, const char **err) {
-    if (all_fixnum(args, argc)) {
-        int64_t acc = 0;
-        for (int i = 0; i < argc; i++)
-            acc += lisp_fixnum_val(args[i]);
-        return lisp_fixnum(acc);
+    int64_t acc = 0;  // single fixnum pass; bail to the flonum path on the first non-fixnum
+    for (int i = 0; i < argc; i++) {
+        if (!lisp_is_fixnum(args[i]))
+            goto inexact;
+        acc += lisp_fixnum_val(args[i]);
     }
+    return lisp_fixnum(acc);
+inexact:
     if (!all_number(args, argc))
         return prim_err(err, "+ expects numbers");
-    double acc = 0.0;
+    double dacc = 0.0;
     for (int i = 0; i < argc; i++)
-        acc += lisp_number_to_double(args[i]);
-    return lisp_make_flonum(acc);
+        dacc += lisp_number_to_double(args[i]);
+    return lisp_make_flonum(dacc);
 }
 
 static lisp_value prim_mul(lisp_value *args, int argc, const char **err) {
-    if (all_fixnum(args, argc)) {
-        int64_t acc = 1;
-        for (int i = 0; i < argc; i++)
-            acc *= lisp_fixnum_val(args[i]);
-        return lisp_fixnum(acc);
+    int64_t acc = 1;
+    for (int i = 0; i < argc; i++) {
+        if (!lisp_is_fixnum(args[i]))
+            goto inexact;
+        acc *= lisp_fixnum_val(args[i]);
     }
+    return lisp_fixnum(acc);
+inexact:
     if (!all_number(args, argc))
         return prim_err(err, "* expects numbers");
-    double acc = 1.0;
+    double dacc = 1.0;
     for (int i = 0; i < argc; i++)
-        acc *= lisp_number_to_double(args[i]);
-    return lisp_make_flonum(acc);
+        dacc *= lisp_number_to_double(args[i]);
+    return lisp_make_flonum(dacc);
 }
 
 static lisp_value prim_sub(lisp_value *args, int argc, const char **err) {
     if (argc < 1)
         return prim_err(err, "- expects at least one argument");
-    if (all_fixnum(args, argc)) {
+    if (lisp_is_fixnum(args[0])) {
         int64_t acc = lisp_fixnum_val(args[0]);
-        if (argc == 1)
-            return lisp_fixnum(-acc);
-        for (int i = 1; i < argc; i++)
+        int i = 1;
+        for (; i < argc; i++) {
+            if (!lisp_is_fixnum(args[i]))
+                goto inexact;
             acc -= lisp_fixnum_val(args[i]);
-        return lisp_fixnum(acc);
+        }
+        return lisp_fixnum(argc == 1 ? -acc : acc);
     }
+inexact:
     if (!all_number(args, argc))
         return prim_err(err, "- expects numbers");
     double acc = lisp_number_to_double(args[0]);
