@@ -56,15 +56,36 @@ the IRQ but it is never delivered (this bit the ps2 migration).
   `send`; a context handle never crosses cores). So a server and its drivers must
   share one core; long-lived services run on the BSP. Cross-core service placement
   waits on cross-core messaging.
-- **Small messages only.** `send` deep-copies (copy-on-send) and there is **no
-  mutable bytevector type yet**. Fine for input events; **not** for packets, disk
-  blocks, or framebuffers. Storage/network/display need a bytevector (copied) or
-  shared-buffer message primitive first — see the "driver MMIO/bytevector
-  primitives" item in `lisp-substrate.md`.
+- **Bulk data — now available.** The mutable byte-buffer type (`LISP_OBJ_BYTES`)
+  is both the driver MMIO/DMA region and the bulk-data message: `send` deep-copies
+  it (a snapshot into the receiver's heap), so packets / disk blocks can cross a
+  context boundary. (Zero-copy shared buffers across contexts are still future;
+  copy-on-send is the shared-nothing default.)
 - **Heavy protocol logic: decide per server.** The Lisp server can be a thin async
   *coordinator* over the existing C protocol logic (FFI), or a genuine rewrite.
   The async message contract is fixed now; the coordinate-vs-rewrite call is made
   when each heavy server (network, storage) is actually tackled.
+
+## Driver substrate (available now)
+
+The Lisp toolkit for writing drivers (commits 1812bdc / e5378ac / ca0f3c1):
+
+- **Bitwise / bitfield** (base prims): `bitwise-and/or/xor/not`,
+  `arithmetic-shift`, `bit-extract`/`bit-insert` (register fields). Fixnums carry
+  62 bits — covers any u32 register.
+- **Mutable byte buffers** (`LISP_OBJ_BYTES`): `make-bytes`, `bytes-length`,
+  `bytes-phys`, and volatile little-endian `bytes-u{8,16,32,64}-{ref,set!}`.
+- **MMIO / DMA / port I/O** (SysLisp, kernel): `(mmio-map phys size)` and
+  `(dma-alloc size)` return byte buffers over a device BAR / a contiguous DMA
+  region (`bytes-phys` gives the address to program into the device);
+  `in-u{8,16,32}` / `out-u{8,16,32}` for legacy ports. Unrestricted today —
+  capability-gated later.
+- **Register/field DSL** (prelude, closures, no macros): `(register region off
+  size)` → a read/write accessor; `(field reg lo width)` → a bit-range accessor
+  (read = extract, write = read-modify-write). Constants bake into the closures.
+
+Example: `(define ctrl (register (mmio-map bar #x1000) #x40 4))` then
+`(define speed (field ctrl 4 3))`, `(speed 5)` / `(speed)`.
 
 ## Status / order
 
@@ -72,10 +93,13 @@ the IRQ but it is never delivered (this bit the ps2 migration).
   IRQ→wake→poll→send→coreinput. The native `servers/CoreInput` C module is
   **superseded** and no longer loaded (it left the boot path when `servicescript`
   was retired in K5b). Mouse is still queued by ps2 but not yet pumped to Lisp.
-- **Next:** a bytevector/shared-buffer message primitive (unblocks bulk data),
-  then **CoreStorage** (clean request/response), then **CoreNetwork** (where the
-  no-re-entrancy win pays off most). Wire each migrated driver into `loadscript`
-  before SysLisp so its FFI symbols resolve.
+- **Driver substrate — done** (bitwise + byte buffers + MMIO/DMA/port-IO +
+  register/field DSL; see above). The bulk-data message type is in place.
+- **Next:** migrate a real device driver in Lisp using the substrate (a NIC is the
+  natural first target — it pairs with the passive CoreNetwork), then
+  **CoreStorage** (request/response) and **CoreNetwork** (where the no-re-entrancy
+  win pays off most). Wire each migrated driver into `loadscript` before SysLisp
+  so its FFI symbols resolve.
 
 ## Testing
 
