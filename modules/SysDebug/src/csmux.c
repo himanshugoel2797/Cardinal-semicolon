@@ -158,7 +158,7 @@ static void emit_frame_locked(uint8_t chan, const uint8_t *p, uint32_t len) {
 
 // Coalesced log buffer. The debug log is high-volume; emitting a CSMUX_CH_LOG
 // frame per print_str would be one USB transfer per line over an FTDI link, whose
-// per-transfer latency stalls the low-rate control/GDB channels sharing the link.
+// per-transfer latency stalls the low-rate control/REPL channels sharing the link.
 // Instead we accumulate log bytes and flush them as a few large CH_LOG frames.
 static uint8_t g_log_buf[CSMUX_MAX_PAYLOAD];
 static uint32_t g_log_len = 0;
@@ -178,7 +178,7 @@ int csmux_send(uint8_t chan, const void *buf, uint32_t len) {
     int if_state;
     if (!tx_acquire(&if_state))
         return -2; // re-entrant on a heavy transport: drop to avoid self-deadlock
-    // Flush any buffered log first so control/GDB frames keep order with the log
+    // Flush any buffered log first so control/REPL frames keep order with the log
     // and are never queued behind it.
     if (chan != CSMUX_CH_LOG)
         flush_log_locked();
@@ -241,18 +241,18 @@ typedef struct {
 // g_rx_lock (declared at top) serialises the receive de-framer:
 // csmux_recv_byte_pump mutates shared deframer state (g_frame/g_flen/g_inframe/
 // g_escape) and the ring heads, so two cores pumping at once (e.g. the SysTest
-// control reader on one core and the tunneled GDB reader on another) would
+// control reader on one core and the REPL reader on another) would
 // corrupt it. Distinct from g_tx_lock and never nested with it (the pump never
 // sends, csmux_send never pumps), so no deadlock.
 
 static ring_t g_ctrl_ring;
-static ring_t g_gdb_ring;
+static ring_t g_repl_ring;
 
 static ring_t *ring_for(uint8_t chan) {
     if (chan == CSMUX_CH_CTRL)
         return &g_ctrl_ring;
-    if (chan == CSMUX_CH_GDB)
-        return &g_gdb_ring;
+    if (chan == CSMUX_CH_REPL)
+        return &g_repl_ring;
     return NULL; // CH_LOG (or unknown) has no inbound ring
 }
 

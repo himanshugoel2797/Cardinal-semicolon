@@ -8,9 +8,10 @@
 
 // CSMUX -- a tiny HDLC-style framing layer that multiplexes several logical
 // channels over the single COM1 serial link. It exists so the in-OS test
-// harness can have a private control channel and a tunneled GDB channel while
-// the human-readable debug log keeps flowing -- all over one wire (the case that
-// matters on real hardware, where there may be only one USB-serial link).
+// harness can have a private control channel and the interactive Lisp REPL can
+// run while the human-readable debug log keeps flowing -- all over one wire (the
+// case that matters on real hardware, where there may be only one USB-serial
+// link).
 //
 // CSMUX is dormant on a normal boot: print_str writes raw text to COM1 exactly
 // as before. It is only switched on (csmux_activate) when the kernel is booted
@@ -27,7 +28,7 @@
 
 #define CSMUX_CH_LOG 0u  // human-readable debug log (print_str)
 #define CSMUX_CH_CTRL 1u // test harness control protocol (text messages)
-#define CSMUX_CH_GDB 2u  // tunneled GDB remote-serial-protocol bytes
+#define CSMUX_CH_REPL 2u // the interactive Lisp REPL (replaced the GDB tunnel)
 
 #define CSMUX_MAX_PAYLOAD 1024u
 
@@ -64,8 +65,8 @@ bool csmux_xport_heavy(void);
 // Append debug-log bytes to the coalescing buffer (CSMUX_CH_LOG). The log is
 // high-volume, so instead of a frame (a USB transfer) per line it is batched and
 // flushed as a few large frames -- otherwise per-line transfer latency over a USB
-// link starves the low-rate control/GDB channels sharing the single link. The
-// buffer auto-flushes when full, before any control/GDB frame, and via
+// link starves the low-rate control/REPL channels sharing the single link. The
+// buffer auto-flushes when full, before any control/REPL frame, and via
 // csmux_log_flush(). print_str routes the log here once CSMUX is active.
 void csmux_log_append(const void *buf, uint32_t len);
 
@@ -96,11 +97,11 @@ int csmux_recv_byte_pump(void);
 
 // Drain up to `cap` already-received bytes on `chan` into `buf` (pumps first).
 // Non-blocking; returns the number of bytes copied (0 if none). Only CH_CTRL and
-// CH_GDB have receive rings.
+// CH_REPL have receive rings.
 int csmux_chan_read(uint8_t chan, void *buf, uint32_t cap);
 
 // Number of bytes currently waiting on `chan` (pumps first), without consuming
-// them. Used by the GDB transport's non-destructive break-in poll.
+// them. Used by the REPL's non-blocking input poll.
 int csmux_chan_avail(uint8_t chan);
 
 // Install a hook invoked at the top of debug_handle_trap() (the PANIC path),

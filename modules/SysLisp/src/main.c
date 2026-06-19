@@ -41,6 +41,7 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysReg/registry.h"
+#include "SysDebug/csmux.h"
 #include "pci/pci.h"
 #include "pci/pci_irq.h"
 #include <stdlib.h>  // itoa
@@ -474,6 +475,67 @@ static void register_driver_modules(lisp_value env) {
         }
 }
 
+// --- The interactive serial REPL (replaces the GDB stub) ----------------------
+//
+// The REPL rides CSMUX_CH_REPL (the channel the GDB tunnel used to). console-poll
+// /-write move bytes over it; repl-eval runs the read-eval-print engine in a
+// PERSISTENT environment (g_repl_env, a child of the shared env, rooted via a
+// hidden %repl-env binding so the collector keeps it). Evaluation is directed at
+// the system heap (lisp_repl_serve) so the REPL's definitions survive across
+// lines without being reclaimed by the REPL context's own heap. These are a gated
+// capability -- (import sys-console) yields an eval-anything shell over the wire,
+// so only a context init grants it (the REPL context, run root for OS debugging)
+// can name them; the REPL context's own grant governs what typed input may import.
+
+static lisp_value g_repl_env = LISP_EMPTY;
+
+// (console-poll) -> a string of the bytes currently waiting on the REPL channel,
+// or #f if none. Non-blocking; the REPL loop yields and retries on #f.
+static lisp_value prim_console_poll(lisp_value *a, int n, const char **e) {
+    (void)a;
+    if (n != 0)
+        return (*e = "console-poll: expects no arguments"), LISP_UNDEF;
+    char buf[256];
+    int got = csmux_chan_read(CSMUX_CH_REPL, buf, sizeof buf);
+    if (got <= 0)
+        return LISP_FALSE;
+    return lisp_make_string(buf, (size_t)got);
+}
+
+// (console-write str) -> emit the string's bytes on the REPL channel. csmux_send
+// rejects a frame larger than CSMUX_MAX_PAYLOAD, so a long transcript is split
+// into payload-sized frames rather than silently dropped.
+static lisp_value prim_console_write(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_string(a[0]))
+        return (*e = "console-write: expects (string)"), LISP_UNDEF;
+    const char *p = lisp_string_data(a[0]);
+    size_t len = lisp_string_len(a[0]);
+    do {  // do/while so a zero-length write still emits one (empty) frame
+        uint32_t chunk = len > CSMUX_MAX_PAYLOAD ? CSMUX_MAX_PAYLOAD : (uint32_t)len;
+        csmux_send(CSMUX_CH_REPL, p, chunk);
+        p += chunk;
+        len -= chunk;
+    } while (len > 0);
+    return LISP_UNDEF;
+}
+
+// (repl-eval str) -> the transcript (values / located errors) from evaluating the
+// input in the persistent REPL env.
+static lisp_value prim_repl_eval(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_string(a[0]))
+        return (*e = "repl-eval: expects (string)"), LISP_UNDEF;
+    char out[2048];
+    lisp_repl_serve(lisp_string_data(a[0]), lisp_string_len(a[0]), g_repl_env,
+                    out, sizeof out);
+    return lisp_make_string(out, strlen(out));
+}
+
+static const lisp_builtin_export sys_console_exports[] = {
+    {"console-poll", prim_console_poll},
+    {"console-write", prim_console_write},
+    {"repl-eval", prim_repl_eval},
+};
+
 // Resolve a Lisp module NAME (as written in `import`/`define-module`) to its
 // source bytes in the initrd, by mapping it to ./lisp/<name>.clp. Installed via
 // lisp_set_module_loader so `(import foo)` pulls ./lisp/foo.clp. The initrd
@@ -617,6 +679,42 @@ static void check_capabilities(lisp_value env) {
     }
 }
 
+// The serial REPL's eval, under the real scheduler: a context (own per-context
+// heap) imports sys-console, defines a value through repl-eval, then churns its
+// OWN heap hard enough to force a collection, and reads the value back. It must
+// survive -- proving the REPL's persistent env (and lisp_repl_serve's system-heap
+// direction) keeps definitions across lines without the context's heap reclaiming
+// them. This is the in-OS proof of the REPL engine + capability path; the live
+// serial loop over CSMUX_CH_REPL is the interactive bring-up (needs an RX-wake
+// bridge so it parks instead of busy-polling).
+static void check_repl(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 4000000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(define rc (spawn (lambda ()"
+        "  (import sys-console)"
+        "  (repl-eval \"(define rz 4242)\")"
+        "  (let loop ((i 0) (acc '()))"
+        "    (if (= i 9000) 'churned (loop (+ i 1) (cons i acc))))"
+        "  (string=? (repl-eval \"rz\") \"4242\\n\"))))",
+        env, &err);
+    lisp_value rc = lisp_eval_string("rc", env, &err);
+    lisp_sched_run(&s, 0);
+    char buf[16];
+    lisp_print(lisp_ctx_value(rc), buf, sizeof buf);
+    if (err == NULL && lisp_ctx_state(rc) == LISP_CTX_DONE && strcmp(buf, "#t") == 0) {
+        print_str("[SysLisp]  ok  serial REPL eval + persistent env survives GC\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL serial REPL eval -> ");
+        print_str(buf);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 static void run_self_test(lisp_value env) {
     check(env, "(+ 1 2 3)", "6");
     check(env, "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 6)", "720");
@@ -651,6 +749,7 @@ static void run_self_test(lisp_value env) {
           "#t");
     check_scheduler(env);
     check_capabilities(env);
+    check_repl(env);
     // sys-debug through the capability path: a module imports the reflective
     // debugger and single-steps a sub-context to completion (Lisp debugging Lisp).
     check(env, "(begin"
@@ -890,6 +989,13 @@ int lisp_scheduler_enter() {
     // The reflective debugger is a capability too: only a context granted
     // sys-debug can import ctx-make/ctx-step/... and drive another context.
     lisp_register_debug_module(g_env);
+    // The interactive serial REPL's I/O + eval, gated as sys-console. Build its
+    // persistent environment now (single-core) and root it via a hidden binding
+    // so the collector keeps it across the freeze and across REPL lines.
+    g_repl_env = lisp_make_env(g_env);
+    lisp_env_define(g_env, lisp_make_symbol("%repl-env", 9), g_repl_env);
+    lisp_register_builtin_module(g_env, "sys-console", sys_console_exports,
+                                 ARRAY_LEN(sys_console_exports));
     // Resolve `import` against the initrd (./lisp/<name>.clp). Must be set before
     // loading any source that imports a library. Module loading shares the same
     // single-core boot window (the registry lives in the shared env, which the
