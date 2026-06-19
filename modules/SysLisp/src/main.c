@@ -764,65 +764,15 @@ static void announce_core(int id, const char *err, lisp_value proof) {
     print_str(line);
 }
 
-// --- Servers-as-Lisp: the async input service (first server migration) --------
+// --- Servers-as-Lisp ----------------------------------------------------------
 //
-// CoreInput becomes a long-lived Lisp CONTEXT instead of a native task with a
-// synchronous callback ABI. Drivers (also contexts) are shared-nothing, so the
-// old re-entrant callbacks become MESSAGES: a driver `send`s
-//   (register <name>)        -- announce itself, and
-//   (event <payload>)        -- one input event,
-// to the coreinput context, which keeps a device table and routes events. There
-// is no synchronous re-entry, so the network-style "rx handler calls back into tx"
-// self-deadlock cannot occur here by construction.
-//
-// The whole thing is set up as ONE expression evaluated in the shared env: it only
-// LOOKS UP names there (spawn/recv/cond/... plus ps2-init/ps2-keyboard-driver,
-// exported by the `ps2` module imported at boot in lisp_scheduler_enter), never
-// `define`s into it -- mutating the cross-core-shared env after the APs are live
-// would be a data race. The
-// coordinator handle is held in a `let` binding the ps2 driver context closes
-// over, not in a global. (ps2-init) brings up the i8042 controller (pure port I/O,
-// in Lisp); the spawned ps2 context then claims IRQ 1, registers with coreinput,
-// and pumps scancodes -- the entire ps2 driver is Lisp now, over the generic
-// irq-register/irq-wait + in-u8/out-u8 primitives.
-static void setup_input_service(void) {
-    const char *err = NULL;
-    lisp_eval_string(
-        "(let ((coreinput"
-        "        (spawn (lambda ()"
-        "          (let loop ((devs '()))"
-        "            (let ((m (recv)))"
-        "              (cond ((eq? (car m) 'register)"
-        "                     (display \"[coreinput] device registered: \")"
-        "                     (display (cadr m)) (newline)"
-        "                     (loop (cons (cadr m) devs)))"
-        "                    ((eq? (car m) 'event)"
-        "                     (display \"[coreinput] event \") (display (cadr m)) (newline)"
-        "                     (loop devs))"
-        "                    (else (loop devs))))))))) "
-        "  (ps2-init)"
-        "  (spawn (lambda () (ps2-keyboard-driver coreinput))))",
-        g_env, &err);
-    if (err != NULL) {
-        print_str("[SysLisp] input service setup error: ");
-        print_str(err);
-        print_str("\r\n");
-    }
-}
-
-// Start the Lisp virtio-net driver. The driver source (./lisp/virtio-net.clp,
-// the `virtio-net` module imported at boot in lisp_scheduler_enter) exports
-// virtio-net-init; here we just invoke it. Lives on the BSP (services are
-// BSP-pinned for now).
-static void discover_nic(void) {
-    const char *err = NULL;
-    lisp_eval_string("(virtio-net-init)", g_env, &err);
-    if (err != NULL) {
-        print_str("[net] virtio-net-init error: ");
-        print_str(err);
-        print_str("\r\n");
-    }
-}
+// The OS services are Lisp contexts, brought up by the privileged `init` module
+// (./lisp/init.clp), not C. CoreInput is a long-lived context owning a device
+// table: drivers `send` it (register <name>) / (event <payload>) instead of the
+// old synchronous callback ABI, so the rx-handler-re-enters-tx self-deadlock
+// cannot occur. init spawns those service contexts with explicit grants (today
+// the empty grant -- they need no runtime import authority), and the kernel only
+// invokes (system-init) on the BSP. See init.clp for the policy and rationale.
 
 // THE PER-CORE SCHEDULER LOOP, run by EVERY core (the BSP at the tail of
 // lisp_scheduler_enter, each AP once released). It NEVER returns. This core
@@ -841,11 +791,19 @@ static void NORETURN lisp_core_loop(void) {
     sched.per_context_heaps = 1;
 
     // Long-lived OS services live on the BSP for now (cross-core messaging is a
-    // later step, so a service + its drivers must share one core). Spawn them onto
-    // this scheduler before the proof so they run in the same pass.
+    // later step, so a service + its drivers must share one core). The privileged
+    // init module owns the policy: (system-init) brings up the input service and
+    // the NIC, spawning each service context with its grant. It runs as root (a
+    // direct eval, not under the scheduler -> no current context), and its spawns
+    // enqueue onto THIS scheduler (lisp_sched_init made it current) to run below.
     if (id == 0) {
-        setup_input_service();
-        discover_nic();
+        const char *ierr = NULL;
+        lisp_eval_string("(system-init)", g_env, &ierr);
+        if (ierr != NULL) {
+            print_str("[SysLisp] system-init error: ");
+            print_str(ierr);
+            print_str("\r\n");
+        }
     }
 
     // Per-core proof of life: spawn a context that does a real (heap-allocating,
@@ -923,19 +881,24 @@ int lisp_scheduler_enter() {
     // single-core boot window (the registry lives in the shared env, which the
     // system collector must see fully built before the APs go live).
     lisp_set_module_loader(syslisp_module_loader, NULL);
-    // Bring up the Lisp drivers by IMPORTING their modules: this loads
-    // ./lisp/{ps2,virtio-net}.clp from the initrd (each a define-module that pulls
-    // in exactly the sys-* capabilities + driver-util it needs) and binds their
-    // entry points -- ps2-init / ps2-keyboard-driver / virtio-net-init -- into the
-    // shared env for setup_input_service / discover_nic to invoke later on the BSP.
-    // The capability prims themselves stay private to each driver module; only the
-    // entry points become visible here. Single-core, before the APs go live.
+    // Load the privileged system initializer. (import init) loads ./lisp/init.clp
+    // -- a define-module that itself (import ps2 virtio-net)s (pulling in each
+    // driver and the sys-* capabilities they need) and exports `system-init`,
+    // which is bound into the shared env here. ALL boot policy (what services come
+    // up, and the grants their contexts get) lives in init.clp now, not in C; the
+    // kernel just calls (system-init) on the BSP once the scheduler is live.
+    // Single-core, before the APs go live (module loading mutates the shared env).
     const char *imperr = NULL;
-    lisp_eval_string("(import ps2 virtio-net)", g_env, &imperr);
+    lisp_eval_string("(import init)", g_env, &imperr);
     if (imperr != NULL) {
-        print_str("[SysLisp] driver import error: ");
+        // init now holds ALL boot policy; without it the OS would boot headless
+        // (no input, no NIC) and silently. Treat a failed load as fatal -- mirrors
+        // the g_env-build failure above -- so the cause is unmistakable.
+        print_str("[SysLisp] FATAL: could not load the init module: ");
         print_str(imperr);
         print_str("\r\n");
+        for (;;)
+            __asm__ volatile("cli; hlt");
     }
 
     // Single-core phase: self-test + the ISR-bridge demo run with the system

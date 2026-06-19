@@ -1,10 +1,10 @@
 ;; ps2: the i8042 PS/2 keyboard controller, written in Cardinal Lisp.
 ;;
-;; This replaces the former C driver (drivers/ps2) entirely. Loaded from the
-;; initrd at boot (single-core, into the shared env) as pure definitions; SysLisp
-;; calls (ps2-init) and spawns (ps2-keyboard-driver coreinput) from the input
-;; service. The whole driver -- controller bring-up, keyboard init, and the
-;; IRQ-driven scancode pump -- is Lisp over the driver substrate: the legacy
+;; This replaces the former C driver (drivers/ps2) entirely. Imported at boot by
+;; the `init` module (single-core); init's input service calls (ps2-init) and
+;; spawns (ps2-keyboard-driver coreinput) -- the latter as a restricted context
+;; (no import authority). The whole driver -- controller bring-up, keyboard init,
+;; and the IRQ-driven scancode pump -- is Lisp over the driver substrate: the legacy
 ;; port-I/O prims (in-u8/out-u8), the bitwise prims, and the generic ISA-IRQ wake
 ;; bridge (irq-register/irq-count/irq-wait).
 ;;
