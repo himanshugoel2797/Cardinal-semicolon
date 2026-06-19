@@ -41,8 +41,10 @@
   (import sys-mmio sys-pci driver-util)
 
 ;; --- PCI config space + virtio capability walk ------------------------------
+;; PCI-COMMAND and bar-base are generic PCI plumbing -- they now live in
+;; driver-util (imported above) and are re-exported here so existing
+;; (import virtio) users still see them.
 
-(define PCI-COMMAND  #x04)   ; u16: bit1 = memory space, bit2 = bus master
 (define PCI-CAP-PTR  #x34)   ; u8 : offset of the first capability
 (define PCI-CAP-VNDR #x09)   ; vendor-specific capability id (virtio uses this)
 
@@ -59,15 +61,6 @@
                  (= (bytes-u8-ref cfg (+ ptr 3)) cfg-type))
             ptr
             (loop (bytes-u8-ref cfg (+ ptr 1)))))))
-
-;; Resolve a BAR's base physical address (handles 64-bit memory BARs).
-(define (bar-base cfg bar-idx)
-  (let* ((off (+ #x10 (* bar-idx 4)))
-         (lo  (bytes-u32-ref cfg off)))
-    (if (= (bit-extract lo 1 2) 2)
-        (+ (bitwise-and lo #xFFFFFFF0)
-           (arithmetic-shift (bytes-u32-ref cfg (+ off 4)) 32))
-        (bitwise-and lo #xFFFFFFF0))))
 
 ;; Map the BAR window a capability points at, returning a byte region over it.
 (define (map-cap cfg cap-off)
@@ -172,7 +165,7 @@
 ;; device rejected FEATURES_OK.
 (define (virtio-bringup ecam lo-want hi-want)
   (let ((cfg (mmio-map ecam #x1000)))
-    (bytes-u16-set! cfg PCI-COMMAND (bitwise-or (bytes-u16-ref cfg PCI-COMMAND) #x6))
+    (pci-enable-mem-bus-master! cfg)
     (let* ((common  (map-cap cfg (find-virtio-cap cfg VIRTIO-CFG-COMMON)))
            (devcfg  (map-cap cfg (find-virtio-cap cfg VIRTIO-CFG-DEVICE)))
            (ncap    (find-virtio-cap cfg VIRTIO-CFG-NOTIFY))

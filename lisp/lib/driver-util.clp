@@ -11,9 +11,32 @@
   (export nth make-cell cell-ref cell-set!
           put-be16! get-be16 put-be32! get-be32
           copy-bytes bytes-copy-into! put-list!
-          wait-until serve)
+          wait-until serve
+          PCI-COMMAND bar-base pci-enable-mem-bus-master!)
 
   (define (nth lst k) (if (= k 0) (car lst) (nth (cdr lst) (- k 1))))
+
+  ;; --- generic PCI config-space plumbing -------------------------------------
+  ;; Shared by every PCI driver (virtio, rtl8139, and the coming rtl8169/ahci):
+  ;; the COMMAND register and BAR base decode live here, not in any one driver.
+
+  (define PCI-COMMAND #x04)   ; u16: bit1 = memory space, bit2 = bus master
+
+  ;; Resolve a BAR's base physical address (handles 64-bit memory BARs). cfg is the
+  ;; mapped ECAM config space; bar-idx selects BAR0..5.
+  (define (bar-base cfg bar-idx)
+    (let* ((off (+ #x10 (* bar-idx 4)))
+           (lo  (bytes-u32-ref cfg off)))
+      (if (= (bit-extract lo 1 2) 2)
+          (+ (bitwise-and lo #xFFFFFFF0)
+             (arithmetic-shift (bytes-u32-ref cfg (+ off 4)) 32))
+          (bitwise-and lo #xFFFFFFF0))))
+
+  ;; Enable memory-space decoding + bus mastering (COMMAND bits 1|2) -- the two
+  ;; bits every memory-mapped, DMA-capable PCI device needs set before use.
+  (define (pci-enable-mem-bus-master! cfg)
+    (bytes-u16-set! cfg PCI-COMMAND
+                    (bitwise-or (bytes-u16-ref cfg PCI-COMMAND) #x6)))
 
   ;; Poll `pred` until it is true, or `timeout-ns` elapses; #t if it became true,
   ;; #f on timeout. The device-bring-up analogue of the C drivers' timer_timeout

@@ -1354,6 +1354,102 @@ static void check_gpu(lisp_value env) {
     }
 }
 
+// rtl8139-in-Lisp, hardware-free. The driver's pure cores (rx-parse-one, tx-fill!)
+// take their buffers as arguments, so they run against FAKE make-bytes buffers --
+// rtl8139-init itself needs a real device, so it is NOT called here. Three layers,
+// all under the real scheduler:
+//   (1) RX PARSE: hand-write two back-to-back 8139 rx-headers (status ROK, length
+//       = frame+4 for the CRC) into a fake ring and assert rx-parse-one recovers
+//       each frame's offset (header+4), CRC-stripped length, and the dword-rounded
+//       next-header offset; a third parse near the 64K end checks the modulo wrap.
+//   (2) TX FILL: fake regs + four fake tx slots + a free cell; tx-fill! must copy
+//       the frame to offset 0 of the current slot, write (len & 0xFFF) into that
+//       slot's TX-STS register, and advance the free cell mod 4.
+//   (3) REGISTRATION: a fake corenetwork context captures the (register-nic mac
+//       tx-ctx) message the driver sends and returns the mac -- proving the
+//       register handshake's shape (the rest of bring-up is the live boot test).
+static void check_rtl8139(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 200000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import rtl8139 driver-util)"
+        // (1) RX parse over a fake ring with two frames + a wrap probe.
+        "(define rx-ok (spawn (lambda ()"
+        // big enough that the wrap-probe header at 65530 is read in-bounds.
+        "  (let ((rb (make-bytes 65540)))"
+        // frame A at off 0: status=ROK(1), length=64 (60-byte frame + 4 CRC).
+        "    (bytes-u16-set! rb 0 1) (bytes-u16-set! rb 2 64)"
+        // frame B at off 68 (= (0+64+4) dword-rounded): status=ROK, length=50.
+        "    (bytes-u16-set! rb 68 1) (bytes-u16-set! rb 70 50)"
+        // wrap probe near the ring end: a header at 65530 with length 12.
+        "    (bytes-u16-set! rb 65530 1) (bytes-u16-set! rb 65532 12)"
+        "    (let ((a (rx-parse-one rb 0))"
+        "          (b (rx-parse-one rb 68))"
+        // wrap: next-off math runs off the 64K ring -> mod 65536.
+        "          (w (rx-parse-one rb 65530)))"
+        "      (and (= (nth a 0) 4) (= (nth a 1) 60) (= (nth a 2) 68)"
+        "           (= (nth b 0) 72) (= (nth b 1) 46) (= (nth b 2) 124)"
+        // (65530 + 12 + 4 + 3) & ~3 = 65548 & ~3 = 65548 -> mod 65536 = 12.
+        "           (= (nth w 2) 12)))))))"
+        // (2) TX fill: slot 0 gets the frame at offset 0, TX-STS(0)=len, free->1.
+        "(define tx-ok (spawn (lambda ()"
+        "  (let ((regs (make-bytes 256))"
+        "        (t0 (make-bytes 2048)) (t1 (make-bytes 2048))"
+        "        (t2 (make-bytes 2048)) (t3 (make-bytes 2048))"
+        "        (free (make-cell 0))"
+        "        (frame (make-bytes 4)))"
+        "    (bytes-u8-set! frame 0 222) (bytes-u8-set! frame 1 173)"
+        "    (let ((r (tx-fill! regs (list t0 t1 t2 t3) free frame 4)))"
+        "      (and (eq? r 'sent)"
+        "           (= (bytes-u8-ref t0 0) 222) (= (bytes-u8-ref t0 1) 173)"
+        "           (= (bytes-u32-ref regs 16) 4)"   // TX-STS(0) = #x10, len & 0xFFF
+        "           (= (cell-ref free) 1)))))))"
+        // (3) Registration: a fake corenetwork captures (register-nic mac tx-ctx).
+        "(define reg-mac (spawn (lambda () (let ((m (recv)))"
+        "  (if (eq? (car m) 'register-nic) (cadr m) 'wrong)))))"
+        "(define reg-send (spawn (lambda ()"
+        "  (send reg-mac (list 'register-nic (list 82 84 0 18 52 86) (self))) 'sent)))",
+        env, &err);
+    lisp_value rx  = lisp_eval_string("rx-ok", env, &err);
+    lisp_value tx  = lisp_eval_string("tx-ok", env, &err);
+    lisp_value reg = lisp_eval_string("reg-mac", env, &err);
+
+    // tx-fill! parks on wait-until's sleep (the slot-idle poll), so drive the
+    // scheduler with timer ticks until tx finishes or a 2s wall bound elapses.
+    uint64_t deadline = timer_timestamp_ns() + 2000000000ull;
+    while (lisp_ctx_state(tx) != LISP_CTX_DONE &&
+           timer_timestamp_ns() < deadline) {
+        lisp_sched_run(&s, 0);
+        if (lisp_ctx_state(tx) == LISP_CTX_DONE)
+            break;
+        __asm__ volatile("sti; hlt");
+    }
+    __asm__ volatile("cli");
+
+    char xb[16], tb[16], rb[48];
+    lisp_print(lisp_ctx_value(rx), xb, sizeof xb);
+    lisp_print(lisp_ctx_value(tx), tb, sizeof tb);
+    lisp_print(lisp_ctx_value(reg), rb, sizeof rb);
+    if (err == NULL &&
+        lisp_ctx_state(rx) == LISP_CTX_DONE && strcmp(xb, "#t") == 0 &&
+        lisp_ctx_state(tx) == LISP_CTX_DONE && strcmp(tb, "#t") == 0 &&
+        lisp_ctx_state(reg) == LISP_CTX_DONE && strcmp(rb, "(82 84 0 18 52 86)") == 0) {
+        print_str("[SysLisp]  ok  rtl8139 RX parse + TX fill + registration\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL rtl8139  rx-> ");
+        print_str(xb);
+        print_str("  tx-> ");
+        print_str(tb);
+        print_str("  reg-> ");
+        print_str(rb);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // (sleep ns) under the real wake path: a context records uptime, sleeps ~20ms,
 // records uptime again, and returns the elapsed time. The context PARKS on the
 // timeout queue -- it is woken by the periodic tick, not a busy-wait -- so this
@@ -1517,6 +1613,7 @@ static void run_self_test(lisp_value env) {
     check_storage(env);
     check_network(env);
     check_gpu(env);
+    check_rtl8139(env);
     check_sleep(env);
     // sys-debug through the capability path: a module imports the reflective
     // debugger and single-steps a sub-context to completion (Lisp debugging Lisp).

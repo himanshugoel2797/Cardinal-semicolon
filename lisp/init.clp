@@ -17,7 +17,7 @@
 (define-module init
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
-          ps2 virtio-net virtio-gpu)
+          ps2 virtio-net rtl8139 virtio-gpu sys-pci)
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -48,14 +48,18 @@
     ;; returns, so a headless smoke boot is unaffected.
     (let ((display-svc (start-display-service)))
       (virtio-gpu-init display-svc))
-    ;; Bring up the network stack, then the NIC, which registers itself with the
-    ;; stack and forwards frames to it. Prime the ARP cache with a who-has for the
-    ;; slirp gateway -- the reply exercises NIC RX -> service demux -> ARP cache
-    ;; end to end (the live counterpart to the in-OS network self-test). The
-    ;; register-nic the NIC sends sits ahead of this arp-request in the service's
-    ;; mailbox, so the MAC/TX are set before the request is built.
+    ;; Bring up the network stack, then a NIC, which registers itself with the
+    ;; stack and forwards frames to it. Prefer the proven virtio-net when present;
+    ;; otherwise fall back to the rtl8139 (the `-device rtl8139` boot, where no
+    ;; virtio-net exists). Prime the ARP cache with a who-has for the slirp gateway
+    ;; -- the reply exercises NIC RX -> service demux -> ARP cache end to end (the
+    ;; live counterpart to the in-OS network self-test). The register-nic the NIC
+    ;; sends sits ahead of this arp-request in the service's mailbox, so the MAC/TX
+    ;; are set before the request is built.
     (let ((net (start-network-service (list 10 0 2 15))))   ; slirp guest address
-      (virtio-net-init net)
+      (cond ((pci-find #x1af4 #x1041) (virtio-net-init net))
+            ((pci-find #x10ec #x8139) (rtl8139-init net))
+            (else (display "[init] no supported NIC") (newline)))
       (send net (list 'arp-request (list 10 0 2 2))))       ; who-has the gateway
     'system-up)
 

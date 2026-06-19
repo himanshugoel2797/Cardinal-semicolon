@@ -19,7 +19,8 @@
 #   GPU=none|virtio|virtio-vga   add a display device for CoreDisplay to bind
 #                                (virtio -> virtio-gpu-pci 1af4:1050, which the
 #                                 VirtioGpu driver matches via devices.txt)
-#   NIC=none|virtio-net          attach a virtio-net-pci NIC (1af4:1041) on slirp
+#   NIC=none|virtio-net|rtl8139  attach a NIC on slirp: virtio-net-pci (1af4:1041)
+#                                or the legacy Realtek rtl8139 (10ec:8139)
 #   NET_PCAP=path                with NIC set, dump the link to a pcap file
 #   DISPLAY_MODE=none|gtk|sdl    qemu display backend (default none = headless)
 #   SCREENSHOT=path  after booting, dump the guest screen to a PPM and exit
@@ -63,7 +64,14 @@ case "${NIC:-none}" in
     nic_args=(-netdev "user,id=n0" -device "virtio-net-pci,disable-legacy=on,netdev=n0")
     [ -n "${NET_PCAP:-}" ] && nic_args+=(-object "filter-dump,id=d0,netdev=n0,file=$NET_PCAP")
     ;;
-  *) echo "error: unknown NIC=$NIC (none|virtio-net)" >&2; exit 1 ;;
+  rtl8139)
+    # The Realtek RTL8139 (10ec:8139) -- a legacy INTx, 32-bit-DMA NIC -- on the
+    # same slirp netdev. Drives the Lisp rtl8139 driver (no virtio-net present, so
+    # init's NIC gating falls through to it).
+    nic_args=(-netdev "user,id=n0" -device "rtl8139,netdev=n0")
+    [ -n "${NET_PCAP:-}" ] && nic_args+=(-object "filter-dump,id=d0,netdev=n0,file=$NET_PCAP")
+    ;;
+  *) echo "error: unknown NIC=$NIC (none|virtio-net|rtl8139)" >&2; exit 1 ;;
 esac
 
 [ -f "$ISO" ] || { echo "error: ISO not found: $ISO (run the 'image' target first)" >&2; exit 1; }
