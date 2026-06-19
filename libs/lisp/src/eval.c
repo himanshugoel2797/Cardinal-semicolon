@@ -82,6 +82,16 @@ lisp_value lisp_make_primitive(lisp_primitive_fn fn, const char *name) {
 
 // --- Environments -----------------------------------------------------------
 
+// Buckets in the top-level frame's hash table (power of two). The global frame
+// holds ~150 bindings; 256 buckets keep chains near length 1.
+#define GLOBAL_ENV_BUCKETS 256
+
+// The hash bucket for `sym` in a `table`-backed frame. Symbols are interned and
+// carry their name hash, so this is a field read + mask.
+static inline size_t env_bucket(lisp_value table, lisp_value sym) {
+    return (size_t)((lisp_named *)lisp_obj(sym))->hash & (lisp_vector_length(table) - 1);
+}
+
 lisp_value lisp_make_env(lisp_value parent) {
     lisp_env_t *e = (lisp_env_t *)lisp_gc_alloc(sizeof(lisp_env_t));
     if (e == NULL)
@@ -89,6 +99,16 @@ lisp_value lisp_make_env(lisp_value parent) {
     e->h.header = LISP_MK_HEADER(LISP_OBJ_ENV, 0);
     e->parent = parent;
     e->bindings = LISP_EMPTY;
+    e->table = LISP_EMPTY;  // set before the nested alloc below can trigger a GC
+    // The top-level frame (no parent) gathers every primitive/prelude/global
+    // define -- hundreds of bindings looked up on every global reference -- so
+    // back it with a hash table for O(1) lookup. Per-call frames are tiny and
+    // stay assoc lists (no per-call hash allocation).
+    if (parent == LISP_EMPTY) {
+        lisp_value t = lisp_make_vector(GLOBAL_ENV_BUCKETS, LISP_EMPTY);
+        if (t != LISP_UNDEF)
+            e->table = t;  // non-moving GC: e stays valid across the alloc; OOM -> assoc list
+    }
     return lisp_from_obj(e);
 }
 
@@ -96,15 +116,19 @@ lisp_value lisp_make_env(lisp_value parent) {
 // Both the binding key and `sym` are interned symbols (every symbol-construction
 // path goes through intern()), so equality is pointer identity -- no need to
 // compare names. This is the interpreter's hottest loop (profiling: variable
-// lookup dominates), so the name length+memcmp that a general compare would do
-// per non-matching binding is pure waste and is avoided here.
+// lookup dominates), so a general name compare's length+memcmp per non-matching
+// binding is pure waste and is avoided. A table-backed (top-level) frame scans
+// only one hash bucket; a plain frame scans its (short) assoc list.
 static lisp_value frame_find(lisp_value env, lisp_value sym) {
-    lisp_value b = ((lisp_env_t *)lisp_obj(env))->bindings;
-    while (lisp_is_pair(b)) {
-        lisp_value cell = lisp_car(b);
+    lisp_env_t *e = (lisp_env_t *)lisp_obj(env);
+    lisp_value chain = e->table != LISP_EMPTY
+                           ? lisp_vector_ref(e->table, env_bucket(e->table, sym))
+                           : e->bindings;
+    while (lisp_is_pair(chain)) {
+        lisp_value cell = lisp_car(chain);
         if (lisp_is_pair(cell) && lisp_car(cell) == sym)
             return cell;
-        b = lisp_cdr(b);
+        chain = lisp_cdr(chain);
     }
     return LISP_EMPTY;
 }
@@ -116,7 +140,16 @@ void lisp_env_define(lisp_value env, lisp_value sym, lisp_value val) {
         return;
     }
     lisp_env_t *e = (lisp_env_t *)lisp_obj(env);
-    e->bindings = lisp_cons(lisp_cons(sym, val), e->bindings);
+    lisp_value entry = lisp_cons(sym, val);  // (sym . val); held live across the next cons
+    if (e->table != LISP_EMPTY) {
+        size_t b = env_bucket(e->table, sym);
+        // Prepend the entry to bucket b. The table is evaluator-owned plumbing, so
+        // its slot is mutated in place (the language never sees this vector).
+        ((lisp_vector *)lisp_obj(e->table))->items[b] =
+            lisp_cons(entry, lisp_vector_ref(e->table, b));
+    } else {
+        e->bindings = lisp_cons(entry, e->bindings);
+    }
 }
 
 bool lisp_env_lookup(lisp_value env, lisp_value sym, lisp_value *out) {

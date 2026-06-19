@@ -267,6 +267,7 @@ static void trace(lisp_value v) {
             lisp_env_t *e = (lisp_env_t *)lisp_obj(v);
             mark_push(e->parent);
             mark_push(e->bindings);
+            mark_push(e->table);  // hash buckets of a top-level frame (LISP_EMPTY otherwise)
             break;
         }
         case LISP_OBJ_CLOSURE: {
