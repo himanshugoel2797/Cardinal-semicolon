@@ -104,6 +104,10 @@ typedef struct {
 typedef struct {
     lisp_header h;
     uint32_t hash;
+    uint8_t form_id;  // interpreter-internal: special-form dispatch id, 0 for an
+                      // ordinary symbol. Set once at startup (see eval.c) so the
+                      // evaluator dispatches forms via a jump table, not a name
+                      // cascade. Fits in struct padding -- no size change.
     char name[];  // NUL-terminated; length in header aux
 } lisp_named;
 

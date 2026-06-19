@@ -160,6 +160,54 @@ static bool is_form(lisp_value sym, const char *name) {
     return len == strlen(name) && memcmp(lisp_named_name(sym), name, len) == 0;
 }
 
+// --- Special-form dispatch ids ----------------------------------------------
+// The head of a form is dispatched by a small integer cached on its interned
+// symbol (lisp_named.form_id) rather than a linear is_form name cascade: an
+// ordinary application used to fall through *every* special-form check before
+// reaching the apply path. Symbols are interned, so a given form name is always
+// the one canonical object; tagging it once makes the head -> id lookup O(1) and
+// the dispatch a jump table. form_id 0 (SF_NONE) means "ordinary symbol".
+typedef enum {
+    SF_NONE = 0,
+    SF_QUOTE, SF_QUASIQUOTE, SF_IF, SF_DEFINE, SF_LAMBDA, SF_SET, SF_BEGIN,
+    SF_LET, SF_LET_STAR, SF_LETREC, SF_AND, SF_OR, SF_COND, SF_WHEN, SF_UNLESS,
+    SF_WHILE, SF_CASE, SF_DEFINE_MODULE, SF_IMPORT,
+} special_form_id;
+
+static const struct {
+    const char *name;
+    uint8_t id;
+} SPECIAL_FORMS[] = {
+    {"quote", SF_QUOTE},     {"quasiquote", SF_QUASIQUOTE},
+    {"if", SF_IF},           {"define", SF_DEFINE},
+    {"lambda", SF_LAMBDA},   {"set!", SF_SET},
+    {"begin", SF_BEGIN},     {"let", SF_LET},
+    {"let*", SF_LET_STAR},   {"letrec", SF_LETREC},
+    {"and", SF_AND},         {"or", SF_OR},
+    {"cond", SF_COND},       {"when", SF_WHEN},
+    {"unless", SF_UNLESS},   {"while", SF_WHILE},
+    {"case", SF_CASE},       {"define-module", SF_DEFINE_MODULE},
+    {"import", SF_IMPORT},
+};
+
+// Tag every special form's interned symbol with its dispatch id. Called from
+// lisp_default_env before the prelude is evaluated, so the tags are in place
+// before any form is dispatched. Idempotent (re-tagging writes the same id) and
+// single-core at boot, so it never races the post-boot frozen shared heap.
+static void lisp_init_special_forms(void) {
+    for (size_t i = 0; i < sizeof(SPECIAL_FORMS) / sizeof(SPECIAL_FORMS[0]); i++) {
+        lisp_value s =
+            lisp_make_symbol(SPECIAL_FORMS[i].name, strlen(SPECIAL_FORMS[i].name));
+        if (s != LISP_UNDEF)
+            ((lisp_named *)lisp_obj(s))->form_id = SPECIAL_FORMS[i].id;
+    }
+}
+
+// The special-form id of a head symbol (caller ensures lisp_is_symbol).
+static inline special_form_id head_form_id(lisp_value head) {
+    return (special_form_id)((lisp_named *)lisp_obj(head))->form_id;
+}
+
 // --- Parameter binding ------------------------------------------------------
 
 // Bind a closure's parameter list to evaluated args in a fresh child env.
@@ -636,7 +684,8 @@ static void step_eval(lisp_ctx_t *cx) {
     lisp_value rest = lisp_cdr(e);
 
     if (lisp_is_symbol(head)) {
-        if (is_form(head, "quote")) {
+        switch (head_form_id(head)) {
+        case SF_QUOTE:
             if (!lisp_is_pair(rest)) {
                 ctx_error(cx, "malformed quote");
                 return;
@@ -644,8 +693,7 @@ static void step_eval(lisp_ctx_t *cx) {
             cx->accum = lisp_car(rest);
             cx->status = LISP_CTX_APPLY;
             return;
-        }
-        if (is_form(head, "quasiquote")) {
+        case SF_QUASIQUOTE: {
             if (!lisp_is_pair(rest)) {
                 ctx_error(cx, "malformed quasiquote");
                 return;
@@ -660,7 +708,7 @@ static void step_eval(lisp_ctx_t *cx) {
             cx->status = LISP_CTX_APPLY;
             return;
         }
-        if (is_form(head, "if")) {
+        case SF_IF: {
             if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_cdr(rest))) {
                 ctx_error(cx, "malformed if");
                 return;
@@ -673,7 +721,7 @@ static void step_eval(lisp_ctx_t *cx) {
             cx->status = LISP_CTX_EVAL;
             return;
         }
-        if (is_form(head, "define")) {
+        case SF_DEFINE: {
             if (!lisp_is_pair(rest)) {
                 ctx_error(cx, "malformed define");
                 return;
@@ -709,7 +757,7 @@ static void step_eval(lisp_ctx_t *cx) {
             ctx_error(cx, "malformed define");
             return;
         }
-        if (is_form(head, "lambda")) {
+        case SF_LAMBDA: {
             if (!lisp_is_pair(rest)) {
                 ctx_error(cx, "malformed lambda");
                 return;
@@ -723,7 +771,7 @@ static void step_eval(lisp_ctx_t *cx) {
             cx->status = LISP_CTX_APPLY;
             return;
         }
-        if (is_form(head, "set!")) {
+        case SF_SET:
             if (!lisp_is_pair(rest) || !lisp_is_pair(lisp_cdr(rest))) {
                 ctx_error(cx, "malformed set!");
                 return;
@@ -733,8 +781,7 @@ static void step_eval(lisp_ctx_t *cx) {
             cx->control = lisp_car(lisp_cdr(rest));
             cx->status = LISP_CTX_EVAL;
             return;
-        }
-        if (is_form(head, "begin")) {
+        case SF_BEGIN:
             if (!lisp_is_pair(rest)) {  // (begin) -> unspecified
                 cx->accum = LISP_UNDEF;
                 cx->status = LISP_CTX_APPLY;
@@ -742,50 +789,43 @@ static void step_eval(lisp_ctx_t *cx) {
             }
             start_body(cx, rest);
             return;
-        }
-        if (is_form(head, "let")) {
+        case SF_LET:
             if (lisp_is_pair(rest) && lisp_is_symbol(lisp_car(rest)))
                 namedlet_start(cx, rest);
             else
                 let_start(cx, rest, LET_PLAIN);
             return;
-        }
-        if (is_form(head, "let*")) {
+        case SF_LET_STAR:
             let_start(cx, rest, LET_STAR);
             return;
-        }
-        if (is_form(head, "letrec")) {
+        case SF_LETREC:
             let_start(cx, rest, LET_REC);
             return;
-        }
-        if (is_form(head, "and")) {
+        case SF_AND:
             and_start(cx, rest);
             return;
-        }
-        if (is_form(head, "or")) {
+        case SF_OR:
             or_start(cx, rest);
             return;
-        }
-        if (is_form(head, "cond")) {
+        case SF_COND:
             cond_start(cx, rest);
             return;
-        }
-        if (is_form(head, "when") || is_form(head, "unless")) {
-            when_start(cx, rest, is_form(head, "when"));
+        case SF_WHEN:
+            when_start(cx, rest, true);
             return;
-        }
-        if (is_form(head, "while")) {
+        case SF_UNLESS:
+            when_start(cx, rest, false);
+            return;
+        case SF_WHILE:
             while_start(cx, rest);
             return;
-        }
-        if (is_form(head, "case")) {
+        case SF_CASE:
             case_start(cx, rest);
             return;
-        }
         // Modules (module.c). These run synchronously to completion (they drive
         // nested evals while loading source), which is fine for a boot-time
         // configuration step; see notes/core/lisp-substrate.md.
-        if (is_form(head, "define-module")) {
+        case SF_DEFINE_MODULE: {
             const char *err = NULL;
             lisp_value r = lisp_module_define(e, cx->env, &err);
             if (err != NULL) {
@@ -796,7 +836,7 @@ static void step_eval(lisp_ctx_t *cx) {
             cx->status = LISP_CTX_APPLY;
             return;
         }
-        if (is_form(head, "import")) {
+        case SF_IMPORT: {
             const char *err = NULL;
             lisp_value r = lisp_module_import(e, cx->env, &err);
             if (err != NULL) {
@@ -806,6 +846,9 @@ static void step_eval(lisp_ctx_t *cx) {
             cx->accum = r;
             cx->status = LISP_CTX_APPLY;
             return;
+        }
+        case SF_NONE:
+            break;  // ordinary symbol -> procedure application below
         }
     }
 
@@ -1236,6 +1279,7 @@ lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **
 lisp_value lisp_default_env(void) {
     lisp_value env = lisp_make_env(LISP_EMPTY);
     if (env != LISP_UNDEF) {
+        lisp_init_special_forms();  // tag form symbols before any form is dispatched
         lisp_install_primitives(env);
         lisp_load_prelude(env);     // standard library, defined in Scheme
     }
