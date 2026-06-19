@@ -847,6 +847,57 @@ static void check_power(lisp_value env) {
     }
 }
 
+// CoreStorage-in-Lisp under the real scheduler. Exercises the two patterns the
+// port introduces: (1) a block-read REQUEST/RESPONSE round-trip -- a reader sends
+// storage a read with its own (self) as the reply target, storage bounds-checks
+// and forwards to the fake driver, the driver answers the reader directly with a
+// bytes buffer -- proving context handles survive being relayed through two
+// hops of send; and (2) the fs-PROBE offer -- a provider registered after a
+// device is offered that device. The reader's value becomes the byte the driver
+// returned (= the requested lba); the provider's value becomes the device name it
+// was probed with.
+static void check_storage(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 1000000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import corestorage)"
+        // Fake block driver: answers a read with a 1-byte buffer holding the lba.
+        "(define disk (spawn (lambda () (let loop () (let ((m (recv)))"
+        "   (if (eq? (car m) 'read)"
+        "       (let ((b (make-bytes 1))) (bytes-u8-set! b 0 (cadr m))"
+        "         (send (cadddr m) (list 'complete 0 b))))"
+        "   (loop))))))"
+        "(define stor (start-storage-service))"
+        "(send stor (list 'register-blockdev 'disk0 512 100 disk))"
+        // Reader: ask storage to read lba 5, return the byte that comes back.
+        "(define rdr (spawn (lambda () (send stor (list 'read 'disk0 5 1 (self)))"
+        "   (let ((m (recv))) (bytes-u8-ref (caddr m) 0)))))"
+        // Provider registered after disk0 -> storage offers disk0 to it.
+        "(define prov (spawn (lambda () (let ((m (recv))) (cadr m)))))"
+        "(send stor (list 'register-fsprovider 'fakefs prov))",
+        env, &err);
+    lisp_value rdr = lisp_eval_string("rdr", env, &err);
+    lisp_value prov = lisp_eval_string("prov", env, &err);
+    lisp_sched_run(&s, 0);
+    char rb[32], pb[32];
+    lisp_print(lisp_ctx_value(rdr), rb, sizeof rb);
+    lisp_print(lisp_ctx_value(prov), pb, sizeof pb);
+    if (err == NULL && lisp_ctx_state(rdr) == LISP_CTX_DONE &&
+        strcmp(rb, "5") == 0 && strcmp(pb, "disk0") == 0) {
+        print_str("[SysLisp]  ok  storage block-read round-trip + fs-probe offer\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL storage  read-> ");
+        print_str(rb);
+        print_str("  probe-> ");
+        print_str(pb);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 static void run_self_test(lisp_value env) {
     check(env, "(+ 1 2 3)", "6");
     check(env, "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 6)", "720");
@@ -911,6 +962,7 @@ static void run_self_test(lisp_value env) {
     check_capabilities(env);
     check_repl(env);
     check_power(env);
+    check_storage(env);
     // sys-debug through the capability path: a module imports the reflective
     // debugger and single-steps a sub-context to completion (Lisp debugging Lisp).
     check(env, "(begin"
