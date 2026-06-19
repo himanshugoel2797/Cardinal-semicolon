@@ -1,0 +1,3 @@
+# Cardinal Lisp source (.clp) is Scheme-flavoured; tell GitHub Linguist so it
+# syntax-highlights and classifies these files as Scheme rather than guessing.
+*.clp linguist-language=Scheme
