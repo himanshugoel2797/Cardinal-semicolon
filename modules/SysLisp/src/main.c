@@ -551,10 +551,23 @@ static lisp_value prim_console_arm_rx(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// (console-flush) -> push out the coalesced debug-log buffer now. The log
+// (display/print_str -> CH_LOG) is batched for throughput; an interactive REPL
+// must flush it so output appears promptly and in order with the REPL transcript
+// (CH_REPL, which csmux_send delivers immediately).
+static lisp_value prim_console_flush(lisp_value *a, int n, const char **e) {
+    (void)a;
+    if (n != 0)
+        return (*e = "console-flush: expects no arguments"), LISP_UNDEF;
+    csmux_log_flush();
+    return LISP_UNDEF;
+}
+
 static const lisp_builtin_export sys_console_exports[] = {
     {"console-poll", prim_console_poll},
     {"console-write", prim_console_write},
     {"console-arm-rx", prim_console_arm_rx},
+    {"console-flush", prim_console_flush},
     {"repl-eval", prim_repl_eval},
 };
 
