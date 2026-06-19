@@ -109,6 +109,7 @@ fi
 if [ -n "${SENDKEY:-}" ]; then
   command -v python3 >/dev/null || { echo "error: python3 needed for SENDKEY" >&2; exit 1; }
   sock="$(mktemp -u /tmp/cardinal-qmon.XXXX.sock)"
+  trap 'rm -f "$sock"' EXIT
   serial="/tmp/cardinal-qemu-serial.log"
   delay="${SENDKEY_DELAY:-12}"
   : > "$serial"
@@ -116,10 +117,12 @@ if [ -n "${SENDKEY:-}" ]; then
   # Use a (headless) VNC display rather than -display none: the input subsystem
   # needs a console to attach the PS/2 keyboard to, or monitor `sendkey` has
   # nowhere to route and the guest IRQ never fires. No VNC client need connect.
+  # Auto-pick a free display (start at SENDKEY_VNC, scan upward) so a stale/busy
+  # port doesn't make QEMU exit silently.
   timeout --foreground "${TIMEOUT:-30}" \
     qemu-system-x86_64 "${common_args[@]}" \
       -serial "file:$serial" \
-      -vnc "127.0.0.1:${SENDKEY_VNC:-31}" \
+      -vnc "127.0.0.1:${SENDKEY_VNC:-20},to=99" \
       -monitor "unix:$sock,server,nowait" $EXTRA &
   qpid=$!
   python3 - "$sock" "$delay" "$SENDKEY" <<'PY'

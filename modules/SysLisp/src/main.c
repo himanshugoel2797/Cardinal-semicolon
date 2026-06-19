@@ -153,7 +153,11 @@ void ps2_set_irq_hook(void (*hook)(void));  // exported by the ps2 module
 int ps2_poll_key(int *code, int *pressed);
 int ps2_pending(void);
 
-static volatile lisp_value g_ps2_waiter = 0;  // the parked ps2 context (0 = none)
+// The parked ps2 context (0 = none). A context object lives in the system heap,
+// which is frozen (never collected/freed) once multi-core, and the scheduler does
+// not reap finished contexts -- so this handle can never dangle even if the ps2
+// context were to exit, and ps2_wake_hook's write stays in-bounds.
+static volatile lisp_value g_ps2_waiter = 0;
 
 static void ps2_wake_hook(void) {  // ISR context
     lisp_value w = g_ps2_waiter;
@@ -161,7 +165,11 @@ static void ps2_wake_hook(void) {  // ISR context
         lisp_ctx_wake(w);
 }
 
-// (%ps2-poll) -> (key <scancode> <pressed?>) for the next event, or #f if none.
+// (%ps2-poll) -> an encoded fixnum (scancode*2 + pressed?) for the next event, or
+// #f if none. Returning a fixnum allocates NOTHING in the primitive, so there is
+// no GC-rooting hazard (a C local holding a half-built list across an allocation
+// that triggers an inline OOM collect). The Lisp pump decodes it and builds the
+// message list via the interpreter, where intermediates are properly rooted.
 static lisp_value prim_ps2_poll(lisp_value *a, int n, const char **e) {
     (void)a;
     (void)n;
@@ -169,10 +177,7 @@ static lisp_value prim_ps2_poll(lisp_value *a, int n, const char **e) {
     int code = 0, pressed = 0;
     if (!ps2_poll_key(&code, &pressed))
         return LISP_FALSE;
-    // Built in the running (ps2) context's heap; deep-copied into coreinput's on
-    // send. (key code pressed)
-    lisp_value tail = lisp_cons(lisp_fixnum(code), lisp_cons(lisp_fixnum(pressed), LISP_EMPTY));
-    return lisp_cons(lisp_make_symbol("key", 3), tail);
+    return lisp_fixnum((int64_t)code * 2 + pressed);
 }
 
 // (%ps2-wait) -> park the running context until the next keyboard IRQ, UNLESS an
@@ -187,6 +192,11 @@ static lisp_value prim_ps2_wait(lisp_value *a, int n, const char **e) {
     lisp_value self = lisp_current_ctx();
     if (self == LISP_EMPTY)
         return (*e = "%ps2-wait: not under the scheduler"), LISP_UNDEF;
+    // Publishing g_ps2_waiter before cli() is fine: if the IRQ fires in that window
+    // it both queues the event and wakes us (clears blocked, a no-op since we are
+    // not blocked yet); the ps2_pending() check below then sees the queued event
+    // and returns without ever blocking. Past the cli(), the same-core IRQ is held
+    // off until we have either bailed or blocked, closing the check-then-park race.
     g_ps2_waiter = self;
     int cli_state = cli();
     if (ps2_pending()) {  // an event arrived; stay runnable and re-drain
@@ -434,7 +444,9 @@ static void setup_input_service(void) {
         "    (let pump ()"
         "      (let ((e (%ps2-poll)))"
         "        (if e"
-        "            (begin (send coreinput (list 'event e)) (pump))"
+        "            (begin"
+        "              (send coreinput (list 'event (list 'key (quotient e 2) (remainder e 2))))"
+        "              (pump))"
         "            (begin (%ps2-wait) (pump))))))))",
         g_env, &err);
     if (err != NULL) {

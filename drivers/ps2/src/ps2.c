@@ -27,122 +27,15 @@ static queue_t mouse_q;
 // context via this hook) and the Lisp ps2 driver context drains it with
 // ps2_poll_key. The hook is ISR-context (set by SysLisp to wake the parked
 // context); NULL until then (events just queue).
-static void (*g_irq_hook)(void) = NULL;
+// volatile: written once in task context (ps2_set_irq_hook) and read in the IRQ
+// handler; without it the compiler could cache the NULL it sees post-init.
+static void (*volatile g_irq_hook)(void) = NULL;
 
 void ps2_set_irq_hook(void (*hook)(void))
 {
     g_irq_hook = hook;
 }
 
-#if 0  // scancode-set-3 translation table (removed with the CoreInput callback path)
-static struct ss3_translation_tbl ss3[] = {
-    {.code = 0x1C, .key = kbd_keys_A},
-    {.code = 0x32, .key = kbd_keys_B},
-    {.code = 0x21, .key = kbd_keys_C},
-    {.code = 0x23, .key = kbd_keys_D},
-    {.code = 0x24, .key = kbd_keys_E},
-    {.code = 0x2B, .key = kbd_keys_F},
-    {.code = 0x34, .key = kbd_keys_G},
-    {.code = 0x33, .key = kbd_keys_H},
-    {.code = 0x43, .key = kbd_keys_I},
-    {.code = 0x3B, .key = kbd_keys_J},
-    {.code = 0x42, .key = kbd_keys_K},
-    {.code = 0x4B, .key = kbd_keys_L},
-    {.code = 0x3A, .key = kbd_keys_M},
-    {.code = 0x31, .key = kbd_keys_N},
-    {.code = 0x44, .key = kbd_keys_O},
-    {.code = 0x4D, .key = kbd_keys_P},
-    {.code = 0x15, .key = kbd_keys_Q},
-    {.code = 0x2D, .key = kbd_keys_R},
-    {.code = 0x1B, .key = kbd_keys_S},
-    {.code = 0x2C, .key = kbd_keys_T},
-    {.code = 0x3C, .key = kbd_keys_U},
-    {.code = 0x2A, .key = kbd_keys_V},
-    {.code = 0x1D, .key = kbd_keys_W},
-    {.code = 0x22, .key = kbd_keys_X},
-    {.code = 0x35, .key = kbd_keys_Y},
-    {.code = 0x1A, .key = kbd_keys_Z},
-    {.code = 0x45, .key = kbd_keys_0},
-    {.code = 0x16, .key = kbd_keys_1},
-    {.code = 0x1E, .key = kbd_keys_2},
-    {.code = 0x26, .key = kbd_keys_3},
-    {.code = 0x25, .key = kbd_keys_4},
-    {.code = 0x2E, .key = kbd_keys_5},
-    {.code = 0x36, .key = kbd_keys_6},
-    {.code = 0x3D, .key = kbd_keys_7},
-    {.code = 0x3E, .key = kbd_keys_8},
-    {.code = 0x46, .key = kbd_keys_9},
-    {.code = 0x0E, .key = kbd_keys_tick},
-    {.code = 0x4E, .key = kbd_keys_sub},
-    {.code = 0x55, .key = kbd_keys_eq},
-    {.code = 0x5C, .key = kbd_keys_bckslash},
-    {.code = 0x66, .key = kbd_keys_bksp},
-    {.code = 0x29, .key = kbd_keys_space},
-    {.code = 0x0D, .key = kbd_keys_tab},
-    {.code = 0x14, .key = kbd_keys_caps},
-    {.code = 0x12, .key = kbd_keys_lshft},
-    {.code = 0x11, .key = kbd_keys_lctrl},
-    {.code = 0x8B, .key = kbd_keys_lwin},
-    {.code = 0x19, .key = kbd_keys_lalt},
-    {.code = 0x59, .key = kbd_keys_rshft},
-    {.code = 0x58, .key = kbd_keys_rctrl},
-    {.code = 0x8C, .key = kbd_keys_rwin},
-    {.code = 0x39, .key = kbd_keys_ralt},
-    {.code = 0x8D, .key = kbd_keys_apps},
-    {.code = 0x5A, .key = kbd_keys_enter},
-    {.code = 0x08, .key = kbd_keys_esc},
-    {.code = 0x07, .key = kbd_keys_f1},
-    {.code = 0x0F, .key = kbd_keys_f2},
-    {.code = 0x17, .key = kbd_keys_f3},
-    {.code = 0x1F, .key = kbd_keys_f4},
-    {.code = 0x27, .key = kbd_keys_f5},
-    {.code = 0x2F, .key = kbd_keys_f6},
-    {.code = 0x37, .key = kbd_keys_f7},
-    {.code = 0x3F, .key = kbd_keys_f8},
-    {.code = 0x47, .key = kbd_keys_f9},
-    {.code = 0x4F, .key = kbd_keys_f10},
-    {.code = 0x56, .key = kbd_keys_f11},
-    {.code = 0x5E, .key = kbd_keys_f12},
-    {.code = 0x57, .key = kbd_keys_prntscrn},
-    {.code = 0x5F, .key = kbd_keys_scroll},
-    {.code = 0x62, .key = kbd_keys_pause},
-    {.code = 0x54, .key = kbd_keys_lsqbrac},
-    {.code = 0x67, .key = kbd_keys_insert},
-    {.code = 0x6E, .key = kbd_keys_home},
-    {.code = 0x6F, .key = kbd_keys_pgup},
-    {.code = 0x64, .key = kbd_keys_del},
-    {.code = 0x65, .key = kbd_keys_end},
-    {.code = 0x6D, .key = kbd_keys_pgdn},
-    {.code = 0x63, .key = kbd_keys_up},
-    {.code = 0x61, .key = kbd_keys_left},
-    {.code = 0x60, .key = kbd_keys_down},
-    {.code = 0x6A, .key = kbd_keys_right},
-    {.code = 0x76, .key = kbd_keys_num},
-    {.code = 0x4A, .key = kbd_keys_kp_div},
-    {.code = 0x7E, .key = kbd_keys_kp_mul},
-    {.code = 0x4E, .key = kbd_keys_kp_sub},
-    {.code = 0x7C, .key = kbd_keys_kp_add},
-    {.code = 0x79, .key = kbd_keys_kp_en},
-    {.code = 0x71, .key = kbd_keys_kp_dot},
-    {.code = 0x70, .key = kbd_keys_kp_0},
-    {.code = 0x69, .key = kbd_keys_kp_1},
-    {.code = 0x72, .key = kbd_keys_kp_2},
-    {.code = 0x7A, .key = kbd_keys_kp_3},
-    {.code = 0x6B, .key = kbd_keys_kp_4},
-    {.code = 0x73, .key = kbd_keys_kp_5},
-    {.code = 0x74, .key = kbd_keys_kp_6},
-    {.code = 0x6C, .key = kbd_keys_kp_7},
-    {.code = 0x75, .key = kbd_keys_kp_8},
-    {.code = 0x7D, .key = kbd_keys_kp_9},
-    {.code = 0x5B, .key = kbd_keys_rsqbrac},
-    {.code = 0x4C, .key = kbd_keys_semicolon},
-    {.code = 0x52, .key = kbd_keys_apostrophe},
-    {.code = 0x41, .key = kbd_keys_comma},
-    {.code = 0x49, .key = kbd_keys_period},
-    {.code = 0x4A, .key = kbd_keys_fwdslash},
-    {.code = 0, .key = kbd_keys_unkn},
-};
-#endif
 
 static void ps2_irq(int int_num)
 {
@@ -342,13 +235,14 @@ static void ps2_irq(int int_num)
             queue_tryenqueue(&kbd_q, stamp);
             queue_tryenqueue(&kbd_q, ((uint64_t)break_code << 32) | c);
             local_spinlock_unlock(&kbd_lock);
+
+            // Wake the parked ps2 Lisp context -- only for a real keyboard event,
+            // so mouse movement doesn't spuriously wake (and re-park) it. A word
+            // read + a word write: ISR-safe. NULL until SysLisp installs it.
+            if (g_irq_hook != NULL)
+                g_irq_hook();
         }
     }
-
-    // Post the event to the Lisp input service (wake the parked ps2 context). Two
-    // word reads + a word write -- ISR-safe; NULL until SysLisp installs it.
-    if (g_irq_hook != NULL)
-        g_irq_hook();
 }
 
 // True if a keyboard event is waiting. Used by the Lisp ps2 context (under cli)
@@ -388,7 +282,7 @@ int ps2_poll_key(int *code, int *pressed)
     return got;
 }
 
-uint8_t PS2_Initialize()
+int PS2_Initialize()
 {
     //Disable the ports
     outb(CMD_PORT, DISABLE_PORT1_CMD);
@@ -517,11 +411,10 @@ uint8_t PS2_Initialize()
     // allocated, destined for THIS core (the BSP, where the Lisp ps2 context runs
     // and where ps2_wake_hook must be able to wake it from hlt). Without this the
     // i8042 raises the line but the IOAPIC never delivers it to our handler.
+    // interrupt_mapinterrupt already clears the RTE mask bit, so a separate
+    // interrupt_setmask(.., false) to enable the lines is redundant.
     interrupt_mapinterrupt(1, kbd_irq, false, false);
     interrupt_mapinterrupt(12, mouse_irq, false, false);
-
-    interrupt_setmask(1, false);
-    interrupt_setmask(12, false);
 
     return 0;
 }

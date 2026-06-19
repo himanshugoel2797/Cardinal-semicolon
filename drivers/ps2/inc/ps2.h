@@ -14,7 +14,7 @@
 #define BUF_LEN 8192
 #define ENT_SIZE 4
 
-uint8_t PS2_Initialize();
+int PS2_Initialize();
 uint8_t PS2_ReadStatus();
 uint8_t PS2_ReadConfig();
 void PS2_WriteConfig(uint8_t cfg);
