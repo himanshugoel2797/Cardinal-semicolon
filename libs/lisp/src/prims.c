@@ -1062,8 +1062,8 @@ static lisp_value prim_ashift(lisp_value *a, int n, const char **e) {
         return prim_err(e, "arithmetic-shift: expects (value count)");
     int64_t v = lisp_fixnum_val(a[0]);
     int64_t s = lisp_fixnum_val(a[1]);
-    if (s >= 0)
-        return lisp_fixnum(s >= 64 ? 0 : (v << s));
+    if (s >= 0)  // shift in unsigned to avoid signed-left-shift UB; two's-complement result
+        return lisp_fixnum(s >= 64 ? 0 : (int64_t)((uint64_t)v << s));
     int64_t sh = -s;
     return lisp_fixnum(sh >= 63 ? (v < 0 ? -1 : 0) : (v >> sh));
 }
@@ -1121,6 +1121,8 @@ static lisp_value prim_bytes_length(lisp_value *a, int n, const char **e) {
 }
 
 // (bytes-phys b) -> the physical address of a DMA region (0 for a plain buffer).
+// NB: the result is a fixnum (62 signed bits), so a physical address >= 2^61 is
+// truncated -- fine for current targets (phys addrs are well under that).
 static lisp_value prim_bytes_phys(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_bytes(a[0]))
         return prim_err(e, "bytes-phys expects a byte buffer");
