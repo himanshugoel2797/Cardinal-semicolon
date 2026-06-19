@@ -153,16 +153,30 @@ static gc_obj *hdr(lisp_value v) { return (gc_obj *)(uintptr_t)v - 1; }
 
 // --- object-address set (membership = "belongs to the heap being collected") -
 
-static uintptr_t *g_set = NULL;
+// A PERSISTENT open-addressed set, rebuilt each collection from the heap's live
+// objects. Rebuilding used to free+malloc+zero the whole table on every
+// collection -- needless churn of a scratch buffer (and on the kernel's O(n)
+// best-fit allocator, a big alloc/free + fragmentation each cycle). Instead the
+// table is kept allocated and each slot carries the generation it was written
+// in: bumping a global generation makes every prior entry logically empty with
+// NO zeroing. The table is zeroed exactly once per growth (rare), never per
+// collection.
+typedef struct {
+    uintptr_t addr;
+    uint32_t gen;
+} gc_set_slot;
+
+static gc_set_slot *g_set = NULL;
 static size_t g_set_cap = 0;
+static uint32_t g_set_gen = 0;  // current generation; slots with gen != this are empty
 
 static int set_contains(uintptr_t a) {
     if (g_set_cap == 0)
         return 0;
     size_t mask = g_set_cap - 1;
-    size_t i = (a >> 3) & mask;  // payloads are 8-aligned
-    while (g_set[i]) {
-        if (g_set[i] == a)
+    size_t i = (a >> 4) & mask;  // payloads are 16-aligned (gc_obj is 16 bytes)
+    while (g_set[i].gen == g_set_gen) {
+        if (g_set[i].addr == a)
             return 1;
         i = (i + 1) & mask;
     }
@@ -173,22 +187,29 @@ static int build_set(struct lisp_heap *h) {
     size_t cap = 1024;
     while (cap < h->live * 2)
         cap <<= 1;
-    free(g_set);
-    g_set = (uintptr_t *)malloc(cap * sizeof(uintptr_t));
-    if (g_set == NULL) {
-        g_set_cap = 0;
-        return 0;
+    if (cap > g_set_cap) {  // grow-only: the only place the table is zeroed
+        gc_set_slot *ns = (gc_set_slot *)realloc(g_set, cap * sizeof(gc_set_slot));
+        if (ns == NULL)
+            return 0;  // keep the old table; caller skips this collection
+        g_set = ns;
+        for (size_t i = 0; i < cap; i++)
+            g_set[i].gen = 0;
+        g_set_cap = cap;
+        g_set_gen = 0;  // the bump below makes the current generation 1
     }
-    for (size_t i = 0; i < cap; i++)
-        g_set[i] = 0;
-    g_set_cap = cap;
-    size_t mask = cap - 1;
+    if (++g_set_gen == 0) {  // generation wrapped (after 4B collections): re-zero once
+        for (size_t i = 0; i < g_set_cap; i++)
+            g_set[i].gen = 0;
+        g_set_gen = 1;
+    }
+    size_t mask = g_set_cap - 1;
     for (gc_obj *o = h->all; o != NULL; o = o->next) {
         uintptr_t a = (uintptr_t)(o + 1);
-        size_t i = (a >> 3) & mask;
-        while (g_set[i])
+        size_t i = (a >> 4) & mask;
+        while (g_set[i].gen == g_set_gen)
             i = (i + 1) & mask;
-        g_set[i] = a;
+        g_set[i].addr = a;
+        g_set[i].gen = g_set_gen;
     }
     return 1;
 }
@@ -392,9 +413,7 @@ static void collect_heap_locked(struct lisp_heap *h) {
         o = next;
     }
 
-    free(g_set);
-    g_set = NULL;
-    g_set_cap = 0;
+    // g_set is kept allocated across collections (generation-tagged); not freed here.
     h->bytes_since = 0;
     h->want_gc = 0;
     h->collections++;
