@@ -50,6 +50,17 @@ lisp_value lisp_current_ctx(void) {
     return v == 0 ? LISP_EMPTY : v;
 }
 
+// Swap this core's current-context slot, returning the previous value. sys-debug's
+// ctx-step brackets a nested run with this so the stepped context is "self" for
+// any scheduler primitives it invokes (yield/capabilities/spawn/recv), instead of
+// the debugger that is driving it. (LISP_EMPTY stored as 0, matching set_current.)
+lisp_value lisp_sched_swap_current(lisp_value v) {
+    int core = lisp_rt_core();
+    lisp_value prev = g_current[core];
+    g_current[core] = (v == LISP_EMPTY) ? 0 : v;
+    return prev == 0 ? LISP_EMPTY : prev;
+}
+
 // Mutate a pair's cdr (the run queue and mailboxes are evaluator-owned plumbing,
 // not user-visible data; the immutable-pair rule does not apply to them).
 static void set_cdr(lisp_value pair, lisp_value v) {

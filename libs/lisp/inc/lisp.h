@@ -320,6 +320,10 @@ lisp_value lisp_current_ctx(void);
 lisp_value lisp_ctx_caps(lisp_value ctx);
 int lisp_ctx_set_caps(lisp_value ctx, lisp_value caps);
 
+// The control register: the expression a context (in the EVAL state) is about to
+// evaluate next. Surfaced by the sys-debug capability for a Lisp single-stepper.
+lisp_value lisp_ctx_control(lisp_value ctx);
+
 // Wake / park a context. lisp_ctx_wake is ISR-SAFE (a single word write, no
 // allocation or lock), so a native interrupt handler can wake a Lisp context
 // parked on a hardware event -- the native-ISR -> event -> wake-context bridge.
@@ -449,6 +453,13 @@ typedef struct {
 int lisp_register_builtin_module(lisp_value env, const char *name,
                                  const lisp_builtin_export *exports,
                                  size_t count);
+
+// Register the built-in `sys-debug` module (debug.c): the reflective debugging
+// capability -- ctx-make/ctx-step/ctx-status/ctx-control/ctx-value/ctx-error,
+// enough to write a single-stepping debugger in Lisp. Gated like any module, so
+// only a context granted `sys-debug` can import it (driving/inspecting another
+// context is authority a sandbox must not hold). Call during single-core boot.
+void lisp_register_debug_module(lisp_value env);
 
 // --- Reader (reader.c) ------------------------------------------------------
 
