@@ -48,6 +48,7 @@
 // it IS the per-core scheduler loop now, entered via CALL from the boot script.
 int print_str(const char *s);
 uint64_t timer_timestamp_ns(void);
+bool Initrd_GetFile(const char *file, void **loc, size_t *size);  // kernel: initrd reader
 
 // --- Runtime lock + shared environment ----------------------------------------
 
@@ -335,6 +336,38 @@ static void install_driver_prims(lisp_value env) {
     lisp_env_define(env, lisp_make_symbol("out-u32", 7), lisp_make_primitive(prim_out_u32, "out-u32"));
 }
 
+// Load a Lisp source file from the initrd and evaluate it into the shared env.
+// Used for driver source (./lisp/*.clp). MUST run single-core (before the APs are
+// released), since the file's top-level (define ...)s mutate the cross-core env.
+static void load_clp(const char *path) {
+    void *loc = NULL;
+    size_t size = 0;
+    if (!Initrd_GetFile(path, &loc, &size)) {
+        print_str("[SysLisp] .clp not found: ");
+        print_str(path);
+        print_str("\r\n");
+        return;
+    }
+    // The tar payload is not NUL-terminated; copy out and terminate for the reader.
+    char *buf = (char *)malloc(size + 1);
+    if (buf == NULL) {
+        print_str("[SysLisp] .clp out of memory\r\n");
+        return;
+    }
+    memcpy(buf, loc, size);
+    buf[size] = '\0';
+    const char *err = NULL;
+    lisp_eval_string(buf, g_env, &err);
+    free(buf);
+    if (err != NULL) {
+        print_str("[SysLisp] .clp error (");
+        print_str(path);
+        print_str("): ");
+        print_str(err);
+        print_str("\r\n");
+    }
+}
+
 // --- Self-test ----------------------------------------------------------------
 
 static int g_pass = 0;
@@ -590,23 +623,14 @@ static void setup_input_service(void) {
     }
 }
 
-// First step of the Lisp NIC driver (virtio-net): find the device via the PCI
-// registry, map its config space, and confirm the vendor/device id read back
-// through the byte accessors. Proves pci-find + mmio-map + config reads on a real
-// PCI device. (The virtqueue/RX/TX stages build on this.) No-op if no NIC.
+// Start the Lisp virtio-net driver. The driver source (./lisp/virtio_net.clp,
+// shipped in the initrd, loaded at boot by load_clp below) defines virtio-net-init;
+// here we just invoke it. Lives on the BSP (services are BSP-pinned for now).
 static void discover_nic(void) {
     const char *err = NULL;
-    lisp_eval_string(
-        "(let ((ecam (pci-find #x1af4 #x1041)))"          // virtio-net-pci (modern)
-        "  (if ecam"
-        "      (let ((cfg (mmio-map ecam #x1000)))"
-        "        (display \"[net] virtio-net found: ecam=\") (display ecam)"
-        "        (display \" vid=\") (display (bytes-u16-ref cfg 0))"
-        "        (display \" did=\") (display (bytes-u16-ref cfg 2)) (newline))"
-        "      (begin (display \"[net] no virtio-net device present\") (newline))))",
-        g_env, &err);
+    lisp_eval_string("(virtio-net-init)", g_env, &err);
     if (err != NULL) {
-        print_str("[net] discovery error: ");
+        print_str("[net] virtio-net-init error: ");
         print_str(err);
         print_str("\r\n");
     }
@@ -707,9 +731,13 @@ int lisp_scheduler_enter() {
                     lisp_make_primitive(prim_ps2_poll, "%ps2-poll"));
     lisp_env_define(g_env, lisp_make_symbol("%ps2-wait", 9),
                     lisp_make_primitive(prim_ps2_wait, "%ps2-wait"));
-    install_driver_prims(g_env);  // mmio-map / dma-alloc / port I/O
+    install_driver_prims(g_env);  // mmio-map / dma-alloc / pci-find / port I/O
     // Route the ps2 keyboard IRQ to wake the (soon-to-be-spawned) ps2 context.
     ps2_set_irq_hook(ps2_wake_hook);
+    // Load Lisp driver source from the initrd (single-core: its top-level defines
+    // populate the shared env before the APs go live). virtio-net-init is invoked
+    // later, on the BSP, by discover_nic.
+    load_clp("./lisp/virtio_net.clp");
 
     // Single-core phase: self-test + the ISR-bridge demo run with the system
     // collector still active (the BSP is the only core building shared state).
