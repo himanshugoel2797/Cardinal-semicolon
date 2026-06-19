@@ -513,6 +513,30 @@ behind a VM.
   super-linearly. *(Next: migrate drivers to Lisp one by one, each driver's IRQ
   driving its context through the ISR-wake bridge; delete the dormant native
   scheduler; later, per-core GC scratch + cross-core messaging.)*
+- **Namespaced modules — multi-file programs + libraries** *(done; `module.c`)*.
+  Two special forms layer over the flat global namespace. `(define-module NAME
+  (export …) body…)` evaluates its body in a *fresh* env parented on the global
+  env — so its internal `define`s stay private — then publishes the listed
+  bindings as NAME's exports. `(import SPEC …)`, where a SPEC is `name`,
+  `(name (prefix p:))`, or `(name (only a b))`, loads each module **once**
+  (idempotent) and binds its chosen exports into the caller's env, optionally
+  renamed so same-named exports from different libraries coexist. Source is
+  fetched by name through a pluggable loader hook (`lisp_set_module_loader`):
+  the kernel maps a name to `./lisp/<name>.clp` in the initrd, host tests to an
+  in-memory table; the returned byte range need not be NUL-terminated (the
+  reader is bounded). The registry of loaded modules lives **inside the global
+  env** (a hidden `%modules` binding), not a C static — the system collector
+  roots conservatively from the C stack + intern table, so anything hung off the
+  always-reachable global env survives for free while a static `lisp_value`
+  would be collected; the price is that loading must run in the **single-core
+  boot window** (before `lisp_gc_set_multicore` freezes the system heap), the
+  same rule top-level `load_clp` already follows. A `%loading` sentinel detects
+  circular imports; a load that fails partway tombstones its registry entry so a
+  retry reports the real error. `test_modules.c` covers the semantics on the
+  host (20/20); in the OS, `virtio_net.clp` is the first multi-file program —
+  it pulls its generic helpers (`nth`, the mutable word `cell`) from a
+  `driver-util` **library** via `(import driver-util)`, and still completes the
+  ARP round-trip end-to-end.
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against

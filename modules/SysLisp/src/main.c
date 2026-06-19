@@ -444,6 +444,38 @@ static void install_driver_prims(lisp_value env) {
     lisp_env_define(env, lisp_make_symbol("out-u32", 7), lisp_make_primitive(prim_out_u32, "out-u32"));
 }
 
+// Resolve a Lisp module NAME (as written in `import`/`define-module`) to its
+// source bytes in the initrd, by mapping it to ./lisp/<name>.clp. Installed via
+// lisp_set_module_loader so `(import foo)` pulls ./lisp/foo.clp. The initrd
+// payload is persistent and the reader is length-bounded, so we hand back a
+// pointer straight into it -- no copy, no NUL terminator needed.
+static bool syslisp_module_loader(const char *name, const char **src, size_t *len,
+                                  void *ctx) {
+    (void)ctx;
+    static const char pre[] = "./lisp/";
+    static const char suf[] = ".clp";
+    char path[160];
+    size_t nlen = strlen(name);
+    if ((sizeof(pre) - 1) + nlen + (sizeof(suf) - 1) >= sizeof path)
+        return false;  // path too long for the buffer
+    size_t o = 0;
+    memcpy(path + o, pre, sizeof(pre) - 1);
+    o += sizeof(pre) - 1;
+    memcpy(path + o, name, nlen);
+    o += nlen;
+    memcpy(path + o, suf, sizeof(suf) - 1);
+    o += sizeof(suf) - 1;
+    path[o] = '\0';
+
+    void *loc = NULL;
+    size_t sz = 0;
+    if (!Initrd_GetFile(path, &loc, &sz))
+        return false;
+    *src = (const char *)loc;
+    *len = sz;
+    return true;
+}
+
 // Load a Lisp source file from the initrd and evaluate it into the shared env.
 // Used for driver source (./lisp/*.clp). MUST run single-core (before the APs are
 // released), since the file's top-level (define ...)s mutate the cross-core env.
@@ -828,9 +860,16 @@ int lisp_scheduler_enter() {
     lisp_env_define(g_env, lisp_make_symbol("%event-wait", 11),
                     lisp_make_primitive(prim_event_wait, "%event-wait"));
     install_driver_prims(g_env);  // mmio-map / dma-alloc / pci-find / irq / port I/O
+    // Resolve `import` against the initrd (./lisp/<name>.clp). Must be set before
+    // loading any source that imports a library. Module loading shares the same
+    // single-core boot window as load_clp below (the registry lives in the shared
+    // env, which the system collector must see fully built before the APs go live).
+    lisp_set_module_loader(syslisp_module_loader, NULL);
     // Load Lisp driver source from the initrd (single-core: its top-level defines
     // populate the shared env before the APs go live). ps2-init / virtio-net-init
     // are invoked later, on the BSP, by setup_input_service / discover_nic.
+    // virtio_net.clp pulls its generic helpers from the driver-util library via
+    // (import driver-util) -- the first multi-file Lisp program in the OS.
     load_clp("./lisp/ps2.clp");
     load_clp("./lisp/virtio_net.clp");
 
