@@ -148,65 +148,97 @@ static lisp_value prim_event_wait(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
-// --- ps2 keyboard driver, migrated to a Lisp context --------------------------
+// --- Generic ISA/IOAPIC IRQ -> wake-context bridge ----------------------------
 //
-// The ps2 module (loaded before us) does the controller init + decode + queueing
-// in its IRQ; here we bridge it to the Lisp input service. The keyboard IRQ fires
-// ps2_wake_hook (ISR context: one word write) to wake the parked ps2 driver
-// CONTEXT, which then drains events with (%ps2-poll) and forwards them as messages
-// to the coreinput context. This is the ISR -> wake -> poll -> send path -- the
-// first real-hardware exercise of the wake bridge.
-void ps2_set_irq_hook(void (*hook)(void));  // exported by the ps2 module
-int ps2_poll_key(int *code, int *pressed);
-int ps2_pending(void);
+// Generalises the single-slot event/MSI bridges above to a small table of ISA
+// interrupt lines, so a Lisp driver can claim a hardware line, park on it, and be
+// woken by that line's interrupt -- with ALL device logic (port I/O, decode) in
+// Lisp. The native floor is exactly this: an interrupt-context trampoline (alloc
+// and GC are illegal there) that bumps a counter and wakes the parked context.
+// The ps2 keyboard driver (./lisp/ps2.clp) is the first user; any future ISA
+// driver reuses it unchanged.
+#define LISP_MAX_IRQ_LINES 8
+static struct lisp_irq_line {
+    volatile int vector;      // allocated IDT vector; 0 = free slot. volatile so the
+                              // ISR's read and the "publish vector last" store in
+                              // irq-register are ordered wrt the volatile count/waiter
+                              // stores (not merely by x86 TSO) under the C memory model.
+    volatile uint32_t count;  // bumped each interrupt (count-based wake, never lost)
+    volatile lisp_value waiter;  // parked context to wake (0 = none)
+} g_irq_lines[LISP_MAX_IRQ_LINES];
 
-// The parked ps2 context (0 = none). A context object lives in the system heap,
-// which is frozen (never collected/freed) once multi-core, and the scheduler does
-// not reap finished contexts -- so this handle can never dangle even if the ps2
-// context were to exit, and ps2_wake_hook's write stays in-bounds.
-static volatile lisp_value g_ps2_waiter = 0;
-
-static void ps2_wake_hook(void) {  // ISR context
-    lisp_value w = g_ps2_waiter;
-    if (w != 0)
-        lisp_ctx_wake(w);
+// The shared ISA-IRQ ISR. The dispatcher passes the vector (idt.c: h(int_no)), so
+// one handler registered on every claimed vector dispatches by vector. A context
+// in the (frozen, never-reaped) system heap can't dangle, so the wake stays valid.
+static void lisp_irq_isr(int vec) {  // interrupt context
+    for (int i = 0; i < LISP_MAX_IRQ_LINES; i++) {
+        if (g_irq_lines[i].vector == vec) {
+            g_irq_lines[i].count++;
+            lisp_value w = g_irq_lines[i].waiter;
+            if (w != 0)
+                lisp_ctx_wake(w);  // ISR-safe: a single word write
+            return;
+        }
+    }
 }
 
-// (%ps2-poll) -> an encoded fixnum (scancode*2 + pressed?) for the next event, or
-// #f if none. Returning a fixnum allocates NOTHING in the primitive, so there is
-// no GC-rooting hazard (a C local holding a half-built list across an allocation
-// that triggers an inline OOM collect). The Lisp pump decodes it and builds the
-// message list via the interpreter, where intermediates are properly rooted.
-static lisp_value prim_ps2_poll(lisp_value *a, int n, const char **e) {
-    (void)a;
-    (void)n;
-    (void)e;
-    int code = 0, pressed = 0;
-    if (!ps2_poll_key(&code, &pressed))
-        return LISP_FALSE;
-    return lisp_fixnum((int64_t)code * 2 + pressed);
+// (irq-register gsi) -> an opaque small-fixnum handle, or #f. Allocates a vector,
+// installs lisp_irq_isr on it, and routes the IOAPIC line `gsi` (edge-triggered,
+// active-high -- the ISA convention) to it, destined for the calling core. Must be
+// called on the core whose contexts will (irq-wait) on it (BSP today: services are
+// BSP-pinned and interrupt_mapinterrupt targets the current core).
+static lisp_value prim_irq_register(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]) || lisp_fixnum_val(a[0]) < 0)
+        return (*e = "irq-register: expects (gsi)"), LISP_UNDEF;
+    uint32_t gsi = (uint32_t)lisp_fixnum_val(a[0]);
+    int slot = -1;
+    for (int i = 0; i < LISP_MAX_IRQ_LINES; i++)
+        if (g_irq_lines[i].vector == 0) { slot = i; break; }
+    if (slot < 0)
+        return (*e = "irq-register: no free IRQ slots"), LISP_UNDEF;
+    // vec=0 + no _fixed: interrupt_allocate scans for a free vector (>=32) and
+    // writes it back. (_fixed instead means "give me exactly *base" -- passing 0
+    // there would route the line to vector 0, a CPU-exception slot.)
+    int vec = 0;
+    if (interrupt_allocate(1, interrupt_flags_exclusive, &vec) != CS_OK)
+        return (*e = "irq-register: vector allocation failed"), LISP_UNDEF;
+    g_irq_lines[slot].count = 0;
+    g_irq_lines[slot].waiter = 0;
+    g_irq_lines[slot].vector = vec;  // publish last: ISR ignores the slot until set
+    interrupt_register_handler(vec, lisp_irq_isr);
+    // interrupt_mapinterrupt already clears the RTE mask, so no separate unmask.
+    interrupt_mapinterrupt(gsi, vec, false, false);
+    return lisp_fixnum(slot);
 }
 
-// (%ps2-wait) -> park the running context until the next keyboard IRQ, UNLESS an
-// event is already pending (so a key landing just before we park is not missed).
-// cli() closes the check-then-park window against the same-core IRQ; the ps2 IRQ
-// is delivered to the BSP, where this context runs. (A keyboard IRQ routed to a
-// different core than the waiter could still miss -- acceptable until cross-core
-// messaging lands; the input service is BSP-pinned for now.)
-static lisp_value prim_ps2_wait(lisp_value *a, int n, const char **e) {
-    (void)a;
-    (void)n;
+// (irq-count handle) -> this line's interrupt counter (advances on every IRQ).
+static lisp_value prim_irq_count(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]))
+        return (*e = "irq-count: expects (handle)"), LISP_UNDEF;
+    int slot = (int)lisp_fixnum_val(a[0]);
+    if (slot < 0 || slot >= LISP_MAX_IRQ_LINES || g_irq_lines[slot].vector == 0)
+        return (*e = "irq-count: bad handle"), LISP_UNDEF;
+    return lisp_fixnum((int64_t)g_irq_lines[slot].count);
+}
+
+// (irq-wait handle seen) -> park the running context until the line's counter
+// passes `seen`; returns immediately (#f) if it already has. cli() closes the
+// check-then-park race against the same-core IRQ (mirrors net-wait). The line is
+// routed to the calling/BSP core, so cli() here masks it; a line re-routed to
+// another core could lose the wake in this window (the cross-core-messaging caveat).
+static lisp_value prim_irq_wait(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "irq-wait: expects (handle seen)"), LISP_UNDEF;
+    int slot = (int)lisp_fixnum_val(a[0]);
+    if (slot < 0 || slot >= LISP_MAX_IRQ_LINES || g_irq_lines[slot].vector == 0)
+        return (*e = "irq-wait: bad handle"), LISP_UNDEF;
+    uint32_t seen = (uint32_t)lisp_fixnum_val(a[1]);
     lisp_value self = lisp_current_ctx();
     if (self == LISP_EMPTY)
-        return (*e = "%ps2-wait: not under the scheduler"), LISP_UNDEF;
-    // Publishing g_ps2_waiter before cli() is fine: if the IRQ fires in that window
-    // it both queues the event and wakes us (clears blocked, a no-op since we are
-    // not blocked yet); the ps2_pending() check below then sees the queued event
-    // and returns without ever blocking. Past the cli(), the same-core IRQ is held
-    // off until we have either bailed or blocked, closing the check-then-park race.
-    g_ps2_waiter = self;
+        return (*e = "irq-wait: not under the scheduler"), LISP_UNDEF;
+    g_irq_lines[slot].waiter = self;
     int cli_state = cli();
-    if (ps2_pending()) {  // an event arrived; stay runnable and re-drain
+    if (g_irq_lines[slot].count != seen) {  // an interrupt already advanced it
         sti(cli_state);
         return LISP_FALSE;
     }
@@ -319,7 +351,10 @@ static lisp_value prim_pci_setup_msi(lisp_value *a, int n, const char **e) {
     pci_config_t *dev = (pci_config_t *)vmem_phystovirt(
         (intptr_t)lisp_fixnum_val(a[0]), 0x1000,
         vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
-    int vec = pci_setup_msi_handler(dev, interrupt_flags_none, net_msi_isr);
+    // _exclusive reserves the allocated vector so nothing else (e.g. an ISA line
+    // claimed via irq-register, which also allocates from this space) can land on
+    // the same vector and share the dispatch slot.
+    int vec = pci_setup_msi_handler(dev, interrupt_flags_exclusive, net_msi_isr);
     return vec < 0 ? LISP_FALSE : lisp_fixnum(vec);
 }
 
@@ -398,6 +433,9 @@ static void install_driver_prims(lisp_value env) {
     lisp_env_define(env, lisp_make_symbol("pci-setup-msi", 13), lisp_make_primitive(prim_pci_setup_msi, "pci-setup-msi"));
     lisp_env_define(env, lisp_make_symbol("net-count", 9), lisp_make_primitive(prim_net_count, "net-count"));
     lisp_env_define(env, lisp_make_symbol("net-wait", 8), lisp_make_primitive(prim_net_wait, "net-wait"));
+    lisp_env_define(env, lisp_make_symbol("irq-register", 12), lisp_make_primitive(prim_irq_register, "irq-register"));
+    lisp_env_define(env, lisp_make_symbol("irq-count", 9), lisp_make_primitive(prim_irq_count, "irq-count"));
+    lisp_env_define(env, lisp_make_symbol("irq-wait", 8), lisp_make_primitive(prim_irq_wait, "irq-wait"));
     lisp_env_define(env, lisp_make_symbol("in-u8", 5), lisp_make_primitive(prim_in_u8, "in-u8"));
     lisp_env_define(env, lisp_make_symbol("in-u16", 6), lisp_make_primitive(prim_in_u16, "in-u16"));
     lisp_env_define(env, lisp_make_symbol("in-u32", 6), lisp_make_primitive(prim_in_u32, "in-u32"));
@@ -652,12 +690,14 @@ static void announce_core(int id, const char *err, lisp_value proof) {
 // self-deadlock cannot occur here by construction.
 //
 // The whole thing is set up as ONE expression evaluated in the shared env: it only
-// LOOKS UP names there (spawn/recv/cond/...), never `define`s into it -- mutating
-// the cross-core-shared env after the APs are live would be a data race. The
+// LOOKS UP names there (spawn/recv/cond/... plus ps2-init/ps2-keyboard-driver,
+// defined by ./lisp/ps2.clp at load time), never `define`s into it -- mutating the
+// cross-core-shared env after the APs are live would be a data race. The
 // coordinator handle is held in a `let` binding the ps2 driver context closes
-// over, not in a global. The ps2 context registers, then pumps: it drains
-// (%ps2-poll) and forwards each event, parking on (%ps2-wait) -- woken by the
-// keyboard IRQ via ps2_wake_hook -- when the queue is empty.
+// over, not in a global. (ps2-init) brings up the i8042 controller (pure port I/O,
+// in Lisp); the spawned ps2 context then claims IRQ 1, registers with coreinput,
+// and pumps scancodes -- the entire ps2 driver is Lisp now, over the generic
+// irq-register/irq-wait + in-u8/out-u8 primitives.
 static void setup_input_service(void) {
     const char *err = NULL;
     lisp_eval_string(
@@ -673,18 +713,8 @@ static void setup_input_service(void) {
         "                     (display \"[coreinput] event \") (display (cadr m)) (newline)"
         "                     (loop devs))"
         "                    (else (loop devs))))))))) "
-        // Slice-1b: the migrated ps2 driver context -- register, then pump: drain
-        // (%ps2-poll), forward each event to coreinput, park on (%ps2-wait) (woken
-        // by the keyboard IRQ) when the queue is empty.
-        "  (spawn (lambda ()"
-        "    (send coreinput (list 'register 'ps2-keyboard))"
-        "    (let pump ()"
-        "      (let ((e (%ps2-poll)))"
-        "        (if e"
-        "            (begin"
-        "              (send coreinput (list 'event (list 'key (quotient e 2) (remainder e 2))))"
-        "              (pump))"
-        "            (begin (%ps2-wait) (pump))))))))",
+        "  (ps2-init)"
+        "  (spawn (lambda () (ps2-keyboard-driver coreinput))))",
         g_env, &err);
     if (err != NULL) {
         print_str("[SysLisp] input service setup error: ");
@@ -797,16 +827,11 @@ int lisp_scheduler_enter() {
                     lisp_make_primitive(prim_event_count, "%event-count"));
     lisp_env_define(g_env, lisp_make_symbol("%event-wait", 11),
                     lisp_make_primitive(prim_event_wait, "%event-wait"));
-    lisp_env_define(g_env, lisp_make_symbol("%ps2-poll", 9),
-                    lisp_make_primitive(prim_ps2_poll, "%ps2-poll"));
-    lisp_env_define(g_env, lisp_make_symbol("%ps2-wait", 9),
-                    lisp_make_primitive(prim_ps2_wait, "%ps2-wait"));
-    install_driver_prims(g_env);  // mmio-map / dma-alloc / pci-find / port I/O
-    // Route the ps2 keyboard IRQ to wake the (soon-to-be-spawned) ps2 context.
-    ps2_set_irq_hook(ps2_wake_hook);
+    install_driver_prims(g_env);  // mmio-map / dma-alloc / pci-find / irq / port I/O
     // Load Lisp driver source from the initrd (single-core: its top-level defines
-    // populate the shared env before the APs go live). virtio-net-init is invoked
-    // later, on the BSP, by discover_nic.
+    // populate the shared env before the APs go live). ps2-init / virtio-net-init
+    // are invoked later, on the BSP, by setup_input_service / discover_nic.
+    load_clp("./lisp/ps2.clp");
     load_clp("./lisp/virtio_net.clp");
 
     // Single-core phase: self-test + the ISR-bridge demo run with the system
