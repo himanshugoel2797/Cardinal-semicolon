@@ -958,6 +958,38 @@ static void run_self_test(lisp_value env) {
                "  (import (du-probe (prefix du:)))"
                "  (du:run))",
           "#t");
+    // CoreDisplay's EDID parser (pure): build a synthetic 128-byte EDID with a
+    // known digital 8bpc input, one 1920x1080@60 16:9 standard timing, a 1920x1080
+    // detailed mode, and the monitor name "TESTDISPLAY", then assert parse-edid
+    // recovers them. No scheduler needed -- it is byte math -- so it runs inline.
+    check(env, "(begin"
+               "  (define-module edid-probe (export run)"
+               "    (import coredisplay)"
+               "    (define (run)"
+               "      (let ((b (make-bytes 128)))"
+               "        (bytes-u8-set! b 1 255) (bytes-u8-set! b 2 255) (bytes-u8-set! b 3 255)"
+               "        (bytes-u8-set! b 4 255) (bytes-u8-set! b 5 255) (bytes-u8-set! b 6 255)"
+               "        (bytes-u8-set! b 20 160) (bytes-u8-set! b 23 120) (bytes-u8-set! b 35 32)"
+               "        (bytes-u8-set! b 38 209) (bytes-u8-set! b 39 192)"
+               "        (let loop ((i 40)) (if (< i 54) (begin (bytes-u8-set! b i 1) (loop (+ i 1))) 0))"
+               "        (bytes-u8-set! b 54 2) (bytes-u8-set! b 55 58)"
+               "        (bytes-u8-set! b 56 128) (bytes-u8-set! b 58 113)"
+               "        (bytes-u8-set! b 59 56) (bytes-u8-set! b 61 64)"
+               "        (bytes-u8-set! b 71 30)"
+               "        (bytes-u8-set! b 75 252)"
+               "        (bytes-u8-set! b 77 84) (bytes-u8-set! b 78 69) (bytes-u8-set! b 79 83)"
+               "        (bytes-u8-set! b 80 84) (bytes-u8-set! b 81 68) (bytes-u8-set! b 82 73)"
+               "        (bytes-u8-set! b 83 83) (bytes-u8-set! b 84 80) (bytes-u8-set! b 85 76)"
+               "        (bytes-u8-set! b 86 65) (bytes-u8-set! b 87 89) (bytes-u8-set! b 88 10)"
+               "        (let* ((e (parse-edid b))"
+               "               (st (car (cdr (assq 'standard-timings e))))"
+               "               (dm (car (cdr (assq 'detailed-modes e)))))"
+               "          (list (cdr (assq 'bit-depth e)) (car st) (cadr st)"
+               "                (string=? (cdr (assq 'display-name e)) \"TESTDISPLAY\")"
+               "                (cdr (assq 'hactive dm)) (cdr (assq 'vactive dm)))))))"
+               "  (import (edid-probe (prefix ed:)))"
+               "  (ed:run))",
+          "(8 1920 1080 #t 1920 1080)");
     check_scheduler(env);
     check_capabilities(env);
     check_repl(env);
