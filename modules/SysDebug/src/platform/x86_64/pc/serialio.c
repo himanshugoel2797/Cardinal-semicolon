@@ -70,6 +70,17 @@ static inline char serial_input()
     return c;
 }
 
+// Enable COM1's "received-data-available" interrupt (IER bit 0), so a byte
+// arriving on COM1 raises ISA IRQ 4. The Lisp REPL claims that line via the
+// generic irq-register/irq-wait bridge so it parks instead of busy-polling for
+// input. Call only AFTER the line is routed (a handler is installed for IRQ 4),
+// or an early byte would raise an unhandled interrupt. COM1 is otherwise left as
+// firmware configured it (8N1); this touches only the interrupt-enable register.
+void serial_enable_rx_irq(void)
+{
+    outb(SERIAL_A + 1, 0x01); // IER: bit0 = Received Data Available interrupt
+}
+
 static void render_char(char c)
 {
     int x = 0;

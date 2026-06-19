@@ -42,6 +42,7 @@
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysReg/registry.h"
 #include "SysDebug/csmux.h"
+#include "boot_information.h"  // GetBootInfo()->Cmdline (the cardinal.repl flag)
 #include "pci/pci.h"
 #include "pci/pci_irq.h"
 #include <stdlib.h>  // itoa
@@ -52,6 +53,7 @@
 int print_str(const char *s);
 uint64_t timer_timestamp_ns(void);
 bool Initrd_GetFile(const char *file, void **loc, size_t *size);  // kernel: initrd reader
+void serial_enable_rx_irq(void);  // SysDebug: arm COM1 RX (IRQ 4) for the REPL
 
 // --- Runtime lock + shared environment ----------------------------------------
 
@@ -489,6 +491,13 @@ static void register_driver_modules(lisp_value env) {
 
 static lisp_value g_repl_env = LISP_EMPTY;
 
+// True iff "cardinal.repl" is in the kernel command line. When set, the BSP brings
+// up the interactive serial REPL: activate CSMUX (so the log and the REPL get
+// their own framed channels over the one link) and spawn the REPL context. Off by
+// default so a normal boot -- and the CI smoke test, which reads raw COM1 -- is
+// unchanged (no framing, no REPL).
+static int g_repl_enabled = 0;
+
 // (console-poll) -> a string of the bytes currently waiting on the REPL channel,
 // or #f if none. Non-blocking; the REPL loop yields and retries on #f.
 static lisp_value prim_console_poll(lisp_value *a, int n, const char **e) {
@@ -530,9 +539,22 @@ static lisp_value prim_repl_eval(lisp_value *a, int n, const char **e) {
     return lisp_make_string(out, strlen(out));
 }
 
+// (console-arm-rx) -> enable COM1's receive interrupt (IRQ 4). Call AFTER claiming
+// the line with (irq-register 4), so the REPL parks on irq-wait instead of busy-
+// polling: an arriving byte raises IRQ 4, the generic ISA-IRQ bridge wakes the
+// parked REPL context, and it drains the input.
+static lisp_value prim_console_arm_rx(lisp_value *a, int n, const char **e) {
+    (void)a;
+    if (n != 0)
+        return (*e = "console-arm-rx: expects no arguments"), LISP_UNDEF;
+    serial_enable_rx_irq();
+    return LISP_UNDEF;
+}
+
 static const lisp_builtin_export sys_console_exports[] = {
     {"console-poll", prim_console_poll},
     {"console-write", prim_console_write},
+    {"console-arm-rx", prim_console_arm_rx},
     {"repl-eval", prim_repl_eval},
 };
 
@@ -914,6 +936,22 @@ static void NORETURN lisp_core_loop(void) {
             print_str(ierr);
             print_str("\r\n");
         }
+        // Interactive serial REPL (cardinal.repl): announce it on the still-raw
+        // log, switch the link into framed CSMUX (log -> CH_LOG, REPL <-> CH_REPL),
+        // then spawn the REPL context. It claims COM1 RX (IRQ 4) and parks on it --
+        // arm-rx is done by the context AFTER irq-register so an early byte can't
+        // hit an unrouted line -- so the BSP idles (hlt) until a keystroke arrives.
+        if (g_repl_enabled) {
+            print_str("[SysLisp] cardinal.repl: starting serial REPL on CSMUX ch2\r\n");
+            csmux_activate();
+            const char *rerr = NULL;
+            lisp_eval_string("(start-repl)", g_env, &rerr);
+            if (rerr != NULL) {
+                print_str("[SysLisp] start-repl error: ");
+                print_str(rerr);
+                print_str("\r\n");
+            }
+        }
     }
 
     // Per-core proof of life: spawn a context that does a real (heap-allocating,
@@ -967,6 +1005,11 @@ int lisp_scheduler_enter() {
     lisp_set_concurrency(lisp_lock, lisp_unlock, interrupt_get_cpu_idx);
     lisp_gc_init(__builtin_frame_address(0));
     lisp_set_output(lisp_out, NULL);
+
+    // Opt in to the interactive serial REPL via the kernel command line. Off by
+    // default: a normal boot stays raw-COM1 (the CI smoke test reads it directly).
+    CardinalBootInfo *bi = GetBootInfo();
+    g_repl_enabled = (bi != NULL) && (strstr(bi->Cmdline, "cardinal.repl") != NULL);
 
     print_str("\r\n[SysLisp] interpreter-as-scheduler, multi-core bring-up\r\n");
 
