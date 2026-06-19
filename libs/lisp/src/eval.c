@@ -914,12 +914,49 @@ static void step_eval(lisp_ctx_t *cx) {
             ctx_error(cx, "unbound variable");
             return;
         }
-        if (!lisp_is_pair(rest)) {
-            if (!lisp_is_empty(rest)) {
-                ctx_error(cx, "improper argument list");
-                return;
+        // Fast path: when every argument is "simple" -- a symbol (variable) or a
+        // self-evaluating literal -- none can suspend, so evaluate them inline
+        // into an array and call with NO continuation frame at all. This covers
+        // the bulk of calls (e.g. (- i 1), (< n 2), (cons x y)) and also the
+        // zero-argument case. A simple value is anything that is neither a pair
+        // (an application) nor the empty list (which is an error to evaluate).
+        int n = 0;
+        bool all_simple = true;
+        for (lisp_value p = rest;; p = lisp_cdr(p)) {
+            if (lisp_is_empty(p))
+                break;
+            if (!lisp_is_pair(p) || n >= MAX_ARGS) {  // improper / too many
+                all_simple = false;
+                break;
             }
-            do_call(cx, op, NULL, 0);  // zero-argument call
+            lisp_value a = lisp_car(p);
+            if (lisp_is_pair(a) || lisp_is_empty(a)) {  // a sub-expression to evaluate
+                all_simple = false;
+                break;
+            }
+            n++;
+        }
+        if (all_simple) {
+            lisp_value args[MAX_ARGS];
+            int i = 0;
+            for (lisp_value p = rest; lisp_is_pair(p); p = lisp_cdr(p), i++) {
+                lisp_value a = lisp_car(p);
+                if (lisp_is_symbol(a)) {
+                    if (!lisp_env_lookup(cx->env, a, &args[i])) {
+                        ctx_error(cx, "unbound variable");
+                        return;
+                    }
+                } else {
+                    args[i] = a;  // self-evaluating literal
+                }
+            }
+            do_call(cx, op, args, n);
+            return;
+        }
+        // Some argument is a sub-expression to evaluate. The empty-args case was
+        // handled above, so a non-pair rest here is an improper argument list.
+        if (!lisp_is_pair(rest)) {
+            ctx_error(cx, "improper argument list");
             return;
         }
         lisp_value rest2 = lisp_cdr(rest);
