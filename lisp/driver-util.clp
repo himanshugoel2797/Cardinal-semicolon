@@ -10,9 +10,30 @@
 (define-module driver-util
   (export nth make-cell cell-ref cell-set!
           put-be16! get-be16 put-be32! get-be32
+          copy-bytes bytes-copy-into! put-list!
           serve)
 
   (define (nth lst k) (if (= k 0) (car lst) (nth (cdr lst) (- k 1))))
+
+  ;; Copy `len` bytes out of `src` starting at `off` into a fresh owned buffer.
+  ;; The NIC RX path needs this: the device's receive buffer is recycled, so a
+  ;; frame handed to the network stack must be snapshotted first.
+  (define (copy-bytes src off len)
+    (let ((out (make-bytes len)))
+      (let loop ((i 0))
+        (if (= i len) out
+            (begin (bytes-u8-set! out i (bytes-u8-ref src (+ off i))) (loop (+ i 1)))))))
+
+  ;; Copy `len` bytes from src[0..) into dst at `off` (in place).
+  (define (bytes-copy-into! dst off src len)
+    (let loop ((i 0))
+      (if (= i len) dst
+          (begin (bytes-u8-set! dst (+ off i) (bytes-u8-ref src i)) (loop (+ i 1))))))
+
+  ;; Write a list of byte values into `b` starting at `off`.
+  (define (put-list! b off lst)
+    (let loop ((i off) (l lst))
+      (if (null? l) b (begin (bytes-u8-set! b i (car l)) (loop (+ i 1) (cdr l))))))
 
   (define (make-cell v) (let ((b (make-bytes 8))) (bytes-u64-set! b 0 v) b))
   (define (cell-ref c)  (bytes-u64-ref c 0))
