@@ -36,14 +36,36 @@
 #include "internal.h"
 
 typedef struct gc_obj {
-    struct gc_obj *next;  // intrusive per-heap all-objects list
-    uintptr_t mark;       // 0 / 1
+    struct gc_obj *next;  // intrusive all-objects list (live) / free list (dead)
+    uint32_t mark;        // 0 / 1
+    uint32_t cls;         // size class, or GC_CLS_LARGE for an individual malloc
 } gc_obj;
-// The 16-byte header keeps the payload at least 8-aligned (malloc returns >=
+// The 16-byte header keeps the payload at least 8-aligned (malloc/slabs return >=
 // 8-aligned), so payload pointers have their low 3 bits clear -- the conservative
 // filter and the address hash rely on that.
 
-// A heap: an intrusive object list plus its counters and collection policy.
+// --- pooled allocation ------------------------------------------------------
+//
+// Objects are not malloc'd one at a time (that dominated the profile -- one
+// malloc per cons, one free per dead cell). Instead each heap bump-allocates
+// fixed size-class slots out of large slabs and recycles dead slots onto a
+// per-class free list, so steady churn (cons/kont) reuses memory with no libc
+// alloc traffic. Slabs are released only when the whole heap is torn down. This
+// stays NON-MOVING, so it is compatible with the system heap's conservative
+// roots (which forbid relocation). Objects larger than the biggest class fall
+// back to an individual malloc/free (rare: big vectors/strings/bytes).
+#define GC_CLASS_STEP 16u                                  // slot granularity
+#define GC_MAX_POOLED 512u                                 // largest pooled slot
+#define GC_NUM_CLASSES (GC_MAX_POOLED / GC_CLASS_STEP)     // 32 classes
+#define GC_CLS_LARGE 0xffffffffu                           // individually malloc'd
+#define GC_SLAB_HDR 16u                                    // keeps carves 16-aligned
+#define GC_SLAB_BYTES (64u * 1024u)                        // carve area per slab
+
+typedef struct gc_slab {
+    struct gc_slab *next;
+} gc_slab;
+
+// A heap: an intrusive object list plus its counters, free lists, and slabs.
 struct lisp_heap {
     gc_obj *all;
     size_t live;
@@ -53,13 +75,27 @@ struct lisp_heap {
     int enabled;
     int want_gc;        // a context heap defers collection to the next safe point
     lisp_value owner;   // owning context value, or LISP_EMPTY for the system heap
+    gc_obj *freelist[GC_NUM_CLASSES];  // recycled dead slots, per size class
+    gc_slab *slabs;     // backing slabs (freed only at heap teardown)
+    char *slab_cur;     // bump cursor into the current slab
+    size_t slab_left;   // bytes remaining in the current slab
 };
 
 #define GC_THRESHOLD (256 * 1024)
 
-// The shared system heap.
-static struct lisp_heap g_system = {NULL, 0, 0, 0, GC_THRESHOLD, 0, 0, LISP_EMPTY};
+// The shared system heap. Everything else (counters, free lists, slabs) is
+// zero/NULL -> an empty pool, as required.
+static struct lisp_heap g_system = {.threshold = GC_THRESHOLD, .owner = LISP_EMPTY};
 static void *g_stack_base = NULL;  // for the system heap's conservative scan
+
+// Size class for a total allocation (header + payload), or >= GC_NUM_CLASSES if
+// it exceeds the largest pooled slot. Class i holds slots of (i + 1) * 16 bytes.
+static inline uint32_t size_to_class(size_t total) {
+    return (uint32_t)((total + GC_CLASS_STEP - 1) / GC_CLASS_STEP - 1);
+}
+static inline size_t class_slot(uint32_t cls) {
+    return (size_t)(cls + 1) * GC_CLASS_STEP;
+}
 
 // The heap each core currently allocates into. PER-CORE: two cores run two
 // contexts (each in its own heap) at once, so a single global target would have
@@ -345,7 +381,12 @@ static void collect_heap_locked(struct lisp_heap *h) {
             link = &o->next;
         } else {
             *link = next;
-            free(o);
+            if (o->cls == GC_CLS_LARGE) {
+                free(o);  // individually malloc'd
+            } else {
+                o->next = h->freelist[o->cls];  // recycle the slot, no libc free
+                h->freelist[o->cls] = o;
+            }
             h->live--;
         }
         o = next;
@@ -361,7 +402,56 @@ static void collect_heap_locked(struct lisp_heap *h) {
 
 // --- allocation -------------------------------------------------------------
 
-// Push a freshly-malloc'd object onto a heap's intrusive list + counters.
+// Carve `slot` bytes off the heap's current slab, grabbing a fresh slab first if
+// the current one can't satisfy it. Returns NULL only on slab malloc failure.
+// When a fresh slab is taken the old slab's tail (< slot bytes, so < GC_MAX_POOLED)
+// is stranded until heap teardown -- worst case ~0.8% of a slab, an accepted trade.
+static gc_obj *slab_carve(struct lisp_heap *h, size_t slot) {
+    if (h->slab_left < slot) {
+        char *block = (char *)malloc(GC_SLAB_HDR + GC_SLAB_BYTES);
+        if (block == NULL)
+            return NULL;
+        gc_slab *s = (gc_slab *)block;
+        s->next = h->slabs;
+        h->slabs = s;
+        h->slab_cur = block + GC_SLAB_HDR;
+        h->slab_left = GC_SLAB_BYTES;
+    }
+    gc_obj *o = (gc_obj *)h->slab_cur;
+    h->slab_cur += slot;
+    h->slab_left -= slot;
+    return o;
+}
+
+// Obtain an uninitialised gc_obj big enough for `size` bytes of payload: pop the
+// size class's free list, else carve a slot from a slab; oversized requests fall
+// back to an individual malloc (tagged GC_CLS_LARGE). Sets o->cls; the caller
+// links it via heap_link. Returns NULL on OOM.
+static gc_obj *obj_alloc(struct lisp_heap *h, size_t size) {
+    // Callers always allocate at least a lisp_header, so total >= 24 and
+    // size_to_class never underflows; size 0 would wrap to the large path, which
+    // is harmless but never happens.
+    size_t total = sizeof(gc_obj) + size;
+    uint32_t cls = size_to_class(total);
+    if (cls >= GC_NUM_CLASSES) {  // larger than any class: individual malloc
+        gc_obj *o = (gc_obj *)malloc(total);
+        if (o != NULL)
+            o->cls = GC_CLS_LARGE;
+        return o;
+    }
+    gc_obj *o = h->freelist[cls];
+    if (o != NULL) {
+        h->freelist[cls] = o->next;  // recycle a dead slot
+    } else {
+        o = slab_carve(h, class_slot(cls));
+        if (o == NULL)
+            return NULL;
+    }
+    o->cls = cls;
+    return o;
+}
+
+// Push a freshly-allocated object onto a heap's intrusive list + counters.
 static void *heap_link(struct lisp_heap *h, gc_obj *o, size_t size) {
     o->next = h->all;
     o->mark = 0;
@@ -379,10 +469,10 @@ static void *sys_alloc_locked(size_t size) {
     struct lisp_heap *h = &g_system;
     if (h->enabled && h->bytes_since >= h->threshold)
         collect_heap_locked(h);  // no-op once the heap is frozen (multi-core)
-    gc_obj *o = (gc_obj *)malloc(sizeof(gc_obj) + size);
+    gc_obj *o = obj_alloc(h, size);
     if (o == NULL) {  // last-ditch: collect what we safely can, then retry
         collect_heap_locked(h);
-        o = (gc_obj *)malloc(sizeof(gc_obj) + size);
+        o = obj_alloc(h, size);
         if (o == NULL)
             return NULL;
     }
@@ -404,12 +494,12 @@ void *lisp_gc_alloc(size_t size) {
     // last-ditch OOM collect runs inline, and it takes the lock for the scratch.
     if (h->enabled && h->bytes_since >= h->threshold)
         h->want_gc = 1;
-    gc_obj *o = (gc_obj *)malloc(sizeof(gc_obj) + size);
+    gc_obj *o = obj_alloc(h, size);
     if (o == NULL) {
         lisp_rt_lock();
         collect_heap_locked(h);
         lisp_rt_unlock();
-        o = (gc_obj *)malloc(sizeof(gc_obj) + size);
+        o = obj_alloc(h, size);
         if (o == NULL)
             return NULL;
     }
@@ -452,6 +542,11 @@ struct lisp_heap *lisp_heap_new(lisp_value owner) {
     h->enabled = 1;
     h->want_gc = 0;
     h->owner = owner;
+    for (size_t i = 0; i < GC_NUM_CLASSES; i++)
+        h->freelist[i] = NULL;
+    h->slabs = NULL;
+    h->slab_cur = NULL;
+    h->slab_left = 0;
     return h;
 }
 
@@ -475,11 +570,19 @@ void lisp_heap_free(struct lisp_heap *h) {
     // core frees it (at a safe point), so resetting this core's slot suffices.
     if (g_alloc_heap[lisp_rt_core()] == h)
         g_alloc_heap[lisp_rt_core()] = NULL;
-    gc_obj *o = h->all;
-    while (o != NULL) {
+    // Pooled objects (live or free-listed) are backed by the slabs, so freeing
+    // the slabs reclaims them all at once; only the large (individually malloc'd)
+    // objects still on the all-list need an individual free.
+    for (gc_obj *o = h->all; o != NULL;) {
         gc_obj *next = o->next;
-        free(o);
+        if (o->cls == GC_CLS_LARGE)
+            free(o);
         o = next;
+    }
+    for (gc_slab *s = h->slabs; s != NULL;) {
+        gc_slab *next = s->next;
+        free(s);
+        s = next;
     }
     free(h);
 }
