@@ -51,17 +51,6 @@ static lisp_value fail(const char **err, const char *msg) {
 // bindings), never on user data -- the language model keeps pairs immutable.
 static void set_cdr(lisp_value pair, lisp_value v) { ((lisp_pair *)lisp_obj(pair))->cdr = v; }
 
-static bool symbol_eq(lisp_value a, lisp_value b) {
-    if (a == b)
-        return true;
-    if (!lisp_is_symbol(a) || !lisp_is_symbol(b))
-        return false;
-    size_t la = lisp_named_len(a);
-    if (la != lisp_named_len(b))
-        return false;
-    return memcmp(lisp_named_name(a), lisp_named_name(b), la) == 0;
-}
-
 // --- Constructors -----------------------------------------------------------
 
 lisp_value lisp_make_closure(lisp_value params, lisp_value body, lisp_value env) {
@@ -104,11 +93,16 @@ lisp_value lisp_make_env(lisp_value parent) {
 }
 
 // Find the (sym . val) binding cell for `sym` in this single frame, or LISP_EMPTY.
+// Both the binding key and `sym` are interned symbols (every symbol-construction
+// path goes through intern()), so equality is pointer identity -- no need to
+// compare names. This is the interpreter's hottest loop (profiling: variable
+// lookup dominates), so the name length+memcmp that a general compare would do
+// per non-matching binding is pure waste and is avoided here.
 static lisp_value frame_find(lisp_value env, lisp_value sym) {
     lisp_value b = ((lisp_env_t *)lisp_obj(env))->bindings;
     while (lisp_is_pair(b)) {
         lisp_value cell = lisp_car(b);
-        if (lisp_is_pair(cell) && symbol_eq(lisp_car(cell), sym))
+        if (lisp_is_pair(cell) && lisp_car(cell) == sym)
             return cell;
         b = lisp_cdr(b);
     }
@@ -150,8 +144,10 @@ bool lisp_env_set(lisp_value env, lisp_value sym, lisp_value val) {
     return false;
 }
 
-// --- Symbol cache for special-form dispatch ---------------------------------
-// Compared by name via symbol_eq, so freshly-read symbols match without interning.
+// --- Keyword matching by name -----------------------------------------------
+// A by-name symbol test for the syntactic keywords that are NOT top-level forms
+// and so carry no form_id: else (cond/case) and unquote/unquote-splicing
+// (quasiquote). The hot form dispatch uses the cached form_id instead.
 
 static bool is_form(lisp_value sym, const char *name) {
     if (!lisp_is_symbol(sym))
