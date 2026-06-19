@@ -12,7 +12,6 @@ CALL:vmem_init
 CALL:acpi_init
 CALL:pci_reg_init
 CALL:intr_init
-LOAD:./SysGdb.celf
 LOAD:./SysFP.celf
 LOAD:./SysTimer.celf
 CALL:mp_init

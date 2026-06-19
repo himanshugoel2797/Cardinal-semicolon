@@ -487,6 +487,14 @@ void lisp_source_location(const char *base, const char *pos, int *line, int *col
 // engine wired to a CSMUX channel; it is also unit-tested standalone.
 int lisp_repl_eval(const char *in, size_t len, lisp_value env, char *out, size_t cap);
 
+// Like lisp_repl_eval but directs all evaluation allocation at the SYSTEM heap,
+// so a persistent REPL env and its definitions survive across calls even when
+// invoked from a context with its own per-context heap (which would otherwise
+// reclaim them -- they are reachable only through `env`, not the caller's
+// registers). This is the entry the in-OS serial shell uses; `env` should be a
+// long-lived child of the global env kept reachable as a GC root.
+int lisp_repl_serve(const char *in, size_t len, lisp_value env, char *out, size_t cap);
+
 // --- Printer (print.c) ------------------------------------------------------
 
 // Write a canonical (reader-faithful) textual form of `v` into `buf` (capacity

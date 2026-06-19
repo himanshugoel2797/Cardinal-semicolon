@@ -13,6 +13,7 @@
 
 #include <stddef.h>
 
+#include "internal.h"  // lisp_gc_set_alloc_heap / lisp_gc_system_heap
 #include "lisp.h"
 
 // Bounded append: copy the NUL-terminated `s` into out[*o .. cap), advancing *o.
@@ -84,4 +85,19 @@ int lisp_repl_eval(const char *in, size_t len, lisp_value env, char *out, size_t
     if (cap > 0)
         out[o < cap ? o : cap - 1] = '\0';
     return forms;
+}
+
+int lisp_repl_serve(const char *in, size_t len, lisp_value env, char *out, size_t cap) {
+    // Evaluate with all allocation directed at the SYSTEM heap. A persistent REPL
+    // env (its `define`s) and the user's computation must NOT land in the calling
+    // context's per-context heap: that heap roots only its owner's registers, so
+    // anything reachable solely through `env` (which lives in the system heap)
+    // would be swept out from under the REPL on its next collection. Keeping it in
+    // the system heap makes it consistently rooted (grow-only once multicore --
+    // a long REPL session's bindings accumulate, the accepted cost of a live
+    // shell). The transcript is copied out by the caller after the heap restores.
+    lisp_heap_t *prev = lisp_gc_set_alloc_heap(lisp_gc_system_heap());
+    int r = lisp_repl_eval(in, len, env, out, cap);
+    lisp_gc_set_alloc_heap(prev);
+    return r;
 }
