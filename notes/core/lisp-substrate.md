@@ -405,6 +405,20 @@ behind a VM.
   semantics + the host suite/conformance are unchanged. A bytecode VM, if built,
   sits on top as a pure-perf layer; the bytecode itself stays deferred until
   profiled-necessary.
+  - **Tagged special-form dispatch** *(done; `eval.c`)* — a first, cheap step in
+    that direction that needs no IR. Form heads were classified by a linear
+    `is_form` name-compare cascade, so an ordinary application fell through *every*
+    special-form check before reaching the apply path. Each form's interned head
+    symbol now carries a small `form_id` (a byte in `lisp_named`'s padding, tagged
+    once at startup by `lisp_init_special_forms`, read-only after the boot freeze),
+    and `step_eval` dispatches via a `switch` jump table. Relies on symbols being
+    interned (a form head is always the one canonical tagged object); `SF_NONE`
+    falls through to application. ~11% on a worst-case application-bound loop that
+    is otherwise GC-bound — i.e. the dispatch slice itself got materially cheaper,
+    confirming the bigger remaining levers are allocation/GC and the assoc-list
+    env walk (lexical addressing), not dispatch. `test_dispatch.c` differentially
+    checks the id classification against a name oracle and covers the
+    form-name-as-variable edge (special only in head position).
 - **Cooperative scheduler over contexts** *(done — "K2", host-first; `sched.c`)*.
   A `lisp_sched_t` round-robin scheduler runs contexts as green-thread
   "processes", each resumed for a reduction slice and preempted at a safe point —
