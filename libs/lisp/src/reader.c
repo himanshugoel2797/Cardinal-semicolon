@@ -9,11 +9,27 @@
 // shorthand '. Commas are whitespace and ; runs to end-of-line. There is no nil.
 // Vectors #(...) arrive with the persistent data structures in Phase 2; for now
 // they are reported as errors rather than silently mis-parsed.
+//
+// Error LOCATION. The reader threads its position through a small `reader`
+// struct so that on a parse error it reports WHERE, not just what: lisp_read
+// leaves `*cursor` at the offending byte (for an unterminated list or string,
+// at the '(' / '"' that was never closed -- the useful place to point), and a
+// caller turns that into a line:column with lisp_source_location. This is what
+// makes the interactive REPL's diagnostics legible.
 
 #include <stdint.h>
 #include <string.h>
 
 #include "lisp.h"
+
+// Threaded reader state: the live cursor, the buffer end, and an optional
+// override for the error location (so an unterminated list can point back at its
+// opening paren rather than at end-of-input where the cursor stopped).
+typedef struct {
+    const char *cur;
+    const char *end;
+    const char *errpos;  // explicit error location, or NULL => use cur
+} reader;
 
 static bool is_ws(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
@@ -26,22 +42,42 @@ static bool is_delim(char c) {
            c == '}' || c == '"' || c == ';' || c == '\'' || c == '`' || c == ',';
 }
 
-static void skip_ws(const char **cur, const char *end) {
-    const char *c = *cur;
-    while (c < end) {
+static void skip_ws(reader *r) {
+    const char *c = r->cur;
+    while (c < r->end) {
         if (is_ws(*c)) {
             c++;
         } else if (*c == ';') {
-            while (c < end && *c != '\n')
+            while (c < r->end && *c != '\n')
                 c++;
         } else {
             break;
         }
     }
-    *cur = c;
+    r->cur = c;
 }
 
-static lisp_value fail(const char **err, const char *msg) {
+// Fail at the current cursor: report `msg` and let lisp_read surface r->cur.
+static lisp_value rfail(reader *r, const char **err, const char *msg) {
+    (void)r;
+    if (err != NULL)
+        *err = msg;
+    return LISP_UNDEF;
+}
+
+// Fail, pinning the reported location to `pos` (e.g. the opening '(' of an
+// unterminated list) rather than wherever the cursor happened to stop.
+static lisp_value rfail_at(reader *r, const char *pos, const char **err,
+                           const char *msg) {
+    r->errpos = pos;
+    if (err != NULL)
+        *err = msg;
+    return LISP_UNDEF;
+}
+
+// A positionless error (post-parse semantic checks that have no single byte to
+// blame, e.g. a malformed vector literal); the caller's cursor is left as-is.
+static lisp_value serr(const char **err, const char *msg) {
     if (err != NULL)
         *err = msg;
     return LISP_UNDEF;
@@ -143,15 +179,16 @@ static bool parse_float(const char *tok, size_t len, lisp_value *out) {
     return *out != LISP_UNDEF;
 }
 
-static lisp_value read_string(const char **cur, const char *end, const char **err) {
-    const char *c = *cur + 1;  // skip opening quote
+static lisp_value read_string(reader *r, const char **err) {
+    const char *open = r->cur;  // the opening quote -- where to point if unclosed
+    const char *c = r->cur + 1;
     char buf[1024];
     size_t n = 0;
-    while (c < end && *c != '"') {
+    while (c < r->end && *c != '"') {
         char ch = *c++;
         if (ch == '\\') {
-            if (c >= end)
-                return fail(err, "unterminated escape in string");
+            if (c >= r->end)
+                return rfail_at(r, open, err, "unterminated escape in string");
             char e = *c++;
             switch (e) {
                 case 'n': ch = '\n'; break;
@@ -164,26 +201,26 @@ static lisp_value read_string(const char **cur, const char *end, const char **er
             }
         }
         if (n >= sizeof(buf))
-            return fail(err, "string literal too long");
+            return rfail_at(r, open, err, "string literal too long");
         buf[n++] = ch;
     }
-    if (c >= end)
-        return fail(err, "unterminated string");
+    if (c >= r->end)
+        return rfail_at(r, open, err, "unterminated string (unclosed '\"')");
     c++;  // skip closing quote
-    *cur = c;
+    r->cur = c;
     return lisp_make_string(buf, n);
 }
 
-static lisp_value read_atom(const char **cur, const char *end, const char **err) {
-    const char *start = *cur;
+static lisp_value read_atom(reader *r, const char **err) {
+    const char *start = r->cur;
     const char *c = start;
-    while (c < end && !is_delim(*c))
+    while (c < r->end && !is_delim(*c))
         c++;
     size_t len = (size_t)(c - start);
-    *cur = c;
+    r->cur = c;
 
     if (len == 0)
-        return fail(err, "empty token");
+        return rfail(r, err, "empty token");
 
     // Booleans, the empty list, and chars are #-syntax (handled in read_hash);
     // there is no nil. A leading ':' is just a symbol constituent in Scheme, so
@@ -197,7 +234,8 @@ static lisp_value read_atom(const char **cur, const char *end, const char **err)
     return lisp_make_symbol(start, len);
 }
 
-static lisp_value read_list(const char **cur, const char *end, const char **err);
+static lisp_value read_list(reader *r, const char **err);
+static lisp_value read_datum(reader *r, const char **err);
 
 // Convert a proper list to an immutable vector (for #(...) literals). A dotted
 // tail (#(1 . 2)) is a read error, not a silent truncation.
@@ -207,49 +245,54 @@ static lisp_value list_to_vector(lisp_value lst, const char **err) {
     for (; lisp_is_pair(p); p = lisp_cdr(p))
         n++;
     if (!lisp_is_empty(p))
-        return fail(err, "vector literal must be a proper list");
+        return serr(err, "vector literal must be a proper list");
     lisp_value v = lisp_make_vector(n, LISP_UNDEF);
     if (v == LISP_UNDEF)
-        return fail(err, "out of memory");
+        return serr(err, "out of memory");
     size_t i = 0;
-    for (lisp_value p = lst; lisp_is_pair(p); p = lisp_cdr(p))
-        lisp_vector_set_init(v, i++, lisp_car(p));
+    for (lisp_value q = lst; lisp_is_pair(q); q = lisp_cdr(q))
+        lisp_vector_set_init(v, i++, lisp_car(q));
     return v;
 }
 
-// Parse #-prefixed syntax: #t/#true, #f/#false, #\<char> literals, and #(...)
-// vectors.
-static lisp_value read_hash(const char **cur, const char *end, const char **err) {
-    const char *c = *cur + 1;  // skip '#'
-    if (c >= end)
-        return fail(err, "dangling # syntax");
+// Parse #-prefixed syntax: #t/#true, #f/#false, #\<char> literals, #(...)
+// vectors, and #x/#b radix integers.
+static lisp_value read_hash(reader *r, const char **err) {
+    const char *hash = r->cur;  // the '#'
+    const char *c = r->cur + 1;
+    if (c >= r->end) {
+        r->cur = c;
+        return rfail_at(r, hash, err, "dangling '#' (nothing follows)");
+    }
     if (*c == '\\') {
         // Character literal. Phase 0: a single character after #\ (named chars
         // like #\newline are a later phase). One must be present.
-        if (c + 1 >= end)
-            return fail(err, "dangling character literal");
+        if (c + 1 >= r->end) {
+            r->cur = c + 1;
+            return rfail_at(r, hash, err, "dangling character literal after '#\\'");
+        }
         uint32_t cp = (uint8_t)c[1];
-        *cur = c + 2;
+        r->cur = c + 2;
         return lisp_char(cp);
     }
     if (*c == '(') {  // #(...) vector literal
-        lisp_value lst = read_list(&c, end, err);
+        r->cur = c;  // point read_list at the '('
+        lisp_value lst = read_list(r, err);
         if (lst == LISP_UNDEF)
             return LISP_UNDEF;
-        *cur = c;
         return list_to_vector(lst, err);
     }
     // Boolean token: #t / #true / #f / #false.
     const char *start = c;
-    while (c < end && !is_delim(*c))
+    while (c < r->end && !is_delim(*c))
         c++;
     size_t len = (size_t)(c - start);
     if ((len == 1 && start[0] == 't') || (len == 4 && memcmp(start, "true", 4) == 0)) {
-        *cur = c;
+        r->cur = c;
         return LISP_TRUE;
     }
     if ((len == 1 && start[0] == 'f') || (len == 5 && memcmp(start, "false", 5) == 0)) {
-        *cur = c;
+        r->cur = c;
         return LISP_FALSE;
     }
     // Radix integer literals: #x<hex> and #b<binary> -- the natural notation for
@@ -261,70 +304,65 @@ static lisp_value read_hash(const char **cur, const char *end, const char **err)
             if (*p >= '0' && *p <= '9') d = *p - '0';
             else if (*p >= 'a' && *p <= 'f') d = *p - 'a' + 10;
             else if (*p >= 'A' && *p <= 'F') d = *p - 'A' + 10;
-            else return fail(err, "bad hex literal");
+            else { r->cur = p; return rfail(r, err, "bad digit in #x hex literal"); }
             val = val * 16 + d;
         }
-        *cur = c;
+        r->cur = c;
         return lisp_fixnum(val);
     }
     if (len >= 2 && (start[0] == 'b' || start[0] == 'B')) {
         int64_t val = 0;
         for (const char *p = start + 1; p < c; p++) {
-            if (*p != '0' && *p != '1')
-                return fail(err, "bad binary literal");
+            if (*p != '0' && *p != '1') {
+                r->cur = p;
+                return rfail(r, err, "bad digit in #b binary literal");
+            }
             val = val * 2 + (*p - '0');
         }
-        *cur = c;
+        r->cur = c;
         return lisp_fixnum(val);
     }
-    return fail(err, "unsupported # syntax");
+    r->cur = start;
+    return rfail_at(r, hash, err, "unsupported '#' syntax");
 }
 
-// Forward decl for recursion.
-lisp_value lisp_read(const char **cursor, const char *end, const char **err);
-
-static lisp_value read_list(const char **cur, const char *end, const char **err) {
-    const char *c = *cur + 1;  // skip '('
-    // Build the list, then we own a head pointer. Append by tracking the tail.
+static lisp_value read_list(reader *r, const char **err) {
+    const char *open = r->cur;  // the '(' -- where to point if never closed
+    r->cur += 1;                // skip '('
+    // Build the list, tracking the tail to append in O(1).
     lisp_value head = LISP_EMPTY;
     lisp_value tail = LISP_EMPTY;
     for (;;) {
-        skip_ws(&c, end);
-        if (c >= end)
-            return fail(err, "unterminated list");
-        if (*c == ')') {
-            c++;
-            *cur = c;
+        skip_ws(r);
+        if (r->cur >= r->end)
+            return rfail_at(r, open, err, "unterminated list (unclosed '(')");
+        if (*r->cur == ')') {
+            r->cur++;
             return head;
         }
         // Dotted tail: a lone '.' (followed by a delimiter) sets the final cdr.
-        if (*c == '.' && (c + 1 >= end || is_delim(c[1]))) {
+        if (*r->cur == '.' && (r->cur + 1 >= r->end || is_delim(r->cur[1]))) {
             if (head == LISP_EMPTY)
-                return fail(err, "nothing before . in list");
-            c++;  // skip the dot
-            const char *sub = c;
-            lisp_value tailv = lisp_read(&sub, end, err);
+                return rfail(r, err, "nothing before '.' in list");
+            r->cur++;  // skip the dot
+            lisp_value tailv = read_datum(r, err);
             if (tailv == LISP_UNDEF)
                 return LISP_UNDEF;
             if (tailv == LISP_EOF)
-                return fail(err, "missing element after . in list");
-            c = sub;
+                return rfail_at(r, open, err, "missing element after '.' in list");
             ((lisp_pair *)lisp_obj(tail))->cdr = tailv;
-            skip_ws(&c, end);
-            if (c >= end || *c != ')')
-                return fail(err, "expected ) after dotted tail");
-            c++;
-            *cur = c;
+            skip_ws(r);
+            if (r->cur >= r->end || *r->cur != ')')
+                return rfail(r, err, "expected ')' after dotted tail");
+            r->cur++;
             return head;
         }
-        const char *sub = c;
-        lisp_value elem = lisp_read(&sub, end, err);
+        lisp_value elem = read_datum(r, err);
         if (elem == LISP_UNDEF)
-            return LISP_UNDEF;
-        c = sub;
+            return LISP_UNDEF;  // r->cur / errpos already mark the inner error
         lisp_value cell = lisp_cons(elem, LISP_EMPTY);
         if (cell == LISP_UNDEF)
-            return fail(err, "out of memory");
+            return rfail(r, err, "out of memory");
         if (head == LISP_EMPTY)
             head = cell;
         else
@@ -335,95 +373,96 @@ static lisp_value read_list(const char **cur, const char *end, const char **err)
 
 // Read the next datum and wrap it as (name datum). Shared by the quote-family
 // reader macros: ' ` , ,@
-static lisp_value read_prefixed(const char *name, size_t nlen, const char **cur,
-                                const char *end, const char **err, const char *empty_msg) {
-    lisp_value datum = lisp_read(cur, end, err);
+static lisp_value read_prefixed(reader *r, const char *name, size_t nlen,
+                                const char **err, const char *empty_msg) {
+    lisp_value datum = read_datum(r, err);
     if (datum == LISP_UNDEF)
         return LISP_UNDEF;
     if (datum == LISP_EOF)
-        return fail(err, empty_msg);
+        return rfail(r, err, empty_msg);
     lisp_value sym = lisp_make_symbol(name, nlen);
     lisp_value rest = lisp_cons(datum, LISP_EMPTY);
     if (sym == LISP_UNDEF || rest == LISP_UNDEF)
-        return fail(err, "out of memory");
+        return rfail(r, err, "out of memory");
     lisp_value form = lisp_cons(sym, rest);
     if (form == LISP_UNDEF)
-        return fail(err, "out of memory");
+        return rfail(r, err, "out of memory");
     return form;
+}
+
+// Read one datum at the cursor. Returns LISP_EOF at end of input, LISP_UNDEF on
+// a parse error (with *err set and r->cur / r->errpos at the offending byte).
+static lisp_value read_datum(reader *r, const char **err) {
+    skip_ws(r);
+    if (r->cur >= r->end)
+        return LISP_EOF;
+
+    char ch = *r->cur;
+    switch (ch) {
+        case '(':
+            return read_list(r, err);
+        case ')':
+            return rfail(r, err, "unexpected ')'");  // cursor sits on the ')'
+        case '"':
+            return read_string(r, err);
+        case '\'':
+            r->cur++;  // skip '
+            return read_prefixed(r, "quote", 5, err, "nothing to quote after \"'\"");
+        case '`':
+            r->cur++;  // skip `
+            return read_prefixed(r, "quasiquote", 10, err,
+                                 "nothing to quasiquote after '`'");
+        case ',': {
+            r->cur++;  // skip ,
+            const char *name = "unquote";
+            size_t nlen = 7;
+            const char *empty = "nothing to unquote after ','";
+            if (r->cur < r->end && *r->cur == '@') {  // ,@
+                r->cur++;
+                name = "unquote-splicing";
+                nlen = 16;
+                empty = "nothing to unquote-splice after ',@'";
+            }
+            return read_prefixed(r, name, nlen, err, empty);
+        }
+        case '#':
+            return read_hash(r, err);
+        case '[':
+        case ']':
+        case '{':
+        case '}':
+            return rfail(r, err, "'[' ']' '{' '}' are not supported (use parens)");
+        default:
+            return read_atom(r, err);
+    }
 }
 
 lisp_value lisp_read(const char **cursor, const char *end, const char **err) {
     if (err != NULL)
         *err = NULL;
-    const char *c = *cursor;
-    skip_ws(&c, end);
-    if (c >= end) {
-        *cursor = c;
-        return LISP_EOF;
-    }
+    reader r = {*cursor, end, NULL};
+    lisp_value v = read_datum(&r, err);
+    // On a parse error, leave the cursor at the offending byte (the explicit
+    // errpos override, if any, else wherever reading stopped) so a caller can
+    // pinpoint it; otherwise advance past the datum just read.
+    *cursor = (v == LISP_UNDEF && r.errpos != NULL) ? r.errpos : r.cur;
+    return v;
+}
 
-    char ch = *c;
-    switch (ch) {
-        case '(': {
-            lisp_value v = read_list(&c, end, err);
-            *cursor = c;
-            return v;
-        }
-        case ')':
-            return fail(err, "unexpected )");
-        case '"': {
-            lisp_value v = read_string(&c, end, err);
-            *cursor = c;
-            return v;
-        }
-        case '\'': {
-            c++;  // skip '
-            lisp_value v = read_prefixed("quote", 5, &c, end, err, "nothing to quote");
-            if (v == LISP_UNDEF)
-                return LISP_UNDEF;
-            *cursor = c;
-            return v;
-        }
-        case '`': {
-            c++;  // skip `
-            lisp_value v =
-                read_prefixed("quasiquote", 10, &c, end, err, "nothing to quasiquote");
-            if (v == LISP_UNDEF)
-                return LISP_UNDEF;
-            *cursor = c;
-            return v;
-        }
-        case ',': {
-            c++;  // skip ,
-            const char *name = "unquote";
-            size_t nlen = 7;
-            const char *empty = "nothing to unquote";
-            if (c < end && *c == '@') {  // ,@
+void lisp_source_location(const char *base, const char *pos, int *line, int *col) {
+    int l = 1, c = 1;
+    // pos <= base (or either NULL) => the loop body never runs, leaving 1,1.
+    if (base != NULL && pos != NULL)
+        for (const char *p = base; p < pos; p++) {
+            if (*p == '\n') {
+                l++;
+                c = 1;
+            } else {
                 c++;
-                name = "unquote-splicing";
-                nlen = 16;
-                empty = "nothing to unquote-splice";
             }
-            lisp_value v = read_prefixed(name, nlen, &c, end, err, empty);
-            if (v == LISP_UNDEF)
-                return LISP_UNDEF;
-            *cursor = c;
-            return v;
         }
-        case '#': {
-            lisp_value v = read_hash(&c, end, err);
-            *cursor = c;
-            return v;
-        }
-        case '[':
-        case ']':
-        case '{':
-        case '}':
-            return fail(err, "[] / {} not supported");
-        default: {
-            lisp_value v = read_atom(&c, end, err);
-            *cursor = c;
-            return v;
-        }
-    }
+    if (line != NULL)
+        *line = l;
+    if (col != NULL)
+        *col = c;
 }
