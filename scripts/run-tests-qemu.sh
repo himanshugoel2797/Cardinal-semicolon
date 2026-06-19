@@ -70,15 +70,19 @@ cat "$LOG"
 echo "----------------------"
 echo "[run-tests] qemu exit code: $qemu_code (33=pass via isa-debug-exit, 35=fail, 124=timeout)"
 
-if grep -q "\[SysTest\] ALL TESTS PASSED" "$LOG" && ! grep -q "\[SysTest\] TESTS FAILED" "$LOG"; then
+# Under interpreter-as-scheduler, SysLisp's single-core self-tests are the in-OS
+# suite (SysTest's native-task framework cannot run -- there is no native
+# scheduler). In "cardinal.test" mode SysLisp runs them and exits via
+# isa-debug-exit, printing one of these sentinels.
+if grep -q "\[SysLisp\] ALL TESTS PASSED" "$LOG" && ! grep -q "\[SysLisp\] SELF-TEST FAILED" "$LOG"; then
   echo "[run-tests] RESULT: PASS"
   exit 0
 fi
 
-if grep -q "\[SysTest\] TESTS FAILED" "$LOG"; then
-  echo "[run-tests] RESULT: FAIL (one or more tests failed)" >&2
+if grep -q "\[SysLisp\] SELF-TEST FAILED" "$LOG"; then
+  echo "[run-tests] RESULT: FAIL (one or more self-tests failed)" >&2
   exit 1
 fi
 
-echo "[run-tests] RESULT: FAIL (no SysTest completion sentinel found -- boot hang/panic?)" >&2
+echo "[run-tests] RESULT: FAIL (no SysLisp completion sentinel found -- boot hang/panic?)" >&2
 exit 1

@@ -1023,6 +1023,11 @@ int lisp_scheduler_enter() {
     // default: a normal boot stays raw-COM1 (the CI smoke test reads it directly).
     CardinalBootInfo *bi = GetBootInfo();
     g_repl_enabled = (bi != NULL) && (strstr(bi->Cmdline, "cardinal.repl") != NULL);
+    // "cardinal.test": the in-OS test gate. SysLisp's single-core self-tests are
+    // the meaningful in-OS suite under interpreter-as-scheduler (SysTest's native-
+    // task framework can't run -- there is no native scheduler), so in test mode
+    // we run them and exit the machine rather than booting on into the scheduler.
+    int test_mode = (bi != NULL) && (strstr(bi->Cmdline, "cardinal.test") != NULL);
 
     print_str("\r\n[SysLisp] interpreter-as-scheduler, multi-core bring-up\r\n");
 
@@ -1081,6 +1086,16 @@ int lisp_scheduler_enter() {
     // collector still active (the BSP is the only core building shared state).
     run_self_test(g_env);
     run_isr_demo(g_env);
+
+    // Test gate: in "cardinal.test" mode, exit the machine on the self-test
+    // verdict via QEMU's isa-debug-exit (0xf4: pass=0x10 -> exit 33, fail=0x11 ->
+    // exit 35, matching SysTest's encoding), instead of booting on into the
+    // scheduler. run-tests-qemu.sh greps "[SysLisp] ALL TESTS PASSED".
+    if (test_mode) {
+        outb(0xf4, g_fail == 0 ? 0x10 : 0x11);
+        for (;;)
+            __asm__ volatile("cli; hlt");  // if isa-debug-exit is absent, just stop
+    }
 
     // Go multi-core: freeze the (now fully-built) shared system heap -- its
     // conservative collector can't see other cores' stacks -- then release the
