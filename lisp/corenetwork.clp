@@ -102,6 +102,9 @@
               (spa    (read-ip  frame 28))
               (tpa    (read-ip  frame 38)))
           (let ((cache2 (cache-put cache spa sha)))   ; learn sender regardless
+            (if (= oper 2)                            ; a reply we solicited / observed
+                (begin (display "[corenetwork] arp learned ") (display spa)
+                       (display " -> ") (display sha) (newline)))
             (if (and (= oper 1) (equal? tpa ip) mac nic-tx)
                 (begin
                   (eth-tx nic-tx mac sha ETH-ARP

@@ -16,7 +16,8 @@
 
 (define-module init
   (export system-init start-repl)
-  (import coreinput coreaudio corepower corestorage coredisplay ps2 virtio-net)
+  (import coreinput coreaudio corepower corestorage coredisplay corenetwork
+          ps2 virtio-net)
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -42,7 +43,15 @@
     (start-power-service)
     (start-storage-service)
     (start-display-service)
-    (virtio-net-init)             ; brings up the NIC (no-op if absent); spawns its own RX context
+    ;; Bring up the network stack, then the NIC, which registers itself with the
+    ;; stack and forwards frames to it. Prime the ARP cache with a who-has for the
+    ;; slirp gateway -- the reply exercises NIC RX -> service demux -> ARP cache
+    ;; end to end (the live counterpart to the in-OS network self-test). The
+    ;; register-nic the NIC sends sits ahead of this arp-request in the service's
+    ;; mailbox, so the MAC/TX are set before the request is built.
+    (let ((net (start-network-service (list 10 0 2 15))))   ; slirp guest address
+      (virtio-net-init net)
+      (send net (list 'arp-request (list 10 0 2 2))))       ; who-has the gateway
     'system-up)
 
   ;; The interactive serial REPL (started only under cardinal.repl). A root context
