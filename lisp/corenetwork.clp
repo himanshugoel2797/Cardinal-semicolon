@@ -95,7 +95,14 @@
   ;; A received ARP (frame; ethernet body at offset 14). Learn the sender, and if
   ;; it is a who-has for our IP, reply. Returns the new arp-cache.
   (define (handle-arp ip mac nic-tx cache frame len)
-    (if (< len 42)
+    ;; Only ethernet/IPv4 ARP with 6-byte MACs and 4-byte IPs (as the C arp_rx
+    ;; required): a non-matching htype/ptype/hlen/plen would otherwise be read
+    ;; with the wrong fixed offsets and poison the cache.
+    (if (or (< len 42)
+            (not (= (get-be16 frame 14) #x0001))   ; htype = ethernet
+            (not (= (get-be16 frame 16) #x0800))   ; ptype = IPv4
+            (not (= (u8 frame 18) 6))              ; hlen
+            (not (= (u8 frame 19) 4)))             ; plen
         cache
         (let ((oper   (get-be16 frame 20))
               (sha    (read-mac frame 22))
@@ -164,9 +171,14 @@
                 (proto (u8 frame (+ o 9)))
                 (src-ip (read-ip frame (+ o 12)))
                 (dst-ip (read-ip frame (+ o 16))))
-            ;; Drop unless addressed to us with a valid header checksum (the
-            ;; checksum over a good header, including its own field, folds to 0).
-            (if (or (not (equal? dst-ip ip)) (not (= 0 (csum frame o ihl))))
+            ;; Drop unless: ihl is sane and the whole header lies within the bytes
+            ;; we actually received (a lying ihl would otherwise drive csum past
+            ;; the frame -> bytes-u8-ref error -> the service context dies), it is
+            ;; addressed to us, and the header checksum is valid (a good header,
+            ;; including its own field, folds to 0). The ihl/len guards precede the
+            ;; csum read because `or` short-circuits.
+            (if (or (< ihl 20) (> (+ o ihl) len)
+                    (not (equal? dst-ip ip)) (not (= 0 (csum frame o ihl))))
                 'ignore
                 (let ((l4 (+ o ihl)))       ; transport header offset
                   (cond
@@ -181,7 +193,9 @@
   ;; we take from the cache (learned when it ARPed us / we ARPed it).
   (define (handle-icmp ip mac nic-tx cache src-ip frame l4 len)
     (let ((ilen (- len l4)))
-      (if (or (< ilen 8) (not (= (u8 frame l4) 8)))   ; only echo-request
+      ;; only a well-formed echo-request with a valid checksum (as icmp.c required)
+      (if (or (< ilen 8) (not (= (u8 frame l4) 8))
+              (not (= 0 (csum frame l4 ilen))))
           'ignore
           (let ((dst-mac (cache-get cache src-ip)))
             (if (not dst-mac)
@@ -206,13 +220,17 @@
                 (sport (get-be16 frame (+ l4 0)))
                 (seglen (get-be16 frame (+ l4 4)))
                 (ucsum (get-be16 frame (+ l4 6))))
-            ;; A non-zero checksum must verify (pseudo-header + segment fold to 0);
-            ;; 0 means "no checksum" (RFC 768). Clamp the summed length to what we
-            ;; actually received so a lying length can't over-read.
+            ;; Clamp the summed length to what we actually received so a lying
+            ;; length can't over-read; a too-SHORT length (< the 8-byte header)
+            ;; is malformed and dropped -- otherwise plen would go negative and
+            ;; (make-bytes <neg>) would error out and kill the service context
+            ;; (the C's udp_seg_len rejected seg_len < sizeof(udp_t)). A non-zero
+            ;; checksum must verify; 0 means "no checksum" (RFC 768).
             (let ((seg (if (> seglen ulen) ulen seglen)))
-              (if (and (not (= ucsum 0))
-                       (not (= 0 (csum-seeded frame l4 seg
-                                              (udp-pseudo-sum src-ip dst-ip seglen)))))
+              (if (or (< seg 8)
+                      (and (not (= ucsum 0))
+                           (not (= 0 (csum-seeded frame l4 seg
+                                                  (udp-pseudo-sum src-ip dst-ip seglen))))))
                   'ignore
                   (let ((h (assq dport binds)))
                     (if (not h)
