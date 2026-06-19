@@ -95,8 +95,8 @@ void csmux_raw_write(const void *buf, uint32_t len);
 int csmux_recv_byte_pump(void);
 
 // Drain up to `cap` already-received bytes on `chan` into `buf` (pumps first).
-// Non-blocking; returns the number of bytes copied (0 if none). Only CH_CTRL and
-// CH_REPL have receive rings.
+// Non-blocking; returns the number of bytes copied (0 if none). Only CH_REPL has
+// a receive ring; CH_LOG and CH_CTRL are output-only (always return 0).
 int csmux_chan_read(uint8_t chan, void *buf, uint32_t cap);
 
 // Number of bytes currently waiting on `chan` (pumps first), without consuming

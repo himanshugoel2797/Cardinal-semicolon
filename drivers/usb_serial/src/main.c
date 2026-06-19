@@ -196,20 +196,19 @@ static int usb_serial_probe(usb_enum_device_t *dev) {
     ftdi_ctrl(dev, FTDI_REQ_SET_MODEM_CTRL, 0x0303, 1);  // DTR+RTS on
     ftdi_ctrl(dev, FTDI_REQ_SET_BAUDRATE, 0x001A, 0);
 
-    // Harness mode (kernel cmdline "cardinal.harness"): this FTDI link is the one
-    // wire the in-OS test harness drives, so route the whole CSMUX mux over it.
-    // GDB then rides CSMUX channel 2 and SysTest's gdb_pump drives async break-in,
-    // so we register no direct GDB transport and start no pump here. This is the
-    // real-hardware path: log + control + GDB all share the single adapter.
+    // REPL mode (kernel cmdline "cardinal.repl"): this FTDI link is the one wire,
+    // so route the whole CSMUX mux over it -- the debug log rides CH_LOG and the
+    // interactive Lisp REPL rides CH_REPL over the single adapter. This is the
+    // real-hardware path (SysLisp activates CSMUX and brings up the REPL).
     CardinalBootInfo *bi = GetBootInfo();
-    if (bi != NULL && strstr(bi->Cmdline, "cardinal.harness") != NULL) {
+    if (bi != NULL && strstr(bi->Cmdline, "cardinal.repl") != NULL) {
         csmux_transport_t t = {
             .write = ftdi_write,
             .getb = ftdi_getb,
             .state = &the_ftdi,
         };
         csmux_set_transport(&t);
-        DEBUG_PRINT("[usb_serial] FTDI up; routed into CSMUX (harness mode)\r\n");
+        DEBUG_PRINT("[usb_serial] FTDI up; routed into CSMUX (REPL mode)\r\n");
         return 0;
     }
 
