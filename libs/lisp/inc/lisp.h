@@ -76,6 +76,7 @@ typedef enum {
     LISP_OBJ_FLONUM = 9,     // heap-boxed double (inexact real)
     LISP_OBJ_KONT = 10,      // a continuation frame (explicit-stack evaluator)
     LISP_OBJ_CTX = 11,       // an execution context (the CEK machine state)
+    LISP_OBJ_BYTES = 12,     // a mutable byte buffer (driver MMIO/DMA + bulk IPC)
     // reserved for later phases: MAP, BYTEVECTOR, BOX, ...
 } lisp_objtype;
 
@@ -110,6 +111,20 @@ typedef struct {
     lisp_header h;
     char data[];  // length in header aux (NOT NUL-reliant; may contain NULs)
 } lisp_string;
+
+// A mutable byte buffer: the driver substrate's MMIO/DMA region + the bulk-data
+// IPC message type. `data` points at inline storage trailing this header
+// (owned == 1, freed with the object) or at FOREIGN memory -- an MMIO mapping or
+// a DMA buffer (owned == 0, never freed by the GC; `phys` is its physical address,
+// 0 for a non-DMA region). Accessors are volatile so MMIO reads/writes are not
+// elided or reordered. Raw bytes have no Lisp children, so it is a GC leaf.
+typedef struct {
+    lisp_header h;
+    uint8_t *data;
+    size_t len;
+    uint64_t phys;
+    uint32_t owned;
+} lisp_bytes;
 
 typedef struct {
     lisp_header h;
@@ -167,6 +182,7 @@ static inline bool lisp_is_keyword(lisp_value v) { return lisp_is_objtype(v, LIS
 static inline bool lisp_is_string(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_STRING); }
 static inline bool lisp_is_vector(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_VECTOR); }
 static inline bool lisp_is_flonum(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_FLONUM); }
+static inline bool lisp_is_bytes(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_BYTES); }
 
 // A number is an exact fixnum or an inexact flonum.
 static inline bool lisp_is_number(lisp_value v) { return lisp_is_fixnum(v) || lisp_is_flonum(v); }
@@ -197,6 +213,16 @@ lisp_value lisp_vector_ref(lisp_value v, size_t i);
 void lisp_vector_set_init(lisp_value v, size_t i, lisp_value x);
 
 lisp_value lisp_make_flonum(double x);
+
+// Mutable byte buffers (driver substrate + bulk IPC). lisp_make_bytes allocates
+// `len` zeroed, GC-owned bytes. lisp_make_bytes_foreign wraps EXTERNAL storage
+// (an MMIO mapping or DMA buffer) the GC must not free; `phys` is its physical
+// address (0 if none). The kernel mints foreign buffers from mmio-map / dma-alloc.
+lisp_value lisp_make_bytes(size_t len);
+lisp_value lisp_make_bytes_foreign(void *ptr, size_t len, uint64_t phys);
+size_t lisp_bytes_len(lisp_value v);
+void *lisp_bytes_data(lisp_value v);
+uint64_t lisp_bytes_phys(lisp_value v);
 
 const char *lisp_named_name(lisp_value v);  // symbol/keyword name (NUL-terminated)
 size_t lisp_named_len(lisp_value v);

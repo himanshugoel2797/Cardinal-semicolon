@@ -1007,6 +1007,174 @@ static lisp_value prim_error(lisp_value *a, int n, const char **e) {
     return prim_err(e, "error");
 }
 
+// --- Bitwise / bitfield (driver substrate) ----------------------------------
+//
+// Operate on fixnums, which carry 62 signed bits -- enough for any u32 register
+// value and for physical addresses up to 2^62. (A full u64 with the top bits set
+// does not fit; the driver register width in practice is u32.) Results are taken
+// modulo the fixnum range.
+
+static bool all_fixnums(lisp_value *a, int n) {
+    for (int i = 0; i < n; i++)
+        if (!lisp_is_fixnum(a[i]))
+            return false;
+    return true;
+}
+
+static lisp_value prim_bitand(lisp_value *a, int n, const char **e) {
+    if (!all_fixnums(a, n))
+        return prim_err(e, "bitwise-and: expects integers");
+    int64_t acc = -1;  // identity: all ones
+    for (int i = 0; i < n; i++)
+        acc &= lisp_fixnum_val(a[i]);
+    return lisp_fixnum(acc);
+}
+
+static lisp_value prim_bitor(lisp_value *a, int n, const char **e) {
+    if (!all_fixnums(a, n))
+        return prim_err(e, "bitwise-or: expects integers");
+    int64_t acc = 0;
+    for (int i = 0; i < n; i++)
+        acc |= lisp_fixnum_val(a[i]);
+    return lisp_fixnum(acc);
+}
+
+static lisp_value prim_bitxor(lisp_value *a, int n, const char **e) {
+    if (!all_fixnums(a, n))
+        return prim_err(e, "bitwise-xor: expects integers");
+    int64_t acc = 0;
+    for (int i = 0; i < n; i++)
+        acc ^= lisp_fixnum_val(a[i]);
+    return lisp_fixnum(acc);
+}
+
+static lisp_value prim_bitnot(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]))
+        return prim_err(e, "bitwise-not: expects one integer");
+    return lisp_fixnum(~lisp_fixnum_val(a[0]));
+}
+
+// (arithmetic-shift value count): count > 0 shifts left, < 0 shifts right
+// (arithmetic, sign-preserving). Shifts of >= 64 saturate (0, or -1 for a
+// negative value shifted right).
+static lisp_value prim_ashift(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
+        return prim_err(e, "arithmetic-shift: expects (value count)");
+    int64_t v = lisp_fixnum_val(a[0]);
+    int64_t s = lisp_fixnum_val(a[1]);
+    if (s >= 0)
+        return lisp_fixnum(s >= 64 ? 0 : (v << s));
+    int64_t sh = -s;
+    return lisp_fixnum(sh >= 63 ? (v < 0 ? -1 : 0) : (v >> sh));
+}
+
+// (bit-extract value lo width): the `width` bits of `value` starting at bit `lo`,
+// right-justified. lo+width must be <= 62.
+static lisp_value prim_bit_extract(lisp_value *a, int n, const char **e) {
+    if (n != 3 || !all_fixnums(a, n))
+        return prim_err(e, "bit-extract: expects (value lo width)");
+    int64_t v = lisp_fixnum_val(a[0]);
+    int64_t lo = lisp_fixnum_val(a[1]), w = lisp_fixnum_val(a[2]);
+    if (lo < 0 || w < 0 || lo + w > 62)
+        return prim_err(e, "bit-extract: lo/width out of range");
+    uint64_t mask = (w == 0) ? 0 : ((1ull << w) - 1);
+    return lisp_fixnum((int64_t)(((uint64_t)v >> lo) & mask));
+}
+
+// (bit-insert value lo width field): `value` with its `width` bits at `lo`
+// replaced by the low `width` bits of `field`.
+static lisp_value prim_bit_insert(lisp_value *a, int n, const char **e) {
+    if (n != 4 || !all_fixnums(a, n))
+        return prim_err(e, "bit-insert: expects (value lo width field)");
+    int64_t v = lisp_fixnum_val(a[0]);
+    int64_t lo = lisp_fixnum_val(a[1]), w = lisp_fixnum_val(a[2]), f = lisp_fixnum_val(a[3]);
+    if (lo < 0 || w < 0 || lo + w > 62)
+        return prim_err(e, "bit-insert: lo/width out of range");
+    uint64_t mask = (w == 0) ? 0 : ((1ull << w) - 1);
+    uint64_t res = ((uint64_t)v & ~(mask << lo)) | (((uint64_t)f & mask) << lo);
+    return lisp_fixnum((int64_t)res);
+}
+
+// --- Mutable byte buffers (driver substrate + bulk IPC) ---------------------
+// (lisp_make_bytes / lisp_make_bytes_foreign live in value.c with the other
+// constructors, since they allocate via lisp_gc_alloc.)
+
+static lisp_bytes *as_bytes(lisp_value v) { return (lisp_bytes *)lisp_obj(v); }
+size_t lisp_bytes_len(lisp_value v) { return as_bytes(v)->len; }
+void *lisp_bytes_data(lisp_value v) { return as_bytes(v)->data; }
+uint64_t lisp_bytes_phys(lisp_value v) { return as_bytes(v)->phys; }
+
+// (make-bytes n) -> a fresh zeroed mutable buffer of n bytes.
+static lisp_value prim_make_bytes(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_fixnum(a[0]) || lisp_fixnum_val(a[0]) < 0)
+        return prim_err(e, "make-bytes expects a non-negative length");
+    lisp_value b = lisp_make_bytes((size_t)lisp_fixnum_val(a[0]));
+    if (b == LISP_UNDEF)
+        return prim_err(e, "make-bytes: out of memory");
+    return b;
+}
+
+static lisp_value prim_bytes_length(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_bytes(a[0]))
+        return prim_err(e, "bytes-length expects a byte buffer");
+    return lisp_fixnum((int64_t)as_bytes(a[0])->len);
+}
+
+// (bytes-phys b) -> the physical address of a DMA region (0 for a plain buffer).
+static lisp_value prim_bytes_phys(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_bytes(a[0]))
+        return prim_err(e, "bytes-phys expects a byte buffer");
+    return lisp_fixnum((int64_t)as_bytes(a[0])->phys);
+}
+
+// Width-checked, bounds-checked, VOLATILE little-endian access. x86 is LE, so a
+// single natural-width volatile load/store gives little-endian semantics AND the
+// single bus access MMIO requires; the offset should be width-aligned for MMIO.
+static lisp_value bytes_ref(lisp_value *a, int n, const char **e, int w) {
+    if (n != 2 || !lisp_is_bytes(a[0]) || !lisp_is_fixnum(a[1]))
+        return prim_err(e, "bytes-ref expects (bytes index)");
+    lisp_bytes *b = as_bytes(a[0]);
+    int64_t i = lisp_fixnum_val(a[1]);
+    if (i < 0 || (size_t)i + (size_t)w > b->len)
+        return prim_err(e, "bytes-ref: index out of range");
+    volatile uint8_t *p = b->data + i;
+    uint64_t v = 0;
+    switch (w) {
+        case 1: v = *(volatile uint8_t *)p; break;
+        case 2: v = *(volatile uint16_t *)p; break;
+        case 4: v = *(volatile uint32_t *)p; break;
+        default: v = *(volatile uint64_t *)p; break;
+    }
+    return lisp_fixnum((int64_t)v);
+}
+
+static lisp_value bytes_set(lisp_value *a, int n, const char **e, int w) {
+    if (n != 3 || !lisp_is_bytes(a[0]) || !lisp_is_fixnum(a[1]) || !lisp_is_fixnum(a[2]))
+        return prim_err(e, "bytes-set! expects (bytes index value)");
+    lisp_bytes *b = as_bytes(a[0]);
+    int64_t i = lisp_fixnum_val(a[1]);
+    if (i < 0 || (size_t)i + (size_t)w > b->len)
+        return prim_err(e, "bytes-set!: index out of range");
+    uint64_t v = (uint64_t)lisp_fixnum_val(a[2]);
+    volatile uint8_t *p = b->data + i;
+    switch (w) {
+        case 1: *(volatile uint8_t *)p = (uint8_t)v; break;
+        case 2: *(volatile uint16_t *)p = (uint16_t)v; break;
+        case 4: *(volatile uint32_t *)p = (uint32_t)v; break;
+        default: *(volatile uint64_t *)p = v; break;
+    }
+    return LISP_UNDEF;
+}
+
+static lisp_value prim_b_u8_ref(lisp_value *a, int n, const char **e) { return bytes_ref(a, n, e, 1); }
+static lisp_value prim_b_u16_ref(lisp_value *a, int n, const char **e) { return bytes_ref(a, n, e, 2); }
+static lisp_value prim_b_u32_ref(lisp_value *a, int n, const char **e) { return bytes_ref(a, n, e, 4); }
+static lisp_value prim_b_u64_ref(lisp_value *a, int n, const char **e) { return bytes_ref(a, n, e, 8); }
+static lisp_value prim_b_u8_set(lisp_value *a, int n, const char **e) { return bytes_set(a, n, e, 1); }
+static lisp_value prim_b_u16_set(lisp_value *a, int n, const char **e) { return bytes_set(a, n, e, 2); }
+static lisp_value prim_b_u32_set(lisp_value *a, int n, const char **e) { return bytes_set(a, n, e, 4); }
+static lisp_value prim_b_u64_set(lisp_value *a, int n, const char **e) { return bytes_set(a, n, e, 8); }
+
 // --- Installation -----------------------------------------------------------
 
 static void def(lisp_value env, const char *name, lisp_primitive_fn fn) {
@@ -1023,6 +1191,24 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "modulo", prim_mod);
     def(env, "remainder", prim_remainder);
     def(env, "quotient", prim_quotient);
+    def(env, "bitwise-and", prim_bitand);
+    def(env, "bitwise-or", prim_bitor);
+    def(env, "bitwise-xor", prim_bitxor);
+    def(env, "bitwise-not", prim_bitnot);
+    def(env, "arithmetic-shift", prim_ashift);
+    def(env, "bit-extract", prim_bit_extract);
+    def(env, "bit-insert", prim_bit_insert);
+    def(env, "make-bytes", prim_make_bytes);
+    def(env, "bytes-length", prim_bytes_length);
+    def(env, "bytes-phys", prim_bytes_phys);
+    def(env, "bytes-u8-ref", prim_b_u8_ref);
+    def(env, "bytes-u16-ref", prim_b_u16_ref);
+    def(env, "bytes-u32-ref", prim_b_u32_ref);
+    def(env, "bytes-u64-ref", prim_b_u64_ref);
+    def(env, "bytes-u8-set!", prim_b_u8_set);
+    def(env, "bytes-u16-set!", prim_b_u16_set);
+    def(env, "bytes-u32-set!", prim_b_u32_set);
+    def(env, "bytes-u64-set!", prim_b_u64_set);
     def(env, "=", prim_numeq);
     def(env, "<", prim_lt);
     def(env, ">", prim_gt);
