@@ -416,6 +416,29 @@ typedef bool (*lisp_module_loader_fn)(const char *name, const char **src,
                                       size_t *len, void *ctx);
 void lisp_set_module_loader(lisp_module_loader_fn fn, void *ctx);
 
+// --- Built-in (C-provided) modules ------------------------------------------
+
+// One export of a built-in module: a Lisp name and the C primitive bound to it.
+typedef struct {
+    const char *name;
+    lisp_primitive_fn fn;
+} lisp_builtin_export;
+
+// Register a built-in module: a subsequent (import NAME) binds these primitives
+// into the importer's environment WITHOUT consulting the source loader (a
+// built-in is just a pre-populated registry entry). This is how the embedder
+// exposes capability-bearing C primitives -- port I/O, MMIO, PCI, IRQ -- as
+// NAMED, importable modules rather than ambient globals: a context can only name
+// a primitive whose module it imported, so withholding the import is withholding
+// the authority (the W7-style lexical capability model; see
+// notes/core/lisp-substrate.md). `env` may be any environment in the target
+// global env's chain. Returns 0 on success, non-zero on out-of-memory. Like all
+// module-registry mutation it must run single-core, before the system heap is
+// frozen by lisp_gc_set_multicore.
+int lisp_register_builtin_module(lisp_value env, const char *name,
+                                 const lisp_builtin_export *exports,
+                                 size_t count);
+
 // --- Reader (reader.c) ------------------------------------------------------
 
 // Parse one datum from `*cursor`, advancing it past the consumed text. Returns

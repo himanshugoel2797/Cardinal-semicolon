@@ -568,10 +568,32 @@ behind a VM.
   same rule top-level `load_clp` already follows. A `%loading` sentinel detects
   circular imports; a load that fails partway tombstones its registry entry so a
   retry reports the real error. `test_modules.c` covers the semantics on the
-  host (20/20); in the OS, `virtio_net.clp` is the first multi-file program —
+  host (24/24, incl. built-in modules below); in the OS, `virtio-net.clp` is the
+  first multi-file program —
   it pulls its generic helpers (`nth`, the mutable word `cell`) from a
   `driver-util` **library** via `(import driver-util)`, and still completes the
   ARP round-trip end-to-end.
+- **Built-in modules → lexical capabilities (W7), step 1** *(done; `module.c`,
+  `lisp_register_builtin_module`)*. The capability-bearing C primitives — port
+  I/O, MMIO/DMA, PCI, IRQ — used to be dumped into the global env as ambient
+  globals, so *any* context could `(mmio-map any-phys …)`. They are now grouped
+  into named **built-in modules** — `sys-io`, `sys-mmio`, `sys-pci`, `sys-irq` —
+  each just a pre-populated `%modules` registry entry (an exports alist of C
+  primitives), so `(import sys-mmio)` resolves from the registry without touching
+  the source loader. A built-in module imports and binds exactly like a source
+  module; the embedder registers them during single-core boot. The two Lisp
+  drivers became `define-module`s that import only what they use (`ps2` →
+  `sys-io sys-irq`; `virtio-net` → `sys-mmio sys-pci driver-util`), so each raw
+  primitive is now **private to the driver module that imported it** — a context
+  that imports none of them cannot even *name* `mmio-map`/`out-u8`/`pci-find`.
+  This is the first half of the W7 model (lexical scope = capability list): the
+  authorities are no longer ambient. The second half — gating *who* may import
+  each `sys-*` module (today any code can), and moving the boot policy (which
+  driver is spawned with which grants) out of C and into a single privileged
+  `init.clp` — is the next step. `test_modules.c` covers the mechanism on the
+  host (registration + use, isolation of an unimported prim, one-way privacy of a
+  wrapping module); the OS self-test reaches `dma-alloc` only through an
+  `(import sys-mmio)` module, proving the path end-to-end at boot.
 - **Macros + call/cc — implemented then CUT** (see Scope above). Not on the
   roadmap unless a concrete need (driver/IPC DSL; coroutines) brings them back.
 - **Next — Kernelization.** Wrap as a signed `Sys*`/`Core*` module against

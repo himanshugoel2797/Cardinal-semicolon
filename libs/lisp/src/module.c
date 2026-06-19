@@ -375,3 +375,40 @@ lisp_value lisp_module_import(lisp_value form, lisp_value env, const char **err)
     }
     return LISP_UNDEF;  // unspecified
 }
+
+// --- built-in (C-provided) modules ------------------------------------------
+
+// Register a module whose exports are C primitives, by pre-populating the same
+// registry that source modules land in. A later (import NAME) finds it there
+// (ensure_loaded returns the record without touching the loader) and binds the
+// primitives like any other module's exports. This is the embedder's hook for
+// exposing capability-bearing primitives (MMIO/PCI/port-I/O/IRQ) as named
+// modules instead of ambient globals -- see lisp.h. The bindings live wherever
+// the current allocation heap points; the embedder calls this during single-core
+// boot, so they land in the (soon-frozen) permanent system heap.
+int lisp_register_builtin_module(lisp_value env, const char *name,
+                                 const lisp_builtin_export *exports,
+                                 size_t count) {
+    lisp_value genv = global_env(env);
+    lisp_value nm = lisp_make_symbol(name, strlen(name));
+    if (nm == LISP_UNDEF)
+        return 1;
+    // Build the exports assoc list ((sym . prim) ...) the importer machinery
+    // already knows how to bind.
+    lisp_value alist = LISP_EMPTY;
+    for (size_t i = 0; i < count; i++) {
+        lisp_value sym = lisp_make_symbol(exports[i].name, strlen(exports[i].name));
+        lisp_value prim = lisp_make_primitive(exports[i].fn, exports[i].name);
+        if (sym == LISP_UNDEF || prim == LISP_UNDEF)
+            return 1;
+        lisp_value cell = lisp_cons(sym, prim);
+        if (cell == LISP_UNDEF)
+            return 1;
+        lisp_value na = lisp_cons(cell, alist);
+        if (na == LISP_UNDEF)
+            return 1;
+        alist = na;
+    }
+    const char *err = NULL;
+    return reg_set(genv, nm, alist, &err) ? 0 : 1;
+}

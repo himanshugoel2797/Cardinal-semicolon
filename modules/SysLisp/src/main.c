@@ -371,7 +371,7 @@ static lisp_value prim_net_count(lisp_value *a, int n, const char **e) {
 // closes the check-then-park race against the same-core MSI. LOAD-BEARING: the
 // MSI is routed to CPU 0 (interrupt_msi_register_addr(0)) and the driver context
 // runs on the BSP, so cli() here masks it. If the MSI were ever re-routed to
-// another core, the wake could be lost in this window (same caveat as %ps2-wait);
+// another core, the wake could be lost in this window (same caveat as irq-wait);
 // that waits on cross-core messaging.
 static lisp_value prim_net_wait(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_fixnum(a[0]))
@@ -426,22 +426,52 @@ static lisp_value prim_out_u32(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
-static void install_driver_prims(lisp_value env) {
-    lisp_env_define(env, lisp_make_symbol("mmio-map", 8), lisp_make_primitive(prim_mmio_map, "mmio-map"));
-    lisp_env_define(env, lisp_make_symbol("dma-alloc", 9), lisp_make_primitive(prim_dma_alloc, "dma-alloc"));
-    lisp_env_define(env, lisp_make_symbol("pci-find", 8), lisp_make_primitive(prim_pci_find, "pci-find"));
-    lisp_env_define(env, lisp_make_symbol("pci-setup-msi", 13), lisp_make_primitive(prim_pci_setup_msi, "pci-setup-msi"));
-    lisp_env_define(env, lisp_make_symbol("net-count", 9), lisp_make_primitive(prim_net_count, "net-count"));
-    lisp_env_define(env, lisp_make_symbol("net-wait", 8), lisp_make_primitive(prim_net_wait, "net-wait"));
-    lisp_env_define(env, lisp_make_symbol("irq-register", 12), lisp_make_primitive(prim_irq_register, "irq-register"));
-    lisp_env_define(env, lisp_make_symbol("irq-count", 9), lisp_make_primitive(prim_irq_count, "irq-count"));
-    lisp_env_define(env, lisp_make_symbol("irq-wait", 8), lisp_make_primitive(prim_irq_wait, "irq-wait"));
-    lisp_env_define(env, lisp_make_symbol("in-u8", 5), lisp_make_primitive(prim_in_u8, "in-u8"));
-    lisp_env_define(env, lisp_make_symbol("in-u16", 6), lisp_make_primitive(prim_in_u16, "in-u16"));
-    lisp_env_define(env, lisp_make_symbol("in-u32", 6), lisp_make_primitive(prim_in_u32, "in-u32"));
-    lisp_env_define(env, lisp_make_symbol("out-u8", 6), lisp_make_primitive(prim_out_u8, "out-u8"));
-    lisp_env_define(env, lisp_make_symbol("out-u16", 7), lisp_make_primitive(prim_out_u16, "out-u16"));
-    lisp_env_define(env, lisp_make_symbol("out-u32", 7), lisp_make_primitive(prim_out_u32, "out-u32"));
+// The capability-bearing driver primitives, grouped into named modules instead
+// of dumped into the global env. A Lisp driver gains an authority only by
+// importing its module -- (import sys-mmio) to map device memory, (import sys-io)
+// for legacy port I/O, and so on -- so a context that imports none of them simply
+// cannot name mmio-map/out-u8/pci-find/irq-register. This is the first half of
+// the lexical (W7-style) capability model: the primitives are no longer ambient.
+// Gating WHO may import each module is the next step (see notes).
+static const lisp_builtin_export sys_io_exports[] = {
+    {"in-u8", prim_in_u8},   {"in-u16", prim_in_u16},   {"in-u32", prim_in_u32},
+    {"out-u8", prim_out_u8}, {"out-u16", prim_out_u16}, {"out-u32", prim_out_u32},
+};
+static const lisp_builtin_export sys_mmio_exports[] = {
+    {"mmio-map", prim_mmio_map}, {"dma-alloc", prim_dma_alloc},
+};
+static const lisp_builtin_export sys_pci_exports[] = {
+    {"pci-find", prim_pci_find},   {"pci-setup-msi", prim_pci_setup_msi},
+    {"net-count", prim_net_count}, {"net-wait", prim_net_wait},
+};
+static const lisp_builtin_export sys_irq_exports[] = {
+    {"irq-register", prim_irq_register}, {"irq-count", prim_irq_count},
+    {"irq-wait", prim_irq_wait},
+};
+
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+
+static void register_driver_modules(lisp_value env) {
+    static const struct {
+        const char *name;
+        const lisp_builtin_export *exports;
+        size_t count;
+    } mods[] = {
+        {"sys-io", sys_io_exports, ARRAY_LEN(sys_io_exports)},
+        {"sys-mmio", sys_mmio_exports, ARRAY_LEN(sys_mmio_exports)},
+        {"sys-pci", sys_pci_exports, ARRAY_LEN(sys_pci_exports)},
+        {"sys-irq", sys_irq_exports, ARRAY_LEN(sys_irq_exports)},
+    };
+    for (size_t i = 0; i < ARRAY_LEN(mods); i++)
+        // Only OOM can fail this, and only at boot with a fresh heap -- but a
+        // silently-absent capability module would surface later as a confusing
+        // "unbound variable" inside a driver, so name the culprit here.
+        if (lisp_register_builtin_module(env, mods[i].name, mods[i].exports,
+                                         mods[i].count) != 0) {
+            print_str("[SysLisp] FATAL: failed to register module ");
+            print_str(mods[i].name);
+            print_str("\r\n");
+        }
 }
 
 // Resolve a Lisp module NAME (as written in `import`/`define-module`) to its
@@ -478,38 +508,6 @@ static bool syslisp_module_loader(const char *name, const char **src, size_t *le
     *src = (const char *)loc;
     *len = sz;
     return true;
-}
-
-// Load a Lisp source file from the initrd and evaluate it into the shared env.
-// Used for driver source (./lisp/*.clp). MUST run single-core (before the APs are
-// released), since the file's top-level (define ...)s mutate the cross-core env.
-static void load_clp(const char *path) {
-    void *loc = NULL;
-    size_t size = 0;
-    if (!Initrd_GetFile(path, &loc, &size)) {
-        print_str("[SysLisp] .clp not found: ");
-        print_str(path);
-        print_str("\r\n");
-        return;
-    }
-    // The tar payload is not NUL-terminated; copy out and terminate for the reader.
-    char *buf = (char *)malloc(size + 1);
-    if (buf == NULL) {
-        print_str("[SysLisp] .clp out of memory\r\n");
-        return;
-    }
-    memcpy(buf, loc, size);
-    buf[size] = '\0';
-    const char *err = NULL;
-    lisp_eval_string(buf, g_env, &err);
-    free(buf);
-    if (err != NULL) {
-        print_str("[SysLisp] .clp error (");
-        print_str(path);
-        print_str("): ");
-        print_str(err);
-        print_str("\r\n");
-    }
 }
 
 // --- Self-test ----------------------------------------------------------------
@@ -593,12 +591,24 @@ static void run_self_test(lisp_value env) {
     lisp_gc_collect();
     check(env, "(apply + keep)", "15");
     check(env, "(> (uptime-ns) 0)", "#t");
-    // Driver substrate: bitfields + a real DMA buffer round-trip (kernel-only --
-    // proves dma-alloc gives a usable, physically-addressed, volatile buffer).
+    // Driver substrate: bitfields (ambient base language) + a real DMA buffer
+    // round-trip reached THROUGH the capability path -- a module that (import
+    // sys-mmio)s to obtain dma-alloc. This exercises the whole Q1 mechanism at
+    // boot: built-in module -> import -> use a physically-addressed volatile
+    // buffer. dma-alloc is no longer ambient, so a bare (dma-alloc ...) in this
+    // env would be unbound by design.
     check(env, "(bit-insert (bit-insert 0 0 1 1) 4 3 5)", "81");
-    check(env, "(let ((d (dma-alloc 64)))"
-               "  (bytes-u32-set! d 0 305419896)"
-               "  (and (= (bytes-u32-ref d 0) 305419896) (> (bytes-phys d) 0)))",
+    check(env, "(begin"
+               "  (define-module dma-probe (export run)"
+               "    (import sys-mmio)"
+               "    (define (run)"
+               "      (let ((d (dma-alloc 64)))"
+               "        (bytes-u32-set! d 0 305419896)"
+               "        (and (= (bytes-u32-ref d 0) 305419896) (> (bytes-phys d) 0)))))"
+               // Prefix the import so this test does not leave a bare `run` bound
+               // in the shared env (a common name a later driver might want).
+               "  (import (dma-probe (prefix dp:)))"
+               "  (dp:run))",
           "#t");
     check_scheduler(env);
 
@@ -727,8 +737,9 @@ static void announce_core(int id, const char *err, lisp_value proof) {
 //
 // The whole thing is set up as ONE expression evaluated in the shared env: it only
 // LOOKS UP names there (spawn/recv/cond/... plus ps2-init/ps2-keyboard-driver,
-// defined by ./lisp/ps2.clp at load time), never `define`s into it -- mutating the
-// cross-core-shared env after the APs are live would be a data race. The
+// exported by the `ps2` module imported at boot in lisp_scheduler_enter), never
+// `define`s into it -- mutating the cross-core-shared env after the APs are live
+// would be a data race. The
 // coordinator handle is held in a `let` binding the ps2 driver context closes
 // over, not in a global. (ps2-init) brings up the i8042 controller (pure port I/O,
 // in Lisp); the spawned ps2 context then claims IRQ 1, registers with coreinput,
@@ -759,9 +770,10 @@ static void setup_input_service(void) {
     }
 }
 
-// Start the Lisp virtio-net driver. The driver source (./lisp/virtio_net.clp,
-// shipped in the initrd, loaded at boot by load_clp below) defines virtio-net-init;
-// here we just invoke it. Lives on the BSP (services are BSP-pinned for now).
+// Start the Lisp virtio-net driver. The driver source (./lisp/virtio-net.clp,
+// the `virtio-net` module imported at boot in lisp_scheduler_enter) exports
+// virtio-net-init; here we just invoke it. Lives on the BSP (services are
+// BSP-pinned for now).
 static void discover_nic(void) {
     const char *err = NULL;
     lisp_eval_string("(virtio-net-init)", g_env, &err);
@@ -863,19 +875,28 @@ int lisp_scheduler_enter() {
                     lisp_make_primitive(prim_event_count, "%event-count"));
     lisp_env_define(g_env, lisp_make_symbol("%event-wait", 11),
                     lisp_make_primitive(prim_event_wait, "%event-wait"));
-    install_driver_prims(g_env);  // mmio-map / dma-alloc / pci-find / irq / port I/O
+    // Expose the capability-bearing primitives as importable modules (sys-io /
+    // sys-mmio / sys-pci / sys-irq) rather than ambient globals.
+    register_driver_modules(g_env);
     // Resolve `import` against the initrd (./lisp/<name>.clp). Must be set before
     // loading any source that imports a library. Module loading shares the same
-    // single-core boot window as load_clp below (the registry lives in the shared
-    // env, which the system collector must see fully built before the APs go live).
+    // single-core boot window (the registry lives in the shared env, which the
+    // system collector must see fully built before the APs go live).
     lisp_set_module_loader(syslisp_module_loader, NULL);
-    // Load Lisp driver source from the initrd (single-core: its top-level defines
-    // populate the shared env before the APs go live). ps2-init / virtio-net-init
-    // are invoked later, on the BSP, by setup_input_service / discover_nic.
-    // virtio_net.clp pulls its generic helpers from the driver-util library via
-    // (import driver-util) -- the first multi-file Lisp program in the OS.
-    load_clp("./lisp/ps2.clp");
-    load_clp("./lisp/virtio_net.clp");
+    // Bring up the Lisp drivers by IMPORTING their modules: this loads
+    // ./lisp/{ps2,virtio-net}.clp from the initrd (each a define-module that pulls
+    // in exactly the sys-* capabilities + driver-util it needs) and binds their
+    // entry points -- ps2-init / ps2-keyboard-driver / virtio-net-init -- into the
+    // shared env for setup_input_service / discover_nic to invoke later on the BSP.
+    // The capability prims themselves stay private to each driver module; only the
+    // entry points become visible here. Single-core, before the APs go live.
+    const char *imperr = NULL;
+    lisp_eval_string("(import ps2 virtio-net)", g_env, &imperr);
+    if (imperr != NULL) {
+        print_str("[SysLisp] driver import error: ");
+        print_str(imperr);
+        print_str("\r\n");
+    }
 
     // Single-core phase: self-test + the ISR-bridge demo run with the system
     // collector still active (the BSP is the only core building shared state).
