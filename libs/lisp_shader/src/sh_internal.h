@@ -45,6 +45,11 @@ typedef enum {
     SH_OP_VSHUFFLE,      // a = src<N x T>; constant lane indices in aux[]
     SH_OP_VREDUCE,       // sub = sh_reduce; a = <N x T> -> scalar T (dot uses b)
     SH_OP_VLANE,         // a = <N x T>, lane const in imm -> scalar T (extract)
+    // --- S3.5 vector region load/store ---
+    SH_OP_VREGION_LOAD,   // a=region nref, b=index nref, imm=lane count N;
+                          // result type = vec<region.elem, N>. N in [2,SH_MAX_LANES].
+    SH_OP_VREGION_STORE,  // a=region nref, b=index nref, c=vector nref.
+                          // region must be mutable; c's lane_kind == region.elem.
 } sh_op;
 
 typedef enum { SH_UN_NEG, SH_UN_NOT, SH_UN_CVT } sh_unop;  // CVT: result kind = node.type
@@ -120,6 +125,11 @@ typedef struct {
 //                 stored as plain uint32 (NOT nrefs); aux_len = result lane count.
 //   SH_OP_VREDUCE sub=sh_reduce; a=vector (b=second vector for SH_RED_DOT) -> scalar.
 //   SH_OP_VLANE   a=vector; imm = constant lane index -> scalar.
+//   SH_OP_VREGION_LOAD  a=region expr, b=index expr; imm=lane count N.
+//                 result type = vec<region.elem, N>. Bounds-check required.
+//                 SH_NF_BOUNDS_PROVEN is NOT set (runtime check always runs).
+//   SH_OP_VREGION_STORE a=region (must be mutable), b=index, c=vector.
+//                 Lane count from c's type. Bounds-check required always.
 // ============================================================================
 
 // --- bounded loop (named-let) -----------------------------------------------

@@ -892,6 +892,95 @@ static sh_status eval(interp_ctx *ctx, sh_nref ref, sh_value *out) {
       return SH_OK;
     }
 
+    // --- VREGION_LOAD -------------------------------------------------------
+    case SH_OP_VREGION_LOAD: {
+      s = eval(ctx, n->a, &va);
+      if (s != SH_OK) return s;
+      s = eval(ctx, n->b, &vb);
+      if (s != SH_OK) return s;
+      uint64_t idx = (vb.kind == SH_K_I64) ? (uint64_t)vb.i : vb.u;
+      uint64_t len = (uint64_t)va.region.len;
+      uint64_t N   = (uint64_t)n->imm;
+      // Overflow-free bounds check: idx > len || (len - idx) < N
+      if (idx > len || (uint64_t)(len - idx) < N)
+        return sh_set_error(ctx->err, SH_ERR_BOUNDS, -1, -1,
+                            "vregion-ref: bounds check failed (idx=%llu len=%llu N=%llu)",
+                            (unsigned long long)idx,
+                            (unsigned long long)len,
+                            (unsigned long long)N);
+      sh_kind elem = va.region.elem;
+      uint32_t esz = sh_kind_size(elem);
+      const uint8_t *base = va.region.base + idx * esz;
+      memset(out, 0, sizeof(*out));
+      out->kind      = SH_K_VEC;
+      out->lanes     = (uint8_t)N;
+      out->lane_kind = (uint8_t)elem;
+      for (uint64_t k = 0; k < N; k++) {
+        const uint8_t *ptr = base + k * esz;
+        uint64_t bits = 0;
+        switch (elem) {
+          case SH_K_BOOL:
+          case SH_K_U8:  bits = *ptr; break;
+          case SH_K_U16: { uint16_t v16; memcpy(&v16, ptr, 2); bits = v16; break; }
+          case SH_K_U32: { uint32_t v32; memcpy(&v32, ptr, 4); bits = v32; break; }
+          case SH_K_U64: { uint64_t v64; memcpy(&v64, ptr, 8); bits = v64; break; }
+          case SH_K_I64: { int64_t  v64; memcpy(&v64, ptr, 8); bits = (uint64_t)v64; break; }
+          case SH_K_F32: {
+            float fv;
+            memcpy(&fv, ptr, 4);
+            uint32_t b32;
+            memcpy(&b32, &fv, 4);
+            bits = (uint64_t)b32;
+            break;
+          }
+          case SH_K_F64: { double dv; memcpy(&dv, ptr, 8); memcpy(&bits, &dv, 8); break; }
+          default: break;
+        }
+        out->lane[k] = bits;
+      }
+      return SH_OK;
+    }
+
+    // --- VREGION_STORE ------------------------------------------------------
+    case SH_OP_VREGION_STORE: {
+      s = eval(ctx, n->a, &va);
+      if (s != SH_OK) return s;
+      s = eval(ctx, n->b, &vb);
+      if (s != SH_OK) return s;
+      s = eval(ctx, n->c, &vc_val);
+      if (s != SH_OK) return s;
+      uint64_t idx = (vb.kind == SH_K_I64) ? (uint64_t)vb.i : vb.u;
+      uint64_t len = (uint64_t)va.region.len;
+      uint64_t N   = (uint64_t)vc_val.lanes;
+      // Overflow-free bounds check
+      if (idx > len || (uint64_t)(len - idx) < N)
+        return sh_set_error(ctx->err, SH_ERR_BOUNDS, -1, -1,
+                            "vregion-set!: bounds check failed (idx=%llu len=%llu N=%llu)",
+                            (unsigned long long)idx,
+                            (unsigned long long)len,
+                            (unsigned long long)N);
+      sh_kind elem = va.region.elem;
+      uint32_t esz = sh_kind_size(elem);
+      uint8_t *base = va.region.base + idx * esz;
+      for (uint64_t k = 0; k < N; k++) {
+        uint8_t *ptr = base + k * esz;
+        uint64_t bits = vc_val.lane[k];
+        switch (elem) {
+          case SH_K_BOOL:
+          case SH_K_U8:  { uint8_t  v8  = (uint8_t)bits;  memcpy(ptr, &v8,  1); break; }
+          case SH_K_U16: { uint16_t v16 = (uint16_t)bits; memcpy(ptr, &v16, 2); break; }
+          case SH_K_U32: { uint32_t v32 = (uint32_t)bits; memcpy(ptr, &v32, 4); break; }
+          case SH_K_U64: { memcpy(ptr, &bits, 8); break; }
+          case SH_K_I64: { memcpy(ptr, &bits, 8); break; }
+          case SH_K_F32: { uint32_t b32 = (uint32_t)bits; memcpy(ptr, &b32, 4); break; }
+          case SH_K_F64: { memcpy(ptr, &bits, 8); break; }
+          default: break;
+        }
+      }
+      *out = vc_val;  // return the stored vector
+      return SH_OK;
+    }
+
     default:
       return sh_set_error(ctx->err, SH_ERR_INTERNAL, -1, -1,
                           "eval: unknown op %u at node %u", n->op, ref);

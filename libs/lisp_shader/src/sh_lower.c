@@ -699,6 +699,57 @@ static sh_status lower_node(lower_ctx *ctx, sh_nref ref, sh_vreg *out_vreg) {
       return SH_OK;
     }
 
+    // -------------------------------------------------------------------------
+    // VREGION_LOAD: SHB_VRLOAD; imm=N, kind=elem, lanes=N.
+    // -------------------------------------------------------------------------
+    case SH_OP_VREGION_LOAD: {
+      sh_vreg va_r, vb_r;
+      sh_status s = lower_node(ctx, n->a, &va_r);
+      if (s != SH_OK) return s;
+      s = lower_node(ctx, n->b, &vb_r);
+      if (s != SH_OK) return s;
+      sh_kind elem_kind = (sh_kind)p->nodes[n->a].type.lane_kind;
+      uint8_t N = (uint8_t)n->imm;
+      sh_vreg dst = alloc_vreg(ctx);
+      sh_instr ins = blank(SHB_VRLOAD);
+      ins.dst   = dst;
+      ins.kind  = (uint8_t)elem_kind;
+      ins.lanes = N;
+      ins.imm   = (uint32_t)N;
+      ins.a     = va_r;
+      ins.b     = vb_r;
+      if (emit_instr(ctx, ins) == UINT32_MAX) return SH_ERR_OOM;
+      *out_vreg = dst;
+      return SH_OK;
+    }
+
+    // -------------------------------------------------------------------------
+    // VREGION_STORE: SHB_VRSTORE; kind=elem, lanes=vector's lane count.
+    // Result = the stored vector (c).
+    // -------------------------------------------------------------------------
+    case SH_OP_VREGION_STORE: {
+      sh_vreg va_r, vb_r, vc_r;
+      sh_status s = lower_node(ctx, n->a, &va_r);
+      if (s != SH_OK) return s;
+      s = lower_node(ctx, n->b, &vb_r);
+      if (s != SH_OK) return s;
+      s = lower_node(ctx, n->c, &vc_r);
+      if (s != SH_OK) return s;
+      sh_kind elem_kind = (sh_kind)p->nodes[n->a].type.lane_kind;
+      uint8_t nl = p->nodes[n->c].type.lanes;
+      sh_vreg dst = alloc_vreg(ctx);
+      sh_instr ins = blank(SHB_VRSTORE);
+      ins.dst   = dst;
+      ins.kind  = (uint8_t)elem_kind;
+      ins.lanes = nl;
+      ins.a     = va_r;
+      ins.b     = vb_r;
+      ins.c     = vc_r;
+      if (emit_instr(ctx, ins) == UINT32_MAX) return SH_ERR_OOM;
+      *out_vreg = dst;
+      return SH_OK;
+    }
+
     default:
       return sh_set_error(ctx->err, SH_ERR_INTERNAL, -1, -1,
                           "lower_node: unknown op %u at node %u", n->op, ref);
