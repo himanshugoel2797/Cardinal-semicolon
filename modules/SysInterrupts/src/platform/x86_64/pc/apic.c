@@ -225,7 +225,18 @@ int local_apic_timer_init(bool tsc_mode, void (*handler)(int), bool ap) {
         }
 
         apic_write(APIC_DCR, 0x0); //divide by 2 (matches the calibration)
-        initial_count = apic_freq / 20000; //tick every 0.05ms
+        // The local-APIC timer is the OS scheduler tick. Under the
+        // interpreter-as-scheduler model it is NOT a preemption quantum -- the
+        // only thing it drives is waking (sleep)/wait-with-timeout sleepers (see
+        // SysLisp lisp_timer_tick), so millisecond granularity is ample. The old
+        // 20kHz (50us) rate -- a leftover from the preemptive scheduler -- pinned
+        // the resident loop near 100% CPU under KVM: each tick is a HLT/wake round
+        // trip, and a 50us period is shorter than that round trip's cost, so the
+        // HLT never actually sleeps. 250Hz (4ms) keeps sleeps responsive while
+        // letting the HLT idle between ticks. (TICKLESS -- arming the timer only
+        // for the next pending sleeper deadline -- would idle deeper still; left
+        // as a follow-up.) initial_count = apic_freq/N gives an N Hz tick here.
+        initial_count = apic_freq / 250; // 250Hz scheduler tick (4ms granularity)
     }
 
     //Program the LVT (mode + vector + unmask) BEFORE loading the initial count.
