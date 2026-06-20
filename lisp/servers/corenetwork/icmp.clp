@@ -19,7 +19,7 @@
     (if (or (< ilen 8) (not (= (u8 frame l4) 8))
             (not (= 0 (csum frame l4 ilen))))
         'ignore
-        (let ((dst-mac (cache-get cache src-ip)))
+        (let ((dst-mac (cache-get cache src-ip (uptime-ns))))
           (if (not dst-mac)
               'ignore                  ; no route back yet
               (let ((reply (copy-bytes frame l4 ilen)))

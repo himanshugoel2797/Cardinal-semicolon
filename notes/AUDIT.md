@@ -541,8 +541,13 @@ behind `CARDFS_SELFTEST` (off). A userspace file-I/O path remains TODO. `intel_w
 `module_init` early-returns before any init. `CoreNetwork` ARP/ICMP/IPv4-rx and a
 minimal tx path are implemented (echo/ARP reply work), and now also a **UDP layer**
 (port bind/unbind + `udp_send_to`) and a general **reliable delivery transport
-(RDT)** over UDP — responder-driven, no device-side timers — plus a `cardinal.ip=`
-cmdline override of the interface address (stepping stone toward DHCP). The new
+(RDT)** over UDP — responder-driven, no device-side timers. The **live K5 stack is
+the Lisp `corenetwork` port**, which additionally carries a **DHCP client** (the
+default; `cardinal.ip=A.B.C.D` forces a static address), **outbound ARP
+resolution** (`arp-resolve`), and **ARP cache aging** — the functionality the C
+PRs #63/#64 prototyped, ported into Lisp (see `notes/servers/CoreNetwork.md`,
+"Lisp port status"). Verified live: a no-`cardinal.ip` virtio-net/slirp boot
+auto-acquires `10.0.2.15` from DHCP. The new
 `CoreNetDebug` server (cmdline-gated by `cardinal.netdbg`) consumes these to offer
 a UDP echo + reliable named-blob upload for fast, swap-free network debug. See
 `notes/servers/CoreNetwork.md`; TCP and the userspace socket API remain TODO and

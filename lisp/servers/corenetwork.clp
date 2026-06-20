@@ -29,11 +29,17 @@
 ;;   (udp-bind <port> <handler-ctx>)           ; datagrams to <port> -> handler
 ;;   (udp-send <dst-ip> <dst-mac> <sport> <dport> <payload-bytes>)
 ;;   (ping <dst-ip> <dst-mac> <id> <seq>)      ; emit an ICMP echo request
+;;   (set-address <ip> <netmask> <gateway> <dns>) ; write the interface config
+;;   (get-address <reply-ctx>)                 ; reply (ip netmask gateway dns)
+;;   (dhcp-start)                              ; begin DHCP on this interface
 ;; A bound UDP handler receives (udp-rx <src-ip> <src-mac> <src-port> <payload>).
+;;
+;; Also exported: arp-resolve (synchronous outbound next-hop resolution, for a
+;; future routing / TCP active-open layer).
 
 (define-module corenetwork
-  (export start-network-service)
+  (export start-network-service arp-resolve)
   (import driver-util)
-  ;; layer by layer: shared helpers, the checksum, then eth/arp/ip/icmp/udp, then
-  ;; the service loop that ties them together.
-  (include common checksum eth arp ip icmp udp service))
+  ;; layer by layer: shared helpers, the checksum, then eth/arp/ip/icmp/udp, the
+  ;; DHCP client, then the service loop that ties them together.
+  (include common checksum eth arp ip icmp udp dhcp service))
