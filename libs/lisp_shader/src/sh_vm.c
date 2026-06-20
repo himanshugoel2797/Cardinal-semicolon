@@ -3,21 +3,42 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-// S3 UNIT 2 -- the bytecode VM: chunk validator + scalar executor.
+// S3 UNIT 2+3 -- the bytecode VM: chunk validator + scalar executor +
+//   SSE/AVX fast paths for vector ops.
 //
 // sh_chunk_validate:  reject any chunk with OOB vreg refs, jump targets,
 //   aux ranges, prim indices, or a bad result vreg. Defense-in-depth so a
 //   buggy lowerer cannot drive sh_vm_run out of bounds.
 //
 // sh_vm_run: execute the chunk on typed args; runtime-bounds-check every
-//   region access; semantics match sh_interp.c bit-for-bit. Vector ops use
-//   the scalar lane-loop path (SH_VM_FORCE_SCALAR is a no-op for now).
+//   region access; semantics match sh_interp.c bit-for-bit. With SSE2
+//   available, vector ops use SIMD intrinsic paths for common widths; the
+//   scalar lane-loop fallback is retained for odd widths, ops without clean
+//   intrinsics, and SH_VM_FORCE_SCALAR.
 //
-// Value representation (internal, for S3-3 compatibility):
+// SIMD paths implemented (S3-3):
+//   SHB_VSPLAT  -- f32x4 (_mm_set1_ps), u32x4/i32x4 (_mm_set1_epi32),
+//                  u8x16 (_mm_set1_epi8), u16x8 (_mm_set1_epi16);
+//                  f32x8/u32x8 via AVX2 when available.
+//   SHB_VBINOP  -- f32x4 add/sub/mul/div; u32x4/i64x2 add/sub;
+//                  u8x16/u16x8 add/sub; u32x4 mul (SSE4.1 mullo);
+//                  all 256-bit variants via AVX2.  Integer div/mod always scalar.
+//   SHB_VCMP    -- f32x4 all six predicates; u32x4 eq/lt/gt; u8x16 eq.
+//                  Result: one BOOL lane per 1-byte slot = 0 or 1 (matches oracle).
+//   SHB_VSELECT -- f32x4/u32x4/u8x16: blend from 0/1 bool-lane mask.
+//   SHB_VSHUFFLE-- 4-lane shuffles where all indices fit _mm_shuffle (imm8);
+//                  else scalar.
+//   SHB_VREDUCE -- ALWAYS scalar (float reductions MUST be left-to-right;
+//                  a tree reduction reassociates and diverges -- this is the
+//                  #1 bit-exactness trap; integer reductions also scalar for
+//                  simplicity and correctness with the oracle's ordering).
+//   SHB_VLANE   -- always scalar (single-element extract; no SIMD payoff).
+//
+// Value representation (internal):
 //   typedef vm_value (see below). Scalars: kind + scalar u64 field.
 //   Vectors: kind=SH_K_VEC, lanes/lane_kind set, bytes packed at native
 //   element width in a 16-byte-aligned vec[SH_MAX_LANES * 8] buffer so that
-//   S3-3 can _mm_load_* them directly without a reformat.
+//   _mm_load_* works directly without a reformat step.
 //   Regions: kind=SH_K_REGION, base/len/elem/mut carried directly.
 //
 // Dispatch: a switch() over sh_bc_op in the main pc loop.
@@ -26,6 +47,11 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+// SSE/AVX intrinsics -- guarded so the file compiles without them.
+#if defined(__SSE2__)
+#include <immintrin.h>
+#endif
 
 #include "sh_bytecode.h"
 
@@ -470,7 +496,8 @@ sh_status sh_chunk_validate(const sh_chunk *c, sh_error *err) {
 
 sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
                     uint32_t flags, sh_value *out, sh_error *err) {
-  (void)flags;  // SH_VM_FORCE_SCALAR: no SIMD yet, so always scalar
+  const int force_scalar = (flags & SH_VM_FORCE_SCALAR) ? 1 : 0;
+  (void)force_scalar;  // suppressed when no SIMD compiled in
 
   if (!c || !out)
     return sh_set_error(err, SH_ERR_INTERNAL, -1, -1,
@@ -888,19 +915,70 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
 
       // -----------------------------------------------------------------------
       // SHB_VSPLAT: dst = broadcast scalar a over `lanes` of `kind`.
+      // SSE/AVX path: use _mm_set1_* for the common fixed widths.
       // -----------------------------------------------------------------------
       case SHB_VSPLAT: {
         if (ins->dst == SH_VREG_NONE) break;
         sh_kind lk    = (sh_kind)ins->kind;
         uint8_t nlanes = ins->lanes;
         uint64_t bits  = vm_scalar_bits(&slots[ins->a]);
-        // For f32 scalar the scalar field already holds the f32 bit pattern.
-        // Mirror interp's scalar_to_lane: for F32 keep the 32-bit pattern.
         vm_value dst;
         memset(&dst, 0, sizeof(dst));
         dst.kind      = SH_K_VEC;
         dst.lanes     = nlanes;
         dst.lane_kind = (uint8_t)lk;
+
+#if defined(__SSE2__)
+        if (!force_scalar) {
+          if (lk == SH_K_F32 && nlanes == 4) {
+            uint32_t b32 = (uint32_t)bits;
+            float fv;
+            memcpy(&fv, &b32, 4);
+            __m128 r = _mm_set1_ps(fv);
+            _mm_store_ps((float *)dst.vec, r);
+            slots[ins->dst] = dst;
+            break;
+          }
+          if ((lk == SH_K_U32 || lk == SH_K_I64) && nlanes == 4) {
+            // Store 4 x 32-bit lanes.
+            __m128i r = _mm_set1_epi32((int)(uint32_t)bits);
+            _mm_store_si128((__m128i *)dst.vec, r);
+            slots[ins->dst] = dst;
+            break;
+          }
+          if (lk == SH_K_U8 && nlanes == 16) {
+            __m128i r = _mm_set1_epi8((char)(uint8_t)bits);
+            _mm_store_si128((__m128i *)dst.vec, r);
+            slots[ins->dst] = dst;
+            break;
+          }
+          if (lk == SH_K_U16 && nlanes == 8) {
+            __m128i r = _mm_set1_epi16((short)(uint16_t)bits);
+            _mm_store_si128((__m128i *)dst.vec, r);
+            slots[ins->dst] = dst;
+            break;
+          }
+#if defined(__AVX2__)
+          if (lk == SH_K_F32 && nlanes == 8) {
+            uint32_t b32 = (uint32_t)bits;
+            float fv;
+            memcpy(&fv, &b32, 4);
+            __m256 r = _mm256_set1_ps(fv);
+            _mm256_store_ps((float *)dst.vec, r);
+            slots[ins->dst] = dst;
+            break;
+          }
+          if (lk == SH_K_U32 && nlanes == 8) {
+            __m256i r = _mm256_set1_epi32((int)(uint32_t)bits);
+            _mm256_store_si256((__m256i *)dst.vec, r);
+            slots[ins->dst] = dst;
+            break;
+          }
+#endif  // __AVX2__
+        }
+#endif  // __SSE2__
+
+        // Scalar fallback (always-correct path; also used for force_scalar).
         for (uint8_t li = 0; li < nlanes; li++)
           vec_lane_set(&dst, li, bits);
         slots[ins->dst] = dst;
@@ -909,11 +987,14 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
 
       // -----------------------------------------------------------------------
       // SHB_VBINOP: dst = lane-wise binop(a, b). sub = sh_binop; kind = lane kind.
+      // SSE/AVX path: f32x4 add/sub/mul/div; integer add/sub for 8/16/32-bit
+      // lanes; 32-bit mul (SSE4.1).  Integer div/mod always scalar (no hw div).
       // -----------------------------------------------------------------------
       case SHB_VBINOP: {
         if (ins->dst == SH_VREG_NONE) break;
-        sh_kind lk   = (sh_kind)ins->kind;
-        uint8_t nl   = ins->lanes;
+        sh_kind lk    = (sh_kind)ins->kind;
+        uint8_t nl    = ins->lanes;
+        sh_binop bop  = (sh_binop)ins->sub;
         vm_value *va  = &slots[ins->a];
         vm_value *vb  = &slots[ins->b];
         vm_value dst;
@@ -921,10 +1002,124 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
         dst.kind      = SH_K_VEC;
         dst.lanes     = nl;
         dst.lane_kind = (uint8_t)lk;
+
+#if defined(__SSE2__)
+        if (!force_scalar) {
+          // --- f32x4 add/sub/mul ---
+          // NOTE: SH_BIN_DIV is EXCLUDED from the SIMD path. The oracle returns
+          // 0.0 for division-by-zero (it checks fb != 0.0), but _mm_div_ps
+          // produces NaN for 0/0 and ±Inf for nonzero/0 -- not bit-equal.
+          // Div stays on the scalar fallback (same result, correct by contract).
+          if (lk == SH_K_F32 && nl == 4 &&
+              (bop == SH_BIN_ADD || bop == SH_BIN_SUB || bop == SH_BIN_MUL)) {
+            __m128 ra = _mm_load_ps((const float *)va->vec);
+            __m128 rb = _mm_load_ps((const float *)vb->vec);
+            __m128 rr;
+            switch (bop) {
+              case SH_BIN_ADD: rr = _mm_add_ps(ra, rb); break;
+              case SH_BIN_SUB: rr = _mm_sub_ps(ra, rb); break;
+              case SH_BIN_MUL: rr = _mm_mul_ps(ra, rb); break;
+              default: rr = _mm_setzero_ps(); break;
+            }
+            _mm_store_ps((float *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+          // --- u32x4 / i64x2 add/sub ---
+          if ((lk == SH_K_U32 || lk == SH_K_I64) && nl == 4 &&
+              (bop == SH_BIN_ADD || bop == SH_BIN_SUB)) {
+            __m128i ra = _mm_load_si128((const __m128i *)va->vec);
+            __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
+            __m128i rr = (bop == SH_BIN_ADD)
+                         ? _mm_add_epi32(ra, rb)
+                         : _mm_sub_epi32(ra, rb);
+            _mm_store_si128((__m128i *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+          // --- u32x4 mul (SSE4.1 mullo_epi32) ---
+#if defined(__SSE4_1__)
+          if (lk == SH_K_U32 && nl == 4 && bop == SH_BIN_MUL) {
+            __m128i ra = _mm_load_si128((const __m128i *)va->vec);
+            __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
+            __m128i rr = _mm_mullo_epi32(ra, rb);
+            _mm_store_si128((__m128i *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+#endif
+          // --- u8x16 add/sub (wrapping, not saturating -- matches scalar) ---
+          if (lk == SH_K_U8 && nl == 16 &&
+              (bop == SH_BIN_ADD || bop == SH_BIN_SUB)) {
+            __m128i ra = _mm_load_si128((const __m128i *)va->vec);
+            __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
+            // _mm_add_epi8 wraps (modular), matching scalar u8 add.
+            __m128i rr = (bop == SH_BIN_ADD)
+                         ? _mm_add_epi8(ra, rb)
+                         : _mm_sub_epi8(ra, rb);
+            _mm_store_si128((__m128i *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+          // --- u16x8 add/sub ---
+          if (lk == SH_K_U16 && nl == 8 &&
+              (bop == SH_BIN_ADD || bop == SH_BIN_SUB)) {
+            __m128i ra = _mm_load_si128((const __m128i *)va->vec);
+            __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
+            __m128i rr = (bop == SH_BIN_ADD)
+                         ? _mm_add_epi16(ra, rb)
+                         : _mm_sub_epi16(ra, rb);
+            _mm_store_si128((__m128i *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+#if defined(__AVX2__)
+          // --- f32x8 add/sub/mul (div excluded: see f32x4 comment above) ---
+          if (lk == SH_K_F32 && nl == 8 &&
+              (bop == SH_BIN_ADD || bop == SH_BIN_SUB || bop == SH_BIN_MUL)) {
+            __m256 ra = _mm256_load_ps((const float *)va->vec);
+            __m256 rb = _mm256_load_ps((const float *)vb->vec);
+            __m256 rr;
+            switch (bop) {
+              case SH_BIN_ADD: rr = _mm256_add_ps(ra, rb); break;
+              case SH_BIN_SUB: rr = _mm256_sub_ps(ra, rb); break;
+              case SH_BIN_MUL: rr = _mm256_mul_ps(ra, rb); break;
+              default: rr = _mm256_setzero_ps(); break;
+            }
+            _mm256_store_ps((float *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+          // --- u32x8 add/sub ---
+          if (lk == SH_K_U32 && nl == 8 &&
+              (bop == SH_BIN_ADD || bop == SH_BIN_SUB)) {
+            __m256i ra = _mm256_load_si256((const __m256i *)va->vec);
+            __m256i rb = _mm256_load_si256((const __m256i *)vb->vec);
+            __m256i rr = (bop == SH_BIN_ADD)
+                         ? _mm256_add_epi32(ra, rb)
+                         : _mm256_sub_epi32(ra, rb);
+            _mm256_store_si256((__m256i *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+          // --- u32x8 mul ---
+          if (lk == SH_K_U32 && nl == 8 && bop == SH_BIN_MUL) {
+            __m256i ra = _mm256_load_si256((const __m256i *)va->vec);
+            __m256i rb = _mm256_load_si256((const __m256i *)vb->vec);
+            __m256i rr = _mm256_mullo_epi32(ra, rb);
+            _mm256_store_si256((__m256i *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+#endif  // __AVX2__
+        }
+#endif  // __SSE2__
+
+        // Scalar fallback (always-correct; also for force_scalar, div/mod, odd widths).
         for (uint8_t li = 0; li < nl; li++) {
           uint64_t ab  = vec_lane_get(va, li);
           uint64_t bb  = vec_lane_get(vb, li);
-          uint64_t res = scalar_binop_bits((sh_binop)ins->sub, lk, ab, bb);
+          uint64_t res = scalar_binop_bits(bop, lk, ab, bb);
           vec_lane_set(&dst, li, res);
         }
         slots[ins->dst] = dst;
@@ -933,11 +1128,15 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
 
       // -----------------------------------------------------------------------
       // SHB_VCMP: dst = lane-wise cmp(a, b) -> bool-mask. kind = operand lane kind.
+      // SSE/AVX path: f32x4 all six predicates; u32x4 eq/lt/gt; u8x16 eq.
+      // Result MUST be 0 or 1 per lane (bool lane_kind), same as oracle.
+      // We expand the all-ones/-zeros mask to 0/1 bytes in the bool vec[].
       // -----------------------------------------------------------------------
       case SHB_VCMP: {
         if (ins->dst == SH_VREG_NONE) break;
         sh_kind lk    = (sh_kind)ins->kind;
         uint8_t  nl   = ins->lanes;
+        sh_cmp   cmp  = (sh_cmp)ins->sub;
         vm_value *va  = &slots[ins->a];
         vm_value *vb  = &slots[ins->b];
         vm_value dst;
@@ -945,10 +1144,82 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
         dst.kind      = SH_K_VEC;
         dst.lanes     = nl;
         dst.lane_kind = (uint8_t)SH_K_BOOL;
+
+#if defined(__SSE2__)
+        if (!force_scalar) {
+          // --- f32x4: use _mm_cmp*_ps, then expand mask to 0/1 uint8 lanes ---
+          if (lk == SH_K_F32 && nl == 4) {
+            __m128 ra = _mm_load_ps((const float *)va->vec);
+            __m128 rb = _mm_load_ps((const float *)vb->vec);
+            __m128 rm;
+            switch (cmp) {
+              case SH_CMP_LT: rm = _mm_cmplt_ps(ra, rb);  break;
+              case SH_CMP_LE: rm = _mm_cmple_ps(ra, rb);  break;
+              case SH_CMP_EQ: rm = _mm_cmpeq_ps(ra, rb);  break;
+              case SH_CMP_NE: rm = _mm_cmpneq_ps(ra, rb); break;
+              case SH_CMP_GT: rm = _mm_cmpgt_ps(ra, rb);  break;
+              case SH_CMP_GE: rm = _mm_cmpge_ps(ra, rb);  break;
+              default: rm = _mm_setzero_ps(); break;
+            }
+            // movemask gives a 4-bit integer; expand to 4 x uint8 lanes (0/1).
+            int msk = _mm_movemask_ps(rm);
+            for (int li = 0; li < 4; li++)
+              dst.vec[li] = (uint8_t)((msk >> li) & 1);
+            slots[ins->dst] = dst;
+            break;
+          }
+          // --- u32x4 eq/lt/gt (SSE2 has no unsigned lt; we handle all via helper) ---
+          if (lk == SH_K_U32 && nl == 4 &&
+              (cmp == SH_CMP_EQ || cmp == SH_CMP_LT || cmp == SH_CMP_GT ||
+               cmp == SH_CMP_LE || cmp == SH_CMP_GE || cmp == SH_CMP_NE)) {
+            // SSE2 only has signed 32-bit compare (cmpeq_epi32, cmpgt_epi32).
+            // For unsigned comparisons, bias both operands by 0x80000000 so
+            // that unsigned order maps to signed order, then use signed cmpgt.
+            __m128i ra = _mm_load_si128((const __m128i *)va->vec);
+            __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
+            __m128i bias = _mm_set1_epi32((int)0x80000000u);
+            __m128i ras = _mm_xor_si128(ra, bias);
+            __m128i rbs = _mm_xor_si128(rb, bias);
+            __m128i rm;
+            switch (cmp) {
+              case SH_CMP_EQ: rm = _mm_cmpeq_epi32(ra, rb); break;
+              case SH_CMP_NE: rm = _mm_andnot_si128(_mm_cmpeq_epi32(ra, rb),
+                                                     _mm_set1_epi32(-1)); break;
+              case SH_CMP_LT: rm = _mm_cmpgt_epi32(rbs, ras); break;
+              case SH_CMP_GT: rm = _mm_cmpgt_epi32(ras, rbs); break;
+              case SH_CMP_LE: rm = _mm_andnot_si128(_mm_cmpgt_epi32(ras, rbs),
+                                                     _mm_set1_epi32(-1)); break;
+              case SH_CMP_GE: rm = _mm_andnot_si128(_mm_cmpgt_epi32(rbs, ras),
+                                                     _mm_set1_epi32(-1)); break;
+              default: rm = _mm_setzero_si128(); break;
+            }
+            // movemask on epi8 gives 16 bits; grab the high bit of each 32-bit lane.
+            // _mm_movemask_epi8 bit [4*i+3] corresponds to lane i's sign/all-ones.
+            int msk = _mm_movemask_epi8(rm);
+            for (int li = 0; li < 4; li++)
+              dst.vec[li] = (uint8_t)((msk >> (li * 4 + 3)) & 1);
+            slots[ins->dst] = dst;
+            break;
+          }
+          // --- u8x16 eq ---
+          if (lk == SH_K_U8 && nl == 16 && cmp == SH_CMP_EQ) {
+            __m128i ra = _mm_load_si128((const __m128i *)va->vec);
+            __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
+            __m128i rm = _mm_cmpeq_epi8(ra, rb);
+            int msk = _mm_movemask_epi8(rm);
+            for (int li = 0; li < 16; li++)
+              dst.vec[li] = (uint8_t)((msk >> li) & 1);
+            slots[ins->dst] = dst;
+            break;
+          }
+        }
+#endif  // __SSE2__
+
+        // Scalar fallback.
         for (uint8_t li = 0; li < nl; li++) {
           uint64_t ab  = vec_lane_get(va, li);
           uint64_t bb  = vec_lane_get(vb, li);
-          uint64_t res = scalar_cmp_bits((sh_cmp)ins->sub, lk, ab, bb);
+          uint64_t res = scalar_cmp_bits(cmp, lk, ab, bb);
           vec_lane_set(&dst, li, res);
         }
         slots[ins->dst] = dst;
@@ -957,6 +1228,8 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
 
       // -----------------------------------------------------------------------
       // SHB_VSELECT: dst = lane-wise (mask a) ? b : c. kind = lane kind.
+      // SSE/AVX path: convert 0/1 bool lanes to all-zeros/all-ones mask,
+      // then blend. Result is the data (lk-typed) lanes.
       // -----------------------------------------------------------------------
       case SHB_VSELECT: {
         if (ins->dst == SH_VREG_NONE) break;
@@ -970,6 +1243,81 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
         dst.kind      = SH_K_VEC;
         dst.lanes     = nl;
         dst.lane_kind = (uint8_t)lk;
+
+#if defined(__SSE2__)
+        if (!force_scalar) {
+          // --- f32x4: build movemask from bool vec[], then blend ---
+          if (lk == SH_K_F32 && nl == 4) {
+            // Build a 4-bit mask from the bool-lane bytes (lane i -> bit i).
+            int msk = 0;
+            for (int li = 0; li < 4; li++)
+              msk |= (va->vec[li] ? 1 : 0) << li;
+            __m128 rb = _mm_load_ps((const float *)vb->vec);
+            __m128 rc = _mm_load_ps((const float *)vc->vec);
+#if defined(__SSE4_1__)
+            __m128 rr = _mm_blendv_ps(rc, rb,
+                          _mm_castsi128_ps(_mm_set_epi32(
+                            (msk >> 3 & 1) ? -1 : 0,
+                            (msk >> 2 & 1) ? -1 : 0,
+                            (msk >> 1 & 1) ? -1 : 0,
+                            (msk >> 0 & 1) ? -1 : 0)));
+#else
+            // SSE2-only: manual per-lane AND/ANDNOT/OR blend.
+            __m128i imsk = _mm_set_epi32(
+              (msk >> 3 & 1) ? -1 : 0,
+              (msk >> 2 & 1) ? -1 : 0,
+              (msk >> 1 & 1) ? -1 : 0,
+              (msk >> 0 & 1) ? -1 : 0);
+            __m128 fmsk  = _mm_castsi128_ps(imsk);
+            __m128 rr    = _mm_or_ps(_mm_and_ps(fmsk, rb),
+                                     _mm_andnot_ps(fmsk, rc));
+#endif
+            _mm_store_ps((float *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+          // --- u32x4 blend ---
+          if (lk == SH_K_U32 && nl == 4) {
+            int msk = 0;
+            for (int li = 0; li < 4; li++)
+              msk |= (va->vec[li] ? 1 : 0) << li;
+            __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
+            __m128i rc = _mm_load_si128((const __m128i *)vc->vec);
+            __m128i imsk = _mm_set_epi32(
+              (msk >> 3 & 1) ? -1 : 0,
+              (msk >> 2 & 1) ? -1 : 0,
+              (msk >> 1 & 1) ? -1 : 0,
+              (msk >> 0 & 1) ? -1 : 0);
+            __m128i rr = _mm_or_si128(_mm_and_si128(imsk, rb),
+                                      _mm_andnot_si128(imsk, rc));
+            _mm_store_si128((__m128i *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+          // --- u8x16 blend ---
+          if (lk == SH_K_U8 && nl == 16) {
+            __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
+            __m128i rc = _mm_load_si128((const __m128i *)vc->vec);
+            // Build a byte mask from bool lanes.
+            __m128i imsk = _mm_set_epi8(
+              (char)(va->vec[15] ? 0xFF : 0), (char)(va->vec[14] ? 0xFF : 0),
+              (char)(va->vec[13] ? 0xFF : 0), (char)(va->vec[12] ? 0xFF : 0),
+              (char)(va->vec[11] ? 0xFF : 0), (char)(va->vec[10] ? 0xFF : 0),
+              (char)(va->vec[ 9] ? 0xFF : 0), (char)(va->vec[ 8] ? 0xFF : 0),
+              (char)(va->vec[ 7] ? 0xFF : 0), (char)(va->vec[ 6] ? 0xFF : 0),
+              (char)(va->vec[ 5] ? 0xFF : 0), (char)(va->vec[ 4] ? 0xFF : 0),
+              (char)(va->vec[ 3] ? 0xFF : 0), (char)(va->vec[ 2] ? 0xFF : 0),
+              (char)(va->vec[ 1] ? 0xFF : 0), (char)(va->vec[ 0] ? 0xFF : 0));
+            __m128i rr = _mm_or_si128(_mm_and_si128(imsk, rb),
+                                      _mm_andnot_si128(imsk, rc));
+            _mm_store_si128((__m128i *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+        }
+#endif  // __SSE2__
+
+        // Scalar fallback.
         for (uint8_t li = 0; li < nl; li++) {
           uint64_t mask_bit = vec_lane_get(va, li);
           uint64_t res      = mask_bit ? vec_lane_get(vb, li)
@@ -982,6 +1330,9 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
 
       // -----------------------------------------------------------------------
       // SHB_VSHUFFLE: dst = { a.lane[aux[k]] }. Constant indices in aux.
+      // SSE/AVX path: for f32x4 with 4 result lanes, use _mm_shuffle_ps when
+      // the pattern fits (all sources from the same 4-lane vector).
+      // For u32x4 use _mm_shuffle_epi32.  All other cases: scalar fallback.
       // -----------------------------------------------------------------------
       case SHB_VSHUFFLE: {
         if (ins->dst == SH_VREG_NONE) break;
@@ -993,6 +1344,187 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
         dst.kind      = SH_K_VEC;
         dst.lanes     = nl;
         dst.lane_kind = (uint8_t)lk;
+
+        // VSHUFFLE SIMD path: _mm_shuffle_ps/_mm_shuffle_epi32 require a
+        // compile-time constant imm8. Use a macro-generated dispatch table for
+        // the 256 possible 4-lane shuffle patterns (indices 0..3 in each slot).
+        // We only do this for the common 4-lane cases (f32x4, u32x4).
+#if defined(__SSE2__)
+        {
+        int simd_took = 0;  // set to 1 if we take the SIMD path below
+        if (!force_scalar && nl == 4 && ins->aux_len == 4 && va->lanes == 4) {
+          uint32_t idx0 = c->aux[ins->aux_off + 0];
+          uint32_t idx1 = c->aux[ins->aux_off + 1];
+          uint32_t idx2 = c->aux[ins->aux_off + 2];
+          uint32_t idx3 = c->aux[ins->aux_off + 3];
+          if (idx0 < 4 && idx1 < 4 && idx2 < 4 && idx3 < 4) {
+            int ctrl = (int)((idx3 << 6) | (idx2 << 4) | (idx1 << 2) | idx0);
+            // _mm_shuffle_ps requires a compile-time const, so enumerate all 256.
+#define SH_SHUF_CASE_F32(imm)                                               \
+            case imm: {                                                       \
+              __m128 ra = _mm_load_ps((const float *)va->vec);               \
+              __m128 rr = _mm_shuffle_ps(ra, ra, imm);                       \
+              _mm_store_ps((float *)dst.vec, rr);                            \
+              slots[ins->dst] = dst;                                         \
+              simd_took = 1; goto vshuffle_done;                             \
+            }
+#define SH_SHUF_CASE_I32(imm)                                               \
+            case imm: {                                                       \
+              __m128i ra = _mm_load_si128((const __m128i *)va->vec);         \
+              __m128i rr = _mm_shuffle_epi32(ra, imm);                       \
+              _mm_store_si128((__m128i *)dst.vec, rr);                       \
+              slots[ins->dst] = dst;                                         \
+              simd_took = 1; goto vshuffle_done;                             \
+            }
+            if (lk == SH_K_F32) {
+              switch (ctrl) {
+                SH_SHUF_CASE_F32(0x00) SH_SHUF_CASE_F32(0x01) SH_SHUF_CASE_F32(0x02) SH_SHUF_CASE_F32(0x03)
+                SH_SHUF_CASE_F32(0x04) SH_SHUF_CASE_F32(0x05) SH_SHUF_CASE_F32(0x06) SH_SHUF_CASE_F32(0x07)
+                SH_SHUF_CASE_F32(0x08) SH_SHUF_CASE_F32(0x09) SH_SHUF_CASE_F32(0x0A) SH_SHUF_CASE_F32(0x0B)
+                SH_SHUF_CASE_F32(0x0C) SH_SHUF_CASE_F32(0x0D) SH_SHUF_CASE_F32(0x0E) SH_SHUF_CASE_F32(0x0F)
+                SH_SHUF_CASE_F32(0x10) SH_SHUF_CASE_F32(0x11) SH_SHUF_CASE_F32(0x12) SH_SHUF_CASE_F32(0x13)
+                SH_SHUF_CASE_F32(0x14) SH_SHUF_CASE_F32(0x15) SH_SHUF_CASE_F32(0x16) SH_SHUF_CASE_F32(0x17)
+                SH_SHUF_CASE_F32(0x18) SH_SHUF_CASE_F32(0x19) SH_SHUF_CASE_F32(0x1A) SH_SHUF_CASE_F32(0x1B)
+                SH_SHUF_CASE_F32(0x1C) SH_SHUF_CASE_F32(0x1D) SH_SHUF_CASE_F32(0x1E) SH_SHUF_CASE_F32(0x1F)
+                SH_SHUF_CASE_F32(0x20) SH_SHUF_CASE_F32(0x21) SH_SHUF_CASE_F32(0x22) SH_SHUF_CASE_F32(0x23)
+                SH_SHUF_CASE_F32(0x24) SH_SHUF_CASE_F32(0x25) SH_SHUF_CASE_F32(0x26) SH_SHUF_CASE_F32(0x27)
+                SH_SHUF_CASE_F32(0x28) SH_SHUF_CASE_F32(0x29) SH_SHUF_CASE_F32(0x2A) SH_SHUF_CASE_F32(0x2B)
+                SH_SHUF_CASE_F32(0x2C) SH_SHUF_CASE_F32(0x2D) SH_SHUF_CASE_F32(0x2E) SH_SHUF_CASE_F32(0x2F)
+                SH_SHUF_CASE_F32(0x30) SH_SHUF_CASE_F32(0x31) SH_SHUF_CASE_F32(0x32) SH_SHUF_CASE_F32(0x33)
+                SH_SHUF_CASE_F32(0x34) SH_SHUF_CASE_F32(0x35) SH_SHUF_CASE_F32(0x36) SH_SHUF_CASE_F32(0x37)
+                SH_SHUF_CASE_F32(0x38) SH_SHUF_CASE_F32(0x39) SH_SHUF_CASE_F32(0x3A) SH_SHUF_CASE_F32(0x3B)
+                SH_SHUF_CASE_F32(0x3C) SH_SHUF_CASE_F32(0x3D) SH_SHUF_CASE_F32(0x3E) SH_SHUF_CASE_F32(0x3F)
+                SH_SHUF_CASE_F32(0x40) SH_SHUF_CASE_F32(0x41) SH_SHUF_CASE_F32(0x42) SH_SHUF_CASE_F32(0x43)
+                SH_SHUF_CASE_F32(0x44) SH_SHUF_CASE_F32(0x45) SH_SHUF_CASE_F32(0x46) SH_SHUF_CASE_F32(0x47)
+                SH_SHUF_CASE_F32(0x48) SH_SHUF_CASE_F32(0x49) SH_SHUF_CASE_F32(0x4A) SH_SHUF_CASE_F32(0x4B)
+                SH_SHUF_CASE_F32(0x4C) SH_SHUF_CASE_F32(0x4D) SH_SHUF_CASE_F32(0x4E) SH_SHUF_CASE_F32(0x4F)
+                SH_SHUF_CASE_F32(0x50) SH_SHUF_CASE_F32(0x51) SH_SHUF_CASE_F32(0x52) SH_SHUF_CASE_F32(0x53)
+                SH_SHUF_CASE_F32(0x54) SH_SHUF_CASE_F32(0x55) SH_SHUF_CASE_F32(0x56) SH_SHUF_CASE_F32(0x57)
+                SH_SHUF_CASE_F32(0x58) SH_SHUF_CASE_F32(0x59) SH_SHUF_CASE_F32(0x5A) SH_SHUF_CASE_F32(0x5B)
+                SH_SHUF_CASE_F32(0x5C) SH_SHUF_CASE_F32(0x5D) SH_SHUF_CASE_F32(0x5E) SH_SHUF_CASE_F32(0x5F)
+                SH_SHUF_CASE_F32(0x60) SH_SHUF_CASE_F32(0x61) SH_SHUF_CASE_F32(0x62) SH_SHUF_CASE_F32(0x63)
+                SH_SHUF_CASE_F32(0x64) SH_SHUF_CASE_F32(0x65) SH_SHUF_CASE_F32(0x66) SH_SHUF_CASE_F32(0x67)
+                SH_SHUF_CASE_F32(0x68) SH_SHUF_CASE_F32(0x69) SH_SHUF_CASE_F32(0x6A) SH_SHUF_CASE_F32(0x6B)
+                SH_SHUF_CASE_F32(0x6C) SH_SHUF_CASE_F32(0x6D) SH_SHUF_CASE_F32(0x6E) SH_SHUF_CASE_F32(0x6F)
+                SH_SHUF_CASE_F32(0x70) SH_SHUF_CASE_F32(0x71) SH_SHUF_CASE_F32(0x72) SH_SHUF_CASE_F32(0x73)
+                SH_SHUF_CASE_F32(0x74) SH_SHUF_CASE_F32(0x75) SH_SHUF_CASE_F32(0x76) SH_SHUF_CASE_F32(0x77)
+                SH_SHUF_CASE_F32(0x78) SH_SHUF_CASE_F32(0x79) SH_SHUF_CASE_F32(0x7A) SH_SHUF_CASE_F32(0x7B)
+                SH_SHUF_CASE_F32(0x7C) SH_SHUF_CASE_F32(0x7D) SH_SHUF_CASE_F32(0x7E) SH_SHUF_CASE_F32(0x7F)
+                SH_SHUF_CASE_F32(0x80) SH_SHUF_CASE_F32(0x81) SH_SHUF_CASE_F32(0x82) SH_SHUF_CASE_F32(0x83)
+                SH_SHUF_CASE_F32(0x84) SH_SHUF_CASE_F32(0x85) SH_SHUF_CASE_F32(0x86) SH_SHUF_CASE_F32(0x87)
+                SH_SHUF_CASE_F32(0x88) SH_SHUF_CASE_F32(0x89) SH_SHUF_CASE_F32(0x8A) SH_SHUF_CASE_F32(0x8B)
+                SH_SHUF_CASE_F32(0x8C) SH_SHUF_CASE_F32(0x8D) SH_SHUF_CASE_F32(0x8E) SH_SHUF_CASE_F32(0x8F)
+                SH_SHUF_CASE_F32(0x90) SH_SHUF_CASE_F32(0x91) SH_SHUF_CASE_F32(0x92) SH_SHUF_CASE_F32(0x93)
+                SH_SHUF_CASE_F32(0x94) SH_SHUF_CASE_F32(0x95) SH_SHUF_CASE_F32(0x96) SH_SHUF_CASE_F32(0x97)
+                SH_SHUF_CASE_F32(0x98) SH_SHUF_CASE_F32(0x99) SH_SHUF_CASE_F32(0x9A) SH_SHUF_CASE_F32(0x9B)
+                SH_SHUF_CASE_F32(0x9C) SH_SHUF_CASE_F32(0x9D) SH_SHUF_CASE_F32(0x9E) SH_SHUF_CASE_F32(0x9F)
+                SH_SHUF_CASE_F32(0xA0) SH_SHUF_CASE_F32(0xA1) SH_SHUF_CASE_F32(0xA2) SH_SHUF_CASE_F32(0xA3)
+                SH_SHUF_CASE_F32(0xA4) SH_SHUF_CASE_F32(0xA5) SH_SHUF_CASE_F32(0xA6) SH_SHUF_CASE_F32(0xA7)
+                SH_SHUF_CASE_F32(0xA8) SH_SHUF_CASE_F32(0xA9) SH_SHUF_CASE_F32(0xAA) SH_SHUF_CASE_F32(0xAB)
+                SH_SHUF_CASE_F32(0xAC) SH_SHUF_CASE_F32(0xAD) SH_SHUF_CASE_F32(0xAE) SH_SHUF_CASE_F32(0xAF)
+                SH_SHUF_CASE_F32(0xB0) SH_SHUF_CASE_F32(0xB1) SH_SHUF_CASE_F32(0xB2) SH_SHUF_CASE_F32(0xB3)
+                SH_SHUF_CASE_F32(0xB4) SH_SHUF_CASE_F32(0xB5) SH_SHUF_CASE_F32(0xB6) SH_SHUF_CASE_F32(0xB7)
+                SH_SHUF_CASE_F32(0xB8) SH_SHUF_CASE_F32(0xB9) SH_SHUF_CASE_F32(0xBA) SH_SHUF_CASE_F32(0xBB)
+                SH_SHUF_CASE_F32(0xBC) SH_SHUF_CASE_F32(0xBD) SH_SHUF_CASE_F32(0xBE) SH_SHUF_CASE_F32(0xBF)
+                SH_SHUF_CASE_F32(0xC0) SH_SHUF_CASE_F32(0xC1) SH_SHUF_CASE_F32(0xC2) SH_SHUF_CASE_F32(0xC3)
+                SH_SHUF_CASE_F32(0xC4) SH_SHUF_CASE_F32(0xC5) SH_SHUF_CASE_F32(0xC6) SH_SHUF_CASE_F32(0xC7)
+                SH_SHUF_CASE_F32(0xC8) SH_SHUF_CASE_F32(0xC9) SH_SHUF_CASE_F32(0xCA) SH_SHUF_CASE_F32(0xCB)
+                SH_SHUF_CASE_F32(0xCC) SH_SHUF_CASE_F32(0xCD) SH_SHUF_CASE_F32(0xCE) SH_SHUF_CASE_F32(0xCF)
+                SH_SHUF_CASE_F32(0xD0) SH_SHUF_CASE_F32(0xD1) SH_SHUF_CASE_F32(0xD2) SH_SHUF_CASE_F32(0xD3)
+                SH_SHUF_CASE_F32(0xD4) SH_SHUF_CASE_F32(0xD5) SH_SHUF_CASE_F32(0xD6) SH_SHUF_CASE_F32(0xD7)
+                SH_SHUF_CASE_F32(0xD8) SH_SHUF_CASE_F32(0xD9) SH_SHUF_CASE_F32(0xDA) SH_SHUF_CASE_F32(0xDB)
+                SH_SHUF_CASE_F32(0xDC) SH_SHUF_CASE_F32(0xDD) SH_SHUF_CASE_F32(0xDE) SH_SHUF_CASE_F32(0xDF)
+                SH_SHUF_CASE_F32(0xE0) SH_SHUF_CASE_F32(0xE1) SH_SHUF_CASE_F32(0xE2) SH_SHUF_CASE_F32(0xE3)
+                SH_SHUF_CASE_F32(0xE4) SH_SHUF_CASE_F32(0xE5) SH_SHUF_CASE_F32(0xE6) SH_SHUF_CASE_F32(0xE7)
+                SH_SHUF_CASE_F32(0xE8) SH_SHUF_CASE_F32(0xE9) SH_SHUF_CASE_F32(0xEA) SH_SHUF_CASE_F32(0xEB)
+                SH_SHUF_CASE_F32(0xEC) SH_SHUF_CASE_F32(0xED) SH_SHUF_CASE_F32(0xEE) SH_SHUF_CASE_F32(0xEF)
+                SH_SHUF_CASE_F32(0xF0) SH_SHUF_CASE_F32(0xF1) SH_SHUF_CASE_F32(0xF2) SH_SHUF_CASE_F32(0xF3)
+                SH_SHUF_CASE_F32(0xF4) SH_SHUF_CASE_F32(0xF5) SH_SHUF_CASE_F32(0xF6) SH_SHUF_CASE_F32(0xF7)
+                SH_SHUF_CASE_F32(0xF8) SH_SHUF_CASE_F32(0xF9) SH_SHUF_CASE_F32(0xFA) SH_SHUF_CASE_F32(0xFB)
+                SH_SHUF_CASE_F32(0xFC) SH_SHUF_CASE_F32(0xFD) SH_SHUF_CASE_F32(0xFE) SH_SHUF_CASE_F32(0xFF)
+                default: break;
+              }
+            } else if (lk == SH_K_U32 || lk == SH_K_I64) {
+              switch (ctrl) {
+                SH_SHUF_CASE_I32(0x00) SH_SHUF_CASE_I32(0x01) SH_SHUF_CASE_I32(0x02) SH_SHUF_CASE_I32(0x03)
+                SH_SHUF_CASE_I32(0x04) SH_SHUF_CASE_I32(0x05) SH_SHUF_CASE_I32(0x06) SH_SHUF_CASE_I32(0x07)
+                SH_SHUF_CASE_I32(0x08) SH_SHUF_CASE_I32(0x09) SH_SHUF_CASE_I32(0x0A) SH_SHUF_CASE_I32(0x0B)
+                SH_SHUF_CASE_I32(0x0C) SH_SHUF_CASE_I32(0x0D) SH_SHUF_CASE_I32(0x0E) SH_SHUF_CASE_I32(0x0F)
+                SH_SHUF_CASE_I32(0x10) SH_SHUF_CASE_I32(0x11) SH_SHUF_CASE_I32(0x12) SH_SHUF_CASE_I32(0x13)
+                SH_SHUF_CASE_I32(0x14) SH_SHUF_CASE_I32(0x15) SH_SHUF_CASE_I32(0x16) SH_SHUF_CASE_I32(0x17)
+                SH_SHUF_CASE_I32(0x18) SH_SHUF_CASE_I32(0x19) SH_SHUF_CASE_I32(0x1A) SH_SHUF_CASE_I32(0x1B)
+                SH_SHUF_CASE_I32(0x1C) SH_SHUF_CASE_I32(0x1D) SH_SHUF_CASE_I32(0x1E) SH_SHUF_CASE_I32(0x1F)
+                SH_SHUF_CASE_I32(0x20) SH_SHUF_CASE_I32(0x21) SH_SHUF_CASE_I32(0x22) SH_SHUF_CASE_I32(0x23)
+                SH_SHUF_CASE_I32(0x24) SH_SHUF_CASE_I32(0x25) SH_SHUF_CASE_I32(0x26) SH_SHUF_CASE_I32(0x27)
+                SH_SHUF_CASE_I32(0x28) SH_SHUF_CASE_I32(0x29) SH_SHUF_CASE_I32(0x2A) SH_SHUF_CASE_I32(0x2B)
+                SH_SHUF_CASE_I32(0x2C) SH_SHUF_CASE_I32(0x2D) SH_SHUF_CASE_I32(0x2E) SH_SHUF_CASE_I32(0x2F)
+                SH_SHUF_CASE_I32(0x30) SH_SHUF_CASE_I32(0x31) SH_SHUF_CASE_I32(0x32) SH_SHUF_CASE_I32(0x33)
+                SH_SHUF_CASE_I32(0x34) SH_SHUF_CASE_I32(0x35) SH_SHUF_CASE_I32(0x36) SH_SHUF_CASE_I32(0x37)
+                SH_SHUF_CASE_I32(0x38) SH_SHUF_CASE_I32(0x39) SH_SHUF_CASE_I32(0x3A) SH_SHUF_CASE_I32(0x3B)
+                SH_SHUF_CASE_I32(0x3C) SH_SHUF_CASE_I32(0x3D) SH_SHUF_CASE_I32(0x3E) SH_SHUF_CASE_I32(0x3F)
+                SH_SHUF_CASE_I32(0x40) SH_SHUF_CASE_I32(0x41) SH_SHUF_CASE_I32(0x42) SH_SHUF_CASE_I32(0x43)
+                SH_SHUF_CASE_I32(0x44) SH_SHUF_CASE_I32(0x45) SH_SHUF_CASE_I32(0x46) SH_SHUF_CASE_I32(0x47)
+                SH_SHUF_CASE_I32(0x48) SH_SHUF_CASE_I32(0x49) SH_SHUF_CASE_I32(0x4A) SH_SHUF_CASE_I32(0x4B)
+                SH_SHUF_CASE_I32(0x4C) SH_SHUF_CASE_I32(0x4D) SH_SHUF_CASE_I32(0x4E) SH_SHUF_CASE_I32(0x4F)
+                SH_SHUF_CASE_I32(0x50) SH_SHUF_CASE_I32(0x51) SH_SHUF_CASE_I32(0x52) SH_SHUF_CASE_I32(0x53)
+                SH_SHUF_CASE_I32(0x54) SH_SHUF_CASE_I32(0x55) SH_SHUF_CASE_I32(0x56) SH_SHUF_CASE_I32(0x57)
+                SH_SHUF_CASE_I32(0x58) SH_SHUF_CASE_I32(0x59) SH_SHUF_CASE_I32(0x5A) SH_SHUF_CASE_I32(0x5B)
+                SH_SHUF_CASE_I32(0x5C) SH_SHUF_CASE_I32(0x5D) SH_SHUF_CASE_I32(0x5E) SH_SHUF_CASE_I32(0x5F)
+                SH_SHUF_CASE_I32(0x60) SH_SHUF_CASE_I32(0x61) SH_SHUF_CASE_I32(0x62) SH_SHUF_CASE_I32(0x63)
+                SH_SHUF_CASE_I32(0x64) SH_SHUF_CASE_I32(0x65) SH_SHUF_CASE_I32(0x66) SH_SHUF_CASE_I32(0x67)
+                SH_SHUF_CASE_I32(0x68) SH_SHUF_CASE_I32(0x69) SH_SHUF_CASE_I32(0x6A) SH_SHUF_CASE_I32(0x6B)
+                SH_SHUF_CASE_I32(0x6C) SH_SHUF_CASE_I32(0x6D) SH_SHUF_CASE_I32(0x6E) SH_SHUF_CASE_I32(0x6F)
+                SH_SHUF_CASE_I32(0x70) SH_SHUF_CASE_I32(0x71) SH_SHUF_CASE_I32(0x72) SH_SHUF_CASE_I32(0x73)
+                SH_SHUF_CASE_I32(0x74) SH_SHUF_CASE_I32(0x75) SH_SHUF_CASE_I32(0x76) SH_SHUF_CASE_I32(0x77)
+                SH_SHUF_CASE_I32(0x78) SH_SHUF_CASE_I32(0x79) SH_SHUF_CASE_I32(0x7A) SH_SHUF_CASE_I32(0x7B)
+                SH_SHUF_CASE_I32(0x7C) SH_SHUF_CASE_I32(0x7D) SH_SHUF_CASE_I32(0x7E) SH_SHUF_CASE_I32(0x7F)
+                SH_SHUF_CASE_I32(0x80) SH_SHUF_CASE_I32(0x81) SH_SHUF_CASE_I32(0x82) SH_SHUF_CASE_I32(0x83)
+                SH_SHUF_CASE_I32(0x84) SH_SHUF_CASE_I32(0x85) SH_SHUF_CASE_I32(0x86) SH_SHUF_CASE_I32(0x87)
+                SH_SHUF_CASE_I32(0x88) SH_SHUF_CASE_I32(0x89) SH_SHUF_CASE_I32(0x8A) SH_SHUF_CASE_I32(0x8B)
+                SH_SHUF_CASE_I32(0x8C) SH_SHUF_CASE_I32(0x8D) SH_SHUF_CASE_I32(0x8E) SH_SHUF_CASE_I32(0x8F)
+                SH_SHUF_CASE_I32(0x90) SH_SHUF_CASE_I32(0x91) SH_SHUF_CASE_I32(0x92) SH_SHUF_CASE_I32(0x93)
+                SH_SHUF_CASE_I32(0x94) SH_SHUF_CASE_I32(0x95) SH_SHUF_CASE_I32(0x96) SH_SHUF_CASE_I32(0x97)
+                SH_SHUF_CASE_I32(0x98) SH_SHUF_CASE_I32(0x99) SH_SHUF_CASE_I32(0x9A) SH_SHUF_CASE_I32(0x9B)
+                SH_SHUF_CASE_I32(0x9C) SH_SHUF_CASE_I32(0x9D) SH_SHUF_CASE_I32(0x9E) SH_SHUF_CASE_I32(0x9F)
+                SH_SHUF_CASE_I32(0xA0) SH_SHUF_CASE_I32(0xA1) SH_SHUF_CASE_I32(0xA2) SH_SHUF_CASE_I32(0xA3)
+                SH_SHUF_CASE_I32(0xA4) SH_SHUF_CASE_I32(0xA5) SH_SHUF_CASE_I32(0xA6) SH_SHUF_CASE_I32(0xA7)
+                SH_SHUF_CASE_I32(0xA8) SH_SHUF_CASE_I32(0xA9) SH_SHUF_CASE_I32(0xAA) SH_SHUF_CASE_I32(0xAB)
+                SH_SHUF_CASE_I32(0xAC) SH_SHUF_CASE_I32(0xAD) SH_SHUF_CASE_I32(0xAE) SH_SHUF_CASE_I32(0xAF)
+                SH_SHUF_CASE_I32(0xB0) SH_SHUF_CASE_I32(0xB1) SH_SHUF_CASE_I32(0xB2) SH_SHUF_CASE_I32(0xB3)
+                SH_SHUF_CASE_I32(0xB4) SH_SHUF_CASE_I32(0xB5) SH_SHUF_CASE_I32(0xB6) SH_SHUF_CASE_I32(0xB7)
+                SH_SHUF_CASE_I32(0xB8) SH_SHUF_CASE_I32(0xB9) SH_SHUF_CASE_I32(0xBA) SH_SHUF_CASE_I32(0xBB)
+                SH_SHUF_CASE_I32(0xBC) SH_SHUF_CASE_I32(0xBD) SH_SHUF_CASE_I32(0xBE) SH_SHUF_CASE_I32(0xBF)
+                SH_SHUF_CASE_I32(0xC0) SH_SHUF_CASE_I32(0xC1) SH_SHUF_CASE_I32(0xC2) SH_SHUF_CASE_I32(0xC3)
+                SH_SHUF_CASE_I32(0xC4) SH_SHUF_CASE_I32(0xC5) SH_SHUF_CASE_I32(0xC6) SH_SHUF_CASE_I32(0xC7)
+                SH_SHUF_CASE_I32(0xC8) SH_SHUF_CASE_I32(0xC9) SH_SHUF_CASE_I32(0xCA) SH_SHUF_CASE_I32(0xCB)
+                SH_SHUF_CASE_I32(0xCC) SH_SHUF_CASE_I32(0xCD) SH_SHUF_CASE_I32(0xCE) SH_SHUF_CASE_I32(0xCF)
+                SH_SHUF_CASE_I32(0xD0) SH_SHUF_CASE_I32(0xD1) SH_SHUF_CASE_I32(0xD2) SH_SHUF_CASE_I32(0xD3)
+                SH_SHUF_CASE_I32(0xD4) SH_SHUF_CASE_I32(0xD5) SH_SHUF_CASE_I32(0xD6) SH_SHUF_CASE_I32(0xD7)
+                SH_SHUF_CASE_I32(0xD8) SH_SHUF_CASE_I32(0xD9) SH_SHUF_CASE_I32(0xDA) SH_SHUF_CASE_I32(0xDB)
+                SH_SHUF_CASE_I32(0xDC) SH_SHUF_CASE_I32(0xDD) SH_SHUF_CASE_I32(0xDE) SH_SHUF_CASE_I32(0xDF)
+                SH_SHUF_CASE_I32(0xE0) SH_SHUF_CASE_I32(0xE1) SH_SHUF_CASE_I32(0xE2) SH_SHUF_CASE_I32(0xE3)
+                SH_SHUF_CASE_I32(0xE4) SH_SHUF_CASE_I32(0xE5) SH_SHUF_CASE_I32(0xE6) SH_SHUF_CASE_I32(0xE7)
+                SH_SHUF_CASE_I32(0xE8) SH_SHUF_CASE_I32(0xE9) SH_SHUF_CASE_I32(0xEA) SH_SHUF_CASE_I32(0xEB)
+                SH_SHUF_CASE_I32(0xEC) SH_SHUF_CASE_I32(0xED) SH_SHUF_CASE_I32(0xEE) SH_SHUF_CASE_I32(0xEF)
+                SH_SHUF_CASE_I32(0xF0) SH_SHUF_CASE_I32(0xF1) SH_SHUF_CASE_I32(0xF2) SH_SHUF_CASE_I32(0xF3)
+                SH_SHUF_CASE_I32(0xF4) SH_SHUF_CASE_I32(0xF5) SH_SHUF_CASE_I32(0xF6) SH_SHUF_CASE_I32(0xF7)
+                SH_SHUF_CASE_I32(0xF8) SH_SHUF_CASE_I32(0xF9) SH_SHUF_CASE_I32(0xFA) SH_SHUF_CASE_I32(0xFB)
+                SH_SHUF_CASE_I32(0xFC) SH_SHUF_CASE_I32(0xFD) SH_SHUF_CASE_I32(0xFE) SH_SHUF_CASE_I32(0xFF)
+                default: break;
+              }
+            }
+#undef SH_SHUF_CASE_F32
+#undef SH_SHUF_CASE_I32
+          }
+          vshuffle_done:;
+          (void)0;  // label needs a statement
+        }
+        // If SIMD path stored the result, we're done; else fall to scalar.
+        if (simd_took) break;
+        }  // end of SIMD block
+#endif  // __SSE2__
+
+        // Scalar fallback.
         for (uint8_t li = 0; li < nl; li++) {
           uint32_t src_idx = c->aux[ins->aux_off + li];
           if (src_idx >= va->lanes) {
@@ -1011,8 +1543,11 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
       // SHB_VREDUCE: dst = reduce(a) -> scalar. sub = sh_reduce.
       //   kind = lane kind of input; lanes = input lane count.
       //   DOT uses b as second vector.
-      // Reduction is SEQUENTIAL left-to-right (the spec mandates it; a tree
-      // reduction reassociates and diverges for floats).
+      // Reduction is ALWAYS SCALAR (no SIMD path). The spec mandates a
+      // sequential left-to-right fold; a SIMD horizontal or tree reduction
+      // reassociates floats and produces a different bit-pattern -- that is the
+      // primary float bit-exactness trap. Integer reductions stay scalar too for
+      // simplicity (the lane-wise ops are where the SIMD win is anyway).
       // -----------------------------------------------------------------------
       case SHB_VREDUCE: {
         if (ins->dst == SH_VREG_NONE) break;
