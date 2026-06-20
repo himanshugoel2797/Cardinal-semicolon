@@ -17,7 +17,7 @@
 (define-module init
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
-          ps2 virtio-net rtl8139 virtio-gpu sys-pci)
+          ps2 virtio-net rtl8139 virtio-gpu lfb sys-pci)
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -46,8 +46,15 @@
     ;; virtio-gpu device to DRIVER_OK, paints a framebuffer, and registers itself
     ;; with the display service. Guarded: with no GPU present it just logs and
     ;; returns, so a headless smoke boot is unaffected.
+    ;; Fallback policy: lfb claims the boot framebuffer (the firmware-provided
+    ;; linear framebuffer, e.g. -vga std) ONLY when no virtio-gpu device is on the
+    ;; bus. The pci-find gate is race-free -- it tests hardware presence, not a
+    ;; registration result -- and matches the C "load lfb only if no display
+    ;; registered". This gate would extend (an `or` over their pci-finds) if other
+    ;; GPU drivers are added.
     (let ((display-svc (start-display-service)))
-      (virtio-gpu-init display-svc))
+      (virtio-gpu-init display-svc)
+      (if (not (pci-find #x1af4 #x1050)) (lfb-init display-svc)))
     ;; Bring up the network stack, then a NIC, which registers itself with the
     ;; stack and forwards frames to it. Prefer the proven virtio-net when present;
     ;; otherwise fall back to the rtl8139 (the `-device rtl8139` boot, where no
