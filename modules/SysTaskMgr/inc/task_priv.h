@@ -17,7 +17,9 @@
 
 #define TASK_NAME_LEN 256
 #define MAX_DESCRIPTOR_COUNT 256
-#define KERNEL_STACK_LEN KiB(32)
+// 128 KiB: a Lisp context may compile/run a "shader" (the recursive in-OS
+// typed-Lisp compiler in libs/lisp_shader) on its kernel stack; 32 KiB overflowed.
+#define KERNEL_STACK_LEN KiB(128)
 #define USER_STACK_LEN KiB(32)
 
 typedef enum

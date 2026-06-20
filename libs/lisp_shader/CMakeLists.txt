@@ -11,10 +11,16 @@ ADD_LIBRARY(lisp_shader STATIC ${SHADER_SRCS})
 TARGET_INCLUDE_DIRECTORIES(lisp_shader PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
 TARGET_LINK_LIBRARIES(lisp_shader PUBLIC lisp)
 TARGET_INCLUDE_DIRECTORIES(lisp_shader SYSTEM PUBLIC "${KERN_STDLIB_INCLUDE_DIR}")
-# Mirror libs/lisp's flags: -fno-pic for the relocatable module model, scalar SSE
-# re-enabled for hardware doubles, alignment-safe (see libs/lisp/CMakeLists.txt).
+# Mirror libs/lisp's flags: -fno-pic for the relocatable model, scalar SSE re-enabled
+# for hardware doubles, alignment-safe (see libs/lisp/CMakeLists.txt). -O2 is
+# LOAD-BEARING here, not just speed: at the Debug default (-O0) the verifier and VM
+# give every large local (vm_value=144B, sh_error=168B, the op switch's temporaries)
+# its own stack slot, ballooning frames to ~37KB (shv_verify) / ~45KB (sh_vm_run) --
+# which overflow the 32KB kernel stack and corrupt memory. -O2 reuses slots and keeps
+# frames to a few KB. The host differential suite runs the same sources and stays
+# bit-exact, so optimization does not change results.
 TARGET_COMPILE_OPTIONS(lisp_shader PRIVATE -fno-pic -msse -msse2 -mstackrealign
-                                           -fno-vectorize -fno-slp-vectorize)
+                                           -fno-vectorize -fno-slp-vectorize -O2)
 # The vector VM (sh_vm.c) uses SSE2 intrinsics via <immintrin.h>, which lives in
 # clang's builtin resource dir -- hidden by -nostdinc (it implies -nobuiltininc).
 # Re-expose ONLY that dir, placed AFTER common/inc on the search path so common's

@@ -10,6 +10,7 @@
 //
 // See notes/scratch/shader-proposal-minimalist.md sections 2-5.
 
+#include <stdlib.h>
 #include <string.h>
 #include "sh_internal.h"
 
@@ -49,6 +50,7 @@ typedef struct {
 // ---------------------------------------------------------------------------
 
 static sh_status verify_node(verify_ctx *vc, sh_nref ref);
+static sh_status shv_verify_core(verify_ctx *vc);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1907,31 +1909,48 @@ sh_status shv_verify(sh_program *p, const sh_prim_set *prims, uint32_t flags,
   sh_status s = validate_params_and_ret(p, err);
   if (s != SH_OK) return s;
 
-  verify_ctx vc;
-  memset(&vc, 0, sizeof(vc));
-  vc.p = p;
-  vc.prims = prims;
-  vc.flags = flags;
-  vc.err = err;
+  // verify_ctx is ~36KB (node_cost[4096] + needs_resolve[4096]); heap-allocate it
+  // so the verifier does NOT blow the small in-kernel stack (16KB bootstrap /
+  // 32KB task). Host malloc is 16-aligned and ample; this just moves the big
+  // arrays off the stack. The caller-owned vc is freed unconditionally below, so
+  // every early return inside shv_verify_core is leak-free.
+  verify_ctx *vc = calloc(1, sizeof(*vc));
+  if (!vc)
+    return sh_set_error(err, SH_ERR_OOM, -1, -1, "verifier: out of memory");
+  vc->p = p;
+  vc->prims = prims;
+  vc->flags = flags;
+  vc->err = err;
+  s = shv_verify_core(vc);
+  free(vc);
+  return s;
+}
+
+// The verifier proper, on a heap-allocated context (see shv_verify). Split out so
+// its ~12 early returns need no cleanup -- the wrapper frees vc.
+static sh_status shv_verify_core(verify_ctx *vc) {
+  sh_program *p = vc->p;
+  sh_error *err = vc->err;
+  uint32_t flags = vc->flags;
 
   // Validate slot indices and aux array ranges before touching the arena
-  s = validate_slots(&vc);
+  sh_status s = validate_slots(vc);
   if (s != SH_OK) return s;
-  s = validate_aux_ranges(&vc);
+  s = validate_aux_ranges(vc);
   if (s != SH_OK) return s;
 
   // Bottom-up type inference from the root
-  s = verify_node(&vc, p->root);
+  s = verify_node(vc, p->root);
   if (s != SH_OK) return s;
 
   // Resolve any remaining untyped CONST nodes
-  s = finalize_all(&vc);
+  s = finalize_all(vc);
   if (s != SH_OK) return s;
 
   // Reject any non-RECUR node still untyped after all inference passes.
   // A VOID result node means the verifier could not prove the type safe;
   // the interpreter must never see such a node.
-  s = check_no_void_nodes(&vc);
+  s = check_no_void_nodes(vc);
   if (s != SH_OK) return s;
 
   // Finding 1/5: Final sweep -- after ALL type inference is complete, reject any
@@ -1995,7 +2014,7 @@ sh_status shv_verify(sh_program *p, const sh_prim_set *prims, uint32_t flags,
                         p->ret.kind, actual.kind);
 
   // Compute worst-case cost
-  compute_cost(&vc);
+  compute_cost(vc);
 
   // Check SH_REQUIRE_CONST_COST
   if ((flags & SH_REQUIRE_CONST_COST) && !p->cost.is_const)

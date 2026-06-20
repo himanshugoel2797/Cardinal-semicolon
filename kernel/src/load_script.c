@@ -23,13 +23,28 @@ int module_load(char *name)
     // decompress celf's elf section
     ModuleHeader *hdr = (ModuleHeader *)mod_loc;
 
+    // The relocatable module executes in place (sections live at base + sh_offset),
+    // so the base must satisfy the sections' alignment. The ELF carries 16/64-byte
+    // alignment for SSE/AVX data (vector constants, _Alignas(16) state, xsave areas);
+    // the in-initrd image is only 8-byte aligned, which makes an aligned SSE move
+    // (movaps/movdqa) on such data #GP. Copy the image to a 64-byte-aligned buffer
+    // first (the kernel allocator only guarantees 8, so over-allocate and align by
+    // hand). The buffer is intentionally never freed -- the module runs from it for
+    // the life of the system.
+    size_t elf_len = hdr->uncompressed_len;
+    uint8_t *elf_raw = (uint8_t *)malloc(elf_len + 63);
+    if (elf_raw == NULL)
+        PANIC("[Kernel] Out of memory loading module.");
+    uint8_t *elf_img = (uint8_t *)(((uintptr_t)elf_raw + 63) & ~(uintptr_t)63);
+    memcpy(elf_img, hdr->data, elf_len);
+
     int (*entry_pt)() = NULL;
-    if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
+    if (elf_load(elf_img, elf_len, &entry_pt))
         PANIC("[Kernel] Elf load failed.");
 
     char tmp_entry_addr[20];
     print_str("[Kernel] Loaded at ");
-    print_str(ltoa((uint64_t)hdr->data, tmp_entry_addr, 16));
+    print_str(ltoa((uint64_t)elf_img, tmp_entry_addr, 16));
     print_str("\r\n");
 
     int err = entry_pt();
