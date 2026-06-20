@@ -708,6 +708,19 @@ static sh_status verify_node(verify_ctx *vc, sh_nref ref) {
       s = check_binop_operands(vc, ref);
       if (s != SH_OK) return s;
       // check_binop_operands may have promoted to VBINOP; cost already set there
+      // For saturating ops: reject float operands regardless of scalar/vector path.
+      {
+        sh_binop bop = (sh_binop)n->sub;
+        if (bop == SH_BIN_SADD || bop == SH_BIN_SSUB) {
+          sh_type ta = node_type(p, n->a);
+          sh_kind ek = (ta.kind == (uint8_t)SH_K_VEC)
+                       ? (sh_kind)ta.lane_kind
+                       : (sh_kind)ta.kind;
+          if (ek == SH_K_F32 || ek == SH_K_F64)
+            return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                                "sat+/sat-: operands must be integer (float not allowed)");
+        }
+      }
       if (n->op == (uint16_t)SH_OP_BINOP) {
         // Still scalar BINOP
         sh_type ta = node_type(p, n->a);

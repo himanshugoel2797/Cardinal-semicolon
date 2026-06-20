@@ -243,16 +243,18 @@ static uint64_t scalar_binop_bits(sh_binop op, sh_kind k,
     case SH_K_U8: {
       uint8_t ra = (uint8_t)a, rb = (uint8_t)b, rr = 0;
       switch (op) {
-        case SH_BIN_ADD: rr = (uint8_t)(ra + rb); break;
-        case SH_BIN_SUB: rr = (uint8_t)(ra - rb); break;
-        case SH_BIN_MUL: rr = (uint8_t)(ra * rb); break;
-        case SH_BIN_DIV: rr = rb ? (uint8_t)(ra / rb) : 0; break;
-        case SH_BIN_MOD: rr = rb ? (uint8_t)(ra % rb) : 0; break;
-        case SH_BIN_AND: rr = ra & rb; break;
-        case SH_BIN_OR:  rr = ra | rb; break;
-        case SH_BIN_XOR: rr = ra ^ rb; break;
-        case SH_BIN_SHL: rr = (uint8_t)(ra << (rb & 7u)); break;
-        case SH_BIN_SHR: rr = (uint8_t)(ra >> (rb & 7u)); break;
+        case SH_BIN_ADD:  rr = (uint8_t)(ra + rb); break;
+        case SH_BIN_SUB:  rr = (uint8_t)(ra - rb); break;
+        case SH_BIN_MUL:  rr = (uint8_t)(ra * rb); break;
+        case SH_BIN_DIV:  rr = rb ? (uint8_t)(ra / rb) : 0; break;
+        case SH_BIN_MOD:  rr = rb ? (uint8_t)(ra % rb) : 0; break;
+        case SH_BIN_AND:  rr = ra & rb; break;
+        case SH_BIN_OR:   rr = ra | rb; break;
+        case SH_BIN_XOR:  rr = ra ^ rb; break;
+        case SH_BIN_SHL:  rr = (uint8_t)(ra << (rb & 7u)); break;
+        case SH_BIN_SHR:  rr = (uint8_t)(ra >> (rb & 7u)); break;
+        case SH_BIN_SADD: rr = (rb > (uint8_t)(0xFFu - ra)) ? 0xFFu : (uint8_t)(ra + rb); break;
+        case SH_BIN_SSUB: rr = (rb > ra) ? 0u : (uint8_t)(ra - rb); break;
         default: rr = 0; break;
       }
       return (uint64_t)rr;
@@ -260,16 +262,18 @@ static uint64_t scalar_binop_bits(sh_binop op, sh_kind k,
     case SH_K_U16: {
       uint16_t ra = (uint16_t)a, rb = (uint16_t)b, rr = 0;
       switch (op) {
-        case SH_BIN_ADD: rr = (uint16_t)(ra + rb); break;
-        case SH_BIN_SUB: rr = (uint16_t)(ra - rb); break;
-        case SH_BIN_MUL: rr = (uint16_t)(ra * rb); break;
-        case SH_BIN_DIV: rr = rb ? (uint16_t)(ra / rb) : 0; break;
-        case SH_BIN_MOD: rr = rb ? (uint16_t)(ra % rb) : 0; break;
-        case SH_BIN_AND: rr = ra & rb; break;
-        case SH_BIN_OR:  rr = ra | rb; break;
-        case SH_BIN_XOR: rr = ra ^ rb; break;
-        case SH_BIN_SHL: rr = (uint16_t)(ra << (rb & 15u)); break;
-        case SH_BIN_SHR: rr = (uint16_t)(ra >> (rb & 15u)); break;
+        case SH_BIN_ADD:  rr = (uint16_t)(ra + rb); break;
+        case SH_BIN_SUB:  rr = (uint16_t)(ra - rb); break;
+        case SH_BIN_MUL:  rr = (uint16_t)(ra * rb); break;
+        case SH_BIN_DIV:  rr = rb ? (uint16_t)(ra / rb) : 0; break;
+        case SH_BIN_MOD:  rr = rb ? (uint16_t)(ra % rb) : 0; break;
+        case SH_BIN_AND:  rr = ra & rb; break;
+        case SH_BIN_OR:   rr = ra | rb; break;
+        case SH_BIN_XOR:  rr = ra ^ rb; break;
+        case SH_BIN_SHL:  rr = (uint16_t)(ra << (rb & 15u)); break;
+        case SH_BIN_SHR:  rr = (uint16_t)(ra >> (rb & 15u)); break;
+        case SH_BIN_SADD: rr = (rb > (uint16_t)(0xFFFFu - ra)) ? 0xFFFFu : (uint16_t)(ra + rb); break;
+        case SH_BIN_SSUB: rr = (rb > ra) ? 0u : (uint16_t)(ra - rb); break;
         default: rr = 0; break;
       }
       return (uint64_t)rr;
@@ -278,16 +282,18 @@ static uint64_t scalar_binop_bits(sh_binop op, sh_kind k,
     case SH_K_U32: {
       uint32_t ra = (uint32_t)a, rb = (uint32_t)b, rr = 0;
       switch (op) {
-        case SH_BIN_ADD: rr = ra + rb; break;
-        case SH_BIN_SUB: rr = ra - rb; break;
-        case SH_BIN_MUL: rr = ra * rb; break;
-        case SH_BIN_DIV: rr = rb ? ra / rb : 0; break;
-        case SH_BIN_MOD: rr = rb ? ra % rb : 0; break;
-        case SH_BIN_AND: rr = ra & rb; break;
-        case SH_BIN_OR:  rr = ra | rb; break;
-        case SH_BIN_XOR: rr = ra ^ rb; break;
-        case SH_BIN_SHL: rr = ra << (rb & 31u); break;
-        case SH_BIN_SHR: rr = ra >> (rb & 31u); break;
+        case SH_BIN_ADD:  rr = ra + rb; break;
+        case SH_BIN_SUB:  rr = ra - rb; break;
+        case SH_BIN_MUL:  rr = ra * rb; break;
+        case SH_BIN_DIV:  rr = rb ? ra / rb : 0; break;
+        case SH_BIN_MOD:  rr = rb ? ra % rb : 0; break;
+        case SH_BIN_AND:  rr = ra & rb; break;
+        case SH_BIN_OR:   rr = ra | rb; break;
+        case SH_BIN_XOR:  rr = ra ^ rb; break;
+        case SH_BIN_SHL:  rr = ra << (rb & 31u); break;
+        case SH_BIN_SHR:  rr = ra >> (rb & 31u); break;
+        case SH_BIN_SADD: rr = (rb > (0xFFFFFFFFu - ra)) ? 0xFFFFFFFFu : (ra + rb); break;
+        case SH_BIN_SSUB: rr = (rb > ra) ? 0u : (ra - rb); break;
         default: rr = 0; break;
       }
       return (uint64_t)rr;
@@ -295,16 +301,18 @@ static uint64_t scalar_binop_bits(sh_binop op, sh_kind k,
     case SH_K_U64: {
       uint64_t ra = a, rb = b;
       switch (op) {
-        case SH_BIN_ADD: return ra + rb;
-        case SH_BIN_SUB: return ra - rb;
-        case SH_BIN_MUL: return ra * rb;
-        case SH_BIN_DIV: return rb ? ra / rb : 0;
-        case SH_BIN_MOD: return rb ? ra % rb : 0;
-        case SH_BIN_AND: return ra & rb;
-        case SH_BIN_OR:  return ra | rb;
-        case SH_BIN_XOR: return ra ^ rb;
-        case SH_BIN_SHL: return ra << (rb & 63u);
-        case SH_BIN_SHR: return ra >> (rb & 63u);
+        case SH_BIN_ADD:  return ra + rb;
+        case SH_BIN_SUB:  return ra - rb;
+        case SH_BIN_MUL:  return ra * rb;
+        case SH_BIN_DIV:  return rb ? ra / rb : 0;
+        case SH_BIN_MOD:  return rb ? ra % rb : 0;
+        case SH_BIN_AND:  return ra & rb;
+        case SH_BIN_OR:   return ra | rb;
+        case SH_BIN_XOR:  return ra ^ rb;
+        case SH_BIN_SHL:  return ra << (rb & 63u);
+        case SH_BIN_SHR:  return ra >> (rb & 63u);
+        case SH_BIN_SADD: return (rb > (UINT64_MAX - ra)) ? UINT64_MAX : (ra + rb);
+        case SH_BIN_SSUB: return (rb > ra) ? 0u : (ra - rb);
         default: return 0;
       }
     }
@@ -321,6 +329,24 @@ static uint64_t scalar_binop_bits(sh_binop op, sh_kind k,
         case SH_BIN_XOR: return (uint64_t)(ra ^ rb);
         case SH_BIN_SHL: return (uint64_t)(ra << ((uint64_t)rb & 63u));
         case SH_BIN_SHR: return (uint64_t)(ra >> ((uint64_t)rb & 63u));
+        // sat+ i64: detect overflow without signed-overflow UB.
+        case SH_BIN_SADD: {
+          uint64_t ua = (uint64_t)ra, ub = (uint64_t)rb;
+          uint64_t ur = ua + ub;
+          int64_t  r  = (int64_t)ur;
+          if (!((ra ^ rb) < 0) && ((ra ^ r) < 0))
+            return (ra < 0) ? (uint64_t)INT64_MIN : (uint64_t)INT64_MAX;
+          return ur;
+        }
+        // sat- i64: detect underflow without signed-overflow UB.
+        case SH_BIN_SSUB: {
+          uint64_t ua = (uint64_t)ra, ub = (uint64_t)rb;
+          uint64_t ur = ua - ub;
+          int64_t  r  = (int64_t)ur;
+          if (((ra ^ rb) < 0) && ((ra ^ r) < 0))
+            return (ra < 0) ? (uint64_t)INT64_MIN : (uint64_t)INT64_MAX;
+          return ur;
+        }
         default: return 0;
       }
     }
@@ -1138,6 +1164,18 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
             slots[ins->dst] = dst;
             break;
           }
+          // --- u8x16 saturating add/sub: _mm_adds_epu8 / _mm_subs_epu8 ---
+          if (lk == SH_K_U8 && nl == 16 &&
+              (bop == SH_BIN_SADD || bop == SH_BIN_SSUB)) {
+            __m128i ra = _mm_load_si128((const __m128i *)va->vec);
+            __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
+            __m128i rr = (bop == SH_BIN_SADD)
+                         ? _mm_adds_epu8(ra, rb)
+                         : _mm_subs_epu8(ra, rb);
+            _mm_store_si128((__m128i *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
           // --- u16x8 add/sub ---
           if (lk == SH_K_U16 && nl == 8 &&
               (bop == SH_BIN_ADD || bop == SH_BIN_SUB)) {
@@ -1146,6 +1184,18 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
             __m128i rr = (bop == SH_BIN_ADD)
                          ? _mm_add_epi16(ra, rb)
                          : _mm_sub_epi16(ra, rb);
+            _mm_store_si128((__m128i *)dst.vec, rr);
+            slots[ins->dst] = dst;
+            break;
+          }
+          // --- u16x8 saturating add/sub: _mm_adds_epu16 / _mm_subs_epu16 ---
+          if (lk == SH_K_U16 && nl == 8 &&
+              (bop == SH_BIN_SADD || bop == SH_BIN_SSUB)) {
+            __m128i ra = _mm_load_si128((const __m128i *)va->vec);
+            __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
+            __m128i rr = (bop == SH_BIN_SADD)
+                         ? _mm_adds_epu16(ra, rb)
+                         : _mm_subs_epu16(ra, rb);
             _mm_store_si128((__m128i *)dst.vec, rr);
             slots[ins->dst] = dst;
             break;
