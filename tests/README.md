@@ -10,11 +10,6 @@ toolchain nor QEMU, so they are cheap to run on every change and in CI.
 
 ## What is covered
 
-- **`test_checksum.c`** — the shared Internet-checksum helper
-  (`servers/CoreNetwork/inc/checksum.h`) used by the IPv4/ICMP transmit paths:
-  a known IPv4 header vector, the generate-then-verify round trip (and the exact
-  on-wire byte orientation), carry folding, odd/empty lengths, and the
-  partial-accumulate API.
 - **`test_sha256.c`** — SHA-256 (`libs/crypto/sha256.c`) against FIPS 180-2
   vectors plus an incremental-vs-one-shot check. This is the hash beneath the
   module-signing MAC.

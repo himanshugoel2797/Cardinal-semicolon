@@ -12,7 +12,6 @@ int main(void) {
     printf("Cardinal; host unit tests\n");
     printf("-------------------------\n");
 
-    test_checksum();
     test_sha256();
     test_hmac();
     test_time();

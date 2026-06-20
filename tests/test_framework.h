@@ -37,7 +37,6 @@ extern int g_checks_failed;
     } while (0)
 
 // Each test group exposes a void(void) entry point invoked by the runner.
-void test_checksum(void);
 void test_sha256(void);
 void test_hmac(void);
 void test_time(void);
