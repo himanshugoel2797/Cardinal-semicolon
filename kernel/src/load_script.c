@@ -154,11 +154,6 @@ int loadscript_execute()
     return named_script_execute("./loadscript.txt");
 }
 
-int servicescript_execute()
-{
-    return named_script_execute("./servicescript.txt");
-}
-
 int apscript_execute()
 {
     return named_script_execute("./apscript.txt");

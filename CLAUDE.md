@@ -76,7 +76,7 @@ module count in mind when adding/removing modules (the tree currently builds
 |------|------|
 | `kernel/` | The tiny core: ELF/relocatable loader, initrd (tar) parsing, boot-script interpreter, bootstrap allocator, symbol DB, DWARF. Linked at a fixed high virtual address. |
 | `modules/` | `Sys*` kernel-privileged modules: memory (`SysPhysicalMemory`, `SysVirtualMemory`, `SysMemory`), `SysInterrupts`, `SysMP`, `SysTimer`, `SysFP`, `SysObj` (object model), `SysReg` (registry), `SysUser` (syscalls), `SysTaskMgr` (scheduler), `SysDebug`, `SysGdb` (GDB remote-serial-protocol stub — debug the OS over serial/USB-serial; see `notes/debugging-gdb.md`). |
-| `servers/` | `Core*` OS services: `CoreDisplay`, `CoreAudio`, `CoreInput`, `CoreNetwork` (ARP/ICMP/IPv4 + a UDP port layer and a reliable delivery transport `RDT`, exported via `servers/inc/CoreNetwork/{udp,rdt}.h`), `CoreNetDebug` (optional, `cardinal.netdbg`-gated network debug endpoint: UDP echo + reliable blob upload), `CoreStorage` (block-device registry + the `cardfs` object-store exploration), `CoreUsb` (controller-agnostic transfer/enumeration + class-driver registration), `CorePower`, `CoreDriver`. |
+| `servers/` | `Core*` OS services: `CoreDisplay`, `CoreAudio`, `CoreInput`, `CoreNetwork` (ARP/ICMP/IPv4 + a UDP port layer and a reliable delivery transport `RDT`, exported via `servers/inc/CoreNetwork/{udp,rdt}.h`), `CoreNetDebug` (optional, `cardinal.netdbg`-gated network debug endpoint: UDP echo + reliable blob upload), `CoreStorage` (block-device registry + the `cardfs` object-store exploration), `CoreUsb` (controller-agnostic transfer/enumeration + class-driver registration), `CorePower`. (Most `Core*` services are now Lisp under `lisp/servers/`; the C `CoreUsb` stays for the C USB drivers.) |
 | `drivers/` | Device drivers: `virtio` (gpu/net/common), `intel_gfx`, `intel_wifi`, `hdaudio`, `rtl8139`, `rtl8169`, `ahci`, USB host controllers `uhci`/`xhci` (both implement the CoreUsb transfer backend; `ehci` is a stub) + USB class drivers `usb_hid` (kbd/mouse), `usb_storage` (BBB/SCSI block device), `usb_hub`, `usb_serial` (FTDI, routes the GDB stub), `ps2`, `lfb`, `tarfs`. |
 | `libs/` | Static libs linked into modules: `crypto` (sha256/hmac), `miniz`, `module_lib` (CELF header build/verify), `kvs`, `ubsan_handlers`, plus header-only `pci/` and `syscalls/`. `pci/` holds `pci.h` (config space, BAR scan), `pci_irq.h` (MSI/MSI-X setup), `pci_alloc.h` (BAR + bridge-window self-assignment for firmware-unconfigured devices), `pci_debug.h` (`pci_msix_debug_dump`). |
 | `common/` | Freestanding mini-libc (`string`, `stdlib`, `stdio`, lists/queues, `time`) + platform type headers. Included as a SYSTEM include everywhere. |
@@ -110,15 +110,20 @@ The kernel reads these text scripts; `LOAD:` loads a `.celf`, `CALL:` invokes an
 already-resolved exported function by name.
 
 - `loadscript.txt` — bring-up order for the `Sys*` modules (memory → interrupts
-  → MP → timer → object/user/taskmgr), interleaved with `CALL:` init steps.
+  → MP → timer → object/user/taskmgr), ending with `LOAD:./SysLisp.celf` +
+  `CALL:lisp_scheduler_enter`. That call never returns: the Lisp runtime becomes
+  the per-core scheduler and `lisp/init.clp` brings up the `Core*` servers and
+  binds the drivers (the policy that used to live in `servicescript.txt`/
+  `devices.txt` + the C `CoreDriver` loader, all now removed).
 - `apscript.txt` — per-AP (application processor) init sequence for SMP.
-- `servicescript.txt` — loads the `Core*` servers and device drivers.
-- `devices.txt` — PCI match table: `./<driver>.celf|VID|DID|class|subclass|progif`
-  (`FFFF`/`00` = wildcard). This is how drivers get bound to hardware.
 
-When you add a module/server/driver, you almost always also touch its
-`CMakeLists.txt`, the parent `CMakeLists.txt` (`ADD_SUBDIRECTORY`), and the
-relevant boot script (and `devices.txt` for a PCI driver).
+When you add a `Sys*` module, you almost always also touch its `CMakeLists.txt`,
+the parent `CMakeLists.txt` (`ADD_SUBDIRECTORY`), and `loadscript.txt`. The
+`Core*` servers and the device drivers are now Lisp (`lisp/servers/*.clp`,
+`lisp/drivers/*.clp`): a new one is a `.clp` on the loader search path, wired
+into `lisp/init.clp` (which `pci-find`s the hardware and calls the driver's
+init) — no boot-script or `devices.txt` edit. The USB stack (`uhci`/`xhci`/
+`usb_*`) and `intel_gfx`/`intel_wifi` remain C drivers.
 
 ## Conventions
 
@@ -229,9 +234,9 @@ before invoking it, since the handler may reply.
   `notes/debugging-gdb.md`): `task_sleep` itself is now fixed and reliable for
   normal delays (it actually deschedules — see AUDIT), but it can't be used by
   code already holding `cli()` (e.g. AHCI/UHCI init), which still busy-spins via
-  the TSC-calibrated `SysTimer` waits; the boot-script files
-  (`loadscript.txt`/`servicescript.txt`) use **CRLF** line endings — keep them
-  CRLF or the parser panics with "Unknown Command".
+  the TSC-calibrated `SysTimer` waits; the boot-script files (`loadscript.txt`/
+  `apscript.txt`) use **CRLF** line endings — keep them CRLF or the parser panics
+  with "Unknown Command".
 
 ## Debugging
 
