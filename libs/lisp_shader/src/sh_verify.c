@@ -472,17 +472,28 @@ static sh_status verify_loop_bound(verify_ctx *vc, uint32_t loop_idx,
   // Determine which induction var slot is the counter (the one in the cmp)
   uint32_t counter_var_idx = ind_slot - lp->var_slot0;
 
-  // Verify that every RECUR in the body advances the counter by a positive const step
-  // Find all RECUR nodes (there may be multiple in nested IFs)
-  sh_nref recur_ref = find_recur(p, lp->body, 512);
-  if (recur_ref == SH_NREF_NONE)
+  // Verify that EVERY RECUR in the body targeting this loop advances the counter
+  // by a positive constant step.  find_recur() returns only the FIRST reachable
+  // RECUR; a second RECUR in a different IF branch could have a zero or negative
+  // step and slip through.  Fix (Finding 1): scan the entire node arena for
+  // SH_OP_RECUR nodes whose `a` field equals loop_idx -- these are all the recurs
+  // that re-enter this specific loop, regardless of nesting.
+  bool found_any_recur = false;
+  int64_t step = 0;
+  for (uint32_t ni = 0; ni < p->nnodes; ni++) {
+    const sh_node *rn = &p->nodes[ni];
+    if (rn->op != (uint16_t)SH_OP_RECUR) continue;
+    if (rn->a != loop_idx) continue;  // targets a different loop
+    found_any_recur = true;
+    // Each RECUR must advance the induction var by a positive constant step.
+    if (!recur_advances_by_const(p, ni, ind_slot, counter_var_idx, &step))
+      return sh_set_error(vc->err, SH_ERR_UNBOUNDED_LOOP, -1, -1,
+                          "loop recur (node %u) does not advance induction var"
+                          " by a constant positive step", ni);
+  }
+  if (!found_any_recur)
     return sh_set_error(vc->err, SH_ERR_UNBOUNDED_LOOP, -1, -1,
                         "no RECUR found in loop body");
-
-  int64_t step = 0;
-  if (!recur_advances_by_const(p, recur_ref, ind_slot, counter_var_idx, &step))
-    return sh_set_error(vc->err, SH_ERR_UNBOUNDED_LOOP, -1, -1,
-                        "loop recur does not advance induction var by a constant positive step");
 
   // Determine the bound: limit is CONST or u32/u64 PARAM
   int64_t const_limit = 0;
@@ -1154,19 +1165,24 @@ static sh_status verify_node(verify_ctx *vc, sh_nref ref) {
         tbody = node_type(p, body);
       }
 
-      // Verify the RECUR nodes: their arg types must match the induction var types
-      sh_nref recur_ref = find_recur(p, body, 512);
-      if (recur_ref != SH_NREF_NONE) {
-        sh_node *recur = &p->nodes[recur_ref];
+      // Verify ALL RECUR nodes targeting this loop: arity and arg types must
+      // match the induction var types.  Using find_recur() here would only check
+      // the FIRST reachable RECUR; a second RECUR in a parallel IF branch could
+      // have wrong arity or mismatched arg types.  Fix (Finding 1): scan the
+      // entire arena for SH_OP_RECUR nodes with a == loop_idx.
+      for (uint32_t ni = 0; ni < p->nnodes; ni++) {
+        sh_node *recur = &p->nodes[ni];
+        if (recur->op != (uint16_t)SH_OP_RECUR) continue;
+        if (recur->a != loop_idx) continue;
         if (recur->aux_len != lp->nvars)
           return sh_set_error(vc->err, SH_ERR_ARITY, -1, -1,
-                              "RECUR arg count %u != loop nvars %u",
-                              recur->aux_len, lp->nvars);
+                              "RECUR (node %u) arg count %u != loop nvars %u",
+                              ni, recur->aux_len, lp->nvars);
         for (uint32_t vi = 0; vi < lp->nvars; vi++) {
           sh_nref arg_ref = p->aux[recur->aux_off + vi];
           if (!valid_ref(p, arg_ref))
             return sh_set_error(vc->err, SH_ERR_INTERNAL, -1, -1,
-                                "RECUR arg %u invalid ref", vi);
+                                "RECUR (node %u) arg %u invalid ref", ni, vi);
           sh_type targ = node_type(p, arg_ref);
           // Get the finalized type for this induction var from its init
           sh_nref init_r = p->aux[lp->init_off + vi];
@@ -1183,15 +1199,31 @@ static sh_status verify_node(verify_ctx *vc, sh_nref ref) {
               targ.kind != (uint8_t)SH_K_VOID &&
               !sh_type_eq(targ, tvar))
             return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
-                                "RECUR arg %u type mismatch", vi);
+                                "RECUR (node %u) arg %u type mismatch", ni, vi);
         }
         recur->type = sh_type_scalar(SH_K_VOID); // RECUR has no result type
       }
 
-      // Compute loop cost
+      // Compute loop cost.
+      // Finding 8: `lp->bound.konst * body_cost` can silently overflow uint64,
+      // under-reporting cost and defeating SH_REQUIRE_CONST_COST resource caps.
+      // Guard with saturation: if the multiplication would overflow, clamp to
+      // UINT64_MAX so every consumer that compares against a budget sees a
+      // value that is at least as large as any finite budget.
       uint64_t loop_total_cost;
       if (lp->bound.kind == SH_BOUND_CONST) {
-        loop_total_cost = init_cost + lp->bound.konst * body_cost;
+        uint64_t iter_cost;
+        if (body_cost != 0 && lp->bound.konst > UINT64_MAX / body_cost) {
+          iter_cost = UINT64_MAX; // saturate
+        } else {
+          iter_cost = lp->bound.konst * body_cost;
+        }
+        // Saturate the addition with init_cost as well.
+        if (iter_cost > UINT64_MAX - init_cost) {
+          loop_total_cost = UINT64_MAX;
+        } else {
+          loop_total_cost = init_cost + iter_cost;
+        }
       } else {
         // PARAM-bound: cost depends on args; use body_cost as per-iter
         loop_total_cost = init_cost + body_cost; // symbolic; exact at invoke
@@ -1641,6 +1673,66 @@ static void compute_cost(verify_ctx *vc) {
 }
 
 // ---------------------------------------------------------------------------
+// validate_type: shared helper for Findings 2 and 3.
+// Returns true if `t` is a well-formed shader type; false otherwise.
+// Rules:
+//   SH_K_VEC:    2 <= lanes <= SH_MAX_LANES, lane_kind is a valid scalar.
+//   SH_K_REGION: lane_kind is a valid scalar (the element kind).
+//   scalar kinds: anything that is not VOID, VEC, or REGION.
+//   SH_K_VOID:   never a valid param or return type.
+// ---------------------------------------------------------------------------
+
+// Returns true iff k is a valid scalar kind (not VOID, VEC, or REGION).
+static bool kind_is_scalar(sh_kind k) {
+  return k == SH_K_BOOL || k == SH_K_U8 || k == SH_K_U16 || k == SH_K_U32 ||
+         k == SH_K_U64 || k == SH_K_I64 || k == SH_K_F32 || k == SH_K_F64;
+}
+
+static bool validate_type(sh_type t) {
+  sh_kind k = (sh_kind)t.kind;
+  if (k == SH_K_VOID) return false;
+  if (k == SH_K_VEC) {
+    // Vector: need a valid scalar lane_kind and a lane count in [2, SH_MAX_LANES].
+    if (!kind_is_scalar((sh_kind)t.lane_kind)) return false;
+    if (t.lanes < 2 || t.lanes > SH_MAX_LANES) return false;
+    return true;
+  }
+  if (k == SH_K_REGION) {
+    // Region: need a valid scalar element kind.
+    if (!kind_is_scalar((sh_kind)t.lane_kind)) return false;
+    return true;
+  }
+  // Scalar: kind itself must be a valid scalar kind.
+  return kind_is_scalar(k);
+}
+
+// ---------------------------------------------------------------------------
+// validate_params_and_ret: Finding 2 -- validate caller-supplied p->params[]
+// and p->ret BEFORE any node in the arena uses them.  A malformed type (e.g.
+// SH_K_VEC with lanes=17 or lanes=0) would propagate into node types and
+// cause the interpreter to write out-of-bounds into sh_value.lane[].
+// ---------------------------------------------------------------------------
+
+static sh_status validate_params_and_ret(sh_program *p, sh_error *err) {
+  // Params: SH_K_VOID is disallowed.
+  for (uint32_t i = 0; i < p->nparams; i++) {
+    if (!validate_type(p->params[i]))
+      return sh_set_error(err, SH_ERR_TYPE, -1, -1,
+                          "param %u has invalid type (kind=%u lanes=%u lane_kind=%u)",
+                          i, p->params[i].kind, p->params[i].lanes,
+                          p->params[i].lane_kind);
+  }
+  // Return type: SH_K_VOID is the only disallowed kind (a shader must produce
+  // a value).  Region return types are valid (e.g. a shader that returns a
+  // sub-region).
+  if (!validate_type(p->ret))
+    return sh_set_error(err, SH_ERR_TYPE, -1, -1,
+                        "return type is invalid (kind=%u lanes=%u lane_kind=%u)",
+                        p->ret.kind, p->ret.lanes, p->ret.lane_kind);
+  return SH_OK;
+}
+
+// ---------------------------------------------------------------------------
 // VSPLAT type resolution: if VSPLAT has no type set, infer from context.
 // This is a forward pass from the root.
 // We skip this for now -- the frontend must set the type from the declared
@@ -1663,6 +1755,14 @@ sh_status shv_verify(sh_program *p, const sh_prim_set *prims, uint32_t flags,
     return sh_set_error(err, SH_ERR_INTERNAL, -1, -1,
                         "program too large (%u nodes, limit 4096)", p->nnodes);
 
+  // Finding 2: validate params and return type BEFORE any node uses them.
+  // A tampered/malformed SH_K_VEC type with lanes > SH_MAX_LANES would
+  // propagate into node types and cause an OOB write in the interpreter's
+  // lane loop.  This check is the moat's first line of defence and must stand
+  // alone (do not rely on the frontend's parse-time lane cap).
+  sh_status s = validate_params_and_ret(p, err);
+  if (s != SH_OK) return s;
+
   verify_ctx vc;
   memset(&vc, 0, sizeof(vc));
   vc.p = p;
@@ -1671,7 +1771,7 @@ sh_status shv_verify(sh_program *p, const sh_prim_set *prims, uint32_t flags,
   vc.err = err;
 
   // Validate slot indices and aux array ranges before touching the arena
-  sh_status s = validate_slots(&vc);
+  s = validate_slots(&vc);
   if (s != SH_OK) return s;
   s = validate_aux_ranges(&vc);
   if (s != SH_OK) return s;
@@ -1689,6 +1789,27 @@ sh_status shv_verify(sh_program *p, const sh_prim_set *prims, uint32_t flags,
   // the interpreter must never see such a node.
   s = check_no_void_nodes(&vc);
   if (s != SH_OK) return s;
+
+  // Finding 3 (defensive): every node whose result type is SH_K_VEC must have
+  // a lanes count in [2, SH_MAX_LANES].  The param/ret validation (Finding 2)
+  // covers types that enter from outside; this pass catches any vector type the
+  // verifier itself assembled from a bad VSPLAT inference or similar path.  The
+  // interpreter's lane loop `for (li=0; li<n->type.lanes; li++) out->lane[li]=...`
+  // writes unguarded into sh_value.lane[], so an oversized lane count is an OOB.
+  for (uint32_t ni = 0; ni < p->nnodes; ni++) {
+    const sh_node *fn = &p->nodes[ni];
+    if (fn->op == (uint16_t)SH_OP_RECUR) continue; // RECUR has void type
+    if (fn->type.kind == (uint8_t)SH_K_VEC) {
+      if (fn->type.lanes < 2 || fn->type.lanes > SH_MAX_LANES)
+        return sh_set_error(err, SH_ERR_TYPE, -1, -1,
+                            "node %u has vector type with invalid lane count %u"
+                            " (must be 2..%u)", ni, fn->type.lanes, SH_MAX_LANES);
+      if (!kind_is_scalar((sh_kind)fn->type.lane_kind))
+        return sh_set_error(err, SH_ERR_TYPE, -1, -1,
+                            "node %u has vector type with invalid lane_kind %u",
+                            ni, fn->type.lane_kind);
+    }
+  }
 
   // Check return type agrees with the declared ret type
   sh_type actual = node_type(p, p->root);

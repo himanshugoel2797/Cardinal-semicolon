@@ -1061,7 +1061,9 @@ static sh_nref parse_expr(parse_ctx *ctx, lisp_value v) {
         return SHF_FAIL(err, SH_ERR_PARSE, -1, -1,
                                       "shuffle indices must be constant integers");
       int64_t ival = lisp_fixnum_val(idx_v);
-      if (ival < 0 || ival > SH_MAX_LANES)
+      // Lane indices are 0-based; a max-width vector has lanes [0, SH_MAX_LANES).
+      // (The verifier re-checks each index against the actual source lane count.)
+      if (ival < 0 || ival >= SH_MAX_LANES)
         return SHF_FAIL(err, SH_ERR_PARSE, -1, -1,
                                       "shuffle index out of range");
       p->aux[aux_off + i] = (uint32_t)ival;
