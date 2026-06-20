@@ -400,11 +400,26 @@ static sh_status lower_node(lower_ctx *ctx, sh_nref ref, sh_vreg *out_vreg) {
         return sh_set_error(ctx->err, SH_ERR_OOM, -1, -1,
                             "RECUR: OOM for temporaries");
 
-      // Phase 1: evaluate all new induction args into temps.
+      // Phase 1: evaluate all new induction args, then COPY each into a FRESH
+      // temp vreg. The copy is essential: lower_node for a bare LOCAL returns
+      // that slot's own vreg, so without the copy a temp could alias an
+      // induction slot that Phase 2 overwrites -- breaking a parallel swap like
+      // (loop ... b a). Materializing into fresh temps makes Phase 2's writes
+      // unable to clobber a still-unread new value.
       for (uint32_t i = 0; i < nargs; i++) {
         sh_nref arg_ref = p->aux[n->aux_off + i];
-        sh_status s = lower_node(ctx, arg_ref, &tmps[i]);
+        sh_vreg v;
+        sh_status s = lower_node(ctx, arg_ref, &v);
         if (s != SH_OK) { free(tmps); return s; }
+        sh_nref init_ref = p->aux[lp->init_off + i];
+        sh_kind kind = (sh_kind)p->nodes[init_ref].type.kind;
+        sh_vreg tmp = alloc_vreg(ctx);
+        sh_instr mov = blank(SHB_MOV);
+        mov.dst = tmp;
+        mov.a = v;
+        mov.kind = (uint8_t)kind;
+        if (emit_instr(ctx, mov) == UINT32_MAX) { free(tmps); return SH_ERR_OOM; }
+        tmps[i] = tmp;
       }
 
       // Phase 2: MOV each temp into its induction slot vreg.
