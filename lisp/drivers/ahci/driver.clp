@@ -185,15 +185,15 @@
                             (= (bytes-u8-ref dbuf 511) #xAA))
                        " (0x55AA seen)" " (no 0x55AA)"))
           (newline)
-          ;; AHCI's MSI is configured + enabled (valid LAPIC address + vector,
-          ;; readback confirms enable=1) and the device raises the interrupt
-          ;; (PxIS/HBA-IS/GHC.IE all set), yet no MSI reaches the CPU here: QEMU's
-          ;; ich9-ahci delivers a legacy INTx in this q35/KVM setup instead. (QEMU
-          ;; DOES implement ich9-ahci MSI -- msi_init/msi_notify -- so the exact
-          ;; reason its msi_notify path is not taken is not yet root-caused; INTx
-          ;; is not wired here, so completion rides the authoritative PxCI poll in
-          ;; issue! with msi-wait only yielding the core. msi-count reports which
-          ;; path actually carried it.) See notes; a follow-up to trace QEMU.
+          ;; The MSI fires and is serviced here: the device raises its interrupt
+          ;; (PxIS/HBA-IS set, GHC.IE on) and the CPU runs the handler, advancing
+          ;; msi-count. This works because the live scheduler runs interrupts-ON
+          ;; (see lisp_core_loop in SysLisp) -- earlier the evaluator ran with
+          ;; interrupts masked, so every device MSI piled up unserviced in the IRR
+          ;; and completion fell back to the poll. issue! STILL treats the PxCI
+          ;; poll as the authoritative completion signal and uses msi-wait only to
+          ;; yield the core, so a missed/coalesced MSI can never wedge a request;
+          ;; msi-count reports whether the MSI actually carried this one.
           (display (if (and msi (> (msi-count msi) before))
                        "[ahci] MSI fired (msi-count advanced)"
                        "[ahci] completion via PxCI-poll (no MSI delivered -- see header)"))
