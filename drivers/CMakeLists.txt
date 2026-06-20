@@ -2,18 +2,14 @@ cmake_minimum_required(VERSION 3.20)
 
 # ps2 was retired: the i8042 keyboard driver is now Lisp (lisp/ps2.clp), driven by
 # SysLisp over the generic ISA-IRQ + port-I/O primitives. No native module remains.
+#
+# rtl8139, rtl8169, virtio (gpu/net), lfb, hdaudio and ahci were likewise retired:
+# their drivers are now Lisp (lisp/drivers/*.clp), bound by lisp/init.clp. The native
+# modules were built-but-unloaded dead weight once the C driver loader was removed.
 
-ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/rtl8139)
-ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/rtl8169)
 ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/intel_wifi)
 
 ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/intel_gfx)
-ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/virtio)
-ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/lfb)
-
-ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/hdaudio)
-
-ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/ahci)
 
 ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/uhci)
 ADD_SUBDIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/ehci)
