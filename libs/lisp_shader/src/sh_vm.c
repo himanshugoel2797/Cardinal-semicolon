@@ -1822,7 +1822,12 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
         uint64_t idx = vb->scalar;
         if (vb->kind == SH_K_I64) idx = (uint64_t)(int64_t)vb->scalar;
         uint64_t len = (uint64_t)va->region.len;
-        uint64_t N   = (uint64_t)ins->lanes;
+        // Finding 4: use the runtime vector slot's lane count (vc->lanes) so
+        // the data written and the count agree and match the oracle. For
+        // well-formed chunks ins->lanes == vc->lanes; using vc->lanes ensures
+        // the SSE path (N*esz bytes read from vc->vec) and the bounds check
+        // are always consistent with the actual data copied.
+        uint64_t N   = (uint64_t)vc->lanes;
         sh_kind  ek  = va->region.elem;
         // Overflow-free bounds check (same formula as interp oracle)
         if (idx > len || (uint64_t)(len - idx) < N) {

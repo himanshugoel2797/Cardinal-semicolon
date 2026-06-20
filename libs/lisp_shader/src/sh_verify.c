@@ -1913,6 +1913,38 @@ sh_status shv_verify(sh_program *p, const sh_prim_set *prims, uint32_t flags,
   s = check_no_void_nodes(&vc);
   if (s != SH_OK) return s;
 
+  // Finding 1/5: Final sweep -- after ALL type inference is complete, reject any
+  // BINOP or VBINOP whose sub is SH_BIN_SADD or SH_BIN_SSUB and whose resolved
+  // element kind is FLOAT (f32/f64) or BOOL. This catches operands that were VOID
+  // at the time of the initial binop check (e.g. loop induction vars that started
+  // as float literals), and vector bool lanes (boolxN) that slipped past the
+  // scalar-BINOP bool check.
+  //
+  // Rules: sat+/sat- accept only integer-non-bool scalar or vector element kinds
+  // (i.e. u8/u16/u32/u64/i64). Float or bool operands must produce SH_ERR_TYPE.
+  for (uint32_t ni = 0; ni < p->nnodes; ni++) {
+    const sh_node *fn = &p->nodes[ni];
+    sh_op fnop = (sh_op)fn->op;
+    if (fnop != SH_OP_BINOP && fnop != SH_OP_VBINOP) continue;
+    sh_binop bop = (sh_binop)fn->sub;
+    if (bop != SH_BIN_SADD && bop != SH_BIN_SSUB) continue;
+    // Determine the element kind from the node's resolved type.
+    sh_kind ek;
+    if (fn->type.kind == (uint8_t)SH_K_VEC) {
+      ek = (sh_kind)fn->type.lane_kind;
+    } else {
+      ek = (sh_kind)fn->type.kind;
+    }
+    if (ek == SH_K_F32 || ek == SH_K_F64)
+      return sh_set_error(err, SH_ERR_TYPE, -1, -1,
+                          "sat+/sat- requires integer operands"
+                          " (node %u resolved to float kind %u)", ni, (unsigned)ek);
+    if (ek == SH_K_BOOL)
+      return sh_set_error(err, SH_ERR_TYPE, -1, -1,
+                          "sat+/sat- requires integer operands"
+                          " (node %u resolved to bool)", ni);
+  }
+
   // Finding 3 (defensive): every node whose result type is SH_K_VEC must have
   // a lanes count in [2, SH_MAX_LANES].  The param/ret validation (Finding 2)
   // covers types that enter from outside; this pass catches any vector type the

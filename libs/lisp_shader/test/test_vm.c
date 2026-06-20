@@ -1740,6 +1740,133 @@ static void test_vselect_direct(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Section 2d-2: Finding 3 regression -- SHB_VRLOAD/SHB_VRSTORE validator paths.
+// Hand-craft an otherwise-valid base chunk (compiled from a real vregion shader),
+// then mutate ONE field per sub-case and assert sh_chunk_validate returns non-SH_OK.
+// ---------------------------------------------------------------------------
+
+static void test_vrload_vrstore_validator(void) {
+  printf("--- validator: SHB_VRLOAD/SHB_VRSTORE required-operand + lanes checks ---\n");
+
+  // Build a valid base chunk from a real vregion shader so we have a structurally
+  // sound chunk to start from. The shader does a single vregion-ref (VRLOAD).
+  // We then mutate individual fields in copies to exercise each reject path.
+  //
+  // Shader: (defshader t ((buf (bytes u8))) -> u8x16 (vregion-ref buf 0 16))
+  // This gives us at least one SHB_VRLOAD instruction in the chunk.
+  sh_chunk *base = compile_lower(
+    "(defshader t ((buf (bytes u8))) -> u8x16 (vregion-ref buf 0 16))", NULL);
+  CHECK(base != NULL, "vrload base shader compiles+lowers");
+  if (!base) return;
+
+  // Confirm the base chunk validates cleanly.
+  {
+    sh_error err; memset(&err, 0, sizeof(err));
+    CHECK(sh_chunk_validate(base, &err) == SH_OK,
+          "vrload base chunk: clean validate passes");
+  }
+
+  // Find the VRLOAD instruction index.
+  int vrload_pc = -1;
+  for (uint32_t i = 0; i < base->ncode; i++) {
+    if ((sh_bc_op)base->code[i].op == SHB_VRLOAD) { vrload_pc = (int)i; break; }
+  }
+  CHECK(vrload_pc >= 0, "vrload base chunk: VRLOAD instruction found");
+  if (vrload_pc < 0) { sh_chunk_free(base); return; }
+
+  // (a) VRLOAD with a == SH_VREG_NONE -> rejected.
+  {
+    sh_instr saved = base->code[vrload_pc];
+    base->code[vrload_pc].a = SH_VREG_NONE;
+    sh_error err; memset(&err, 0, sizeof(err));
+    CHECK(sh_chunk_validate(base, &err) != SH_OK,
+          "vrload: a==SH_VREG_NONE rejected");
+    base->code[vrload_pc] = saved;
+  }
+
+  // (b) VRLOAD with b == SH_VREG_NONE -> rejected.
+  {
+    sh_instr saved = base->code[vrload_pc];
+    base->code[vrload_pc].b = SH_VREG_NONE;
+    sh_error err; memset(&err, 0, sizeof(err));
+    CHECK(sh_chunk_validate(base, &err) != SH_OK,
+          "vrload: b==SH_VREG_NONE rejected");
+    base->code[vrload_pc] = saved;
+  }
+
+  // (c) VRLOAD with lanes == 0 -> rejected.
+  {
+    sh_instr saved = base->code[vrload_pc];
+    base->code[vrload_pc].lanes = 0;
+    sh_error err; memset(&err, 0, sizeof(err));
+    CHECK(sh_chunk_validate(base, &err) != SH_OK,
+          "vrload: lanes==0 rejected");
+    base->code[vrload_pc] = saved;
+  }
+
+  // (d) VRLOAD with lanes == 1 -> rejected (minimum is 2).
+  {
+    sh_instr saved = base->code[vrload_pc];
+    base->code[vrload_pc].lanes = 1;
+    sh_error err; memset(&err, 0, sizeof(err));
+    CHECK(sh_chunk_validate(base, &err) != SH_OK,
+          "vrload: lanes==1 rejected");
+    base->code[vrload_pc] = saved;
+  }
+
+  // (e) VRLOAD with lanes > SH_MAX_LANES -> rejected.
+  {
+    sh_instr saved = base->code[vrload_pc];
+    // lanes is uint8_t; SH_MAX_LANES fits in uint8_t + 1.
+    // The general >SH_MAX_LANES check catches this.
+    base->code[vrload_pc].lanes = (uint8_t)(SH_MAX_LANES + 1);
+    sh_error err; memset(&err, 0, sizeof(err));
+    CHECK(sh_chunk_validate(base, &err) != SH_OK,
+          "vrload: lanes>SH_MAX_LANES rejected");
+    base->code[vrload_pc] = saved;
+  }
+
+  sh_chunk_free(base); base = NULL;
+
+  // Now build a base chunk for SHB_VRSTORE using a vregion-set! shader.
+  // Shader: (defshader t ((buf (bytes-mut u8)) (v u8x16)) -> u8x16
+  //          (vregion-set! buf 0 v))
+  sh_chunk *base_st = compile_lower(
+    "(defshader t ((buf (bytes-mut u8)) (v u8x16)) -> u8x16"
+    " (vregion-set! buf 0 v))", NULL);
+  CHECK(base_st != NULL, "vrstore base shader compiles+lowers");
+  if (!base_st) return;
+
+  {
+    sh_error err; memset(&err, 0, sizeof(err));
+    CHECK(sh_chunk_validate(base_st, &err) == SH_OK,
+          "vrstore base chunk: clean validate passes");
+  }
+
+  // Find the VRSTORE instruction index.
+  int vrstore_pc = -1;
+  for (uint32_t i = 0; i < base_st->ncode; i++) {
+    if ((sh_bc_op)base_st->code[i].op == SHB_VRSTORE) {
+      vrstore_pc = (int)i; break;
+    }
+  }
+  CHECK(vrstore_pc >= 0, "vrstore base chunk: VRSTORE instruction found");
+  if (vrstore_pc < 0) { sh_chunk_free(base_st); return; }
+
+  // (f) VRSTORE with c == SH_VREG_NONE -> rejected.
+  {
+    sh_instr saved = base_st->code[vrstore_pc];
+    base_st->code[vrstore_pc].c = SH_VREG_NONE;
+    sh_error err; memset(&err, 0, sizeof(err));
+    CHECK(sh_chunk_validate(base_st, &err) != SH_OK,
+          "vrstore: c==SH_VREG_NONE rejected");
+    base_st->code[vrstore_pc] = saved;
+  }
+
+  sh_chunk_free(base_st);
+}
+
+// ---------------------------------------------------------------------------
 // Section 2e: Finding 1 regression + Finding 7 -- i64 vector differential
 //             tests and u8x16 / f32x8 / u32x8 additional coverage
 // ---------------------------------------------------------------------------
@@ -1948,6 +2075,9 @@ int main(void) {
 
   printf("\n[test_vm] VSELECT direct chunk test (Finding 4)\n");
   test_vselect_direct();
+
+  printf("\n[test_vm] VRLOAD/VRSTORE validator paths (Finding 3)\n");
+  test_vrload_vrstore_validator();
 
   printf("\n[test_vm] i64 vector regression (Finding 1)\n");
   test_i64_vector_regression();
