@@ -275,18 +275,29 @@ where the derived half (the type signature) is richest.
 Independently reviewable phases, earlier ones designed not to preclude later ones —
 the substrate note's pattern.
 
-- **S0 — Frontend + types + verifier (host-first).** `defshader` reader, the
-  monomorphic type checker, region-bounds and bounded-loop analysis, the
-  capability whitelist. No execution yet beyond type-checking. Host test harness.
-- **S1 — Typed bytecode + reference interpreter.** The portable, scalar-lowered
-  executor; the semantic oracle. Differential tests vs. equivalent dynamic Lisp.
-- **S2 — Vectors (abstract ops, scalar lowering).** The `<N×T>` family end-to-end
-  through verifier + reference interpreter, still scalar underneath.
-- **S3 — x86 SSE/AVX backend.** The first ISA layer; differential-tested
-  bit-for-bit against the reference interpreter. SIMD framebuffer-blit demo.
+- **S0 — Frontend + types + verifier (host-first).** *(done, PR #75.)* `defshader`
+  reader, the monomorphic type checker, region-bounds and bounded-loop analysis,
+  the capability whitelist (`libs/lisp_shader/src/sh_frontend.c`, `sh_verify.c`).
+- **S1 — Reference interpreter.** *(done, PR #75.)* The scalar-lowered tree-walking
+  executor over the verified AST — the semantic oracle (`sh_interp.c`).
+- **S2 — Vectors (abstract ops, scalar lowering).** *(done, PR #75.)* The `<N×T>`
+  family end-to-end through verifier + reference interpreter, scalar underneath.
+- **S3 — Bytecode + SSE/AVX VM.** *(done, PR #75.)* `sh_lower.c` (verified AST →
+  register bytecode) + `sh_vm.c` (chunk validator + executor whose vector ops use
+  SSE2/AVX2, scalar fallback). Differential-tested bit-for-bit vs. the interpreter
+  oracle (`test_vm.c`); `bench_compute.c` ≈2.7× SIMD-vs-scalar-VM. Decided as a
+  bytecode VM, NOT a machine-code JIT (smallest trusted surface; the JIT consumes
+  this same bytecode later). See `notes/scratch/shader-s3-decision.md`.
+- **S3.5 — Vector region load/store + saturating ops** *(next; the literal
+  framebuffer-blit demo needs it).* Today `region-ref` returns ONE scalar element,
+  so a real SIMD memory blit (load a `u8x16` strip, saturating-add, store) is not
+  expressible — the S3 SIMD speedup is on compute kernels over vector vregs, not
+  memory bandwidth. Add a vector region load/store op (a strip as a vector) + the
+  saturating arith a blit needs; touches all five units (frontend/verifier/interp/
+  lower/vm) and is where SIMD memory-bandwidth wins land.
 - **S4 — In-OS integration.** `libs/lisp_shader` wired into `SysLisp`;
-  compile-at-first-execution; a driver data-plane hot loop and/or an ISR micro-op
-  ported to a shader through the existing ISR→event→wake bridge.
+  compile-at-first-execution; an explicit-stack interpreter (the host tree-walker
+  recurses — fine host-side, a kernel-stack hazard in-OS); swap `<math.h>`/libc for
+  `common/`; a driver data-plane hot loop and/or ISR micro-op ported to a shader.
 - **S5 — Documentation pipeline.** Inline-doc extraction, the canonical-hash build
-  gate, the cold sidecar, and the load-time mismatch warning — applied to all Lisp
-  defs, not only shaders.
+  gate, the cold sidecar, and the load-time mismatch warning — for all Lisp defs.
