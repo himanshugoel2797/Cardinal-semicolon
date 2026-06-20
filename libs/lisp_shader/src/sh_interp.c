@@ -604,7 +604,10 @@ static sh_status eval(interp_ctx *ctx, sh_nref ref, sh_value *out) {
       if (!prim->fn)
         return sh_set_error(ctx->err, SH_ERR_INTERNAL, -1, -1,
                             "CALL: prim '%s' has null fn", prim->name);
-      *out = prim->fn(call_args, nargs);
+      // Pass limit (not nargs) so the callee sees only initialised entries.
+      // The verifier enforces nargs <= SH_MAX_PRIM_PARAMS, so limit == nargs
+      // in all valid programs; this guards against a future verifier bug.
+      *out = prim->fn(call_args, limit);
       return SH_OK;
     }
 
@@ -772,6 +775,10 @@ static sh_status eval(interp_ctx *ctx, sh_nref ref, sh_value *out) {
       out->lane_kind = (uint8_t)lk;
       for (uint8_t li = 0; li < nlanes; li++) {
         uint32_t src_idx = p->aux[n->aux_off + li];
+        if (src_idx >= va.lanes)
+          return sh_set_error(ctx->err, SH_ERR_INTERNAL, -1, -1,
+                              "VSHUFFLE: lane index %u >= nlanes %u",
+                              src_idx, (uint32_t)va.lanes);
         out->lane[li] = va.lane[src_idx];
       }
       return SH_OK;
@@ -837,6 +844,10 @@ static sh_status eval(interp_ctx *ctx, sh_nref ref, sh_value *out) {
       if (s != SH_OK) return s;
       sh_kind lk = (sh_kind)p->nodes[n->a].type.lane_kind;
       uint32_t lane_idx = (uint32_t)n->imm;
+      if (lane_idx >= va.lanes)
+        return sh_set_error(ctx->err, SH_ERR_INTERNAL, -1, -1,
+                            "VLANE: lane index %u >= nlanes %u",
+                            lane_idx, (uint32_t)va.lanes);
       *out = lane_to_scalar(lk, va.lane[lane_idx]);
       out->kind = (sh_kind)n->type.kind;
       return SH_OK;
