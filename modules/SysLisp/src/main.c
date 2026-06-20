@@ -1916,6 +1916,19 @@ static void announce_core(int id, const char *err, lisp_value proof) {
 static void NORETURN lisp_core_loop(void) {
     int id = interrupt_get_cpu_idx();
 
+    // Enter the LIVE phase interrupts-ON. The single-core boot phase ran
+    // interrupts-off by design (deterministic, no preemption while the BSP built
+    // the shared heap), and the self-test harnesses cli() back to that default
+    // (see run_self_test). That convention must be reversed exactly here -- the
+    // heap is frozen and this is the resident scheduler -- so device interrupts
+    // (a driver's MSI/MSI-X, an ISA IRQ) are delivered PROMPTLY while a context
+    // evaluates, not just in the narrow `sti; hlt` idle window (where the
+    // higher-priority scheduler tick always wins, starving lower-vector device
+    // interrupts -- the bug that made every MSI fall back to polling). This is
+    // the model the wait primitives already assume: they cli() around their
+    // check-then-park precisely because IF=1 is meant to be ambient once live.
+    __asm__ volatile("sti");
+
     // The timeout-queue tick is per-core (timer_features_local). The BSP armed its
     // own in lisp_scheduler_enter; each AP arms its here so a context sleeping /
     // waiting-with-timeout on this core is woken. (Re-arming on the BSP would be
