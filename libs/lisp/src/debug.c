@@ -138,12 +138,59 @@ static lisp_value prim_ctx_error(lisp_value *a, int n, const char **e) {
     return m != NULL ? lisp_make_string(m, strlen(m)) : LISP_FALSE;
 }
 
+// (ctx-list) -> the live run queue of THIS core's scheduler: a list of the
+// scheduler-owned context values. Combined with the read-only views above
+// (ctx-status / ctx-control / ctx-blocked? / ctx-value / ctx-error) this is the
+// live-inspection half of the debugger -- enumerate the running contexts and see
+// what each is doing WITHOUT driving them (which only ctx-step does, and which
+// stays restricted to contexts you ctx-make until cooperative pause lands).
+static lisp_value prim_ctx_list(lisp_value *a, int n, const char **e) {
+    (void)a;
+    if (n != 0)
+        return derr(e, "ctx-list expects no arguments");
+    return lisp_sched_queue();
+}
+
+// (ctx-blocked? c) -> #t if the context is parked (blocked) waiting for a
+// message, else #f. Read-only -- safe on a scheduler-owned context -- and the
+// piece ctx-status lacks: it lets a debugger tell a parked server from a context
+// that is actually running (the signature of a busy-spin).
+static lisp_value prim_ctx_blocked(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_objtype(a[0], LISP_OBJ_CTX))
+        return derr(e, "ctx-blocked? expects a context");
+    return lisp_ctx_is_blocked(a[0]) ? LISP_TRUE : LISP_FALSE;
+}
+
+// (ctx-pause c) -> ATTACH: mark a live, scheduler-owned context blocked so the
+// scheduler skips it, handing exclusive ownership to the debugger. On a single
+// cooperative core the target is NOT running when you call this (only one context
+// runs at a time), so it is race-free -- and once paused, (ctx-step c) is safe on
+// it (the thing the ctx-make-only rule otherwise guards against). Returns c.
+static lisp_value prim_ctx_pause(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_objtype(a[0], LISP_OBJ_CTX))
+        return derr(e, "ctx-pause expects a context");
+    lisp_ctx_block(a[0]);
+    return a[0];
+}
+
+// (ctx-unpause c) -> DETACH: clear the blocked flag, returning the context to the
+// scheduler (the inverse of ctx-pause). The context resumes from wherever the
+// debugger's stepping left it. Returns c.
+static lisp_value prim_ctx_unpause(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_objtype(a[0], LISP_OBJ_CTX))
+        return derr(e, "ctx-unpause expects a context");
+    lisp_ctx_wake(a[0]);
+    return a[0];
+}
+
 // Register the sys-debug module so a context granted it can (import sys-debug).
 void lisp_register_debug_module(lisp_value env) {
     static const lisp_builtin_export exports[] = {
         {"ctx-make", prim_ctx_make},     {"ctx-step", prim_ctx_step},
         {"ctx-status", prim_ctx_status}, {"ctx-control", prim_ctx_control},
         {"ctx-value", prim_ctx_value},   {"ctx-error", prim_ctx_error},
+        {"ctx-list", prim_ctx_list},     {"ctx-blocked?", prim_ctx_blocked},
+        {"ctx-pause", prim_ctx_pause},   {"ctx-unpause", prim_ctx_unpause},
     };
     lisp_register_builtin_module(env, "sys-debug", exports,
                                  sizeof(exports) / sizeof(exports[0]));

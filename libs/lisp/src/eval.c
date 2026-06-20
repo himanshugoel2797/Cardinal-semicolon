@@ -1357,6 +1357,11 @@ lisp_ctx_status lisp_ctx_state(lisp_value ctxv) {
     return (lisp_ctx_status)((lisp_ctx_t *)lisp_obj(ctxv))->status;
 }
 
+// DIAGNOSTIC: 1 if the context is parked waiting for a message, else 0.
+int lisp_ctx_is_blocked(lisp_value ctxv) {
+    return (int)((lisp_ctx_t *)lisp_obj(ctxv))->blocked;
+}
+
 // Mark a parked context runnable again. Deliberately a SINGLE word write (no
 // allocation, no lock) so a native interrupt handler can call it to wake a
 // context parked on a hardware event -- the ISR -> wake-context bridge.

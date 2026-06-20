@@ -50,6 +50,14 @@ lisp_value lisp_current_ctx(void) {
     return v == 0 ? LISP_EMPTY : v;
 }
 
+// This core's scheduler run queue (the list of live context values), or
+// LISP_EMPTY if no scheduler is current. Read-only -- sys-debug's (ctx-list)
+// exposes it so a debugger can enumerate and inspect the live contexts.
+lisp_value lisp_sched_queue(void) {
+    lisp_sched_t *s = cur_sched();
+    return s != NULL ? s->queue : LISP_EMPTY;
+}
+
 // Swap this core's current-context slot, returning the previous value. sys-debug's
 // ctx-step brackets a nested run with this so the stepped context is "self" for
 // any scheduler primitives it invokes (yield/capabilities/spawn/recv), instead of
