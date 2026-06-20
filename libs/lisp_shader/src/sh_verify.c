@@ -77,6 +77,24 @@ static sh_type node_type(const sh_program *p, sh_nref ref) {
   return p->nodes[ref].type;
 }
 
+// True iff `ref` is in TAIL position a re-entry of the enclosing loop -- i.e. it
+// is a RECUR, or a LET whose body ends in a recur (the begin-desugar case), or an
+// IF both of whose arms end in a recur. Such a node produces no value (bottom
+// type); the loop's type comes from the exit arm. Used so a `(begin effect..
+// (loop ..))` recur arm (which desugars to a LET wrapping the RECUR) is treated
+// like a bare RECUR arm by the IF-arm match and the no-void check.
+static bool ends_in_recur(const sh_program *p, sh_nref ref) {
+  for (int guard = 0; guard < 4096 && valid_ref(p, ref); guard++) {
+    const sh_node *n = &p->nodes[ref];
+    if (n->op == (uint16_t)SH_OP_RECUR) return true;
+    if (n->op == (uint16_t)SH_OP_LET) { ref = n->b; continue; }  // tail = body
+    if (n->op == (uint16_t)SH_OP_IF)
+      return ends_in_recur(p, n->b) && ends_in_recur(p, n->c);
+    return false;
+  }
+  return false;
+}
+
 // Resolve an integer-const node to a specific kind if it is still unresolved.
 // Does nothing if already resolved.
 static void resolve_int_const(verify_ctx *vc, sh_nref ref, sh_kind k) {
@@ -802,10 +820,10 @@ static sh_status verify_node(verify_ctx *vc, sh_nref ref) {
       // a value -- the loop body's type comes from the exit arm), use the
       // other arm's type. This is how the bounded-loop IF works: one arm
       // is the exit value, the other is RECUR (which loops back).
-      bool then_is_recur = (valid_ref(p, n->b) &&
-                            p->nodes[n->b].op == (uint16_t)SH_OP_RECUR);
-      bool else_is_recur = (valid_ref(p, n->c) &&
-                            p->nodes[n->c].op == (uint16_t)SH_OP_RECUR);
+      // A recur arm may be a bare RECUR or a (begin ... (loop ...)) that
+      // desugared to a LET wrapping the RECUR -- recognize both via tail position.
+      bool then_is_recur = ends_in_recur(p, n->b);
+      bool else_is_recur = ends_in_recur(p, n->c);
       if (then_is_recur && !else_is_recur) {
         // then = RECUR, else = exit value: IF's type is else's type
         n->type = telse;
@@ -1760,8 +1778,11 @@ static sh_status check_no_void_nodes(verify_ctx *vc) {
   sh_program *p = vc->p;
   for (uint32_t i = 0; i < p->nnodes; i++) {
     sh_node *n = &p->nodes[i];
-    // RECUR is intentionally void (it does not produce a value)
+    // RECUR is intentionally void (it does not produce a value); so is any node
+    // in tail position to a recur (a LET/IF whose tail loops back, e.g. a
+    // (begin effect.. (loop ..)) recur arm desugared to a LET wrapping the RECUR).
     if (n->op == (uint16_t)SH_OP_RECUR) continue;
+    if (ends_in_recur(p, i)) continue;
     if (n->type.kind == (uint8_t)SH_K_VOID)
       return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
                           "node %u (op=%u) has unresolved type after verification",

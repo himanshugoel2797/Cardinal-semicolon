@@ -666,17 +666,67 @@ static sh_nref parse_or(parse_ctx *ctx, lisp_value args) {
   return if_node;
 }
 
-// Parse (begin e1 e2 ...) -> last expr
+// Parse (begin e1 .. e(n-1) en). A single expression returns directly. For a
+// multi-expression begin, the leading expressions must be EVALUATED for effect
+// (e.g. vregion-set!) and TYPED, not discarded -- so it desugars to a LET that
+// binds e1..e(n-1) to throwaway slots with en as the body/value:
+//   (begin e1 .. e(n-1) en) == (let ((_ e1) .. (_ e(n-1))) en)
+// reusing the existing LET machinery (the verifier types every LET init; the
+// interpreter/VM evaluate each in order). The throwaway slots are unnamed so
+// nothing can reference them. The leading slots must be CONTIGUOUS, so all
+// sub-expressions are parsed BEFORE the slots are allocated (a nested let inside
+// an init must not interleave slot numbers).
 static sh_nref parse_begin(parse_ctx *ctx, lisp_value body) {
+  sh_program *p = ctx->p;
   if (!lisp_is_pair(body))
     return SHF_FAIL(ctx->err, SH_ERR_PARSE, -1, -1, "empty begin");
-  sh_nref result = SH_NREF_NONE;
-  while (lisp_is_pair(body)) {
-    result = parse_expr(ctx, lisp_car(body));
-    if (result == SH_NREF_NONE) return SH_NREF_NONE;
-    body = lisp_cdr(body);
+
+  int n = 0;
+  for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b)) n++;
+  if (n == 1) return parse_expr(ctx, lisp_car(body));
+
+  sh_nref *refs = (sh_nref *)malloc((size_t)n * sizeof(sh_nref));
+  if (!refs) return SHF_FAIL(ctx->err, SH_ERR_OOM, -1, -1, "OOM begin");
+  lisp_value b = body;
+  for (int i = 0; i < n; i++) {
+    refs[i] = parse_expr(ctx, lisp_car(b));
+    if (refs[i] == SH_NREF_NONE) { free(refs); return SH_NREF_NONE; }
+    b = lisp_cdr(b);
   }
-  return result;
+
+  // Now allocate n-1 contiguous throwaway slots for the leading expressions.
+  uint32_t saved = ctx->nlocals_alloc;
+  uint32_t aux_off;
+  if (!sh_aux_reserve(p, (uint32_t)(n - 1), &aux_off)) {
+    free(refs);
+    return SHF_FAIL(ctx->err, SH_ERR_OOM, -1, -1, "OOM begin aux");
+  }
+  int first_slot = -1;
+  for (int i = 0; i < n - 1; i++) {
+    int slot = alloc_local(ctx, "");
+    if (slot < 0) {
+      ctx->nlocals_alloc = saved;
+      free(refs);
+      return SHF_FAIL(ctx->err, SH_ERR_INTERNAL, -1, -1, "begin: too many locals");
+    }
+    if (i == 0) first_slot = slot;
+    p->aux[aux_off + i] = refs[i];
+  }
+  sh_nref body_ref = refs[n - 1];
+  free(refs);
+
+  sh_nref let_node = sh_node_alloc(p, SH_OP_LET);
+  if (let_node == SH_NREF_NONE) {
+    ctx->nlocals_alloc = saved;
+    return SHF_FAIL(ctx->err, SH_ERR_OOM, -1, -1, "OOM begin let");
+  }
+  p->nodes[let_node].a = (uint32_t)first_slot;
+  p->nodes[let_node].b = body_ref;
+  p->nodes[let_node].aux_off = aux_off;
+  p->nodes[let_node].aux_len = (uint32_t)(n - 1);
+
+  ctx->nlocals_alloc = saved;  // pop the throwaway bindings (p->nlocals keeps the max)
+  return let_node;
 }
 
 // Parse (when test body...) -> (if test (begin body...) 0)
