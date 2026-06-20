@@ -20,9 +20,13 @@
 //   SHB_VSPLAT  -- f32x4 (_mm_set1_ps), u32x4/i32x4 (_mm_set1_epi32),
 //                  u8x16 (_mm_set1_epi8), u16x8 (_mm_set1_epi16);
 //                  f32x8/u32x8 via AVX2 when available.
-//   SHB_VBINOP  -- f32x4 add/sub/mul/div; u32x4/i64x2 add/sub;
+//                  i64 vectors (any width) always fall through to the scalar
+//                  lane loop: each i64 lane is 8 bytes; _mm_set1_epi32 is
+//                  4-byte and would silently truncate each i64 lane.
+//   SHB_VBINOP  -- f32x4 add/sub/mul/div; u32x4 add/sub;
 //                  u8x16/u16x8 add/sub; u32x4 mul (SSE4.1 mullo);
 //                  all 256-bit variants via AVX2.  Integer div/mod always scalar.
+//                  i64 vectors always use the scalar lane loop (see VSPLAT note).
 //   SHB_VCMP    -- f32x4 all six predicates; u32x4 eq/lt/gt; u8x16 eq.
 //                  Result: one BOOL lane per 1-byte slot = 0 or 1 (matches oracle).
 //   SHB_VSELECT -- f32x4/u32x4/u8x16: blend from 0/1 bool-lane mask.
@@ -411,7 +415,8 @@ sh_status sh_chunk_validate(const sh_chunk *c, sh_error *err) {
     const sh_instr *ins = &c->code[i];
     sh_bc_op op = (sh_bc_op)ins->op;
 
-    // Check dst/a/b/c when not SH_VREG_NONE.
+    // Check dst/a/b/c when not SH_VREG_NONE (bounds only; per-opcode required
+    // checks follow below, using CHK_REQ_VREG for operands that must be valid).
 #define CHK_VREG(field)                                                       \
     if (ins->field != SH_VREG_NONE && ins->field >= c->nvregs)               \
       return sh_set_error(err, SH_ERR_INTERNAL, -1, -1,                      \
@@ -423,6 +428,70 @@ sh_status sh_chunk_validate(const sh_chunk *c, sh_error *err) {
     CHK_VREG(b);
     CHK_VREG(c);
 #undef CHK_VREG
+
+    // Per-opcode: required operand vregs must not be SH_VREG_NONE.
+    // The VM dereferences these unconditionally; SH_VREG_NONE (0xFFFFFFFF) would
+    // produce a wild OOB access even though CHK_VREG above passed (it skips NONE).
+#define CHK_REQ_VREG(field)                                                   \
+    if (ins->field == SH_VREG_NONE)                                           \
+      return sh_set_error(err, SH_ERR_INTERNAL, -1, -1,                      \
+                          "validate: pc=%u op=%u: required operand " #field   \
+                          " is SH_VREG_NONE",                                 \
+                          i, ins->op)
+    switch (op) {
+      // Scalar arithmetic / compare: read a and b.
+      case SHB_BINOP: CHK_REQ_VREG(a); CHK_REQ_VREG(b); break;
+      case SHB_CMP:   CHK_REQ_VREG(a); CHK_REQ_VREG(b); break;
+      // Unary: read a.
+      case SHB_UNOP:  CHK_REQ_VREG(a); break;
+      // MOV: read a.
+      case SHB_MOV:   CHK_REQ_VREG(a); break;
+      // Region ops: RLOAD reads a (region) and b (index).
+      case SHB_RLOAD: CHK_REQ_VREG(a); CHK_REQ_VREG(b); break;
+      // RSTORE: reads a (region), b (index), c (value).
+      case SHB_RSTORE: CHK_REQ_VREG(a); CHK_REQ_VREG(b); CHK_REQ_VREG(c); break;
+      // RLEN: reads a (region).
+      case SHB_RLEN: CHK_REQ_VREG(a); break;
+      // JMP_IFNOT: reads a (condition).
+      case SHB_JMP_IFNOT: CHK_REQ_VREG(a); break;
+      // RET: reads a (return value) when present; a == SH_VREG_NONE is allowed
+      // (bare ret with no value, result comes from chunk->result).
+      case SHB_RET: break;
+      // Vector ops: VSPLAT reads a (scalar to broadcast).
+      case SHB_VSPLAT: CHK_REQ_VREG(a); break;
+      // VBINOP: reads a and b.
+      case SHB_VBINOP: CHK_REQ_VREG(a); CHK_REQ_VREG(b); break;
+      // VCMP: reads a and b.
+      case SHB_VCMP: CHK_REQ_VREG(a); CHK_REQ_VREG(b); break;
+      // VSELECT: reads a (mask), b (then), c (else).
+      case SHB_VSELECT: CHK_REQ_VREG(a); CHK_REQ_VREG(b); CHK_REQ_VREG(c); break;
+      // VSHUFFLE: reads a (source vector).
+      case SHB_VSHUFFLE: CHK_REQ_VREG(a); break;
+      // VREDUCE: reads a; DOT also reads b.
+      case SHB_VREDUCE:
+        CHK_REQ_VREG(a);
+        if ((sh_reduce)ins->sub == SH_RED_DOT) CHK_REQ_VREG(b);
+        break;
+      // VLANE: reads a (source vector).
+      case SHB_VLANE: CHK_REQ_VREG(a); break;
+      // CONST / PARAM / JMP / CALL: no required a/b/c vreg reads in the vm loop.
+      default: break;
+    }
+#undef CHK_REQ_VREG
+
+    // Finding 2: reject out-of-range lane counts to prevent scalar-loop OOB.
+    // ins->lanes is uint8_t (max 255); SH_MAX_LANES is the safe upper bound.
+    if (ins->lanes > SH_MAX_LANES)
+      return sh_set_error(err, SH_ERR_INTERNAL, -1, -1,
+                          "validate: pc=%u op=%u: lanes=%u > SH_MAX_LANES=%u",
+                          i, ins->op, (unsigned)ins->lanes,
+                          (unsigned)SH_MAX_LANES);
+
+    // Finding 5: PARAM.imm must be a valid parameter index.
+    if (op == SHB_PARAM && ins->imm >= c->nparams)
+      return sh_set_error(err, SH_ERR_INTERNAL, -1, -1,
+                          "validate: pc=%u PARAM: imm=%u >= nparams=%u",
+                          i, ins->imm, c->nparams);
 
     // Jump targets: SHB_JMP/JMP_IFNOT imm is a pc index.
     // Targets equal to ncode are "past the end" and are valid (the VM exits).
@@ -939,13 +1008,18 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
             slots[ins->dst] = dst;
             break;
           }
-          if ((lk == SH_K_U32 || lk == SH_K_I64) && nlanes == 4) {
+          if (lk == SH_K_U32 && nlanes == 4) {
             // Store 4 x 32-bit lanes.
             __m128i r = _mm_set1_epi32((int)(uint32_t)bits);
             _mm_store_si128((__m128i *)dst.vec, r);
             slots[ins->dst] = dst;
             break;
           }
+          // NOTE: i64 vectors (any width) fall through to the scalar lane loop
+          // below.  _mm_set1_epi32 is 4-byte and would silently truncate the
+          // high 32 bits of each i64 lane; _mm_set1_epi64x exists but mixing
+          // the 4-lane SIMD path for 8-byte lanes is layout-incompatible with
+          // the packed vec[] stride.  Scalar is correct and cheap enough.
           if (lk == SH_K_U8 && nlanes == 16) {
             __m128i r = _mm_set1_epi8((char)(uint8_t)bits);
             _mm_store_si128((__m128i *)dst.vec, r);
@@ -1025,8 +1099,11 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
             slots[ins->dst] = dst;
             break;
           }
-          // --- u32x4 / i64x2 add/sub ---
-          if ((lk == SH_K_U32 || lk == SH_K_I64) && nl == 4 &&
+          // --- u32x4 add/sub ---
+          // NOTE: i64 is intentionally excluded. _mm_add_epi32/_mm_sub_epi32
+          // operate on 4 x 32-bit lanes; i64 lanes are 8 bytes each and would
+          // be silently truncated.  i64 vectors fall through to the scalar loop.
+          if (lk == SH_K_U32 && nl == 4 &&
               (bop == SH_BIN_ADD || bop == SH_BIN_SUB)) {
             __m128i ra = _mm_load_si128((const __m128i *)va->vec);
             __m128i rb = _mm_load_si128((const __m128i *)vb->vec);
@@ -1444,7 +1521,9 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
                 SH_SHUF_CASE_F32(0xFC) SH_SHUF_CASE_F32(0xFD) SH_SHUF_CASE_F32(0xFE) SH_SHUF_CASE_F32(0xFF)
                 default: break;
               }
-            } else if (lk == SH_K_U32 || lk == SH_K_I64) {
+            // NOTE: i64 is excluded -- _mm_shuffle_epi32 treats the register
+            // as 4 x 32-bit lanes, which corrupts 8-byte i64 lanes.
+            } else if (lk == SH_K_U32) {
               switch (ctrl) {
                 SH_SHUF_CASE_I32(0x00) SH_SHUF_CASE_I32(0x01) SH_SHUF_CASE_I32(0x02) SH_SHUF_CASE_I32(0x03)
                 SH_SHUF_CASE_I32(0x04) SH_SHUF_CASE_I32(0x05) SH_SHUF_CASE_I32(0x06) SH_SHUF_CASE_I32(0x07)
