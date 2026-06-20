@@ -1354,6 +1354,107 @@ static void check_gpu(lisp_value env) {
     }
 }
 
+// AHCI-in-Lisp, hardware-free: exercise the EXPORTED pure FIS/PRDT builders + the
+// IDENTIFY parser on make-bytes buffers (no MMIO, no device -- the bring-up that
+// touches the HBA is verified live under DISK=). Four layers in one spawned ctx:
+//   (1) FIS builder: an IDENTIFY FIS (byte0=0x27 type, C bit, command=0xEC) and a
+//       READ DMA EXT FIS for a known LBA48 + count -- assert the FIS type, the
+//       command, the device byte (0x40 = LBA), the LBA bytes at the right wire
+//       offsets (4/5/6 low, 8/9/10 high), and the split count bytes (12/13).
+//   (2) PRDT setter: a fake phys + len -> DBA(lo)/DBAU(hi)/DBC(=len-1, bit31=I) at
+//       command-table offset 0x80.
+//   (3) IDENTIFY parse: a crafted 512B IDENTIFY (word83 bit10 = LBA48, words
+//       100-103 = a known 48-bit sector count, words 27-46 = a byte-swapped model)
+//       -> the parser recovers the count and decodes the model string.
+//   (4) Registration round-trip (check_storage shape): a fake corestorage captures
+//       (register-blockdev name bsize bcount driver), and a fake driver answers a
+//       read -> assert the registration carries bsize 512 + the sector count + a
+//       ctx, and the read round-trips the lba.
+static void check_ahci(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 200000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import ahci corestorage driver-util)"
+        // (1)+(2)+(3): pure builders/parser, all byte math -> one boolean.
+        "(define pure-ok (spawn (lambda ()"
+        "  (let ((idf (make-bytes 32)) (rdf (make-bytes 32)) (tbl (make-bytes 512))"
+        "        (idb (make-bytes 512)))"
+        // IDENTIFY FIS: command 0xEC, count 0, device 0.
+        "    (fis-build! idf ATA-IDENTIFY 0 0 0)"
+        // READ FIS: lba = 0x123456789A, count = 8, device = 0x40 (LBA).
+        "    (fis-build! rdf ATA-READ-EXT 78187493530 8 #x40)"
+        // PRDT: phys 0x100000, len 4096 -> DBC = 4095, bit31 set.
+        "    (prdt-set! tbl 1048576 4096 #f)"
+        // IDENTIFY data: word83 bit10 (LBA48), words100-103 = 0x000012345678,
+        // model words 27-28 = 'TE' 'ST' (byte-swapped: hi byte first on the wire).
+        "    (bytes-u16-set! idb (* 83 2) #x0400)"
+        "    (bytes-u16-set! idb (* 100 2) #x5678)"
+        "    (bytes-u16-set! idb (* 101 2) #x1234)"
+        "    (bytes-u16-set! idb (* 102 2) 0) (bytes-u16-set! idb (* 103 2) 0)"
+        // Model words are ATA byte-swapped (2nd char in the low byte): 0x5445
+        // decodes to 'T'(0x54)'E'(0x45), 0x5354 to 'S'(0x53)'T'(0x54) -> "TEST".
+        "    (bytes-u16-set! idb (* 27 2) #x5445)"
+        "    (bytes-u16-set! idb (* 28 2) #x5354)"
+        "    (and"
+        // FIS (1): IDENTIFY
+        "      (= (bytes-u8-ref idf 0) #x27) (= (bytes-u8-ref idf 1) #x80)"
+        "      (= (bytes-u8-ref idf 2) #xEC)"
+        // FIS (1): READ -- command, device, LBA bytes, count
+        "      (= (bytes-u8-ref rdf 2) #x25) (= (bytes-u8-ref rdf 7) #x40)"
+        "      (= (bytes-u8-ref rdf 4) #x9A) (= (bytes-u8-ref rdf 5) #x78)"
+        "      (= (bytes-u8-ref rdf 6) #x56) (= (bytes-u8-ref rdf 8) #x34)"
+        "      (= (bytes-u8-ref rdf 9) #x12) (= (bytes-u8-ref rdf 10) 0)"
+        "      (= (bytes-u8-ref rdf 12) 8) (= (bytes-u8-ref rdf 13) 0)"
+        // PRDT (2): DBA lo/hi at 0x80/0x84, DBC = len-1 with bit31 at 0x8C
+        "      (= (bytes-u32-ref tbl #x80) 1048576) (= (bytes-u32-ref tbl #x84) 0)"
+        "      (= (bytes-u32-ref tbl #x8C) (bitwise-or 4095 #x80000000))"
+        // IDENTIFY parse (3): sector count + model
+        "      (= (id-sector-count idb) 305419896)"     // 0x12345678
+        "      (string=? (id-model idb) \"TEST\"))))))"
+        // (4) Registration round-trip via corestorage (check_storage shape).
+        "(define disk (spawn (lambda () (let loop () (let ((m (recv)))"
+        "   (if (eq? (car m) 'read)"
+        "       (let ((b (make-bytes 1))) (bytes-u8-set! b 0 (cadr m))"
+        "         (send (cadddr m) (list 'complete 0 b))))"
+        "   (loop))))))"
+        "(define reg (spawn (lambda () (let ((m (recv)))"
+        "  (list (caddr m) (cadddr m) (if (nth m 4) 'has-ctx 'no-ctx))))))"
+        "(define stor (start-storage-service))"
+        // emulate ahci-init's registration: bsize 512, a sector count, the driver.
+        "(send reg (list 'register-blockdev 'ahci0 512 305419896 disk))"
+        "(send stor (list 'register-blockdev 'ahci0 512 305419896 disk))"
+        "(define rdr (spawn (lambda () (send stor (list 'read 'ahci0 7 1 (self)))"
+        "   (let ((m (recv))) (bytes-u8-ref (caddr m) 0)))))",
+        env, &err);
+    lisp_value pure = lisp_eval_string("pure-ok", env, &err);
+    lisp_value reg  = lisp_eval_string("reg", env, &err);
+    lisp_value rdr  = lisp_eval_string("rdr", env, &err);
+    lisp_sched_run(&s, 0);
+    char pb[16], gb[48], rb[16];
+    lisp_print(lisp_ctx_value(pure), pb, sizeof pb);
+    lisp_print(lisp_ctx_value(reg), gb, sizeof gb);
+    lisp_print(lisp_ctx_value(rdr), rb, sizeof rb);
+    if (err == NULL &&
+        lisp_ctx_state(pure) == LISP_CTX_DONE && strcmp(pb, "#t") == 0 &&
+        lisp_ctx_state(reg) == LISP_CTX_DONE &&
+        strcmp(gb, "(512 305419896 has-ctx)") == 0 &&
+        lisp_ctx_state(rdr) == LISP_CTX_DONE && strcmp(rb, "7") == 0) {
+        print_str("[SysLisp]  ok  ahci FIS/PRDT builders + IDENTIFY parse + registration\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL ahci  pure-> ");
+        print_str(pb);
+        print_str("  reg-> ");
+        print_str(gb);
+        print_str("  read-> ");
+        print_str(rb);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // lfb-in-Lisp (the linear framebuffer driver), hardware-free. Three layers, no
 // device map -- lfb-init itself maps real MMIO, so it is NOT called here:
 //   (1) REGISTRY: the boot framebuffer's WIDTH key is a number at boot (SysReg's
@@ -1665,6 +1766,7 @@ static void run_self_test(lisp_value env) {
     check_repl(env);
     check_power(env);
     check_storage(env);
+    check_ahci(env);
     check_network(env);
     check_gpu(env);
     check_lfb(env);
