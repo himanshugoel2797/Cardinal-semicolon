@@ -17,7 +17,7 @@
 (define-module init
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
-          ps2 virtio-net rtl8139 virtio-gpu lfb ahci sys-pci sys-cmdline)
+          ps2 virtio-net rtl8139 virtio-gpu lfb ahci cardfs sys-pci sys-cmdline)
 
   ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
   ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
@@ -67,7 +67,11 @@
     ;; Storage: start the registry, capture its handle (formerly dropped), then
     ;; bring up the AHCI driver feeding it. ahci-init is gated on pci-find, so a
     ;; default (no-disk) boot just logs "no device" and returns -- unaffected.
+    ;; cardfs registers as an fs provider FIRST, so it is offered each block
+    ;; device the AHCI driver then registers (a probe reads LBA 0 and claims the
+    ;; volume if it is a cardfs superblock).
     (let ((storage (start-storage-service)))
+      (start-cardfs storage)
       (ahci-init storage))
     ;; Bring up the display registry, then the GPU driver, which brings the
     ;; virtio-gpu device to DRIVER_OK, paints a framebuffer, and registers itself

@@ -1154,6 +1154,74 @@ static void check_storage(lisp_value env) {
     }
 }
 
+// cardfs (the flat key->object store) end to end, with NO real disk: an in-memory
+// RAM-disk context (64 x 512B, mutated in place) stands in for a block driver, the
+// real storage service mediates, and the cardfs provider does format/put/get over
+// the message protocol. Proves the on-disk path -- superblock + 128-byte table
+// entries + bump-allocated data blocks -- round-trips two keys and that an absent
+// key misses, exercising exactly the C cardfs_format/put/get the port mirrors.
+static void check_cardfs(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 1000000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import corestorage cardfs driver-util)"
+        // string <-> bytes helpers
+        "(define (s->b s) (let ((b (make-bytes (string-length s))))"
+        "  (let loop ((i 0)) (if (< i (string-length s))"
+        "    (begin (bytes-u8-set! b i (char->integer (string-ref s i))) (loop (+ i 1))) b))))"
+        "(define (b->s b) (let loop ((i 0) (acc (quote ())))"
+        "  (if (< i (bytes-length b)) (loop (+ i 1) (cons (integer->char (bytes-u8-ref b i)) acc))"
+        "    (list->string (reverse acc)))))"
+        // RAM disk: 64 x 512B in memory; (read lba cnt reply) / (write lba cnt data reply)
+        "(define ram (make-bytes (* 64 512)))"
+        "(define disk (spawn (lambda () (let loop () (let ((m (recv)))"
+        "  (cond ((eq? (car m) (quote read))"
+        "         (send (cadddr m) (list (quote complete) 0 (copy-bytes ram (* (cadr m) 512) (* (caddr m) 512)))))"
+        "        ((eq? (car m) (quote write))"
+        "         (bytes-copy-into! ram (* (cadr m) 512) (cadddr m) (* (caddr m) 512))"
+        "         (send (nth m 4) (list (quote complete) 0))))"
+        "  (loop))))))"
+        "(define stor (start-storage-service))"
+        "(define cfs (start-cardfs stor))"
+        "(send stor (list (quote register-blockdev) (quote ram0) 512 64 disk))"
+        // tester: format, put two keys, get them back + a miss
+        "(define t (spawn (lambda ()"
+        "  (send cfs (list (quote format) stor (quote ram0) (self))) (recv)"
+        "  (send cfs (list (quote put) stor (quote ram0) \"greeting\" (s->b \"hello cardinal\") (self))) (recv)"
+        "  (send cfs (list (quote put) stor (quote ram0) \"answer\" (s->b \"forty-two\") (self))) (recv)"
+        "  (send cfs (list (quote get) stor (quote ram0) \"greeting\" (self)))"
+        "  (let ((g1 (cadr (recv))))"
+        "    (send cfs (list (quote get) stor (quote ram0) \"answer\" (self)))"
+        "    (let ((g2 (cadr (recv))))"
+        "      (send cfs (list (quote get) stor (quote ram0) \"absent\" (self)))"
+        "      (let ((g3 (cadr (recv))))"
+        "        (list (if g1 (b->s g1) \"#f\") (if g2 (b->s g2) \"#f\")"
+        "              (if g3 (b->s g3) \"miss\"))))))))",
+        env, &err);
+    lisp_value t = lisp_eval_string("t", env, &err);
+    lisp_sched_run(&s, 0);
+    char rb[96];
+    lisp_print(lisp_ctx_value(t), rb, sizeof rb);
+    // expected ("hello cardinal" "forty-two" "miss")
+    if (err == NULL && lisp_ctx_state(t) == LISP_CTX_DONE &&
+        strstr(rb, "hello cardinal") != NULL && strstr(rb, "forty-two") != NULL &&
+        strstr(rb, "miss") != NULL) {
+        print_str("[SysLisp]  ok  cardfs format + put/get round-trip (2 keys + a miss)\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL cardfs -> ");
+        print_str(rb);
+        if (err != NULL) {
+            print_str("  err: ");
+            print_str(err);
+        }
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // CoreNetwork-in-Lisp under the real scheduler, driven entirely by Lisp contexts
 // (no NIC). Two scenarios prove the stack end to end:
 //   (1) ARP: a peer ARPs for our IP; a fake NIC captures the frame the service
@@ -1807,6 +1875,7 @@ static void run_self_test(lisp_value env) {
     check_repl(env);
     check_power(env);
     check_storage(env);
+    check_cardfs(env);
     check_ahci(env);
     check_network(env);
     check_gpu(env);

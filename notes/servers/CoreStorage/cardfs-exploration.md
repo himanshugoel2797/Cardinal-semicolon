@@ -1,10 +1,20 @@
 # cardfs — object-store exploration (status)
 
-`drivers/cardfs/src/main.c` is a **minimal, working exploration** of the
-relational/object filesystem direction (see `filesystem-direction.md`). It is
-NOT the final design — it's the simplest expression of the "objects with keys"
-model, built to exercise the on-disk persistence path end-to-end on real
-hardware before committing to the full log-structured/COW design.
+cardfs now lives in **`lisp/servers/cardfs.clp`** — ported to kernel-Lisp (the C
+`drivers/cardfs/src/main.c` it superseded has been removed). It is a **minimal,
+working exploration** of the relational/object filesystem direction (see
+`filesystem-direction.md`). It is NOT the final design — it's the simplest
+expression of the "objects with keys" model, built to exercise the on-disk
+persistence path end-to-end before committing to the full log-structured/COW
+design.
+
+The Lisp port keeps the same on-disk format and the format/put/get logic, but
+block I/O is by MESSAGE (the CoreStorage protocol) rather than a synchronous
+call: cardfs does each read/write as a send + recv round-trip through the storage
+handle, deferring any request that overlaps an in-flight I/O so the single
+provider context serialises them. An in-OS self-test (`check_cardfs` in SysLisp)
+drives format + put/get against an in-memory RAM-disk context — no real disk —
+verifying the superblock + object-table + data-block path round-trips.
 
 ## What works (verified, QEMU/KVM, xHCI → usb-storage)
 
