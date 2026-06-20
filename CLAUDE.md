@@ -66,9 +66,11 @@ interactive 3D desktop and is not used for smoke tests.
 
 `.github/workflows/build.yml` reuses `scripts/devenv/environment.yml` as the
 single source of truth for the toolchain, builds host tools + target, and
-asserts `kernel.bin` exists and ≥30 `.celf` modules were produced. Keep that
-module count in mind when adding/removing modules (the tree currently builds
-~40 `.celf`s).
+asserts `kernel.bin` exists and ≥20 `.celf` modules were produced. Keep that
+module count in mind when adding/removing modules: most of the OS is now Lisp
+(`.clp` under `lisp/`, carried in the initrd — not signed `.celf`s), so the tree
+builds only ~25 `.celf`s (the `Sys*` core, `CoreUsb` + the C USB stack, the
+remaining C drivers, and `mana`).
 
 ## Repository layout
 
@@ -76,7 +78,7 @@ module count in mind when adding/removing modules (the tree currently builds
 |------|------|
 | `kernel/` | The tiny core: ELF/relocatable loader, initrd (tar) parsing, boot-script interpreter, bootstrap allocator, symbol DB, DWARF. Linked at a fixed high virtual address. |
 | `modules/` | `Sys*` kernel-privileged modules: memory (`SysPhysicalMemory`, `SysVirtualMemory`, `SysMemory`), `SysInterrupts`, `SysMP`, `SysTimer`, `SysFP`, `SysObj` (object model), `SysReg` (registry), `SysUser` (syscalls), `SysTaskMgr` (scheduler), `SysDebug`, `SysGdb` (GDB remote-serial-protocol stub — debug the OS over serial/USB-serial; see `notes/debugging-gdb.md`). |
-| `servers/` | `Core*` OS services: `CoreDisplay`, `CoreAudio`, `CoreInput`, `CoreNetwork` (ARP/ICMP/IPv4 + a UDP port layer and a reliable delivery transport `RDT`, exported via `servers/inc/CoreNetwork/{udp,rdt}.h`), `CoreNetDebug` (optional, `cardinal.netdbg`-gated network debug endpoint: UDP echo + reliable blob upload), `CoreStorage` (block-device registry + the `cardfs` object-store exploration), `CoreUsb` (controller-agnostic transfer/enumeration + class-driver registration), `CorePower`. (Most `Core*` services are now Lisp under `lisp/servers/`; the C `CoreUsb` stays for the C USB drivers.) |
+| `servers/` | The `Core*` OS services are now Lisp under `lisp/servers/` (`coredisplay`, `coreaudio`, `coreinput`, `corenetwork` — ARP/ICMP/IPv4 + UDP + the reliable `RDT` transport, `corenetdebug`, `corestorage` + `cardfs`, `corepower`). Only **`CoreUsb`** stays in C (controller-agnostic transfer/enumeration + class-driver registration), as the backend for the C USB drivers that have not been ported. `servers/inc/` keeps the public headers the surviving C drivers still include: `CoreUsb`, `CoreDisplay`, `CoreInput`, `CoreStorage`. |
 | `drivers/` | C device drivers that stay in C: `intel_gfx`, `intel_wifi`, USB host controllers `uhci`/`xhci` (both implement the CoreUsb transfer backend; `ehci` is a stub) + USB class drivers `usb_hid` (kbd/mouse), `usb_storage` (BBB/SCSI block device), `usb_hub`, `usb_serial` (FTDI, routes the GDB stub), `tarfs`. The `virtio` (gpu/net), `hdaudio`, `rtl8139`, `rtl8169`, `ahci`, `lfb`, and `ps2` drivers are now Lisp under `lisp/drivers/`, bound by `lisp/init.clp`. |
 | `libs/` | Static libs linked into modules: `crypto` (sha256/hmac), `miniz`, `module_lib` (CELF header build/verify), `kvs`, `ubsan_handlers`, plus header-only `pci/` and `syscalls/`. `pci/` holds `pci.h` (config space, BAR scan), `pci_irq.h` (MSI/MSI-X setup), `pci_alloc.h` (BAR + bridge-window self-assignment for firmware-unconfigured devices), `pci_debug.h` (`pci_msix_debug_dump`). |
 | `common/` | Freestanding mini-libc (`string`, `stdlib`, `stdio`, lists/queues, `time`) + platform type headers. Included as a SYSTEM include everywhere. |
@@ -181,9 +183,14 @@ Public headers live in `modules/inc/Sys*/`, `servers/inc/Core*/`, and driver
 facilities: the **registry** (`SysReg` — a hierarchical key/value store,
 `registry_addkey_*`/`registry_readkey_*`), the **object model** (`SysObj`),
 **syscalls** (`libs/syscalls/cs_syscall.h`, register-based `syscallq`), and
-driver→server registration (e.g. a display driver calls `display_register()`
-to attach to `CoreDisplay`, a NIC calls `network_register()` to attach to
-`CoreNetwork`). Debug output is `DEBUG_PRINT(...)` over COM1.
+driver→server registration. Under K5 the live drivers are Lisp and register with
+the Lisp `Core*` servers by **message passing**, not the old synchronous C ABI;
+the C `display_register()`/`network_register()`/`input_device_register()`/
+`storage_register_blockdev()` entry points were deleted with their C servers. The
+still-C drivers (`intel_gfx`, the USB stack) keep the matching `servers/inc/`
+headers and call those symbols, but they are **built-but-not-loaded** until they
+too are ported (no boot script loads them, and there is no Lisp `.celf` loader).
+Debug output is `DEBUG_PRINT(...)` over COM1.
 
 **PCI drivers** receive their device's ECAM (`module_init(void *ecam)`) and map
 it as a `pci_config_t`. The usual path is `pci_first_mmio_bar()` (firmware
@@ -223,12 +230,13 @@ before invoking it, since the handler may reply.
 - **No floating point / no libc** in kernel-space code — use `common/`.
 - **Load order** is explicit in the boot scripts; an unresolved import means a
   module is loaded before the one that exports the symbol.
-- `notes/AUDIT.md` enumerates known stubs and which are now addressed
-  (`CoreAudio`/`tarfs` `module_init` still empty; `CoreStorage` now has a
-  block-device registry + the `cardfs` object-store exploration; `CoreNetwork`
-  ARP/ICMP/IPv4 + UDP (port bind/send) + reliable transport (`RDT`) work, TCP and
-  the *userspace* socket API still TODO; the USB stack works over UHCI/xHCI;
-  Haswell `intel_gfx` largely absent). Check it before assuming something is
+- `notes/AUDIT.md` enumerates known stubs and which are now addressed (many of its
+  entries predate the Lisp migration and cite now-deleted C servers — read them as
+  history). The current shape: the `Core*` services are Lisp (`lisp/servers/`) —
+  network does ARP/ICMP/IPv4 + UDP + reliable `RDT`, storage has a block-device
+  registry + the `cardfs` object store, TCP and the *userspace* socket API still
+  TODO; the C USB stack (UHCI/xHCI) and Haswell `intel_gfx` remain C but unloaded.
+  Check it before assuming something is
   broken vs. intentionally unfinished.
 - **Boot timing knobs that bit recent work** (all detailed in `notes/AUDIT.md` /
   `notes/debugging-gdb.md`): `task_sleep` itself is now fixed and reliable for

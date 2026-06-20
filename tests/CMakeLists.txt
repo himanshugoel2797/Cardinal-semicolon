@@ -27,8 +27,7 @@ SET_SOURCE_FILES_PROPERTIES("${TIME_SRC}" PROPERTIES
 ADD_EXECUTABLE(cardinal_tests "${TEST_SRCS}" "${TIME_SRC}")
 TARGET_INCLUDE_DIRECTORIES(cardinal_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${LIBS_DIR}/crypto"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../servers/CoreNetwork/inc")
+    "${LIBS_DIR}/crypto")
 TARGET_LINK_LIBRARIES(cardinal_tests crypto)
 
 ADD_TEST(NAME cardinal_tests COMMAND cardinal_tests)
