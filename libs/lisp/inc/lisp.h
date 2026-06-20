@@ -306,8 +306,18 @@ const char *lisp_ctx_error(lisp_value ctx);
 // EVAL/APPLY step). Lets a scheduler tell finished contexts from runnable ones.
 lisp_ctx_status lisp_ctx_state(lisp_value ctx);
 
+// 1 if the context is parked (blocked) waiting for a message, else 0. Read-only;
+// sys-debug's (ctx-blocked? c) exposes it so a debugger can tell a parked context
+// from a runnable one.
+int lisp_ctx_is_blocked(lisp_value ctx);
+
 // The context currently being resumed by the scheduler (LISP_EMPTY when none).
 lisp_value lisp_current_ctx(void);
+
+// This core's scheduler run queue (a list of live context values), or LISP_EMPTY
+// if no scheduler is current. sys-debug's (ctx-list) exposes it for live
+// enumeration + read-only inspection of scheduler-owned contexts.
+lisp_value lisp_sched_queue(void);
 
 // A context's capability set: LISP_UNDEF (unrestricted/root) or a list of the
 // module-name symbols it may (import …). A restricted context can import only
