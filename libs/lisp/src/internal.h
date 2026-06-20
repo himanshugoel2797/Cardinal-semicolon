@@ -42,6 +42,17 @@ typedef struct {
     lisp_value name;
 } lisp_prim_t;
 
+// An opaque foreign handle (see lisp_make_handle in lisp.h): an external resource
+// pointer plus a finalizer the GC runs once when the handle dies. `tag`
+// discriminates handles minted by different owners. A GC leaf -- `ptr` is foreign
+// and is never followed by the tracer. `fin` may be NULL (no cleanup needed).
+typedef struct {
+    lisp_header h;
+    void *ptr;
+    void (*fin)(void *ptr);
+    uint32_t tag;
+} lisp_handle_t;
+
 // A continuation frame for the explicit-stack (CEK) evaluator. The frames form a
 // heap-linked chain (`next`); a frame's *kind* lives in the header aux byte and
 // selects how `a`/`b`/`c` are interpreted (see the K_* enum in eval.c). `env` is

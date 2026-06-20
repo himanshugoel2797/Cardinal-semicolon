@@ -34,6 +34,7 @@
 #include <cardinal/local_spinlock.h>
 
 #include "lisp.h"
+#include "lisp_shader.h"  // sys-shader: compile + run typed shader kernels in-OS
 
 #include "SysTimer/timer.h"
 #include "SysMP/mp.h"
@@ -715,6 +716,186 @@ static lisp_value prim_initrd_file(lisp_value *a, int n, const char **e) {
     return b;
 }
 
+// --- sys-shader: compile + run typed "shader" kernels in-OS ---------------------
+//
+// The shader tier (libs/lisp_shader) is a typed, compiled, allocation-free Lisp
+// sublanguage -- a third managed-but-restricted tier that drops GC/dynamic dispatch
+// so it can run where full Lisp can't (line-rate data planes, SIMD blits). It was
+// host-only (compiled + tested under plain clang); this module is the in-OS bridge,
+// the S4 "submit code for compilation from within Lisp" step. A context that
+// imports sys-shader may (shader-compile '(defshader ...)) -> an opaque shader
+// handle, then (shader-run handle arg ...) to execute it through the bytecode VM
+// (SSE-accelerated; AVX paths compile out under the kernel's -msse2 flags).
+//
+// The compiled program owns external memory; it is wrapped in a GC handle
+// (lisp_make_handle) whose finalizer the collector runs when the handle dies, so a
+// shader's lifetime is the GC's -- no manual free. The handle carries a tag so
+// shader-run rejects any handle minted elsewhere before dereferencing it.
+
+#define SHADER_HANDLE_TAG 0x53484452u  // 'SHDR' -- discriminates our GC handles
+
+// Returned via *err on a compile/run failure. sh_error.msg lives on the C stack;
+// the primitive protocol wants a static string, so copy it here. A benign race on
+// the rare error path (boot is effectively single-writer); the message is advisory.
+static char g_shader_err[192];
+
+static const char *shader_err(const sh_error *e) {
+    size_t n = strlen(e->msg);
+    if (n >= sizeof(g_shader_err))
+        n = sizeof(g_shader_err) - 1;
+    memcpy(g_shader_err, e->msg, n);
+    g_shader_err[n] = '\0';
+    return g_shader_err;
+}
+
+// GC finalizer: reclaim the compiled program when its handle becomes unreachable.
+static void shader_finalize(void *p) { sh_free((sh_program *)p); }
+
+// (shader-compile '(defshader NAME ((p TYPE) ...) -> RET BODY)) -> shader handle.
+// The datum is the existing reader's output (quote it, or build it). No host prims
+// are exposed to a shader yet (the closed whitelist is empty), so a shader may call
+// only the built-in typed operators. On a structured compile error returns #f with
+// *e describing it (status + message + source line/col where known).
+static lisp_value prim_shader_compile(lisp_value *a, int n, const char **e) {
+    if (n != 1)
+        return (*e = "shader-compile: expects (form)"), LISP_UNDEF;
+    sh_program *prog = NULL;
+    sh_error err;
+    memset(&err, 0, sizeof(err));
+    sh_status s = sh_compile(a[0], NULL, 0, &prog, &err);
+    if (s != SH_OK)
+        return (*e = shader_err(&err)), LISP_FALSE;
+    lisp_value h = lisp_make_handle(prog, shader_finalize, SHADER_HANDLE_TAG);
+    if (h == LISP_UNDEF) {  // OOM minting the handle: don't leak the program
+        sh_free(prog);
+        return (*e = "shader-compile: out of memory"), LISP_UNDEF;
+    }
+    return h;
+}
+
+// Marshal one Lisp argument into a typed sh_value per the shader's declared param
+// type. Returns 0 on success, -1 (and sets *e) on a type/shape mismatch.
+static int shader_marshal_arg(lisp_value v, sh_type t, sh_value *out,
+                              const char **e) {
+    sh_kind k = (sh_kind)t.kind;
+    switch (k) {
+        case SH_K_BOOL:
+            if (v != LISP_TRUE && v != LISP_FALSE)
+                return (*e = "shader-run: boolean arg expected", -1);
+            *out = sh_val_bool(v == LISP_TRUE);
+            return 0;
+        case SH_K_U8: case SH_K_U16: case SH_K_U32: case SH_K_U64: case SH_K_I64:
+            if (!lisp_is_fixnum(v))
+                return (*e = "shader-run: integer arg expected", -1);
+            {
+                int64_t x = lisp_fixnum_val(v);
+                switch (k) {
+                    case SH_K_U8:  *out = sh_val_u8((uint8_t)x);   break;
+                    case SH_K_U16: *out = sh_val_u16((uint16_t)x); break;
+                    case SH_K_U32: *out = sh_val_u32((uint32_t)x); break;
+                    case SH_K_U64: *out = sh_val_u64((uint64_t)x); break;
+                    default:       *out = sh_val_i64(x);           break;
+                }
+            }
+            return 0;
+        case SH_K_F32:
+            if (!lisp_is_number(v))
+                return (*e = "shader-run: number arg expected", -1);
+            *out = sh_val_f32((float)lisp_number_to_double(v));
+            return 0;
+        case SH_K_F64:
+            if (!lisp_is_number(v))
+                return (*e = "shader-run: number arg expected", -1);
+            *out = sh_val_f64(lisp_number_to_double(v));
+            return 0;
+        case SH_K_REGION:
+            if (!lisp_is_bytes(v))
+                return (*e = "shader-run: bytes arg expected for a region", -1);
+            // A region view over the buffer's storage; element kind + mutability
+            // come from the declared param type (the verifier already checked the
+            // shader respects them). Zero-copy: the shader reads/writes in place.
+            *out = sh_val_region(v, (sh_kind)t.lane_kind,
+                                 (t.flags & SH_TYPE_FLAG_MUTABLE) != 0);
+            return 0;
+        case SH_K_VEC: {
+            // A fixed-width vector arg: a Lisp vector of `lanes` fixnums, packed
+            // into the lane bit-patterns (the same encoding sh_value uses).
+            if (!lisp_is_vector(v) || lisp_vector_length(v) != t.lanes)
+                return (*e = "shader-run: vector arg of wrong shape", -1);
+            sh_value r;
+            memset(&r, 0, sizeof(r));
+            r.kind = SH_K_VEC;
+            r.lanes = t.lanes;
+            r.lane_kind = t.lane_kind;
+            for (uint8_t i = 0; i < t.lanes; i++) {
+                lisp_value el = lisp_vector_ref(v, i);
+                if (!lisp_is_fixnum(el))
+                    return (*e = "shader-run: vector lanes must be integers", -1);
+                r.lane[i] = (uint64_t)lisp_fixnum_val(el);
+            }
+            *out = r;
+            return 0;
+        }
+        default:
+            return (*e = "shader-run: unsupported param type", -1);
+    }
+}
+
+// Marshal a shader result back into a Lisp value. Scalars -> fixnum/flonum/bool;
+// a vector -> a Lisp vector of fixnums. Returns LISP_UNDEF + *e for a kind that has
+// no Lisp representation (a bare region is never returned by value).
+static lisp_value shader_marshal_result(sh_value v, const char **e) {
+    switch (v.kind) {
+        case SH_K_BOOL: return v.u ? LISP_TRUE : LISP_FALSE;
+        case SH_K_U8: case SH_K_U16: case SH_K_U32: case SH_K_U64:
+            return lisp_fixnum((int64_t)v.u);
+        case SH_K_I64: return lisp_fixnum(v.i);
+        case SH_K_F32: case SH_K_F64: return lisp_make_flonum(v.f);
+        case SH_K_VEC: {
+            lisp_value vec = lisp_make_vector(v.lanes, LISP_FALSE);
+            if (vec == LISP_UNDEF)
+                return (*e = "shader-run: out of memory for result vector"), LISP_UNDEF;
+            for (uint8_t i = 0; i < v.lanes; i++)
+                lisp_vector_set_init(vec, i, lisp_fixnum((int64_t)v.lane[i]));
+            return vec;
+        }
+        default:
+            return (*e = "shader-run: result has no Lisp representation"), LISP_UNDEF;
+    }
+}
+
+// (shader-run handle arg ...) -> the shader's result. Marshals each arg to the
+// declared param type, runs the bytecode VM (the accelerated path), and marshals
+// the result back. A runtime trap (e.g. a region access out of range) returns #f
+// with *e set; the shader can never corrupt memory (every access is checked).
+static lisp_value prim_shader_run(lisp_value *a, int n, const char **e) {
+    if (n < 1 || !lisp_is_handle(a[0]) ||
+        lisp_handle_tag(a[0]) != SHADER_HANDLE_TAG)
+        return (*e = "shader-run: first arg must be a shader handle"), LISP_UNDEF;
+    sh_program *prog = (sh_program *)lisp_handle_ptr(a[0]);
+    uint32_t argc = (uint32_t)(n - 1);
+    // Bound the stack array FIRST, independent of sh_param_count, so the safety of
+    // the args[] writes below holds even if a future program source bypassed the
+    // frontend's own nparams<=SH_MAX_PARAMS clamp.
+    if (argc > SH_MAX_PARAMS)
+        return (*e = "shader-run: too many arguments"), LISP_UNDEF;
+    if (argc != sh_param_count(prog))
+        return (*e = "shader-run: wrong argument count"), LISP_UNDEF;
+
+    sh_value args[SH_MAX_PARAMS];
+    for (uint32_t i = 0; i < argc; i++)
+        if (shader_marshal_arg(a[i + 1], sh_param_type(prog, i), &args[i], e) != 0)
+            return LISP_UNDEF;
+
+    sh_value out;
+    sh_error err;
+    memset(&err, 0, sizeof(err));
+    sh_status s = sh_run(prog, args, argc, 0, &out, &err);
+    if (s != SH_OK)
+        return (*e = shader_err(&err)), LISP_FALSE;
+    return shader_marshal_result(out, e);
+}
+
 // The capability-bearing driver primitives, grouped into named modules instead
 // of dumped into the global env. A Lisp driver gains an authority only by
 // importing its module -- (import sys-mmio) to map device memory, (import sys-io)
@@ -748,6 +929,10 @@ static const lisp_builtin_export sys_reg_exports[] = {
 static const lisp_builtin_export sys_initrd_exports[] = {
     {"initrd-file", prim_initrd_file},
 };
+static const lisp_builtin_export sys_shader_exports[] = {
+    {"shader-compile", prim_shader_compile},
+    {"shader-run", prim_shader_run},
+};
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -764,6 +949,7 @@ static void register_driver_modules(lisp_value env) {
         {"sys-cmdline", sys_cmdline_exports, ARRAY_LEN(sys_cmdline_exports)},
         {"sys-reg", sys_reg_exports, ARRAY_LEN(sys_reg_exports)},
         {"sys-initrd", sys_initrd_exports, ARRAY_LEN(sys_initrd_exports)},
+        {"sys-shader", sys_shader_exports, ARRAY_LEN(sys_shader_exports)},
     };
     for (size_t i = 0; i < ARRAY_LEN(mods); i++)
         // Only OOM can fail this, and only at boot with a fresh heap -- but a
@@ -1783,6 +1969,39 @@ static void run_self_test(lisp_value env) {
                "  (import (dbg-probe (prefix d:)))"
                "  (d:run))",
           "42");
+    // sys-shader through the capability path (the S4 in-OS bridge): a module
+    // imports the shader tier, compiles a scalar kernel and the SIMD saturating
+    // blit, runs both through the bytecode VM, and confirms a malformed kernel is
+    // rejected at compile. This proves end-to-end "submit Lisp for compilation
+    // from within Lisp": (defshader ...) datum -> verified+lowered chunk -> VM
+    // result, plus the GC-finalized shader handle and the zero-copy region path.
+    check(env, "(begin"
+               "  (define-module sh-probe (export run)"
+               "    (import sys-shader)"
+               "    (define (run)"
+               "      (let ((add (shader-compile"
+               "                   '(defshader add ((a u32)(b u32)) -> u32 (+ a b))))"
+               "            (blit (shader-compile"
+               "                   '(defshader blit ((buf (bytes-mut u8))(delta u8x16)) -> u32"
+               "                      (let loop ((i 0)(acc (u32 0)))"
+               "                        (if (>= i (region-len buf)) acc"
+               "                            (loop (+ i 16)"
+               "                              (+ acc (u32 (lane (vregion-set! buf i"
+               "                                   (sat+ (vregion-ref buf i 16) delta)) 0)))))))))"
+               "            (buf (make-bytes 16))"
+               "            (delta (vector 100 100 100 100 100 100 100 100"
+               "                           100 100 100 100 100 100 100 100)))"
+               "        (let fill ((i 0))"                       // buf := 200 everywhere
+               "          (if (< i 16) (begin (bytes-u8-set! buf i 200) (fill (+ i 1))) #f))"
+               "        (shader-run blit buf delta)"             // 200 + 100 -> saturate 255
+               "        (and (= (shader-run add 7 35) 42)"
+               "             (= (bytes-u8-ref buf 0) 255)"
+               "             (= (bytes-u8-ref buf 15) 255)"
+               "             (eq? (shader-compile"
+               "                   '(defshader bad ((x u32)) -> u32 (nope x))) #f)))))"
+               "  (import (sh-probe (prefix sh:)))"
+               "  (sh:run))",
+          "#t");
 
     char num[24];
     print_str("[SysLisp] ");

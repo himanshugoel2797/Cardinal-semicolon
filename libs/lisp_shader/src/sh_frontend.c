@@ -29,6 +29,7 @@
 #include <stdint.h>
 
 #include "sh_internal.h"
+#include "sh_bytecode.h"  // sh_chunk_free: sh_free reclaims the cached VM chunk
 
 // Error-and-return helper for functions returning sh_nref:
 // sets the error, then returns SH_NREF_NONE (NOT the status code).
@@ -135,6 +136,22 @@ static lisp_value list_ref(lisp_value v, int i) {
   return lisp_is_pair(v) ? lisp_car(v) : LISP_EMPTY;
 }
 
+// Parse a non-empty run of decimal digits that must consume the WHOLE string.
+// Returns the value via *out and true on success; false on empty/non-digit/overflow.
+// Replaces strtol (common/ has no strtol; a vector lane count is a small positive
+// decimal), so the same source compiles host-side and freestanding in-OS.
+static bool parse_dec_all(const char *s, long *out) {
+  if (*s == '\0') return false;
+  long v = 0;
+  for (const char *p = s; *p != '\0'; p++) {
+    if (*p < '0' || *p > '9') return false;
+    v = v * 10 + (*p - '0');
+    if (v > 1000000) return false;  // lane counts are tiny; cap well below overflow
+  }
+  *out = v;
+  return true;
+}
+
 // --- type parsing ------------------------------------------------------------
 // Returns true on success, fills *out. sym must be a symbol value.
 
@@ -159,9 +176,8 @@ static bool parse_type_sym(lisp_value sym, sh_type *out) {
     for (size_t i = 1; i < len; i++) {
       if (name[i] == 'x' && i > 0 && i + 1 < len) {
         // try parsing lanes after 'x'
-        char *endp;
-        long lanes = strtol(name + i + 1, &endp, 10);
-        if (endp != name + i + 1 && *endp == '\0' &&
+        long lanes;
+        if (parse_dec_all(name + i + 1, &lanes) &&
             lanes >= 2 && lanes <= SH_MAX_LANES) {
           // parse the kind prefix
           char kbuf[16];
@@ -1416,6 +1432,7 @@ sh_status sh_compile_string(const char *src, const sh_prim_set *prims, uint32_t 
 
 void sh_free(sh_program *p) {
   if (!p) return;
+  sh_chunk_free((sh_chunk *)p->chunk);  // the lazily-lowered VM chunk (NULL if unused)
   free(p->nodes);
   free(p->aux);
   free(p->loops);

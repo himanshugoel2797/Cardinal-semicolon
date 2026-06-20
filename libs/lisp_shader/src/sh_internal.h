@@ -172,6 +172,10 @@ struct sh_program {
 
     const sh_prim_set *prims;  // capability set captured at compile (interp needs fns)
     bool verified;             // set true by shv_verify on SH_OK
+    void *chunk;               // S4: lazily-lowered+validated sh_chunk cache for the
+                               // sh_run SIMD VM path; NULL until first sh_run, freed
+                               // by sh_free. void* keeps the frozen bytecode contract
+                               // (sh_bytecode.h) out of this header.
 };
 
 // --- arena builders (owned by the frontend; declared for clarity) -----------

@@ -15,10 +15,14 @@ ADD_CUSTOM_TARGET(${CELF_NAME}.celf ALL
     COMMAND cp -t ${PLATFORM_CELF_DIR} ${CELF_NAME}.celf
 )
 
-SET_TARGET_PROPERTIES(${CELF_NAME}.elf PROPERTIES COMPILE_OPTIONS "-fno-pic")
-TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf PRIVATE "inc" "../inc" "../../kernel/inc" "${LIBS_DIR}/lisp/inc" "${LIBS_DIR}/syscalls" "${LIBS_DIR}")
+# SSE re-enabled (overrides the global -mno-sse, which is earlier on the line) like
+# libs/lisp: SysLisp is the Lisp host and now marshals flonum/shader f32/f64 values,
+# which need hardware doubles. -mstackrealign keeps the stack 16-aligned for them.
+SET_TARGET_PROPERTIES(${CELF_NAME}.elf PROPERTIES COMPILE_OPTIONS "-fno-pic;-msse;-msse2;-mstackrealign")
+TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf PRIVATE "inc" "../inc" "../../kernel/inc" "${LIBS_DIR}/lisp/inc" "${LIBS_DIR}/lisp_shader/inc" "${LIBS_DIR}/syscalls" "${LIBS_DIR}")
 TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf SYSTEM PUBLIC "${KERN_STDLIB_INCLUDE_DIR}")
 # Links the kernel-resident Scheme runtime (built freestanding with SSE re-enabled
-# for its hardware-double flonums) plus the UBSan handlers used across modules.
-TARGET_LINK_LIBRARIES(${CELF_NAME}.elf PRIVATE lisp ubsan_handlers)
+# for its hardware-double flonums), the typed shader tier (its in-OS host -- the
+# (import sys-shader) capability), plus the UBSan handlers used across modules.
+TARGET_LINK_LIBRARIES(${CELF_NAME}.elf PRIVATE lisp lisp_shader ubsan_handlers)
 SET_TARGET_PROPERTIES(${CELF_NAME}.elf PROPERTIES LINK_FLAGS "-r ${ISA_LINKER_FLAGS} ${PLATFORM_LINKER_FLAGS}")

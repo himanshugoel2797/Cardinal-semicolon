@@ -218,6 +218,7 @@ static void print_val(sink *s, lisp_value v, bool readable) {
             emit_int(s, (int64_t)lisp_bytes_len(v));
             emit_ch(s, '>');
             return;
+        case LISP_OBJ_HANDLE: emit_cstr(s, "#<handle>"); return;
         default: emit_cstr(s, "#<obj>"); return;
     }
 }

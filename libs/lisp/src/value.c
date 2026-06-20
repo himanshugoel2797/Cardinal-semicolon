@@ -67,6 +67,30 @@ lisp_value lisp_make_bytes_foreign(void *ptr, size_t len, uint64_t phys) {
     return lisp_from_obj(b);
 }
 
+// Opaque foreign handles (lisp_make_handle in lisp.h): an external resource the GC
+// finalizes. The wrapped pointer is foreign storage libs/lisp never dereferences;
+// gc.c calls `fin` when the handle is swept (a GC leaf -- see the trace `default`).
+lisp_value lisp_make_handle(void *ptr, void (*finalize)(void *ptr), uint32_t tag) {
+    lisp_handle_t *o = (lisp_handle_t *)lisp_gc_alloc(sizeof(lisp_handle_t));
+    if (o == NULL)
+        return LISP_UNDEF;
+    o->h.header = LISP_MK_HEADER(LISP_OBJ_HANDLE, 0);
+    o->ptr = ptr;
+    o->fin = finalize;
+    o->tag = tag;
+    return lisp_from_obj(o);
+}
+
+bool lisp_is_handle(lisp_value v) {
+    return lisp_is_ptr(v) && LISP_HDR_TYPE(lisp_obj(v)) == LISP_OBJ_HANDLE;
+}
+void *lisp_handle_ptr(lisp_value v) {
+    return lisp_is_handle(v) ? ((lisp_handle_t *)lisp_obj(v))->ptr : NULL;
+}
+uint32_t lisp_handle_tag(lisp_value v) {
+    return lisp_is_handle(v) ? ((lisp_handle_t *)lisp_obj(v))->tag : 0;
+}
+
 const char *lisp_named_name(lisp_value v) { return ((lisp_named *)lisp_obj(v))->name; }
 size_t lisp_named_len(lisp_value v) { return (size_t)LISP_HDR_AUX(lisp_obj(v)); }
 const char *lisp_string_data(lisp_value v) { return ((lisp_string *)lisp_obj(v))->data; }

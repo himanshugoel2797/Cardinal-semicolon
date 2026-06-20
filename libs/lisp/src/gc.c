@@ -310,7 +310,24 @@ static void trace(lisp_value v) {
             break;
         }
         default:
-            break;  // symbol / keyword / string / flonum are leaves
+            break;  // symbol / keyword / string / flonum / handle are leaves
+    }
+}
+
+// Run an object's finalizer as it is reclaimed. Only a foreign handle carries one
+// -- an external (non-GC) resource whose lifetime is the collector's; every other
+// type is self-contained in GC memory. Idempotent (clears `fin`) so the sweep and
+// a later heap teardown can never double-free the same resource. The payload
+// trails the gc_obj header (heap_link returns o + 1).
+static void gc_finalize(gc_obj *o) {
+    lisp_header *p = (lisp_header *)(o + 1);
+    if (LISP_HDR_TYPE(p) == LISP_OBJ_HANDLE) {
+        lisp_handle_t *hd = (lisp_handle_t *)p;
+        if (hd->fin != NULL) {
+            void (*fin)(void *) = hd->fin;
+            hd->fin = NULL;
+            fin(hd->ptr);
+        }
     }
 }
 
@@ -412,6 +429,7 @@ static void collect_heap_locked(struct lisp_heap *h) {
             link = &o->next;
         } else {
             *link = next;
+            gc_finalize(o);  // release any external resource before reclaiming
             if (o->cls == GC_CLS_LARGE) {
                 free(o);  // individually malloc'd
             } else {
@@ -609,6 +627,7 @@ void lisp_heap_free(struct lisp_heap *h) {
     // objects still on the all-list need an individual free.
     for (gc_obj *o = h->all; o != NULL;) {
         gc_obj *next = o->next;
+        gc_finalize(o);  // a live handle's resource must still be released at teardown
         if (o->cls == GC_CLS_LARGE)
             free(o);
         o = next;

@@ -7,7 +7,21 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <types.h>
+
+// calloc over the module allocator (malloc/free live in SysMemory): allocate
+// nmemb*size zeroed bytes, with an overflow guard on the product. WEAK so a module
+// may override; the shader tier (libs/lisp_shader) relies on this in-OS.
+void *WEAK calloc(size_t nmemb, size_t size) {
+    if (nmemb != 0 && size > (size_t)-1 / nmemb)
+        return NULL;  // multiplication would overflow
+    size_t total = nmemb * size;
+    void *p = malloc(total);
+    if (p != NULL)
+        memset(p, 0, total);
+    return p;
+}
 
 char *WEAK itoa(int val, char *dst, int base) {
     char *iter = dst;

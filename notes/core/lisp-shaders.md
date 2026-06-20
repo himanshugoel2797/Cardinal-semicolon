@@ -301,9 +301,25 @@ the substrate note's pattern.
   found and drove a fix for a real `begin` bug: multi-expression `begin` dropped
   the leading expressions' effects — it now desugars to a LET so effects are
   sequenced and typed, with tail-recur recognition propagating through it.
-- **S4 — In-OS integration.** `libs/lisp_shader` wired into `SysLisp`;
-  compile-at-first-execution; an explicit-stack interpreter (the host tree-walker
-  recurses — fine host-side, a kernel-stack hazard in-OS); swap `<math.h>`/libc for
-  `common/`; a driver data-plane hot loop and/or ISR micro-op ported to a shader.
+- **S4 — In-OS integration** *(done.)* `libs/lisp_shader` is in the target build and
+  linked into `SysLisp`, which exposes it as the capability-gated `sys-shader`
+  module: `(import sys-shader)` then `(shader-compile '(defshader …))` → an opaque
+  shader handle, and `(shader-run handle arg …)` runs it through the bytecode VM
+  (SSE2-accelerated; AVX/SSE4 paths compile out under the kernel's `-msse2`). The
+  chunk is lowered+validated and cached on first run (compile-at-first-execution,
+  via the new public `sh_run`). The compiled program is owned by a **GC handle**
+  (`lisp_make_handle` — a new generic foreign-resource object whose finalizer the
+  collector runs on sweep/teardown), so a shader's lifetime is the GC's with no
+  manual free; the handle carries a tag so `shader-run` rejects a foreign handle
+  minted elsewhere. Freestanding-libc gaps this surfaced were filled in `common/`:
+  `calloc`, a minimal `vsnprintf`/`snprintf`, and the `<stdint.h>` limit macros.
+  `<math.h>` was vestigial (no calls) and dropped. Execution is stack-safe in-OS:
+  the VM is a flat bytecode loop — only *compilation* (verify/lower) recurses, and
+  its depth is bounded by the program text, so the explicit-stack rewrite is **not**
+  needed for a first cut (kept as a follow-up only if untrusted shader text is ever
+  compiled at runtime). An in-OS self-test compiles+runs a scalar kernel and the
+  SIMD saturating blit from Lisp (`[SysLisp] ALL TESTS PASSED`); host suites add a
+  GC-finalizer test (`test_gc.c`) and an `sh_run` test (`test_run.c`). *Still
+  deferred:* exposing host prims to a shader's whitelist; a machine-code JIT.
 - **S5 — Documentation pipeline.** Inline-doc extraction, the canonical-hash build
   gate, the cold sidecar, and the load-time mismatch warning — for all Lisp defs.

@@ -77,6 +77,8 @@ typedef enum {
     LISP_OBJ_KONT = 10,      // a continuation frame (explicit-stack evaluator)
     LISP_OBJ_CTX = 11,       // an execution context (the CEK machine state)
     LISP_OBJ_BYTES = 12,     // a mutable byte buffer (driver MMIO/DMA + bulk IPC)
+    LISP_OBJ_HANDLE = 13,    // an opaque foreign resource + GC finalizer (e.g. a
+                             // compiled shader); a GC leaf
     // reserved for later phases: MAP, BYTEVECTOR, BOX, ...
 } lisp_objtype;
 
@@ -232,6 +234,23 @@ const char *lisp_named_name(lisp_value v);  // symbol/keyword name (NUL-terminat
 size_t lisp_named_len(lisp_value v);
 const char *lisp_string_data(lisp_value v);
 size_t lisp_string_len(lisp_value v);
+
+// An opaque foreign handle: a pointer to an EXTERNAL (non-Lisp) resource plus an
+// optional finalizer the GC invokes exactly once when the handle becomes
+// unreachable (so the resource's lifetime is the collector's). This lets a module
+// hand Lisp an artifact it owns -- e.g. the shader tier's compiled program --
+// without libs/lisp depending on that module: the owner supplies `finalize`.
+// `tag` is an owner-chosen discriminator so a primitive can reject a handle minted
+// elsewhere (the pointer is never dereferenced by libs/lisp). A GC leaf; a handle
+// is an identity, not data, so it cannot be deep-copied across contexts (a `send`
+// of one is rejected, like a procedure). Returns LISP_UNDEF on OOM.
+// The finalizer runs DURING collection, while the runtime lock is held: it must
+// only release its own resource (e.g. free()) and must NOT allocate Lisp objects
+// or call any lisp_* function that re-acquires the runtime lock (it would deadlock).
+lisp_value lisp_make_handle(void *ptr, void (*finalize)(void *ptr), uint32_t tag);
+bool lisp_is_handle(lisp_value v);
+void *lisp_handle_ptr(lisp_value v);    // the wrapped pointer (NULL if not a handle)
+uint32_t lisp_handle_tag(lisp_value v);  // the owner's discriminator (0 if not a handle)
 
 // --- Evaluator (eval.c / prims.c) -------------------------------------------
 

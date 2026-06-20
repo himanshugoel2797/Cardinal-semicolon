@@ -26,6 +26,40 @@ static void expect(const char *label, const char *got, const char *want) {
     }
 }
 
+static void check_true(const char *label, int cond) {
+    checks++;
+    if (cond) {
+        printf("  ok   %-36s\n", label);
+    } else {
+        printf("  FAIL %-36s\n", label);
+        failures++;
+    }
+}
+
+// Foreign-handle finalizer probe: the GC calls this once when a handle dies.
+static int g_fin_count = 0;
+static void *g_fin_last = NULL;
+static void count_finalizer(void *p) {
+    g_fin_count++;
+    g_fin_last = p;
+}
+
+// Mint a handle whose ONLY reference is this frame's local, then return -- so the
+// handle is unreachable once the frame is gone. Kept out of line so the compiler
+// cannot keep the value live in the caller (the harness builds at -O0, no inline).
+static void mint_dead_handle(void *slot) {
+    lisp_value h = lisp_make_handle(slot, count_finalizer, 0xBEEF);
+    if (!lisp_is_handle(h))
+        printf("  FAIL mint_dead_handle produced a non-handle\n");
+}
+
+// Allocate a heap of immediately-dead pairs to force a collection (and overwrite
+// the stack slots the previous frame used, so a stale pointer can't pin a handle).
+static void churn_garbage(void) {
+    for (int i = 0; i < 200000; i++)
+        (void)lisp_cons(lisp_fixnum(i), LISP_EMPTY);
+}
+
 int main(void) {
     uintptr_t stack_marker;
     lisp_gc_init(&stack_marker);  // enable GC; this frame is the stack base
@@ -102,6 +136,38 @@ int main(void) {
         lisp_value r = lisp_eval_string("(add7 35)", env, &err);
         lisp_print(r, buf, sizeof(buf));
         expect("captured closure survives GC", buf, "42");
+    }
+
+    // 5. Foreign handles: accessors read back, the finalizer never runs while the
+    //    handle is reachable, and runs exactly once when it dies. (The shader tier
+    //    rides this to reclaim a compiled program with no manual free.)
+    {
+        g_fin_count = 0;
+        g_fin_last = NULL;
+        int slot_a = 0;
+        // A reachable handle (held in a local the conservative scan sees).
+        volatile lisp_value live = lisp_make_handle(&slot_a, count_finalizer, 0xC0DE);
+        lisp_value lh = (lisp_value)live;
+        check_true("is-handle predicate", lisp_is_handle(lh));
+        check_true("handle ptr accessor", lisp_handle_ptr(lh) == &slot_a);
+        check_true("handle tag accessor", lisp_handle_tag(lh) == 0xC0DE);
+        check_true("non-handle predicate rejects a fixnum", !lisp_is_handle(lisp_fixnum(7)));
+        churn_garbage();
+        lisp_gc_collect();
+        lisp_gc_collect();
+        check_true("reachable handle NOT finalized", g_fin_count == 0);
+        (void)live;  // keep it rooted across the collections above
+
+        // A separate handle that becomes unreachable must be finalized exactly once.
+        g_fin_count = 0;
+        g_fin_last = NULL;
+        int slot_b = 0;
+        mint_dead_handle(&slot_b);  // its only reference dies with the helper frame
+        churn_garbage();            // forces a collection; reclaims the dead handle
+        lisp_gc_collect();
+        lisp_gc_collect();
+        check_true("dead handle finalized exactly once", g_fin_count == 1);
+        check_true("finalizer received the wrapped pointer", g_fin_last == &slot_b);
     }
 
     printf("\n[lisp GC] %d checks, %d failures\n", checks, failures);

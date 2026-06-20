@@ -11,7 +11,6 @@
 // The public sh_invoke (arg validation + dispatch) lives here; shi_invoke is the
 // internal entry. See notes/scratch/shader-proposal-minimalist.md sections 1 and 8.
 
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 

@@ -178,6 +178,18 @@ uint64_t sh_cost_for_args(const sh_program *p, const sh_value *args, uint32_t ar
 sh_status sh_invoke(const sh_program *p, const sh_value *args, uint32_t argc,
                     sh_value *out, sh_error *err);
 
+// --- run (the bytecode VM: SIMD where the build enables it) -----------------
+// Like sh_invoke, but executes the compiled-on-first-use bytecode chunk instead of
+// the scalar reference interpreter -- the accelerated path (SSE/AVX vector ops).
+// The first call lowers + validates the program into a chunk cached on `p` (hence
+// the non-const handle); later calls reuse it. Identical result semantics to
+// sh_invoke by construction (the differential test suite asserts this bit-for-bit);
+// `flags` is forwarded to the VM (e.g. SH_VM_FORCE_SCALAR). On SH_OK *out holds the
+// typed result. A lowering/validation failure is returned and leaves `p` runnable
+// via sh_invoke.
+sh_status sh_run(sh_program *p, const sh_value *args, uint32_t argc,
+                 uint32_t flags, sh_value *out, sh_error *err);
+
 // --- value helpers (host builds args / reads results) -----------------------
 static inline sh_value sh_val_bool(bool b) {
     sh_value v = {0}; v.kind = SH_K_BOOL; v.lanes = 1; v.u = b ? 1 : 0; return v;
