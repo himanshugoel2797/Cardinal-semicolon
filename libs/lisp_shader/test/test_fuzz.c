@@ -348,6 +348,51 @@ static void fuzz_bounds(int iters) {
   sh_free(p); sh_chunk_free(c);
 }
 
+// 8. Multi-effect begin: TWO sequential vregion-set! per iteration (different
+// strips), sequencing two side effects in one begin -- stresses begin's
+// effect-ordering desugar beyond the single-store blit. Each executor gets its
+// own buffer copy; the resulting buffers must be byte-identical.
+static void fuzz_begin_multi(int iters) {
+  sh_program *p; sh_chunk *c;
+  // buf processed two strips (32 elems) per iteration: strip i gets +d1, the
+  // next strip gets saturating +d2. Tests order + two distinct effects.
+  if (!build("(defshader f ((buf (bytes-mut u8))(d1 u8x16)(d2 u8x16)) -> u32"
+             " (let loop ((i 0))"
+             "   (if (>= i (region-len buf)) (u32 0)"
+             "     (begin"
+             "       (vregion-set! buf i (sat+ (vregion-ref buf i 16) d1))"
+             "       (vregion-set! buf (+ i 16) (sat+ (vregion-ref buf (+ i 16) 16) d2))"
+             "       (loop (+ i 32))))))", NULL, &p, &c)) { g_fail++; return; }
+  for (int it = 0; it < iters; it++) {
+    uint32_t pairs = 1 + (rnd_u32() % 32);
+    uint32_t n = pairs * 32;  // multiple of 32 so every iteration's two strips fit
+    uint8_t *base = (uint8_t *)malloc(n);
+    for (uint32_t j = 0; j < n; j++) base[j] = (uint8_t)rnd_u32();
+    uint8_t *bo = (uint8_t *)malloc(n), *bs = (uint8_t *)malloc(n), *bm = (uint8_t *)malloc(n);
+    memcpy(bo, base, n); memcpy(bs, base, n); memcpy(bm, base, n);
+    sh_value d1 = mkvec(SH_K_U8, 16), d2 = mkvec(SH_K_U8, 16);
+    sh_value ao[3] = {sh_val_region_raw(bo, n, SH_K_U8, true), d1, d2};
+    sh_value as[3] = {sh_val_region_raw(bs, n, SH_K_U8, true), d1, d2};
+    sh_value am[3] = {sh_val_region_raw(bm, n, SH_K_U8, true), d1, d2};
+    sh_value ro, rs, rm; sh_error eo, es, em;
+    memset(&ro,0,sizeof ro); memset(&rs,0,sizeof rs); memset(&rm,0,sizeof rm);
+    memset(&eo,0,sizeof eo); memset(&es,0,sizeof es); memset(&em,0,sizeof em);
+    sh_status so = sh_invoke(p, ao, 3, &ro, &eo);
+    sh_status ss = sh_vm_run(c, as, 3, SH_VM_FORCE_SCALAR, &rs, &es);
+    sh_status sm = sh_vm_run(c, am, 3, 0, &rm, &em);
+    g_cases++;
+    if (so != SH_OK || ss != SH_OK || sm != SH_OK) {
+      if (g_fail < 12) printf("  [fuzz] begin-multi STATUS o=%d s=%d m=%d\n",(int)so,(int)ss,(int)sm);
+      g_fail++;
+    } else if (memcmp(bo, bs, n) != 0 || memcmp(bo, bm, n) != 0) {
+      if (g_fail < 12) printf("  [fuzz] begin-multi BUFFER mismatch (n=%u)\n", n);
+      g_fail++;
+    }
+    free(base); free(bo); free(bs); free(bm);
+  }
+  sh_free(p); sh_chunk_free(c);
+}
+
 int main(void) {
   (void)lisp_default_env();  // bring up interning for the reader
 
@@ -359,6 +404,7 @@ int main(void) {
   fuzz_vector(N);
   fuzz_region_sum(N / 4);
   fuzz_blit(N / 8);
+  fuzz_begin_multi(N / 8);
   fuzz_bounds(N);
 
   printf("[fuzz] %ld differential cases, %ld failures\n", g_cases, g_fail);
