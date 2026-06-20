@@ -185,9 +185,15 @@
                             (= (bytes-u8-ref dbuf 511) #xAA))
                        " (0x55AA seen)" " (no 0x55AA)"))
           (newline)
+          ;; AHCI's plain-MSI message is not delivered under QEMU q35/ich9-ahci
+          ;; (the cap is correctly enabled -- valid LAPIC address + vector -- and
+          ;; the device raises the interrupt, PxIS/HBA-IS/GHC.IE all set, but no
+          ;; message reaches the CPU; a QEMU emulation gap, not a driver bug). So
+          ;; completion is carried by the PxCI poll in issue!, with msi-wait only
+          ;; yielding the core. This reports which path actually fired.
           (display (if (and msi (> (msi-count msi) before))
                        "[ahci] MSI fired (msi-count advanced)"
-                       "[ahci] completion via PxCI-poll (MSI did not advance)"))
+                       "[ahci] completion via PxCI-poll (MSI not delivered by QEMU)"))
           (newline))))
   ;; P3: write a known pattern at a scratch high LBA, read it back, compare.
   (let ((scratch (- sectors 8)))
