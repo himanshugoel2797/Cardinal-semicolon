@@ -1983,7 +1983,19 @@ static void NORETURN lisp_core_loop(void) {
     lisp_value proof = lisp_eval_string(
         "(spawn (lambda () (let loop ((i 0) (n 2000)) (if (= n 0) i (loop (+ i 1) (- n 1))))))",
         g_env, &err);
-    lisp_sched_run(&sched, 0);
+    // Run the scheduler until the PROOF context finishes -- not until every
+    // context blocks. `sched` also carries the long-lived service contexts that
+    // (system-init) spawned, and with interrupts live the periodic tick keeps
+    // waking sleepers, so an "all contexts blocked" condition may never hold;
+    // gating on it (the old lisp_sched_run(&sched, 0)) would spin here forever
+    // and never reach the resident loop. Bounded passes let the finite proof
+    // complete, then we hand off to the resident loop, which idles at sti;hlt.
+    if (err == NULL)
+        for (int guard = 0; guard < 100000 &&
+                            lisp_ctx_state(proof) != LISP_CTX_DONE &&
+                            lisp_ctx_state(proof) != LISP_CTX_ERROR;
+             guard++)
+            lisp_sched_run(&sched, 64);
 
     // Announce on a single line, built in a local buffer and emitted with ONE
     // print_str. print_str itself serialises a whole call on COM1, so distinct
