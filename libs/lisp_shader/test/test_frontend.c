@@ -766,10 +766,10 @@ static void test_let_star_slots(void) {
   sh_free(p);
 }
 
-// --- 14. pipeline: sh_compile_string now passes parse, hits VERIFY stub ------
+// --- 14. pipeline: frontend + verifier real; compile succeeds end-to-end -----
 
-static void test_pipeline_reaches_verifier(void) {
-  printf("--- 14. pipeline reaches verifier stub ---\n");
+static void test_pipeline_compiles(void) {
+  printf("--- 14. pipeline compiles end-to-end ---\n");
 
   sh_program *prog = NULL;
   sh_error err = {0};
@@ -777,13 +777,16 @@ static void test_pipeline_reaches_verifier(void) {
     "(defshader id ((x u32)) -> u32 x)",
     NULL, 0, &prog, &err);
 
-  // Verifier is a stub that returns SH_ERR_INTERNAL with "verifier not implemented"
-  CHECK(s == SH_ERR_INTERNAL, "pipeline returns SH_ERR_INTERNAL (verifier stub)");
-  CHECK(prog == NULL, "out_prog is NULL on failure");
-  CHECK(strstr(err.msg, "verifier not implemented") != NULL,
-        "error message says 'verifier not implemented'");
-
-  printf("   (verifier stub message: %s)\n", err.msg);
+  // sh_compile runs parse + verify (not invoke), so the identity shader compiles.
+  CHECK(s == SH_OK, "identity shader compiles (SH_OK)");
+  CHECK(prog != NULL, "out_prog non-NULL on success");
+  if (prog) {
+    CHECK(strcmp(sh_name(prog), "id") == 0, "shader name is 'id'");
+    CHECK(sh_param_count(prog) == 1, "one parameter");
+    CHECK(sh_type_eq(sh_param_type(prog, 0), sh_type_scalar(SH_K_U32)), "param type u32");
+    CHECK(sh_type_eq(sh_return_type(prog), sh_type_scalar(SH_K_U32)), "return type u32");
+    sh_free(prog);
+  }
 }
 
 // --- 15. float literal -------------------------------------------------------
@@ -866,7 +869,7 @@ int main(void) {
   test_prim_call();
   test_rejections();
   test_let_star_slots();
-  test_pipeline_reaches_verifier();
+  test_pipeline_compiles();
   test_float_literal();
   test_nested_let_loop();
 
