@@ -1340,6 +1340,57 @@ static void check_network(lisp_value env) {
     }
 }
 
+// CoreNetDebug-in-Lisp: a mock network service captures the echo endpoint's
+// reply. start-netdebug binds its handlers to the mock; delivering a (udp-rx ...)
+// to the echo port must bounce the same payload back via (udp-send ...) with the
+// ports swapped (sport=1337, dport=the sender's port) -- the responder-driven echo.
+static void check_netdebug(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 1000000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import corenetdebug)"
+        "(define (s->b s) (let ((b (make-bytes (string-length s))))"
+        "  (let loop ((i 0)) (if (< i (string-length s))"
+        "    (begin (bytes-u8-set! b i (char->integer (string-ref s i))) (loop (+ i 1))) b))))"
+        "(define (b->s b) (let loop ((i 0) (acc (quote ())))"
+        "  (if (< i (bytes-length b)) (loop (+ i 1) (cons (integer->char (bytes-u8-ref b i)) acc))"
+        "    (list->string (reverse acc)))))"
+        // mock net: capture the echo handler (port 1337) + its reply; `deliver`
+        // simulates an inbound datagram; `query` returns the captured reply.
+        "(define eh #f) (define cap #f)"
+        "(define net (spawn (lambda () (let loop () (let ((m (recv)))"
+        "  (cond ((eq? (car m) 'udp-bind) (if (= (cadr m) 1337) (set! eh (caddr m))))"
+        "        ((eq? (car m) 'udp-send) (set! cap m))"
+        "        ((eq? (car m) 'deliver)"
+        "         (send eh (list 'udp-rx (cadr m) (caddr m) (cadddr m) (nth m 4))))"
+        "        ((eq? (car m) 'query) (send (cadr m) cap)))"
+        "  (loop))))))"
+        "(start-netdebug net)"
+        "(define t (spawn (lambda ()"
+        "  (send net (list 'deliver (list 10 0 2 9) (list 1 2 3 4 5 6) 5555 (s->b \"ping\")))"
+        "  (yield) (yield) (yield) (yield) (yield)"
+        "  (send net (list 'query (self)))"
+        "  (let ((c (recv)))"
+        "    (if (and c (= (cadddr c) 1337) (= (nth c 4) 5555) (string=? (b->s (nth c 5)) \"ping\"))"
+        "        \"echo-ok\" \"echo-bad\")))))",
+        env, &err);
+    lisp_value t = lisp_eval_string("t", env, &err);
+    lisp_sched_run(&s, 0);
+    char rb[32];
+    lisp_print(lisp_ctx_value(t), rb, sizeof rb);
+    if (err == NULL && lisp_ctx_state(t) == LISP_CTX_DONE && strstr(rb, "echo-ok") != NULL) {
+        print_str("[SysLisp]  ok  corenetdebug echo bounces datagram to sender\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL corenetdebug -> ");
+        print_str(rb);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // VirtioGpu-in-Lisp, hardware-free. Three layers, all under the real scheduler:
 //   (1) command-struct LAYOUT: build each control-queue command and assert the
 //       exact little-endian bytes + total length. This is the offset regression
@@ -1878,6 +1929,7 @@ static void run_self_test(lisp_value env) {
     check_cardfs(env);
     check_ahci(env);
     check_network(env);
+    check_netdebug(env);
     check_gpu(env);
     check_lfb(env);
     check_rtl8139(env);
