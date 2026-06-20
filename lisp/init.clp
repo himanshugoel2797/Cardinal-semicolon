@@ -17,7 +17,8 @@
 (define-module init
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
-          ps2 virtio-net rtl8139 virtio-gpu lfb ahci cardfs sys-pci sys-cmdline)
+          corenetdebug ps2 virtio-net rtl8139 virtio-gpu lfb ahci cardfs
+          sys-pci sys-cmdline)
 
   ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
   ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
@@ -105,7 +106,10 @@
             (else (display "[init] no supported NIC") (newline)))
       (if static
           (send net (list 'arp-request (list 10 0 2 2)))    ; static: prime gw who-has
-          (send net (list 'dhcp-start))))                   ; default: configure via DHCP
+          (send net (list 'dhcp-start)))                    ; default: configure via DHCP
+      ;; Optional network debug endpoint (echo 1337 / digest 1338), gated on the
+      ;; kernel command line -- a remote attack surface, so opt-in like the REPL.
+      (if (cmdline-has? "cardinal.netdbg") (start-netdebug net)))
     'system-up)
 
   ;; The interactive serial REPL (started only under cardinal.repl). A root context
