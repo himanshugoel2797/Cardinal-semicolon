@@ -3,7 +3,7 @@
 Two complementary test layers exist:
 
 - **Host unit tests** (`tests/`, run via `scripts/run-tests.sh`): exercise the
-  freestanding-but-host-compilable leaf code (crypto, checksums, libc helpers)
+  freestanding-but-host-compilable leaf code (crypto, libc helpers)
   on the build machine. No kernel needed. Fast.
 - **In-OS tests** (`modules/SysTest`): run *inside* the booted OS, so they can
   test things that need the real kernel — memory, the registry, the scheduler,
