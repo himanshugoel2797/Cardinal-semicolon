@@ -68,12 +68,12 @@ int main(void) {
     CHECK(s == SH_ERR_TYPE && err.line == 3 && err.col == 7, "error fields");
     CHECK(strstr(err.msg, "expected u32 got f32") != NULL, "error message format");
 
-    // --- pipeline reaches the stubbed seam (frontend not implemented yet) ---
+    // --- pipeline: frontend now real; verify stub hit next ---
     sh_program *prog = NULL;
     err = (sh_error){0};
     s = sh_compile_string("(defshader id ((x u32)) -> u32 x)", NULL, 0, &prog, &err);
-    CHECK(s == SH_ERR_INTERNAL && prog == NULL, "pipeline reaches stubbed frontend");
-    CHECK(strstr(err.msg, "frontend not implemented") != NULL, "stub error surfaced");
+    CHECK(s == SH_ERR_INTERNAL && prog == NULL, "pipeline reaches stubbed verifier");
+    CHECK(strstr(err.msg, "verifier not implemented") != NULL, "verifier stub error surfaced");
 
     printf("[lisp_shader scaffold] %d failures\n", failures);
     return failures ? 1 : 0;
