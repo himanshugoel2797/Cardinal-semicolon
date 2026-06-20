@@ -913,6 +913,8 @@ static sh_nref parse_expr(parse_ctx *ctx, lisp_value v) {
     else if (strcmp(hname, "bit-xor") == 0) binop = SH_BIN_XOR;
     else if (strcmp(hname, "shl")     == 0) binop = SH_BIN_SHL;
     else if (strcmp(hname, "shr")     == 0) binop = SH_BIN_SHR;
+    else if (strcmp(hname, "sat+")    == 0) binop = SH_BIN_SADD;
+    else if (strcmp(hname, "sat-")    == 0) binop = SH_BIN_SSUB;
     else is_binop = false;
 
     if (is_binop) {

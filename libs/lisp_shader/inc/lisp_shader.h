@@ -182,6 +182,12 @@ sh_status sh_invoke(const sh_program *p, const sh_value *args, uint32_t argc,
 static inline sh_value sh_val_bool(bool b) {
     sh_value v = {0}; v.kind = SH_K_BOOL; v.lanes = 1; v.u = b ? 1 : 0; return v;
 }
+static inline sh_value sh_val_u8(uint8_t x) {
+    sh_value v = {0}; v.kind = SH_K_U8; v.lanes = 1; v.u = x; return v;
+}
+static inline sh_value sh_val_u16(uint16_t x) {
+    sh_value v = {0}; v.kind = SH_K_U16; v.lanes = 1; v.u = x; return v;
+}
 static inline sh_value sh_val_u32(uint32_t x) {
     sh_value v = {0}; v.kind = SH_K_U32; v.lanes = 1; v.u = x; return v;
 }

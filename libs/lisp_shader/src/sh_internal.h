@@ -51,6 +51,11 @@ typedef enum { SH_UN_NEG, SH_UN_NOT, SH_UN_CVT } sh_unop;  // CVT: result kind =
 typedef enum {
     SH_BIN_ADD, SH_BIN_SUB, SH_BIN_MUL, SH_BIN_DIV, SH_BIN_MOD,
     SH_BIN_AND, SH_BIN_OR, SH_BIN_XOR, SH_BIN_SHL, SH_BIN_SHR,
+    // S3.5 saturating integer add/sub (integer kinds only; reject on float).
+    // Scalar: sat+ = clamp(a+b, 0, KMAX); sat- = clamp(a-b, 0, KMAX) for
+    // unsigned, signed clamp to [INT64_MIN, INT64_MAX] for i64.
+    // Vector: promoted to SH_OP_VBINOP/SHB_VBINOP with same sub value.
+    SH_BIN_SADD, SH_BIN_SSUB,
 } sh_binop;
 typedef enum { SH_CMP_LT, SH_CMP_LE, SH_CMP_EQ, SH_CMP_NE, SH_CMP_GT, SH_CMP_GE } sh_cmp;
 typedef enum { SH_RED_ADD, SH_RED_MIN, SH_RED_MAX, SH_RED_DOT } sh_reduce;
