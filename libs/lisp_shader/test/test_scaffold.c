@@ -68,12 +68,16 @@ int main(void) {
     CHECK(s == SH_ERR_TYPE && err.line == 3 && err.col == 7, "error fields");
     CHECK(strstr(err.msg, "expected u32 got f32") != NULL, "error message format");
 
-    // --- pipeline: frontend now real; verify stub hit next ---
+    // --- pipeline: frontend + verifier real; compile succeeds end-to-end ---
     sh_program *prog = NULL;
     err = (sh_error){0};
     s = sh_compile_string("(defshader id ((x u32)) -> u32 x)", NULL, 0, &prog, &err);
-    CHECK(s == SH_ERR_INTERNAL && prog == NULL, "pipeline reaches stubbed verifier");
-    CHECK(strstr(err.msg, "verifier not implemented") != NULL, "verifier stub error surfaced");
+    CHECK(s == SH_OK && prog != NULL, "identity shader compiles end-to-end");
+    if (prog) {
+        CHECK(strcmp(sh_name(prog), "id") == 0, "compiled shader name");
+        CHECK(sh_param_count(prog) == 1, "compiled param count");
+        sh_free(prog);
+    }
 
     printf("[lisp_shader scaffold] %d failures\n", failures);
     return failures ? 1 : 0;
