@@ -77,7 +77,7 @@ module count in mind when adding/removing modules (the tree currently builds
 | `kernel/` | The tiny core: ELF/relocatable loader, initrd (tar) parsing, boot-script interpreter, bootstrap allocator, symbol DB, DWARF. Linked at a fixed high virtual address. |
 | `modules/` | `Sys*` kernel-privileged modules: memory (`SysPhysicalMemory`, `SysVirtualMemory`, `SysMemory`), `SysInterrupts`, `SysMP`, `SysTimer`, `SysFP`, `SysObj` (object model), `SysReg` (registry), `SysUser` (syscalls), `SysTaskMgr` (scheduler), `SysDebug`, `SysGdb` (GDB remote-serial-protocol stub — debug the OS over serial/USB-serial; see `notes/debugging-gdb.md`). |
 | `servers/` | `Core*` OS services: `CoreDisplay`, `CoreAudio`, `CoreInput`, `CoreNetwork` (ARP/ICMP/IPv4 + a UDP port layer and a reliable delivery transport `RDT`, exported via `servers/inc/CoreNetwork/{udp,rdt}.h`), `CoreNetDebug` (optional, `cardinal.netdbg`-gated network debug endpoint: UDP echo + reliable blob upload), `CoreStorage` (block-device registry + the `cardfs` object-store exploration), `CoreUsb` (controller-agnostic transfer/enumeration + class-driver registration), `CorePower`. (Most `Core*` services are now Lisp under `lisp/servers/`; the C `CoreUsb` stays for the C USB drivers.) |
-| `drivers/` | Device drivers: `virtio` (gpu/net/common), `intel_gfx`, `intel_wifi`, `hdaudio`, `rtl8139`, `rtl8169`, `ahci`, USB host controllers `uhci`/`xhci` (both implement the CoreUsb transfer backend; `ehci` is a stub) + USB class drivers `usb_hid` (kbd/mouse), `usb_storage` (BBB/SCSI block device), `usb_hub`, `usb_serial` (FTDI, routes the GDB stub), `ps2`, `lfb`, `tarfs`. |
+| `drivers/` | C device drivers that stay in C: `intel_gfx`, `intel_wifi`, USB host controllers `uhci`/`xhci` (both implement the CoreUsb transfer backend; `ehci` is a stub) + USB class drivers `usb_hid` (kbd/mouse), `usb_storage` (BBB/SCSI block device), `usb_hub`, `usb_serial` (FTDI, routes the GDB stub), `tarfs`. The `virtio` (gpu/net), `hdaudio`, `rtl8139`, `rtl8169`, `ahci`, `lfb`, and `ps2` drivers are now Lisp under `lisp/drivers/`, bound by `lisp/init.clp`. |
 | `libs/` | Static libs linked into modules: `crypto` (sha256/hmac), `miniz`, `module_lib` (CELF header build/verify), `kvs`, `ubsan_handlers`, plus header-only `pci/` and `syscalls/`. `pci/` holds `pci.h` (config space, BAR scan), `pci_irq.h` (MSI/MSI-X setup), `pci_alloc.h` (BAR + bridge-window self-assignment for firmware-unconfigured devices), `pci_debug.h` (`pci_msix_debug_dump`). |
 | `common/` | Freestanding mini-libc (`string`, `stdlib`, `stdio`, lists/queues, `time`) + platform type headers. Included as a SYSTEM include everywhere. |
 | `platform/<isa>/<plat>/` | Per-target CMake fragments (`flags.cmake`), `linker.ld`, GRUB configs, and the `image`/`run` custom targets. |
@@ -130,7 +130,7 @@ init) — no boot-script or `devices.txt` edit. The USB stack (`uhci`/`xhci`/
 ### CMake (per-module pattern)
 
 Each module/server/driver `CMakeLists.txt` follows the same shape (see
-`modules/SysDebug/CMakeLists.txt` or `drivers/virtio/gpu/CMakeLists.txt`):
+`modules/SysDebug/CMakeLists.txt` or `drivers/uhci/CMakeLists.txt`):
 
 ```cmake
 SET(CELF_NAME <Name>)
