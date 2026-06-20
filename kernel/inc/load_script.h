@@ -5,6 +5,5 @@ int module_load(char *name);
 void module_user_load(char *name);
 int loadscript_execute();
 int apscript_execute();
-int servicescript_execute();
 
 #endif

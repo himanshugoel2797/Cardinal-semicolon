@@ -19,7 +19,6 @@ COMMAND rm -rf "ISO/isodir/boot/apscript.txt"
 COMMAND rm -rf "ISO/isodir/boot/lisp"
 
 COMMAND cp "${LOAD_SCRIPT}" "ISO/isodir/boot/loadscript.txt"
-COMMAND cp "${DEVICE_FILE}" "ISO/isodir/boot/devices.txt"
 COMMAND cp "${AP_SCRIPT}" "ISO/isodir/boot/apscript.txt"
 # Lisp driver/source files, shipped in the initrd as ./lisp/*.clp.
 COMMAND cp -r "${CMAKE_CURRENT_SOURCE_DIR}/lisp" "ISO/isodir/boot/lisp"
@@ -27,7 +26,6 @@ COMMAND tar -cvf "ISO/isodir/boot/initrd" -C "ISO/isodir/boot" .
 
 COMMAND rm -rf "ISO/isodir/boot/loadscript.txt"
 COMMAND rm -rf "ISO/isodir/boot/apscript.txt"
-COMMAND rm -rf "ISO/isodir/boot/devices.txt"
 COMMAND rm -rf "ISO/isodir/boot/lisp"
 COMMAND rm -rf "ISO/isodir/boot/*.celf"
 

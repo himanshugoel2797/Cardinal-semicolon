@@ -1150,13 +1150,7 @@ void semaphore_wait(semaphore_t *sema)
     local_spinlock_unlock(&sema->spinlock);
 }
 
-int servicescript_execute();
 static void task_ap_entry(void); //defined below; released by task_release_aps()
-void servicescript_handler(void *arg)
-{
-    arg = NULL;
-    servicescript_execute();
-}
 
 //Releases the application processors into the scheduler once every Core* server and
 //device driver has been loaded (the kernel module loader is single-threaded-only, so
@@ -1275,8 +1269,8 @@ int module_init()
     //instead module_init RETURNS and the boot script continues into the Lisp
     //runtime (LOAD SysLisp + CALL lisp_scheduler_enter), which becomes the per-core
     //scheduler loop. The native task machinery below (run queues, the idle task,
-    //task_core_arm, the servicescript task) is dormant during this transition and
-    //is removed once nothing native remains. See notes/core/lisp-substrate.md.
+    //task_core_arm) is dormant during this transition and is removed once nothing
+    //native remains. See notes/core/lisp-substrate.md.
 
     syscall_sethandler(1, (void *)nanosleep_syscall);
 
@@ -1292,10 +1286,10 @@ int module_init()
 
     //TODO: consider adding code to SysDebug to allow it to provide support for user mode debuggers
 
-    //NOTE: the application processors are released into the scheduler later, at
-    //the end of servicescript_handler -- only once every Core* server/driver has
-    //been loaded. The kernel module loader is single-threaded-only, so the APs
-    //must stay parked in mp_signalready() until loading is complete.
+    //NOTE: under K5 the application processors are released into the scheduler by
+    //lisp_scheduler_enter (mp_set_ap_entry(lisp_core_loop)), once the Lisp runtime
+    //is up -- not here. The kernel module loader is single-threaded-only, so the
+    //APs stay parked in mp_signalready() until loading is complete.
 
     //Return so the boot script continues into the Lisp runtime, which takes over
     //as the per-core scheduler (the native task_core_arm() handoff is gone).
