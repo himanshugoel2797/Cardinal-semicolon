@@ -627,14 +627,21 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
     if (vs != SH_OK) return vs;
   }
 
-  // Allocate the slot file.
+  // Allocate the slot file, 16-byte aligned. vm_value declares _Alignas(16) so the
+  // vector ops can use aligned SSE moves (movdqa/movaps) on `.vec`; but a freestanding
+  // allocator only guarantees 8-byte alignment (the kernel's malloc rounds to 8), and
+  // an aligned move on an 8-aligned slot #GPs. So over-allocate and align the base by
+  // hand, keeping the raw pointer to free. sizeof(vm_value) is a multiple of 16, so
+  // every slot stays aligned. (Host malloc is already 16-aligned; harmless there.)
+  void *slots_raw = NULL;
   vm_value *slots = NULL;
   if (c->nvregs > 0) {
-    slots = (vm_value *)calloc(c->nvregs, sizeof(vm_value));
-    if (!slots)
+    slots_raw = calloc((size_t)c->nvregs * sizeof(vm_value) + 15u, 1);
+    if (!slots_raw)
       return sh_set_error(err, SH_ERR_OOM, -1, -1,
                           "vm_run: OOM allocating slot file (%u vregs)",
                           c->nvregs);
+    slots = (vm_value *)(((uintptr_t)slots_raw + 15u) & ~(uintptr_t)15u);
   }
 
   sh_status status = SH_OK;
@@ -1878,6 +1885,6 @@ done:
     *out = to_sh_value(result);
   }
 
-  free(slots);
+  free(slots_raw);  // the raw (pre-alignment) pointer
   return status;
 }
