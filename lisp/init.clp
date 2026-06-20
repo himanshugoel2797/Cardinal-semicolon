@@ -17,7 +17,7 @@
 (define-module init
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
-          ps2 virtio-net rtl8139 virtio-gpu lfb sys-pci)
+          ps2 virtio-net rtl8139 virtio-gpu lfb ahci sys-pci)
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -41,7 +41,11 @@
     (setup-input)
     (start-audio-service)
     (start-power-service)
-    (start-storage-service)
+    ;; Storage: start the registry, capture its handle (formerly dropped), then
+    ;; bring up the AHCI driver feeding it. ahci-init is gated on pci-find, so a
+    ;; default (no-disk) boot just logs "no device" and returns -- unaffected.
+    (let ((storage (start-storage-service)))
+      (ahci-init storage))
     ;; Bring up the display registry, then the GPU driver, which brings the
     ;; virtio-gpu device to DRIVER_OK, paints a framebuffer, and registers itself
     ;; with the display service. Guarded: with no GPU present it just logs and

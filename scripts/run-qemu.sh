@@ -22,6 +22,8 @@
 #   NIC=none|virtio-net|rtl8139  attach a NIC on slirp: virtio-net-pci (1af4:1041)
 #                                or the legacy Realtek rtl8139 (10ec:8139)
 #   NET_PCAP=path                with NIC set, dump the link to a pcap file
+#   DISK=path        attach an ICH9 AHCI controller (8086:2922) + a raw-image SATA
+#                    drive on port 0 (drives the Lisp ahci block-device driver)
 #   DISPLAY_MODE=none|gtk|sdl    qemu display backend (default none = headless)
 #   SCREENSHOT=path  after booting, dump the guest screen to a PPM and exit
 #   TIMEOUT=30      seconds before auto-killing the guest (0 = no timeout)
@@ -74,6 +76,17 @@ case "${NIC:-none}" in
   *) echo "error: unknown NIC=$NIC (none|virtio-net|rtl8139)" >&2; exit 1 ;;
 esac
 
+# Optional AHCI disk. DISK=path attaches an ICH9 AHCI controller (8086:2922, which
+# the Lisp ahci driver matches) with a raw-image SATA drive on port 0, exercising
+# the block-device read/write path. Mirrors the NIC case structure.
+disk_args=()
+if [ -n "${DISK:-}" ]; then
+  [ -f "$DISK" ] || { echo "error: DISK image not found: $DISK" >&2; exit 1; }
+  disk_args=(-device ich9-ahci,id=ahci0 \
+             -drive id=disk,file="$DISK",format=raw,if=none \
+             -device ide-hd,drive=disk,bus=ahci0.0)
+fi
+
 [ -f "$ISO" ] || { echo "error: ISO not found: $ISO (run the 'image' target first)" >&2; exit 1; }
 command -v qemu-system-x86_64 >/dev/null || { echo "error: qemu-system-x86_64 not installed" >&2; exit 1; }
 
@@ -96,6 +109,7 @@ common_args=(
   "${vga_arg[@]}"
   "${gpu_args[@]}"
   "${nic_args[@]}"
+  "${disk_args[@]}"
   -no-reboot -no-shutdown
   -d guest_errors
 )
