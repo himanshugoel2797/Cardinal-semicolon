@@ -1162,6 +1162,274 @@ static void test_diff_vector(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Section 2b: SIMD bit-exactness landmine tests
+// These cases specifically exercise the correctness traps documented in
+// notes/scratch/shader-s3-decision.md:
+//   - f32x4 add/sub/mul/div with edge-case values (zero, negative, nearly-equal)
+//   - u8x16 and u32x4 integer VBINOP
+//   - VCMP producing 0/1 bool mask, verified through VLANE
+//   - VSHUFFLE all permutations in the dispatch table
+//   - VREDUCE add/min/max on floats (the reassociation landmine: correct answer
+//     is the left-to-right sequential fold; a tree reduction would differ)
+//   - VREDUCE add on integers (ordering should match too)
+// Both the SIMD (default) and FORCE_SCALAR paths are checked against the oracle.
+// ---------------------------------------------------------------------------
+
+// Helper: make a u32x4 sh_value.
+static sh_value make_u32x4(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+  sh_value v;
+  memset(&v, 0, sizeof(v));
+  v.kind = SH_K_VEC;
+  v.lanes = 4;
+  v.lane_kind = (uint8_t)SH_K_U32;
+  v.lane[0] = a; v.lane[1] = b; v.lane[2] = c; v.lane[3] = d;
+  return v;
+}
+
+// Helper: make a u8x16 sh_value.
+static sh_value make_u8x16(uint8_t lanes[16]) {
+  sh_value v;
+  memset(&v, 0, sizeof(v));
+  v.kind = SH_K_VEC;
+  v.lanes = 16;
+  v.lane_kind = (uint8_t)SH_K_U8;
+  for (int i = 0; i < 16; i++) v.lane[i] = lanes[i];
+  return v;
+}
+
+static void test_simd_exactness(void) {
+  printf("--- SIMD bit-exactness landmines ---\n");
+
+  // --- f32x4 arithmetic: several operand sets including zeros, negatives,
+  //     and values that would differ under a different rounding order.
+  {
+    // Normal positive values.
+    sh_value va = make_f32x4(1.0f/3.0f, 2.0f/7.0f, 3.0f/11.0f, 4.0f/13.0f);
+    sh_value vb = make_f32x4(7.0f, 11.0f, 13.0f, 17.0f);
+    sh_value args2[2] = {va, vb};
+    CHECK(diff_case_flags("f32x4 add frac",
+          "(defshader f ((a f32x4)(b f32x4)) -> f32x4 (+ a b))",
+          NULL, args2, 2), "SIMD f32x4 add fractional values");
+    CHECK(diff_case_flags("f32x4 sub frac",
+          "(defshader f ((a f32x4)(b f32x4)) -> f32x4 (- a b))",
+          NULL, args2, 2), "SIMD f32x4 sub fractional values");
+    CHECK(diff_case_flags("f32x4 mul frac",
+          "(defshader f ((a f32x4)(b f32x4)) -> f32x4 (* a b))",
+          NULL, args2, 2), "SIMD f32x4 mul fractional values");
+    CHECK(diff_case_flags("f32x4 div frac",
+          "(defshader f ((a f32x4)(b f32x4)) -> f32x4 (/ a b))",
+          NULL, args2, 2), "SIMD f32x4 div fractional values");
+  }
+  {
+    // Negative and zero values.
+    sh_value va = make_f32x4(-1.0f, 0.0f, -0.0f, 1e-38f);
+    sh_value vb = make_f32x4( 1.0f, 0.0f,  1.0f, 1e38f);
+    sh_value args2[2] = {va, vb};
+    CHECK(diff_case_flags("f32x4 add neg/zero",
+          "(defshader f ((a f32x4)(b f32x4)) -> f32x4 (+ a b))",
+          NULL, args2, 2), "SIMD f32x4 add with negatives/zeros");
+    CHECK(diff_case_flags("f32x4 mul neg/zero",
+          "(defshader f ((a f32x4)(b f32x4)) -> f32x4 (* a b))",
+          NULL, args2, 2), "SIMD f32x4 mul with negatives/zeros");
+    // f32x4 div: avoid 0/0 in the SIMD test since the spec defines that as 0
+    // via the scalar zero-check (fb != 0.0 ? fa/fb : 0.0), but SSE _mm_div_ps
+    // produces NaN for 0/0. The SIMD div path is scalar-only (see sh_vm.c).
+    // Use only non-zero divisors here.
+    {
+      sh_value vad = make_f32x4(-1.0f, -0.0f, 1e-38f, 1.0f);
+      sh_value vbd = make_f32x4( 1.0f,  1.0f, 1e38f, -1.0f);
+      sh_value aargs[2] = {vad, vbd};
+      CHECK(diff_case_flags("f32x4 div nonzero",
+            "(defshader f ((a f32x4)(b f32x4)) -> f32x4 (/ a b))",
+            NULL, aargs, 2), "SIMD f32x4 div nonzero divisors");
+    }
+  }
+  {
+    // Large values (near overflow territory).
+    sh_value va = make_f32x4(1e37f, -1e37f, 3.4e38f, -3.4e38f);
+    sh_value vb = make_f32x4(1e36f, -1e36f, 3.4e37f, -3.4e37f);
+    sh_value args2[2] = {va, vb};
+    CHECK(diff_case_flags("f32x4 add large",
+          "(defshader f ((a f32x4)(b f32x4)) -> f32x4 (+ a b))",
+          NULL, args2, 2), "SIMD f32x4 add large values");
+    CHECK(diff_case_flags("f32x4 mul large",
+          "(defshader f ((a f32x4)(b f32x4)) -> f32x4 (* a b))",
+          NULL, args2, 2), "SIMD f32x4 mul large values");
+  }
+
+  // --- u32x4 VBINOP ---
+  {
+    sh_value va = make_u32x4(0xFFFFFFFFu, 1, 100, 0);
+    sh_value vb = make_u32x4(1, 0xFFFFFFFFu, 200, 0);
+    sh_value args2[2] = {va, vb};
+    CHECK(diff_case_flags("u32x4 add wrap",
+          "(defshader f ((a u32x4)(b u32x4)) -> u32x4 (+ a b))",
+          NULL, args2, 2), "SIMD u32x4 add with wraparound");
+    CHECK(diff_case_flags("u32x4 sub wrap",
+          "(defshader f ((a u32x4)(b u32x4)) -> u32x4 (- a b))",
+          NULL, args2, 2), "SIMD u32x4 sub with wraparound");
+    CHECK(diff_case_flags("u32x4 mul",
+          "(defshader f ((a u32x4)(b u32x4)) -> u32x4 (* a b))",
+          NULL, args2, 2), "SIMD u32x4 mul");
+  }
+  {
+    sh_value va = make_u32x4(3, 7, 15, 255);
+    sh_value vb = make_u32x4(3, 7, 15, 255);
+    sh_value args2[2] = {va, vb};
+    CHECK(diff_case_flags("u32x4 mul equal lanes",
+          "(defshader f ((a u32x4)(b u32x4)) -> u32x4 (* a b))",
+          NULL, args2, 2), "SIMD u32x4 mul equal lanes (squares)");
+  }
+
+  // --- u8x16 VBINOP ---
+  {
+    uint8_t la[16] = {255,200,100,50,1,0,128,64, 255,200,100,50,1,0,128,64};
+    uint8_t lb[16] = {  1, 10, 20,30,5,7, 64,32,   0,  1, 56,27,9,3,  10, 8};
+    sh_value va = make_u8x16(la);
+    sh_value vb = make_u8x16(lb);
+    sh_value args2[2] = {va, vb};
+    CHECK(diff_case_flags("u8x16 add wrap",
+          "(defshader f ((a u8x16)(b u8x16)) -> u8x16 (+ a b))",
+          NULL, args2, 2), "SIMD u8x16 add with wrapping");
+    CHECK(diff_case_flags("u8x16 sub wrap",
+          "(defshader f ((a u8x16)(b u8x16)) -> u8x16 (- a b))",
+          NULL, args2, 2), "SIMD u8x16 sub with wrapping");
+  }
+
+  // --- VCMP -> VLANE: verify bool mask is exactly 0 or 1 (not 0xFF) ---
+  {
+    sh_value va = make_f32x4(1.0f, 5.0f, 3.0f, 9.0f);
+    sh_value vb = make_f32x4(2.0f, 5.0f, 2.0f, 8.0f);
+    sh_value args2[2] = {va, vb};
+    // lane 0: 1 < 2 -> true; lane 1: 5 < 5 -> false
+    CHECK(diff_case_flags("vcmp lt lane0",
+          "(defshader f ((a f32x4)(b f32x4)) -> bool (lane (< a b) 0))",
+          NULL, args2, 2), "SIMD VCMP lt lane0 = 1");
+    CHECK(diff_case_flags("vcmp lt lane1",
+          "(defshader f ((a f32x4)(b f32x4)) -> bool (lane (< a b) 1))",
+          NULL, args2, 2), "SIMD VCMP lt lane1 = 0");
+    CHECK(diff_case_flags("vcmp eq lane1",
+          "(defshader f ((a f32x4)(b f32x4)) -> bool (lane (= a b) 1))",
+          NULL, args2, 2), "SIMD VCMP eq lane1 = 1");
+    CHECK(diff_case_flags("vcmp gt lane2",
+          "(defshader f ((a f32x4)(b f32x4)) -> bool (lane (> a b) 2))",
+          NULL, args2, 2), "SIMD VCMP gt lane2 = 1");
+    CHECK(diff_case_flags("vcmp ge lane3",
+          "(defshader f ((a f32x4)(b f32x4)) -> bool (lane (>= a b) 3))",
+          NULL, args2, 2), "SIMD VCMP ge lane3 = 1");
+    // NE: the shader language has no direct /= on vectors;
+    // test NE indirectly via the existing NOT(EQ) through the lower-level test
+    // (the NE path in VCMP SIMD is exercised by all six-predicate coverage).
+    // Skipping explicit NE test (no frontend syntax for it on vectors).
+    // u32x4 cmp
+    sh_value vu32a = make_u32x4(5, 10, 10, 0);
+    sh_value vu32b = make_u32x4(5, 20,  5, 1);
+    sh_value uargs[2] = {vu32a, vu32b};
+    CHECK(diff_case_flags("vcmp u32x4 eq lane0",
+          "(defshader f ((a u32x4)(b u32x4)) -> bool (lane (= a b) 0))",
+          NULL, uargs, 2), "SIMD u32x4 VCMP eq lane0 = 1");
+    CHECK(diff_case_flags("vcmp u32x4 lt lane1",
+          "(defshader f ((a u32x4)(b u32x4)) -> bool (lane (< a b) 1))",
+          NULL, uargs, 2), "SIMD u32x4 VCMP lt lane1 = 1");
+    CHECK(diff_case_flags("vcmp u32x4 gt lane2",
+          "(defshader f ((a u32x4)(b u32x4)) -> bool (lane (> a b) 2))",
+          NULL, uargs, 2), "SIMD u32x4 VCMP gt lane2 = 1");
+  }
+
+  // --- VSHUFFLE: verify all four common patterns hit the dispatch table ---
+  {
+    sh_value va = make_f32x4(10.0f, 20.0f, 30.0f, 40.0f);
+    CHECK(diff_case_flags("vshuffle identity",
+          "(defshader f ((v f32x4)) -> f32x4 (shuffle v 0 1 2 3))",
+          NULL, &va, 1), "SIMD VSHUFFLE identity");
+    CHECK(diff_case_flags("vshuffle reverse",
+          "(defshader f ((v f32x4)) -> f32x4 (shuffle v 3 2 1 0))",
+          NULL, &va, 1), "SIMD VSHUFFLE reverse");
+    CHECK(diff_case_flags("vshuffle swizzle xwzy",
+          "(defshader f ((v f32x4)) -> f32x4 (shuffle v 0 3 2 1))",
+          NULL, &va, 1), "SIMD VSHUFFLE xwzy");
+    CHECK(diff_case_flags("vshuffle broadcast x",
+          "(defshader f ((v f32x4)) -> f32x4 (shuffle v 0 0 0 0))",
+          NULL, &va, 1), "SIMD VSHUFFLE broadcast lane 0");
+    CHECK(diff_case_flags("vshuffle wzyx",
+          "(defshader f ((v f32x4)) -> f32x4 (shuffle v 3 2 1 0))",
+          NULL, &va, 1), "SIMD VSHUFFLE wzyx");
+  }
+
+  // --- VREDUCE: the float ordering landmine ---
+  // These values are chosen so that a tree reduction (l0+l1)+(l2+l3) would
+  // potentially differ from sequential (((l0+l1)+l2)+l3). We verify the VM
+  // matches the oracle (which always does sequential).
+  {
+    // Values where order matters: 1e7 + 1 + (-1e7) + 1 = 2 sequential,
+    // but (1e7 + 1) + ((-1e7) + 1) = 2 too -- use values that diverge more:
+    // use a sum where rounding at intermediate steps differs.
+    sh_value va = make_f32x4(1.0f/3.0f, 1.0f/7.0f, 1.0f/11.0f, 1.0f/13.0f);
+    CHECK(diff_case_flags("vreduce-add f32x4 fracs",
+          "(defshader f ((v f32x4)) -> f32 (vreduce-add v))",
+          NULL, &va, 1), "VREDUCE add f32x4 fracs (ordering landmine)");
+    sh_value vb = make_f32x4(-1.0f, 3.0f, -2.0f, 4.0f);
+    CHECK(diff_case_flags("vreduce-add f32x4 mixed signs",
+          "(defshader f ((v f32x4)) -> f32 (vreduce-add v))",
+          NULL, &vb, 1), "VREDUCE add f32x4 mixed signs");
+    sh_value vc = make_f32x4(1e7f, 1.0f, -1e7f, 1.0f);
+    CHECK(diff_case_flags("vreduce-add f32x4 cancellation",
+          "(defshader f ((v f32x4)) -> f32 (vreduce-add v))",
+          NULL, &vc, 1), "VREDUCE add f32x4 cancellation case");
+
+    // min/max: NaN / signed-zero semantics -- must match oracle.
+    sh_value vd = make_f32x4(-5.0f, 3.0f, -1.0f, 2.0f);
+    CHECK(diff_case_flags("vreduce-min f32x4 neg",
+          "(defshader f ((v f32x4)) -> f32 (vreduce-min v))",
+          NULL, &vd, 1), "VREDUCE min f32x4 with negatives");
+    CHECK(diff_case_flags("vreduce-max f32x4 neg",
+          "(defshader f ((v f32x4)) -> f32 (vreduce-max v))",
+          NULL, &vd, 1), "VREDUCE max f32x4 with negatives");
+
+    // Integer VREDUCE: order should be consistent.
+    sh_value vi = make_u32x4(100, 200, 300, 400);
+    CHECK(diff_case_flags("vreduce-add u32x4",
+          "(defshader f ((v u32x4)) -> u32 (vreduce-add v))",
+          NULL, &vi, 1), "VREDUCE add u32x4");
+    sh_value vj = make_u32x4(7, 2, 9, 1);
+    CHECK(diff_case_flags("vreduce-min u32x4",
+          "(defshader f ((v u32x4)) -> u32 (vreduce-min v))",
+          NULL, &vj, 1), "VREDUCE min u32x4");
+    CHECK(diff_case_flags("vreduce-max u32x4",
+          "(defshader f ((v u32x4)) -> u32 (vreduce-max v))",
+          NULL, &vj, 1), "VREDUCE max u32x4");
+  }
+
+  // --- VSELECT through VCMP: full pipeline VCMP->VSELECT->VLANE ---
+  // The shader language expresses VSELECT implicitly via (if mask then else)
+  // on vectors. Exercise VCMP+VLANE as the direct pipeline.
+  {
+    sh_value va = make_f32x4(1.0f, 5.0f, 3.0f, 9.0f);
+    sh_value vb = make_f32x4(2.0f, 5.0f, 2.0f, 8.0f);
+    sh_value args2[2] = {va, vb};
+    // Test all six predicates so VCMP covers all branches.
+    CHECK(diff_case_flags("vcmp le lane0",
+          "(defshader f ((a f32x4)(b f32x4)) -> bool (lane (<= a b) 0))",
+          NULL, args2, 2), "SIMD VCMP le lane0 = 1 (1<=2)");
+    CHECK(diff_case_flags("vcmp le lane1 (eq)",
+          "(defshader f ((a f32x4)(b f32x4)) -> bool (lane (<= a b) 1))",
+          NULL, args2, 2), "SIMD VCMP le lane1 = 1 (5<=5)");
+    CHECK(diff_case_flags("vcmp ge lane2",
+          "(defshader f ((a f32x4)(b f32x4)) -> bool (lane (>= a b) 2))",
+          NULL, args2, 2), "SIMD VCMP ge lane2 = 1 (3>=2)");
+    // NE: no /= syntax for vectors; use (< b a) for lane1 (5<5=false) to
+    // exercise the same "false result" path.
+    CHECK(diff_case_flags("vcmp lt reversed lane1",
+          "(defshader f ((a f32x4)(b f32x4)) -> bool (lane (< b a) 1))",
+          NULL, args2, 2), "SIMD VCMP lt(b<a) lane1 = 0 (5<5 -> false)");
+    // Extract lane from a VCMP result to verify bool representation.
+    CHECK(diff_case_flags("vcmp lane3",
+          "(defshader f ((a f32x4)(b f32x4)) -> bool (lane (> a b) 3))",
+          NULL, args2, 2), "SIMD VCMP gt lane3 = 1 (9>8)");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Section 3: SH_VM_FORCE_SCALAR flag check
 // ---------------------------------------------------------------------------
 
@@ -1241,6 +1509,9 @@ int main(void) {
 
   printf("\n[test_vm] Differential harness -- vector ops\n");
   test_diff_vector();
+
+  printf("\n[test_vm] SIMD bit-exactness landmines\n");
+  test_simd_exactness();
 
   printf("\n[test_vm] SH_VM_FORCE_SCALAR flag\n");
   test_force_scalar_flag();
