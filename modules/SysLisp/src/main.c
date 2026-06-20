@@ -2002,6 +2002,22 @@ static void run_self_test(lisp_value env) {
                "  (import (sh-probe (prefix sh:)))"
                "  (sh:run))",
           "#t");
+    // A deep (depth-40) shader: compiles + runs in-OS, confirming the recursive
+    // compiler stays within the kernel stack (parse_expr is capped at
+    // MAX_EXPR_DEPTH=64; worst case ~30KB, kernel stacks are 48KB). mknest builds
+    // (+ x (+ x ... x)) with 40 '+', i.e. 41*x; x=3 -> 123.
+    check(env, "(begin"
+               "  (define-module sh-deep (export run)"
+               "    (import sys-shader)"
+               "    (define (mknest n) (if (= n 0) 'x (list '+ 'x (mknest (- n 1)))))"
+               "    (define (run)"
+               "      (let ((s (shader-compile"
+               "                 (list 'defshader 'deep (list (list 'x 'u32)) '-> 'u32"
+               "                       (mknest 40)))))"
+               "        (and (not (eq? s #f)) (= (shader-run s 3) 123)))))"
+               "  (import (sh-deep (prefix sd:)))"
+               "  (sd:run))",
+          "#t");
 
     char num[24];
     print_str("[SysLisp] ");

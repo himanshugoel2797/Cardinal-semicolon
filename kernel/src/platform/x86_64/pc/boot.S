@@ -237,7 +237,7 @@ multiboot_end:
                                # header) past GRUB's 32 KiB header scan window.
                                .section .bootstrap_stack, "aw", @nobits
                                stack_bottom:
-                               .skip 131072 # 128 KiB	(the single-core boot phase runs the in-OS self-test, including the recursive Lisp "shader" compiler, on this stack; 16 KiB overflowed)
+                               .skip 49152 # 48 KiB	(the single-core boot self-test runs the recursive Lisp "shader" compiler here; bounded by MAX_EXPR_DEPTH to ~30 KiB worst case)
                                stack_top:
                                storage:
                                .skip 16384

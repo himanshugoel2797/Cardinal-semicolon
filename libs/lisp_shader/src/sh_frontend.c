@@ -83,6 +83,14 @@ sh_nref sh_loop_alloc(sh_program *p, uint32_t *out_index) {
 // Stack entry tracking a named-let (loop) binding scope
 #define MAX_LOOP_DEPTH 16
 
+// Cap on expression nesting depth. parse_expr recurses once per nested
+// sub-expression and the verifier/lowerer then walk the same AST, so this bounds
+// the kernel-stack depth of the WHOLE compile to a predictable maximum (~depth *
+// a few hundred bytes/level + a small base, comfortably under the kernel stack).
+// A deeper datum is rejected with SH_ERR_PARSE rather than overflowing the stack.
+// 64 is far beyond any hand-written shader (real kernels nest well under 20).
+#define MAX_EXPR_DEPTH 64
+
 typedef struct {
   const char *name;       // loop label name
   uint32_t loop_idx;      // index into p->loops
@@ -113,6 +121,9 @@ typedef struct {
   // loop stack
   loop_frame loop_stack[MAX_LOOP_DEPTH];
   int loop_depth;
+
+  // current expression-nesting depth (guards parse_expr recursion; see MAX_EXPR_DEPTH)
+  int expr_depth;
 } parse_ctx;
 
 // --- helper: symbol name comparison -----------------------------------------
@@ -814,7 +825,23 @@ static sh_nref parse_recur(parse_ctx *ctx, int loop_frame_idx, lisp_value args_l
 
 // --- main expression parser --------------------------------------------------
 
+static sh_nref parse_expr_inner(parse_ctx *ctx, lisp_value v);
+
+// Depth-guarded entry to expression parsing. Bounds the recursion (and hence the
+// whole compile's kernel-stack use) to MAX_EXPR_DEPTH levels; a deeper datum is
+// rejected, not crashed. All recursive sub-parsers call this wrapper, so the count
+// tracks true AST nesting.
 static sh_nref parse_expr(parse_ctx *ctx, lisp_value v) {
+  if (ctx->expr_depth >= MAX_EXPR_DEPTH)
+    return SHF_FAIL(ctx->err, SH_ERR_PARSE, -1, -1,
+                    "expression nesting too deep (limit %d)", MAX_EXPR_DEPTH);
+  ctx->expr_depth++;
+  sh_nref r = parse_expr_inner(ctx, v);
+  ctx->expr_depth--;
+  return r;
+}
+
+static sh_nref parse_expr_inner(parse_ctx *ctx, lisp_value v) {
   sh_program *p = ctx->p;
   sh_error *err = ctx->err;
 

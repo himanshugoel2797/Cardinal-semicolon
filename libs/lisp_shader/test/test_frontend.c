@@ -857,6 +857,33 @@ static void test_nested_let_loop(void) {
   sh_free(p);
 }
 
+// Expression-nesting depth cap (MAX_EXPR_DEPTH): bounds parse_expr recursion so the
+// in-OS compile's kernel-stack use is predictable. A datum within the limit parses;
+// a deeper one is REJECTED with SH_ERR_PARSE, not crashed. (On the host's huge stack
+// it wouldn't crash anyway -- the point is the bound fires before deep recursion.)
+static void test_depth_bound(void) {
+  for (int trial = 0; trial < 2; trial++) {
+    int depth = (trial == 0) ? 50 : 200;  // 50 < 64 (ok); 200 > 64 (rejected)
+    char *buf = (char *)malloc((size_t)depth * 8 + 64);
+    int o = 0;
+    o += sprintf(buf + o, "(defshader d ((x u32)) -> u32 ");
+    for (int i = 0; i < depth; i++) o += sprintf(buf + o, "(+ x ");
+    o += sprintf(buf + o, "x");
+    for (int i = 0; i < depth; i++) buf[o++] = ')';
+    buf[o++] = ')';
+    buf[o] = '\0';
+    sh_program *p = NULL;
+    sh_error err;
+    sh_status s = parse_shader(buf, NULL, &p, &err);
+    if (trial == 0)
+      CHECK(s == SH_OK, "expr nested 50 deep (< limit) parses");
+    else
+      CHECK(s == SH_ERR_PARSE, "expr nested 200 deep (> limit) rejected, not crashed");
+    if (p) sh_free(p);
+    free(buf);
+  }
+}
+
 // =============================================================================
 // main
 // =============================================================================
@@ -883,6 +910,7 @@ int main(void) {
   test_pipeline_compiles();
   test_float_literal();
   test_nested_let_loop();
+  test_depth_bound();
 
   printf("\n[lisp_shader frontend] %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
