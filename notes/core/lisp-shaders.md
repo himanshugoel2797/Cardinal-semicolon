@@ -288,13 +288,19 @@ the substrate note's pattern.
   oracle (`test_vm.c`); `bench_compute.c` ≈2.7× SIMD-vs-scalar-VM. Decided as a
   bytecode VM, NOT a machine-code JIT (smallest trusted surface; the JIT consumes
   this same bytecode later). See `notes/scratch/shader-s3-decision.md`.
-- **S3.5 — Vector region load/store + saturating ops** *(next; the literal
-  framebuffer-blit demo needs it).* Today `region-ref` returns ONE scalar element,
-  so a real SIMD memory blit (load a `u8x16` strip, saturating-add, store) is not
-  expressible — the S3 SIMD speedup is on compute kernels over vector vregs, not
-  memory bandwidth. Add a vector region load/store op (a strip as a vector) + the
-  saturating arith a blit needs; touches all five units (frontend/verifier/interp/
-  lower/vm) and is where SIMD memory-bandwidth wins land.
+- **S3.5 — Vector region load/store + saturating ops** *(done, PR #75.)*
+  `(vregion-ref buf i N)` / `(vregion-set! buf i v)` move a contiguous strip as a
+  fixed-width vector (a single `_mm_loadu`/`_mm_storeu` for a 128-bit strip — the
+  memory-bandwidth win), and `(sat+ / sat-)` give the saturating clamp a blit
+  needs (`_mm_adds_epu8` etc.). The literal SIMD framebuffer blit
+  `(begin (vregion-set! buf i (sat+ (vregion-ref buf i 16) delta)) (loop (+ i 16)))`
+  now compiles, lowers, and runs (~2.5× SIMD over scalar). The overflow-free strip
+  bounds check (`idx > len || (uint64_t)(len-idx) < N`) is the safety invariant,
+  identical in interpreter and VM. A randomized differential **fuzzer**
+  (`test_fuzz.c`, ~50k cases, oracle == scalar-VM == SIMD-VM, ASan/UBSan-clean)
+  found and drove a fix for a real `begin` bug: multi-expression `begin` dropped
+  the leading expressions' effects — it now desugars to a LET so effects are
+  sequenced and typed, with tail-recur recognition propagating through it.
 - **S4 — In-OS integration.** `libs/lisp_shader` wired into `SysLisp`;
   compile-at-first-execution; an explicit-stack interpreter (the host tree-walker
   recurses — fine host-side, a kernel-stack hazard in-OS); swap `<math.h>`/libc for
