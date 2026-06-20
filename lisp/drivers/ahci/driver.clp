@@ -185,15 +185,18 @@
                             (= (bytes-u8-ref dbuf 511) #xAA))
                        " (0x55AA seen)" " (no 0x55AA)"))
           (newline)
-          ;; AHCI's plain-MSI message is not delivered under QEMU q35/ich9-ahci
-          ;; (the cap is correctly enabled -- valid LAPIC address + vector -- and
-          ;; the device raises the interrupt, PxIS/HBA-IS/GHC.IE all set, but no
-          ;; message reaches the CPU; a QEMU emulation gap, not a driver bug). So
-          ;; completion is carried by the PxCI poll in issue!, with msi-wait only
-          ;; yielding the core. This reports which path actually fired.
+          ;; AHCI's MSI is configured + enabled (valid LAPIC address + vector,
+          ;; readback confirms enable=1) and the device raises the interrupt
+          ;; (PxIS/HBA-IS/GHC.IE all set), yet no MSI reaches the CPU here: QEMU's
+          ;; ich9-ahci delivers a legacy INTx in this q35/KVM setup instead. (QEMU
+          ;; DOES implement ich9-ahci MSI -- msi_init/msi_notify -- so the exact
+          ;; reason its msi_notify path is not taken is not yet root-caused; INTx
+          ;; is not wired here, so completion rides the authoritative PxCI poll in
+          ;; issue! with msi-wait only yielding the core. msi-count reports which
+          ;; path actually carried it.) See notes; a follow-up to trace QEMU.
           (display (if (and msi (> (msi-count msi) before))
                        "[ahci] MSI fired (msi-count advanced)"
-                       "[ahci] completion via PxCI-poll (MSI not delivered by QEMU)"))
+                       "[ahci] completion via PxCI-poll (no MSI delivered -- see header)"))
           (newline))))
   ;; P3: write a known pattern at a scratch high LBA, read it back, compare.
   (let ((scratch (- sectors 8)))
