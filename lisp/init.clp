@@ -17,8 +17,8 @@
 (define-module init
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
-          corenetdebug ps2 virtio-net rtl8139 virtio-gpu lfb ahci cardfs
-          sys-pci sys-cmdline)
+          corenetdebug ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci cardfs
+          hdaudio sys-pci sys-cmdline)
 
   ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
   ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
@@ -63,7 +63,11 @@
   ;; drivers that will attach (the same posture the C servers held).
   (define (system-init)
     (setup-input)
-    (start-audio-service)
+    ;; Audio: start the service, capture its handle (formerly dropped), and bring
+    ;; up the HD Audio controller feeding it. hdaudio-init is gated on pci-find, so
+    ;; a default boot with no HDA controller just logs "no device" and returns.
+    (let ((audio (start-audio-service)))
+      (hdaudio-init audio))
     (start-power-service)
     ;; Storage: start the registry, capture its handle (formerly dropped), then
     ;; bring up the AHCI driver feeding it. ahci-init is gated on pci-find, so a
@@ -102,6 +106,7 @@
     (let* ((static (static-ip))
            (net (start-network-service (if static static (list 0 0 0 0)))))
       (cond ((pci-find #x1af4 #x1041) (virtio-net-init net))
+            ((pci-find #x10ec #x8168) (rtl8169-init net))
             ((pci-find #x10ec #x8139) (rtl8139-init net))
             (else (display "[init] no supported NIC") (newline)))
       (if static

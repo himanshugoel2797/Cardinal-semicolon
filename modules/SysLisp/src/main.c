@@ -1391,6 +1391,54 @@ static void check_netdebug(lisp_value env) {
     }
 }
 
+// rtl8169-in-Lisp: the RTL8168/8111 gigabit driver. QEMU has no 8168 model, so the
+// MMIO bring-up path cannot run here; instead drive the pure descriptor-ring
+// helpers (the same hardware-free factoring rtl8139 uses) over mock byte buffers.
+// An RX descriptor reads back NIC-owned (empty) right after init, then reports the
+// frame length once OWN clears; a TX build stamps OWN|FS|LS|len; read-mac unpacks
+// IDR0. Booleans are mapped to 1/0 so the result string is unambiguous.
+static void check_rtl8169(lisp_value env) {
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import rtl8169)"
+        "(define rr (make-bytes 64))"                // rx ring: 1 descriptor (16B)
+        "(rx-desc-init! rr 0 305419896 #t)"          // buf-phys 0x12345678, last
+        "(define empty (rx-desc-consume rr 0))"      // OWN=1 -> #f (NIC-owned)
+        "(bytes-u32-set! rr 0 1500)"                 // simulate NIC fill: OWN=0,len=1500
+        "(define rlen (rx-desc-consume rr 0))"       // -> 1500
+        "(define tr (make-bytes 64))"
+        "(tx-desc-build! tr 0 100 #f)"               // dword0 = OWN|FS|LS|100
+        "(define td0 (bytes-u32-ref tr 0))"
+        "(define mr (make-bytes 8))"
+        "(bytes-u8-set! mr 0 82) (bytes-u8-set! mr 1 84) (bytes-u8-set! mr 2 0)"
+        "(bytes-u8-set! mr 3 18) (bytes-u8-set! mr 4 52) (bytes-u8-set! mr 5 86)"
+        "(define mac (read-mac mr))"
+        // (empty-is-false rlen own fs ls td-len mac)
+        "(define res (list (if (eq? empty #f) 1 0) rlen"
+        "  (if (= 0 (bitwise-and td0 #x80000000)) 0 1)"   // OWN  bit31
+        "  (if (= 0 (bitwise-and td0 #x20000000)) 0 1)"   // FS   bit29
+        "  (if (= 0 (bitwise-and td0 #x10000000)) 0 1)"   // LS   bit28
+        "  (bitwise-and td0 #xFFFF) mac))",
+        env, &err);
+    lisp_value res = lisp_eval_string("res", env, &err);
+    char rb[96];
+    lisp_print(res, rb, sizeof rb);
+    if (err == NULL &&
+        strcmp(rb, "(1 1500 1 1 1 100 (82 84 0 18 52 86))") == 0) {
+        print_str("[SysLisp]  ok  rtl8169 descriptor ring build/parse + mac\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL rtl8169  res-> ");
+        print_str(rb);
+        if (err) {
+            print_str("  err: ");
+            print_str(err);
+        }
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // VirtioGpu-in-Lisp, hardware-free. Three layers, all under the real scheduler:
 //   (1) command-struct LAYOUT: build each control-queue command and assert the
 //       exact little-endian bytes + total length. This is the offset regression
@@ -1930,6 +1978,7 @@ static void run_self_test(lisp_value env) {
     check_ahci(env);
     check_network(env);
     check_netdebug(env);
+    check_rtl8169(env);
     check_gpu(env);
     check_lfb(env);
     check_rtl8139(env);
