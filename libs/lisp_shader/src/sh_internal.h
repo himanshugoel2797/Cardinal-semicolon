@@ -71,6 +71,52 @@ typedef struct {
 
 #define SH_NF_BOUNDS_PROVEN 0x1u  // verifier discharged this region access statically
 
+// ===========================  AST ENCODING CONVENTIONS  =====================
+// The SHARED contract between the frontend (which builds this) and the verifier
+// + interpreter (which consume it). Pinned here so all three units agree. The
+// frontend produces these; node.type is ZEROED (SH_K_VOID) until the verifier
+// fills it, EXCEPT where noted "frontend sets type" (explicit casts).
+//
+//   Slots: every let/loop binding gets a unique local slot in a flat per-shader
+//   space [0 .. p->nlocals). No reuse across scopes in v1 (simplest). The
+//   frontend assigns slots and sets p->nlocals; SH_OP_LOCAL.a / SH_OP_PARAM.a
+//   are the slot / parameter index. The interpreter allocates nlocals sh_values.
+//
+//   SH_OP_CONST   imm = payload; sub selects how to read it:
+//                   sub=0 integer literal  (imm = int64 value)
+//                   sub=1 float literal     (imm = the double's bit pattern)
+//                   sub=2 bool literal      (imm = 0 or 1)
+//                 The verifier sets the concrete type (and narrows f32).
+//   SH_OP_PARAM   a = parameter index.
+//   SH_OP_LOCAL   a = slot index.
+//   SH_OP_UNOP    sub=sh_unop; a=operand. For SH_UN_CVT the FRONTEND sets
+//                 node.type to the target scalar type (from a (u32 x) cast form).
+//   SH_OP_BINOP   sub=sh_binop; a,b=operands.
+//   SH_OP_CMP     sub=sh_cmp;   a,b=operands -> bool.
+//   SH_OP_IF      a=cond(bool), b=then, c=else (arms must match).
+//   SH_OP_LET     a = first slot index; aux[aux_off .. +aux_len) = the aux_len
+//                 init-expr nrefs (binding i -> slot a+i); b = body expr.
+//   SH_OP_REGION_LOAD   a=region expr, b=index expr.
+//   SH_OP_REGION_STORE  a=region, b=index, c=value (region must be mutable).
+//   SH_OP_REGION_LEN    a=region -> u32.
+//   SH_OP_LOOP    a = index into p->loops. The sh_loop holds nvars, var_slot0
+//                 (induction vars occupy slots [var_slot0 .. +nvars)), init_off
+//                 (aux offset of nvars init-expr nrefs), body, and bound.
+//   SH_OP_RECUR   a = the enclosing loop's index (frontend resolves it); aux[
+//                 aux_off .. +aux_len) = nvars new induction-value nrefs. Only
+//                 valid in tail position of that loop's body.
+//   SH_OP_CALL    a = primitive index into p->prims; aux[aux_off .. +aux_len) =
+//                 the argument nrefs.
+//   SH_OP_VSPLAT  a = scalar operand (result vector type from node.type).
+//   SH_OP_VBINOP  sub=sh_binop; a,b = vectors (lane-wise).
+//   SH_OP_VCMP    sub=sh_cmp;   a,b = vectors -> mask (a vector of bool lanes).
+//   SH_OP_VSELECT a=mask, b=then-vec, c=else-vec.
+//   SH_OP_VSHUFFLE a=src vector; aux[aux_off .. +aux_len) = CONSTANT lane indices
+//                 stored as plain uint32 (NOT nrefs); aux_len = result lane count.
+//   SH_OP_VREDUCE sub=sh_reduce; a=vector (b=second vector for SH_RED_DOT) -> scalar.
+//   SH_OP_VLANE   a=vector; imm = constant lane index -> scalar.
+// ============================================================================
+
 // --- bounded loop (named-let) -----------------------------------------------
 typedef enum { SH_BOUND_NONE = 0, SH_BOUND_CONST, SH_BOUND_PARAM } sh_bound_kind;
 typedef struct {
