@@ -1,6 +1,0 @@
-cmake_minimum_required(VERSION 3.20)
-
-FILE(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c)
-ADD_LIBRARY(VirtioCommon STATIC ${SRCS})
-TARGET_INCLUDE_DIRECTORIES(VirtioCommon PRIVATE "inc" "../../../modules/inc" "../../../libs")
-TARGET_INCLUDE_DIRECTORIES(VirtioCommon SYSTEM PUBLIC "${KERN_STDLIB_INCLUDE_DIR}")
