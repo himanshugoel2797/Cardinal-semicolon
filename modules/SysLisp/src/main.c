@@ -1354,6 +1354,60 @@ static void check_gpu(lisp_value env) {
     }
 }
 
+// lfb-in-Lisp (the linear framebuffer driver), hardware-free. Three layers, no
+// device map -- lfb-init itself maps real MMIO, so it is NOT called here:
+//   (1) REGISTRY: the boot framebuffer's WIDTH key is a number at boot (SysReg's
+//       bootinfo wrote it), and a missing key reads back #f. This is the sys-reg
+//       capability path the driver's fb-params rides.
+//   (2) pack-rgb (pure): the exported packer assembles R8G8B8 into the pixel word
+//       for the standard 16/8/0 layout -- assert two known colours.
+//   (3) REGISTRATION: a fake coredisplay context captures the register message;
+//       drive the exported lfb-register-msg with fake geometry/ctx (NOT a real
+//       fb map) and assert the captured name is "Linear Framebuffer".
+static void check_lfb(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 200000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+
+    lisp_eval_string(
+        "(import lfb sys-reg)"
+        // (1) registry + (2) pack-rgb: pure/synchronous, run in one spawned probe.
+        "(define lfb-pure (spawn (lambda ()"
+        "  (and (number? (reg-read-uint \"HW/BOOTINFO/FRAMEBUFFER\" \"WIDTH\"))"
+        "       (eq? (reg-read-uint \"HW/BOOTINFO/FRAMEBUFFER\" \"NOPE\") #f)"
+        "       (= (pack-rgb 255 0 0 16 8 0) 16711680)"      // 0xFF0000
+        "       (= (pack-rgb 18 52 86 16 8 0) 1193046)))))"  // 0x123456
+        // (3) registration: a fake coredisplay captures the register name; a driver
+        // probe drives the exported lfb-register-msg against fake geometry + ctx.
+        "(define lfb-reg-name (spawn (lambda () (let ((m (recv))) (cadr m)))))"
+        "(define lfb-reg (spawn (lambda ()"
+        "  (lfb-register-msg lfb-reg-name 1024 768 4096 (self)) 'sent)))",
+        env, &err);
+
+    lisp_value pure = lisp_eval_string("lfb-pure", env, &err);
+    lisp_value regn = lisp_eval_string("lfb-reg-name", env, &err);
+    lisp_sched_run(&s, 0);
+
+    char pb[16], rb[48];
+    lisp_print(lisp_ctx_value(pure), pb, sizeof pb);
+    lisp_print(lisp_ctx_value(regn), rb, sizeof rb);
+    if (err == NULL &&
+        lisp_ctx_state(pure) == LISP_CTX_DONE && strcmp(pb, "#t") == 0 &&
+        lisp_ctx_state(regn) == LISP_CTX_DONE &&
+        strcmp(rb, "\"Linear Framebuffer\"") == 0) {
+        print_str("[SysLisp]  ok  lfb registry read + pack-rgb + registration\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL lfb  pure-> ");
+        print_str(pb);
+        print_str("  reg-> ");
+        print_str(rb);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // rtl8139-in-Lisp, hardware-free. The driver's pure cores (rx-parse-one, tx-fill!)
 // take their buffers as arguments, so they run against FAKE make-bytes buffers --
 // rtl8139-init itself needs a real device, so it is NOT called here. Three layers,
@@ -1613,6 +1667,7 @@ static void run_self_test(lisp_value env) {
     check_storage(env);
     check_network(env);
     check_gpu(env);
+    check_lfb(env);
     check_rtl8139(env);
     check_sleep(env);
     // sys-debug through the capability path: a module imports the reflective
