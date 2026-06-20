@@ -35,11 +35,13 @@
           ;; Drop unless: ihl is sane and the whole header lies within the bytes
           ;; we actually received (a lying ihl would otherwise drive csum past
           ;; the frame -> bytes-u8-ref error -> the service context dies), it is
-          ;; addressed to us, and the header checksum is valid (a good header,
-          ;; including its own field, folds to 0). The ihl/len guards precede the
-          ;; csum read because `or` short-circuits.
+          ;; addressed to us (our unicast OR the limited broadcast, which carries
+          ;; DHCP OFFER/ACK while ip is still 0.0.0.0), and the header checksum is
+          ;; valid (a good header, including its own field, folds to 0). The
+          ;; ihl/len guards precede the csum read because `or` short-circuits.
           (if (or (< ihl 20) (> (+ o ihl) len)
-                  (not (equal? dst-ip ip)) (not (= 0 (csum frame o ihl))))
+                  (not (or (equal? dst-ip ip) (equal? dst-ip IP-BROADCAST)))
+                  (not (= 0 (csum frame o ihl))))
               'ignore
               (let ((l4 (+ o ihl)))       ; transport header offset
                 (cond

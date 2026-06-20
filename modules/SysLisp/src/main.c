@@ -1205,19 +1205,56 @@ static void check_network(lisp_value env) {
         "(define bad (make-bytes 40))"                 // shorter than ihl=15 claims
         "(put-be16! bad 12 2048) (bytes-u8-set! bad 14 79)"  // IPv4 ethertype; byte14=0x4F (v4,ihl15)
         "(send netD (list 'rx bad 40))"                // must be ignored, not fatal
-        "(send netD (list 'rx areq 42))",              // then a valid ARP -> reply
+        "(send netD (list 'rx areq 42))"               // then a valid ARP -> reply
+        // (4) Outbound resolution: netA learns 10.0.2.9 from an observed ARP
+        // reply (oper 2), then arp-resolve returns that MAC from the cache -- the
+        // aged-entry shape + cache-get(now) + the exported client helper, end to
+        // end (the cache-hit fast path, no retransmit needed).
+        "(define arep (make-bytes 42))"
+        "(put-list! arep 0 (list 2 0 0 0 0 1)) (put-list! arep 6 (list 9 0 0 0 0 9))"
+        "(put-be16! arep 12 2054) (put-be16! arep 14 1) (put-be16! arep 16 2048)"
+        "(bytes-u8-set! arep 18 6) (bytes-u8-set! arep 19 4) (put-be16! arep 20 2)"
+        "(put-list! arep 22 (list 9 0 0 0 0 9)) (put-list! arep 28 (list 10 0 2 9))"
+        "(put-list! arep 38 (list 10 0 2 15))"
+        "(send netA (list 'rx arep 42))"
+        "(define resolved (spawn (lambda () (arp-resolve netA (list 10 0 2 9)))))"
+        // (5) ICMP echo: prime net-icmp's cache with an unsolicited ARP reply
+        // (oper 2, no tx), then have net-ping emit a real ICMP echo REQUEST that a
+        // wire relays in; net-icmp must reply, and the captured reply's ICMP type
+        // (byte 34 = eth14 + ip20) must be 0 (echo reply). This exercises the
+        // handle-icmp -> cache-get(now) path the cache-aging change touched.
+        "(define net-icmp (start-network-service (list 10 0 2 15)))"
+        "(define icmp-cap (spawn (lambda () (let ((m (recv))) (bytes-u8-ref (cadr m) 34)))))"
+        "(send net-icmp (list 'register-nic (list 2 0 0 0 0 1) icmp-cap))"
+        "(define arep2 (make-bytes 42))"
+        "(put-list! arep2 0 (list 2 0 0 0 0 1)) (put-list! arep2 6 (list 8 0 0 0 0 8))"
+        "(put-be16! arep2 12 2054) (put-be16! arep2 14 1) (put-be16! arep2 16 2048)"
+        "(bytes-u8-set! arep2 18 6) (bytes-u8-set! arep2 19 4) (put-be16! arep2 20 2)"
+        "(put-list! arep2 22 (list 8 0 0 0 0 8)) (put-list! arep2 28 (list 10 0 2 8))"
+        "(put-list! arep2 38 (list 10 0 2 15))"
+        "(send net-icmp (list 'rx arep2 42))"
+        "(define icmp-wire (spawn (lambda () (let loop () (let ((m (recv)))"
+        "  (if (eq? (car m) 'tx) (send net-icmp (list 'rx (cadr m) (caddr m)))) (loop))))))"
+        "(define net-ping (start-network-service (list 10 0 2 8)))"
+        "(send net-ping (list 'register-nic (list 8 0 0 0 0 8) icmp-wire))"
+        "(send net-ping (list 'ping (list 10 0 2 15) (list 2 0 0 0 0 1) 1234 1))",
         env, &err);
     lisp_value arp = lisp_eval_string("arp-info", env, &err);
     lisp_value udp = lisp_eval_string("udp-got", env, &err);
     lisp_value robust = lisp_eval_string("dinfo", env, &err);
+    lisp_value resolved = lisp_eval_string("resolved", env, &err);
+    lisp_value icmp = lisp_eval_string("icmp-cap", env, &err);
     lisp_sched_run(&s, 0);
-    char ab[64], ub[32], rb[32];
+    char ab[64], ub[32], rb[32], reb[32], icb[32];
     lisp_print(lisp_ctx_value(arp), ab, sizeof ab);
     lisp_print(lisp_ctx_value(udp), ub, sizeof ub);
     lisp_print(lisp_ctx_value(robust), rb, sizeof rb);
+    lisp_print(lisp_ctx_value(resolved), reb, sizeof reb);
+    lisp_print(lisp_ctx_value(icmp), icb, sizeof icb);
     if (err == NULL && strcmp(ab, "(2 10 0 2 15)") == 0 && strcmp(ub, "222") == 0 &&
-        strcmp(rb, "2") == 0) {  // ARP reply emitted after the malformed frame
-        print_str("[SysLisp]  ok  network ARP + UDP round-trip + survives malformed IP\r\n");
+        strcmp(rb, "2") == 0 && strcmp(reb, "(9 0 0 0 0 9)") == 0 &&
+        strcmp(icb, "0") == 0) {
+        print_str("[SysLisp]  ok  network ARP + UDP + ICMP echo + malformed-IP survival + arp-resolve\r\n");
         g_pass++;
     } else {
         print_str("[SysLisp] FAIL network  arp-> ");
@@ -1226,6 +1263,10 @@ static void check_network(lisp_value env) {
         print_str(ub);
         print_str("  robust-> ");
         print_str(rb);
+        print_str("  resolve-> ");
+        print_str(reb);
+        print_str("  icmp-> ");
+        print_str(icb);
         print_str("\r\n");
         g_fail++;
     }

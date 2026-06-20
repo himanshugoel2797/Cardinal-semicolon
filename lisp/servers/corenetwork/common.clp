@@ -15,6 +15,13 @@
   (list (u8 b off) (u8 b (+ off 1)) (u8 b (+ off 2)) (u8 b (+ off 3))))
 
 (define BROADCAST (list #xFF #xFF #xFF #xFF #xFF #xFF))
+;; The IPv4 limited broadcast address (255.255.255.255). Accepted on rx in
+;; addition to our own unicast address -- the DHCP path receives OFFER/ACK here
+;; (the server broadcasts the reply while our interface is still 0.0.0.0).
+(define IP-BROADCAST (list #xFF #xFF #xFF #xFF))
+;; The unconfigured interface address (0.0.0.0): DHCP brings the interface up
+;; here and the address layer is set from the lease.
+(define IP-ANY (list 0 0 0 0))
 
 ;; Pack a 4-byte IP list into a fixnum so it is an eq?-comparable cache key.
 (define (ip->key ip)

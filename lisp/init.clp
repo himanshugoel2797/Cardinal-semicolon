@@ -17,7 +17,30 @@
 (define-module init
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
-          ps2 virtio-net rtl8139 virtio-gpu lfb ahci sys-pci)
+          ps2 virtio-net rtl8139 virtio-gpu lfb ahci sys-pci sys-cmdline)
+
+  ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
+  ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
+  ;; each 0..255). A bad value returns #f and falls back to DHCP rather than
+  ;; silently configuring an out-of-range address that nothing would ever match.
+  (define (parse-ipv4 s)
+    (let loop ((chars (string->list s)) (cur 0) (have #f) (acc '()))
+      (if (null? chars)
+          (let ((acc2 (if have (cons cur acc) acc)))
+            (if (= (length acc2) 4) (reverse acc2) #f))
+          (let ((c (char->integer (car chars))))
+            (cond
+              ((= c 46)                          ; '.' -> next octet
+               (if have (loop (cdr chars) 0 #f (cons cur acc)) #f))
+              ((and (>= c 48) (<= c 57))         ; '0'..'9'
+               (let ((n (+ (* cur 10) (- c 48))))
+                 (if (> n 255) #f (loop (cdr chars) n #t acc))))
+              (else #f))))))
+
+  ;; The static address pinned on the kernel command line, or #f to use DHCP.
+  (define (static-ip)
+    (let ((v (cmdline-get "cardinal.ip=")))
+      (if v (parse-ipv4 v) #f)))
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -62,16 +85,23 @@
     ;; Bring up the network stack, then a NIC, which registers itself with the
     ;; stack and forwards frames to it. Prefer the proven virtio-net when present;
     ;; otherwise fall back to the rtl8139 (the `-device rtl8139` boot, where no
-    ;; virtio-net exists). Prime the ARP cache with a who-has for the slirp gateway
-    ;; -- the reply exercises NIC RX -> service demux -> ARP cache end to end (the
-    ;; live counterpart to the in-OS network self-test). The register-nic the NIC
-    ;; sends sits ahead of this arp-request in the service's mailbox, so the MAC/TX
-    ;; are set before the request is built.
-    (let ((net (start-network-service (list 10 0 2 15))))   ; slirp guest address
+    ;; virtio-net exists). The register-nic the NIC sends sits ahead of the
+    ;; messages below in the service's mailbox, so the MAC/TX are set first.
+    ;;
+    ;; Addressing policy (DHCP is the default; cardinal.ip=A.B.C.D forces a static
+    ;; address and skips it): a static boot comes up at the pinned IP and primes
+    ;; the ARP cache with a who-has for the slirp gateway -- the reply exercises
+    ;; NIC RX -> service demux -> ARP cache end to end. A default boot comes up at
+    ;; 0.0.0.0 and sends dhcp-start; the DHCP client acquires IP/mask/gw/dns and
+    ;; learns the gateway MAC itself, so no manual prime is wanted there.
+    (let* ((static (static-ip))
+           (net (start-network-service (if static static (list 0 0 0 0)))))
       (cond ((pci-find #x1af4 #x1041) (virtio-net-init net))
             ((pci-find #x10ec #x8139) (rtl8139-init net))
             (else (display "[init] no supported NIC") (newline)))
-      (send net (list 'arp-request (list 10 0 2 2))))       ; who-has the gateway
+      (if static
+          (send net (list 'arp-request (list 10 0 2 2)))    ; static: prime gw who-has
+          (send net (list 'dhcp-start))))                   ; default: configure via DHCP
     'system-up)
 
   ;; The interactive serial REPL (started only under cardinal.repl). A root context

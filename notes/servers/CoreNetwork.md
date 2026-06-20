@@ -133,6 +133,33 @@ learned only from actual ARP traffic).
 - **UDP** RX checksum code predates this pass and is left as-is; it is not yet
   wired to any delivery mechanism.
 
+## Lisp port status (the live stack under K5)
+
+The live network stack is the Lisp `corenetwork` module (`lisp/servers/
+corenetwork/`), a message-passing port of the C server. Beyond the C feature set
+it now also carries the work that the C PRs #63 (DHCP) and #64 (outbound ARP)
+prototyped, ported directly into Lisp so those PRs could close without merging:
+
+- **DHCP client** (`corenetwork/dhcp.clp`): pure `dhcp-build`/`dhcp-parse` plus a
+  per-interface client context (INIT→SELECTING→REQUESTING→BOUND→RENEWING, exp
+  backoff, T1=lease/2 unicast renew). It is the **default**; `cardinal.ip=A.B.C.D`
+  forces a static address and skips it. Started by `init` via the `dhcp-start`
+  service message; the lease is written back with `set-address` and is readable
+  with `get-address`. Verified live: a no-`cardinal.ip` virtio-net/slirp boot
+  auto-acquires `10.0.2.15 gw 10.0.2.2 mask 255.255.255.0 lease 86400s`.
+- **Outbound ARP** (`arp-resolve`, exported): cache-hit fast path, else broadcast
+  who-has + poll, ~4 tries/~1s, then `#f`. Synchronous/task-context only (the
+  caller supplies the next-hop IP — decoupled from routing).
+- **ARP cache aging**: entries carry an expiry (`now + 120s`); an aged-out lookup
+  reports a miss. Degrades to never-expire when no monotonic clock is calibrated.
+- DHCP OFFER/ACK reception required relaxing IPv4 rx to also accept the limited
+  broadcast `255.255.255.255` (the server broadcasts the reply while our address
+  is still `0.0.0.0`); the C `ipv4_rx` did no dst filtering at all.
+
+Still Lisp-side TODO (unchanged from the C deferrals below): a routing table that
+uses the DHCP-learned gateway + `arp-resolve` for off-link TX, a DNS resolver,
+RELEASE/DECLINE, and ARP-probe duplicate detection.
+
 ## Deliberately deferred (consequential design decisions — DO NOT guess)
 
 These were left as notes rather than code because each constrains the system
@@ -146,19 +173,19 @@ design and should be decided deliberately, in line with the microkernel model:
    ring?) — and the "raw queue" TODO for unhandled protocols. TCP also needs this.
 2. **TX path architecture.** A proper transmit path wants a per-device tx queue,
    a tx worker task draining it to the driver, and outbound ARP resolution
-   (hold the packet, emit an ARP request, retry/timeout on reply). The current
-   inline-from-RX send and the broadcast-only `network_tx_packet` are
-   placeholders for this.
-3. **Interface addressing / configuration.** The default IP is still build-time
-   (`NET_DEFAULT_IPV4`), now overridable per-boot via the `cardinal.ip=` cmdline.
-   Real addressing still needs per-interface config (registry or userspace) and
-   **DHCP** (RDT-style UDP services make a DHCP client straightforward now).
-   Subnet mask, gateway, and a routing table all live here.
+   (hold the packet, emit an ARP request, retry/timeout on reply). *Outbound ARP
+   resolution now exists in the Lisp stack (`arp-resolve`); the async tx-queue /
+   packet-hold-during-resolution and waiter-coalescing remain.*
+3. **Interface addressing / configuration.** *DHCP is now the Lisp stack's default
+   (see "Lisp port status"), with `cardinal.ip=` as the static override; subnet
+   mask + gateway are stored on the interface.* Still deferred: a **routing table**
+   over the learned gateway, a DNS resolver, and a userspace config/query surface.
 4. **IPv4 options / fragmentation / reassembly.** Only `ihl == 5`, unfragmented
    datagrams are meaningfully handled.
 5. **TCP.** Not started; needs the socket API (1) and the tx path (2) first.
-6. **ARP aging.** The cache has no timed expiry or a state machine for in-flight
-   resolutions; entries only get overwritten under pressure.
+6. **ARP aging.** *Timed expiry now exists in the Lisp stack (120s TTL, lazy drop
+   on lookup).* A state machine for in-flight resolutions (coalescing concurrent
+   waiters for the same IP, negative caching) remains deferred.
 
 ## Testability
 
