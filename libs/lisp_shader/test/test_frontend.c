@@ -542,13 +542,24 @@ static void test_control_forms(void) {
   CHECK(s == SH_OK, "parse when");
   if (s == SH_OK) { sh_free(p); }
 
-  // (begin x x)
+  // (begin x x): a multi-expression begin desugars to a LET that binds the
+  // leading expressions to throwaway slots (so their effects are evaluated and
+  // typed) with the last expression as the body/value.
   s = parse_shader(
     "(defshader b ((x i64)) -> i64 (begin x x))",
     NULL, &p, &err);
   CHECK(s == SH_OK, "parse begin");
   if (s == SH_OK) {
-    CHECK(p->nodes[p->root].op == (uint16_t)SH_OP_PARAM, "begin returns last expr");
+    CHECK(p->nodes[p->root].op == (uint16_t)SH_OP_LET, "multi-expr begin desugars to let");
+    CHECK(p->nodes[p->nodes[p->root].b].op == (uint16_t)SH_OP_PARAM,
+          "begin value is the last expr");
+    sh_free(p);
+  }
+  // A single-expression begin stays a bare expression (no let wrapper).
+  s = parse_shader("(defshader b ((x i64)) -> i64 (begin x))", NULL, &p, &err);
+  CHECK(s == SH_OK, "parse single-expr begin");
+  if (s == SH_OK) {
+    CHECK(p->nodes[p->root].op == (uint16_t)SH_OP_PARAM, "single-expr begin is bare");
     sh_free(p);
   }
 
