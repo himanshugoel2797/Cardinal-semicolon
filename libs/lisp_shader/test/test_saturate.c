@@ -161,6 +161,108 @@ static void test_verify(void) {
 }
 
 // ---------------------------------------------------------------------------
+// SECTION 2b: Loop-accumulator float sat+ rejection (Finding 1/5 regression)
+//
+// These shaders use sat+/sat- on loop induction/accumulator variables that are
+// FLOAT-typed.  They were incorrectly accepted before the final-sweep fix
+// because the operands were VOID at the initial BINOP check time, and the
+// float-rejection never re-ran after loop-finalize resolved them to f64.
+// After the fix all must return SH_ERR_TYPE.
+// ---------------------------------------------------------------------------
+
+static void test_loop_float_sat_rejection(void) {
+  printf("\n[loop float sat+ rejection (Finding 1/5)]\n");
+  sh_error err;
+
+  // Direct float sat+ (non-loop): must already fail -- kept as guard.
+  {
+    memset(&err, 0, sizeof(err));
+    sh_program *p = NULL;
+    sh_status s = sh_compile_string(
+      "(defshader t () -> f64 (sat+ 1.0 2.0))",
+      NULL, 0, &p, &err);
+    CHECK(s == SH_ERR_TYPE, "guard: direct f64 sat+ -> SH_ERR_TYPE");
+    if (p) sh_free(p);
+  }
+
+  // Loop accumulator: BOTH float accumulators, integer counter.
+  // The integer counter `i` advances via `(+ i 1)` so the loop bound is valid.
+  // `a` and `b` are float loop vars; `(sat+ a b)` passes VOID operands during
+  // the initial BINOP check (both are unresolved induction vars at that point),
+  // so the float check inside verify_node MISSES them.  After loop-finalize
+  // resolves them to f64, only the final sweep (our fix) catches the violation.
+  // Without the fix: SH_OK (compiles and returns 0.0 silently).
+  // With the fix: SH_ERR_TYPE.
+  {
+    memset(&err, 0, sizeof(err));
+    sh_program *p = NULL;
+    sh_status s = sh_compile_string(
+      "(defshader t () -> f64"
+      " (let loop ((i 0) (a 0.0) (b 0.0))"
+      "   (if (>= i 10) a (loop (+ i 1) (sat+ a b) b))))",
+      NULL, 0, &p, &err);
+    CHECK(s == SH_ERR_TYPE,
+          "loop f64 sat+ accumulators -> SH_ERR_TYPE (Finding 1)");
+    if (p) sh_free(p);
+  }
+
+  // Float sat- variant.
+  {
+    memset(&err, 0, sizeof(err));
+    sh_program *p = NULL;
+    sh_status s = sh_compile_string(
+      "(defshader t () -> f64"
+      " (let loop ((i 0) (a 100.0) (b 1.0))"
+      "   (if (>= i 10) a (loop (+ i 1) (sat- a b) b))))",
+      NULL, 0, &p, &err);
+    CHECK(s == SH_ERR_TYPE,
+          "loop f64 sat- accumulators -> SH_ERR_TYPE (Finding 1)");
+    if (p) sh_free(p);
+  }
+
+  // Integer loop accumulator sat+: must still compile and run correctly.
+  // The counter uses plain `+` (recognized by bound check); sat+ is on the
+  // u8 accumulator -- this is the legitimate use the fix must NOT break.
+  {
+    memset(&err, 0, sizeof(err));
+    sh_program *p = NULL;
+    sh_status s = sh_compile_string(
+      "(defshader t ((n u32)) -> u8"
+      " (let loop ((i 0) (acc (u8 0)))"
+      "   (if (>= i n) acc (loop (+ i 1) (sat+ acc (u8 10))))))",
+      NULL, 0, &p, &err);
+    CHECK(s == SH_OK,
+          "loop u8 sat+ accumulator -> SH_OK (integer, must not break)");
+    if (s == SH_OK && p) {
+      sh_value arg = sh_val_u32(30);
+      sh_value out;
+      memset(&out, 0, sizeof(out));
+      sh_status sr = sh_invoke(p, &arg, 1, &out, &err);
+      // 30 iterations of sat+(acc, 10); acc saturates at 255 after 26 iters.
+      CHECK(sr == SH_OK && out.u == 255,
+            "loop u8 sat+ accumulator runs correctly (255)");
+    }
+    if (p) sh_free(p);
+  }
+
+  // Finding 5: vector bool sat+ -- boolxN must be rejected.  Scalar bool IS
+  // rejected by the existing BINOP check (type is BOOL not VOID at that point),
+  // but the final sweep adds the same rejection for VBINOPs whose lane_kind
+  // resolves to BOOL, and for any scalar BINOP that slipped through as VOID.
+  // We test scalar bool as a guard (already covered in test_verify).
+  {
+    memset(&err, 0, sizeof(err));
+    sh_program *p = NULL;
+    sh_status s = sh_compile_string(
+      "(defshader t ((a bool)(b bool)) -> bool (sat+ a b))",
+      NULL, 0, &p, &err);
+    CHECK(s == SH_ERR_TYPE,
+          "scalar bool sat+ -> SH_ERR_TYPE (Finding 5 guard)");
+    if (p) sh_free(p);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // SECTION 3: Interpreter oracle boundary tests
 // ---------------------------------------------------------------------------
 
@@ -645,6 +747,7 @@ int main(void) {
 
   test_parse();
   test_verify();
+  test_loop_float_sat_rejection();
   test_interp_oracle();
   test_differential();
 
