@@ -1430,6 +1430,436 @@ static void test_simd_exactness(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Section 2c: validator safety tests (Findings 2, 3, 5)
+// ---------------------------------------------------------------------------
+
+// Helper: build a minimal valid chunk with one instruction (opcode, dst, a, b, c).
+// Returns a heap-allocated sh_chunk with nvregs=4 and nparams=2.
+// Caller must free with sh_chunk_free.
+static sh_chunk *make_minimal_chunk(sh_bc_op op, uint8_t lanes,
+                                    sh_vreg dst, sh_vreg a,
+                                    sh_vreg b, sh_vreg c) {
+  sh_chunk *ck = (sh_chunk *)calloc(1, sizeof(sh_chunk));
+  if (!ck) return NULL;
+  ck->nvregs  = 4;
+  ck->nparams = 2;
+  ck->ncode   = 1;
+  ck->code    = (sh_instr *)calloc(1, sizeof(sh_instr));
+  if (!ck->code) { free(ck); return NULL; }
+  ck->naux    = 0;
+  ck->aux     = NULL;
+  ck->result  = SH_VREG_NONE;
+  ck->prims   = NULL;
+  ck->code[0].op    = (uint16_t)op;
+  ck->code[0].lanes = lanes;
+  ck->code[0].dst   = dst;
+  ck->code[0].a     = a;
+  ck->code[0].b     = b;
+  ck->code[0].c     = c;
+  return ck;
+}
+
+static void test_validator_safety(void) {
+  printf("--- validator safety: lanes/required-operands/param ---\n");
+
+  // Finding 2: ins->lanes > SH_MAX_LANES must be rejected (heap overflow guard).
+  {
+    sh_chunk *ck = make_minimal_chunk(SHB_VSPLAT, (uint8_t)(SH_MAX_LANES + 1),
+                                      0, 1, SH_VREG_NONE, SH_VREG_NONE);
+    if (ck) {
+      sh_error err; memset(&err, 0, sizeof(err));
+      CHECK(sh_chunk_validate(ck, &err) == SH_ERR_INTERNAL,
+            "validator: VSPLAT lanes > SH_MAX_LANES rejected");
+      free(ck->code); free(ck);
+    }
+  }
+  {
+    // Use lanes=200 to ensure it's well beyond the limit.
+    sh_chunk *ck = make_minimal_chunk(SHB_VBINOP, 200,
+                                      0, 1, 2, SH_VREG_NONE);
+    if (ck) {
+      sh_error err; memset(&err, 0, sizeof(err));
+      CHECK(sh_chunk_validate(ck, &err) == SH_ERR_INTERNAL,
+            "validator: VBINOP lanes=200 > SH_MAX_LANES rejected");
+      free(ck->code); free(ck);
+    }
+  }
+
+  // Finding 3: required operand == SH_VREG_NONE must be rejected.
+  // BINOP reads a and b; a == SH_VREG_NONE must fail.
+  {
+    sh_chunk *ck = make_minimal_chunk(SHB_BINOP, 0,
+                                      0, SH_VREG_NONE, 1, SH_VREG_NONE);
+    if (ck) {
+      sh_error err; memset(&err, 0, sizeof(err));
+      CHECK(sh_chunk_validate(ck, &err) == SH_ERR_INTERNAL,
+            "validator: BINOP with a=SH_VREG_NONE rejected");
+      free(ck->code); free(ck);
+    }
+  }
+  {
+    // BINOP reads b too.
+    sh_chunk *ck = make_minimal_chunk(SHB_BINOP, 0,
+                                      0, 1, SH_VREG_NONE, SH_VREG_NONE);
+    if (ck) {
+      sh_error err; memset(&err, 0, sizeof(err));
+      CHECK(sh_chunk_validate(ck, &err) == SH_ERR_INTERNAL,
+            "validator: BINOP with b=SH_VREG_NONE rejected");
+      free(ck->code); free(ck);
+    }
+  }
+  {
+    // RSTORE reads a, b, c -- c=SH_VREG_NONE must fail.
+    sh_chunk *ck = make_minimal_chunk(SHB_RSTORE, 0,
+                                      SH_VREG_NONE, 0, 1, SH_VREG_NONE);
+    if (ck) {
+      sh_error err; memset(&err, 0, sizeof(err));
+      CHECK(sh_chunk_validate(ck, &err) == SH_ERR_INTERNAL,
+            "validator: RSTORE with c=SH_VREG_NONE rejected");
+      free(ck->code); free(ck);
+    }
+  }
+  {
+    // VSELECT reads a (mask), b (then), c (else).
+    sh_chunk *ck = make_minimal_chunk(SHB_VSELECT, 4,
+                                      0, SH_VREG_NONE, 1, 2);
+    if (ck) {
+      sh_error err; memset(&err, 0, sizeof(err));
+      CHECK(sh_chunk_validate(ck, &err) == SH_ERR_INTERNAL,
+            "validator: VSELECT with a=SH_VREG_NONE rejected");
+      free(ck->code); free(ck);
+    }
+  }
+  {
+    // JMP_IFNOT reads a.
+    sh_chunk *ck = make_minimal_chunk(SHB_JMP_IFNOT, 0,
+                                      SH_VREG_NONE, SH_VREG_NONE,
+                                      SH_VREG_NONE, SH_VREG_NONE);
+    if (ck) {
+      ck->code[0].imm = 1;  // valid jump target (== ncode)
+      sh_error err; memset(&err, 0, sizeof(err));
+      CHECK(sh_chunk_validate(ck, &err) == SH_ERR_INTERNAL,
+            "validator: JMP_IFNOT with a=SH_VREG_NONE rejected");
+      free(ck->code); free(ck);
+    }
+  }
+  {
+    // VSPLAT reads a.
+    sh_chunk *ck = make_minimal_chunk(SHB_VSPLAT, 4,
+                                      0, SH_VREG_NONE, SH_VREG_NONE,
+                                      SH_VREG_NONE);
+    if (ck) {
+      sh_error err; memset(&err, 0, sizeof(err));
+      CHECK(sh_chunk_validate(ck, &err) == SH_ERR_INTERNAL,
+            "validator: VSPLAT with a=SH_VREG_NONE rejected");
+      free(ck->code); free(ck);
+    }
+  }
+
+  // Finding 5: PARAM imm >= nparams must be rejected.
+  {
+    sh_chunk *ck = make_minimal_chunk(SHB_PARAM, 0,
+                                      0, SH_VREG_NONE, SH_VREG_NONE,
+                                      SH_VREG_NONE);
+    if (ck) {
+      // nparams == 2; imm == 5 is OOB.
+      ck->code[0].imm = 5;
+      sh_error err; memset(&err, 0, sizeof(err));
+      CHECK(sh_chunk_validate(ck, &err) == SH_ERR_INTERNAL,
+            "validator: PARAM imm >= nparams rejected");
+      // imm == 1 is valid (< nparams=2).
+      ck->code[0].imm = 1;
+      memset(&err, 0, sizeof(err));
+      CHECK(sh_chunk_validate(ck, &err) == SH_OK,
+            "validator: PARAM imm < nparams accepted");
+      free(ck->code); free(ck);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Section 2d: Finding 4 -- VSELECT end-to-end coverage (direct chunk test)
+// ---------------------------------------------------------------------------
+// The frontend compiles (if mask-vec then-vec else-vec) into a vector IF, not
+// a VSELECT instruction.  VSELECT is therefore not reachable from the frontend
+// pipeline and cannot be differential-tested via compile->lower->vm.  Instead
+// we build a hand-crafted chunk that:
+//   slot[0] = splat of 'then' value   (f32x4, all 5.0f)
+//   slot[1] = splat of 'else' value   (f32x4, all 9.0f)
+//   slot[2] = mask vector             (bool x4, lanes 1,0,1,0)
+//   slot[3] = VSELECT dst             (result)
+// Expected: [5,9,5,9].
+// We also test u32x4 and u8x16 to exercise all three SIMD blend paths.
+static void test_vselect_direct(void) {
+  printf("--- VSELECT direct chunk test (Finding 4) ---\n");
+
+  // Helper lambda-equivalent: build and run a VSELECT chunk, check result.
+  // Uses sh_vm_run directly (both SIMD and FORCE_SCALAR paths).
+  // vreg layout: 0=then, 1=else, 2=mask(bool), 3=dst; no params (nparams=0).
+
+  // --- f32x4 VSELECT ---
+  {
+    // Allocate chunk with 4 instructions: CONST, CONST, hand-set slots via PARAM
+    // trick... actually simpler to allocate a chunk with nvregs=4 and 1 instr.
+    // We inject the slot values by passing them as params via SHB_PARAM
+    // and manually construct: PARAM 0 -> slot0, PARAM 1 -> slot1,
+    // PARAM 2 -> slot2 (mask), VSELECT slot3 = slot2 ? slot0 : slot1.
+
+    // Build chunk: 4 instructions: 3 PARAMs + 1 VSELECT.
+    sh_chunk ck;
+    memset(&ck, 0, sizeof(ck));
+    ck.nvregs  = 4;
+    ck.nparams = 3;
+    ck.naux    = 0;
+    ck.aux     = NULL;
+    ck.result  = 3;  // result = slot[3]
+    ck.prims   = NULL;
+    ck.ncode   = 4;
+    sh_instr code[4];
+    memset(code, 0, sizeof(code));
+    ck.code = code;
+
+    // PARAM 0 -> slot 0 (then vector)
+    code[0].op = (uint16_t)SHB_PARAM; code[0].dst = 0; code[0].imm = 0;
+    code[0].a = code[0].b = code[0].c = SH_VREG_NONE;
+    // PARAM 1 -> slot 1 (else vector)
+    code[1].op = (uint16_t)SHB_PARAM; code[1].dst = 1; code[1].imm = 1;
+    code[1].a = code[1].b = code[1].c = SH_VREG_NONE;
+    // PARAM 2 -> slot 2 (mask vector)
+    code[2].op = (uint16_t)SHB_PARAM; code[2].dst = 2; code[2].imm = 2;
+    code[2].a = code[2].b = code[2].c = SH_VREG_NONE;
+    // VSELECT: slot3 = slot2 ? slot0 : slot1
+    code[3].op    = (uint16_t)SHB_VSELECT;
+    code[3].kind  = (uint8_t)SH_K_F32;
+    code[3].lanes = 4;
+    code[3].dst   = 3;
+    code[3].a     = 2;  // mask
+    code[3].b     = 0;  // then
+    code[3].c     = 1;  // else
+
+    // Param types: all vec (needed for sh_vm_run type-check).
+    ck.params[0].kind     = SH_K_VEC;
+    ck.params[0].lanes    = 4;
+    ck.params[0].lane_kind = (uint8_t)SH_K_F32;
+    ck.params[1] = ck.params[0];
+    ck.params[2].kind     = SH_K_VEC;
+    ck.params[2].lanes    = 4;
+    ck.params[2].lane_kind = (uint8_t)SH_K_BOOL;
+
+    // Build args: then=[5,5,5,5], else=[9,9,9,9], mask=[1,0,1,0].
+    sh_value args[3];
+    args[0] = make_f32x4(5.0f, 5.0f, 5.0f, 5.0f);   // then
+    args[1] = make_f32x4(9.0f, 9.0f, 9.0f, 9.0f);   // else
+    memset(&args[2], 0, sizeof(sh_value));
+    args[2].kind = SH_K_VEC; args[2].lanes = 4;
+    args[2].lane_kind = (uint8_t)SH_K_BOOL;
+    args[2].lane[0] = 1; args[2].lane[1] = 0;
+    args[2].lane[2] = 1; args[2].lane[3] = 0;
+
+    // Expected: [5,9,5,9].
+    float exp[4] = {5.0f, 9.0f, 5.0f, 9.0f};
+
+    sh_error err; sh_value out;
+    memset(&err, 0, sizeof(err));
+    memset(&out, 0, sizeof(out));
+    sh_status s = sh_vm_run(&ck, args, 3, 0, &out, &err);
+    int ok = (s == SH_OK) && (out.kind == SH_K_VEC) && (out.lanes == 4);
+    if (ok) {
+      for (int li = 0; li < 4; li++) {
+        uint32_t b32 = (uint32_t)out.lane[li];
+        float fv; memcpy(&fv, &b32, 4);
+        ok &= (fv == exp[li]);
+      }
+    }
+    CHECK(ok, "VSELECT f32x4 SIMD path: [5,9,5,9]");
+
+    // Same with FORCE_SCALAR.
+    memset(&err, 0, sizeof(err));
+    memset(&out, 0, sizeof(out));
+    s = sh_vm_run(&ck, args, 3, SH_VM_FORCE_SCALAR, &out, &err);
+    ok = (s == SH_OK) && (out.kind == SH_K_VEC) && (out.lanes == 4);
+    if (ok) {
+      for (int li = 0; li < 4; li++) {
+        uint32_t b32 = (uint32_t)out.lane[li];
+        float fv; memcpy(&fv, &b32, 4);
+        ok &= (fv == exp[li]);
+      }
+    }
+    CHECK(ok, "VSELECT f32x4 FORCE_SCALAR path: [5,9,5,9]");
+  }
+
+  // --- u32x4 VSELECT ---
+  {
+    sh_chunk ck;
+    memset(&ck, 0, sizeof(ck));
+    ck.nvregs = 4; ck.nparams = 3; ck.result = 3; ck.ncode = 4;
+    sh_instr code[4];
+    memset(code, 0, sizeof(code));
+    ck.code = code;
+    code[0].op = (uint16_t)SHB_PARAM; code[0].dst = 0; code[0].imm = 0;
+    code[0].a = code[0].b = code[0].c = SH_VREG_NONE;
+    code[1].op = (uint16_t)SHB_PARAM; code[1].dst = 1; code[1].imm = 1;
+    code[1].a = code[1].b = code[1].c = SH_VREG_NONE;
+    code[2].op = (uint16_t)SHB_PARAM; code[2].dst = 2; code[2].imm = 2;
+    code[2].a = code[2].b = code[2].c = SH_VREG_NONE;
+    code[3].op    = (uint16_t)SHB_VSELECT;
+    code[3].kind  = (uint8_t)SH_K_U32;
+    code[3].lanes = 4;
+    code[3].dst   = 3; code[3].a = 2; code[3].b = 0; code[3].c = 1;
+
+    ck.params[0].kind = SH_K_VEC; ck.params[0].lanes = 4;
+    ck.params[0].lane_kind = (uint8_t)SH_K_U32;
+    ck.params[1] = ck.params[0];
+    ck.params[2].kind = SH_K_VEC; ck.params[2].lanes = 4;
+    ck.params[2].lane_kind = (uint8_t)SH_K_BOOL;
+
+    sh_value args[3];
+    args[0] = make_u32x4(10, 20, 30, 40);  // then
+    args[1] = make_u32x4(11, 21, 31, 41);  // else
+    memset(&args[2], 0, sizeof(sh_value));
+    args[2].kind = SH_K_VEC; args[2].lanes = 4;
+    args[2].lane_kind = (uint8_t)SH_K_BOOL;
+    args[2].lane[0] = 0; args[2].lane[1] = 1;
+    args[2].lane[2] = 0; args[2].lane[3] = 1;
+    // Expected: [11,20,31,40] (mask[i]=0->else, 1->then)
+    uint32_t exp[4] = {11, 20, 31, 40};
+
+    sh_error err; sh_value out;
+    memset(&err, 0, sizeof(err)); memset(&out, 0, sizeof(out));
+    sh_status s = sh_vm_run(&ck, args, 3, 0, &out, &err);
+    int ok = (s == SH_OK) && (out.kind == SH_K_VEC) && (out.lanes == 4);
+    if (ok) for (int li = 0; li < 4; li++) ok &= (out.lane[li] == exp[li]);
+    CHECK(ok, "VSELECT u32x4 SIMD path");
+
+    memset(&err, 0, sizeof(err)); memset(&out, 0, sizeof(out));
+    s = sh_vm_run(&ck, args, 3, SH_VM_FORCE_SCALAR, &out, &err);
+    ok = (s == SH_OK) && (out.kind == SH_K_VEC) && (out.lanes == 4);
+    if (ok) for (int li = 0; li < 4; li++) ok &= (out.lane[li] == exp[li]);
+    CHECK(ok, "VSELECT u32x4 FORCE_SCALAR path");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Section 2e: Finding 1 regression + Finding 7 -- i64 vector differential
+//             tests and u8x16 / f32x8 / u32x8 additional coverage
+// ---------------------------------------------------------------------------
+
+// Helper: make an i64xN sh_value with values that have nonzero high 32 bits.
+static sh_value make_i64x4(int64_t a, int64_t b, int64_t cc, int64_t d) {
+  sh_value v;
+  memset(&v, 0, sizeof(v));
+  v.kind = SH_K_VEC;
+  v.lanes = 4;
+  v.lane_kind = (uint8_t)SH_K_I64;
+  v.lane[0] = (uint64_t)a;
+  v.lane[1] = (uint64_t)b;
+  v.lane[2] = (uint64_t)cc;
+  v.lane[3] = (uint64_t)d;
+  return v;
+}
+
+static sh_value make_i64x2(int64_t a, int64_t b) {
+  sh_value v;
+  memset(&v, 0, sizeof(v));
+  v.kind = SH_K_VEC;
+  v.lanes = 2;
+  v.lane_kind = (uint8_t)SH_K_I64;
+  v.lane[0] = (uint64_t)a;
+  v.lane[1] = (uint64_t)b;
+  return v;
+}
+
+static void test_i64_vector_regression(void) {
+  printf("--- i64 vector regression (Finding 1) ---\n");
+
+  // Values with nonzero high 32 bits: if the VM wrongly uses 32-bit SIMD, the
+  // high halves are silently dropped and the result differs from the oracle.
+  // 0x100000001LL = 4294967297, high32=1, low32=1.
+  // Add: 0x100000001 + 0x200000003 = 0x300000004.
+
+  sh_value va = make_i64x4(0x100000001LL,  0x200000003LL,
+                            -0x100000001LL, 0x7FFFFFFFLL + 1LL);
+  sh_value vb = make_i64x4(0x200000003LL,  0x100000001LL,
+                            -0x200000003LL, 0x7FFFFFFFLL);
+  sh_value args2[2] = {va, vb};
+
+  // i64x4 add -- both SIMD (default) and FORCE_SCALAR paths must match oracle.
+  CHECK(diff_case_flags("i64x4 add high32",
+        "(defshader f ((a i64x4)(b i64x4)) -> i64x4 (+ a b))",
+        NULL, args2, 2),
+        "i64x4 add (high32 nonzero): SIMD==scalar==oracle");
+
+  // i64x4 sub.
+  CHECK(diff_case_flags("i64x4 sub high32",
+        "(defshader f ((a i64x4)(b i64x4)) -> i64x4 (- a b))",
+        NULL, args2, 2),
+        "i64x4 sub (high32 nonzero): SIMD==scalar==oracle");
+
+  // i64x4 splat (broadcast): splat of a value with nonzero high 32 bits.
+  sh_value scalar_i64 = sh_val_i64(0x123456789ABCDEFLL);
+  CHECK(diff_case_flags("i64x4 splat high32",
+        "(defshader f ((x i64)) -> i64x4 (splat x))",
+        NULL, &scalar_i64, 1),
+        "i64x4 splat (high32 nonzero): SIMD==scalar==oracle");
+
+  // i64x4 shuffle: reverse lanes.
+  CHECK(diff_case_flags("i64x4 shuffle reverse",
+        "(defshader f ((v i64x4)) -> i64x4 (shuffle v 3 2 1 0))",
+        NULL, &va, 1),
+        "i64x4 shuffle reverse: SIMD==scalar==oracle");
+
+  // i64x2 add (2-lane; was already on scalar path since old guard required nl==4).
+  sh_value va2 = make_i64x2(0x100000001LL, -0x200000003LL);
+  sh_value vb2 = make_i64x2(0x300000007LL,  0x100000001LL);
+  sh_value args2_2lane[2] = {va2, vb2};
+  CHECK(diff_case_flags("i64x2 add",
+        "(defshader f ((a i64x2)(b i64x2)) -> i64x2 (+ a b))",
+        NULL, args2_2lane, 2),
+        "i64x2 add: SIMD==scalar==oracle");
+
+  // i64x4 vreduce-add.
+  CHECK(diff_case_flags("i64x4 vreduce-add",
+        "(defshader f ((v i64x4)) -> i64 (vreduce-add v))",
+        NULL, &va, 1),
+        "i64x4 vreduce-add: SIMD==scalar==oracle");
+
+  // i64x4 mul (scalar path). Use values whose product fits in i64.
+  sh_value vamul = make_i64x4(100000LL, -200000LL, 300000LL, -400000LL);
+  sh_value vbmul = make_i64x4(      3LL,       4LL,      5LL,       6LL);
+  sh_value argsmul[2] = {vamul, vbmul};
+  CHECK(diff_case_flags("i64x4 mul",
+        "(defshader f ((a i64x4)(b i64x4)) -> i64x4 (* a b))",
+        NULL, argsmul, 2),
+        "i64x4 mul: SIMD==scalar==oracle");
+}
+
+static void test_u8x16_differential(void) {
+  printf("--- u8x16 differential (Finding 7) ---\n");
+
+  // u8x16 add/sub: SIMD path uses _mm_add_epi8 (wrapping), scalar loop also
+  // wraps.  Exercise with values where wrapping occurs.
+  uint8_t la[16] = {255,200,100,50,1,0,128,64, 255,200,100,50,1,0,128,64};
+  uint8_t lb[16] = {  1, 10, 20,30,5,7, 64,32,   0,  1, 56,27,9,3, 10, 8};
+  sh_value va = make_u8x16(la);
+  sh_value vb = make_u8x16(lb);
+  sh_value args2[2] = {va, vb};
+  CHECK(diff_case_flags("u8x16 add wrap diff",
+        "(defshader f ((a u8x16)(b u8x16)) -> u8x16 (+ a b))",
+        NULL, args2, 2),
+        "u8x16 add wrapping differential (SIMD vs scalar vs oracle)");
+  CHECK(diff_case_flags("u8x16 sub wrap diff",
+        "(defshader f ((a u8x16)(b u8x16)) -> u8x16 (- a b))",
+        NULL, args2, 2),
+        "u8x16 sub wrapping differential");
+
+  // u8x16 mul (always scalar since there's no 8-bit hw mul -- scalar fallback).
+  CHECK(diff_case_flags("u8x16 mul diff",
+        "(defshader f ((a u8x16)(b u8x16)) -> u8x16 (* a b))",
+        NULL, args2, 2),
+        "u8x16 mul differential (scalar path)");
+}
+
+// ---------------------------------------------------------------------------
 // Section 3: SH_VM_FORCE_SCALAR flag check
 // ---------------------------------------------------------------------------
 
@@ -1512,6 +1942,18 @@ int main(void) {
 
   printf("\n[test_vm] SIMD bit-exactness landmines\n");
   test_simd_exactness();
+
+  printf("\n[test_vm] Validator safety: lanes/required-operands/param (Findings 2,3,5)\n");
+  test_validator_safety();
+
+  printf("\n[test_vm] VSELECT direct chunk test (Finding 4)\n");
+  test_vselect_direct();
+
+  printf("\n[test_vm] i64 vector regression (Finding 1)\n");
+  test_i64_vector_regression();
+
+  printf("\n[test_vm] u8x16 integer op differential (Finding 7)\n");
+  test_u8x16_differential();
 
   printf("\n[test_vm] SH_VM_FORCE_SCALAR flag\n");
   test_force_scalar_flag();
