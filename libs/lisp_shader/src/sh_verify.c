@@ -373,10 +373,8 @@ static sh_status check_binop_operands(verify_ctx *vc, sh_nref ref) {
 
 static sh_status verify_loop_bound(verify_ctx *vc, uint32_t loop_idx,
                                    sh_nref body,
-                                   sh_nref *induction_var_slot_out,
-                                   uint64_t body_cost,
-                                   sh_nref region_param_for_bounds,
-                                   uint32_t region_param_idx) {
+                                   uint32_t *induction_var_slot_out,
+                                   uint64_t body_cost) {
   sh_program *p = vc->p;
   sh_loop *lp = &p->loops[loop_idx];
 
@@ -404,33 +402,28 @@ static sh_status verify_loop_bound(verify_ctx *vc, uint32_t loop_idx,
   sh_nref cmp_lhs = cmp->a;
   sh_nref cmp_rhs = cmp->b;
 
-  // Find which operand is the induction var and which is the limit
-  // Normalize to: induction_slot >= limit_ref (or equivalent)
-  sh_nref i_ref = SH_NREF_NONE;  // the node referencing the induction var
+  // Find which operand is the induction var and which is the limit.
+  // Normalize to: induction_slot >= limit_ref (or equivalent).
   sh_nref limit_ref = SH_NREF_NONE;
   uint32_t ind_slot = 0;
   bool found_ind = false;
   bool limit_on_rhs = false;  // true: lhs=i, rhs=limit; false: lhs=limit, rhs=i
 
-  // Check first induction var only (the spec's minimalist template uses var 0
-  // as the loop counter). The bound must involve exactly this var.
+  // Check each induction var to find the one used in the comparison.
   for (uint32_t vi = 0; vi < lp->nvars && !found_ind; vi++) {
     uint32_t slot = lp->var_slot0 + vi;
     if (is_local_slot(p, cmp_lhs, slot)) {
       ind_slot = slot;
-      i_ref = cmp_lhs;
       limit_ref = cmp_rhs;
       limit_on_rhs = true;
       found_ind = true;
     } else if (is_local_slot(p, cmp_rhs, slot)) {
       ind_slot = slot;
-      i_ref = cmp_rhs;
       limit_ref = cmp_lhs;
       limit_on_rhs = false;
       found_ind = true;
     }
   }
-  (void)i_ref;
 
   if (!found_ind)
     return sh_set_error(vc->err, SH_ERR_UNBOUNDED_LOOP, -1, -1,
@@ -448,41 +441,26 @@ static sh_status verify_loop_bound(verify_ctx *vc, uint32_t loop_idx,
                         "loop body must have exactly one exit arm and one recur arm");
   }
 
-  // exit_arm: the arm that exits (no RECUR); continue_arm: contains RECUR
-  sh_nref continue_arm = then_has_recur ? then_ref : else_ref;
-  (void)continue_arm;
-
-  // Validate the comparison direction:
-  // When limit_on_rhs (i op LIMIT):
-  //   >= or > means "exit when i >= LIMIT" (induction increases)
-  //   <= or < means "exit when i <= LIMIT" (invalid for upward induction)
-  // When limit_on_lhs (LIMIT op i):
-  //   <= or < means "exit when LIMIT <= i" i.e. i >= LIMIT
-  //   >= or > means "exit when LIMIT >= i" i.e. i <= LIMIT (wrong direction)
+  // Validate the comparison direction for upward-counted loops (i starts low,
+  // increases by a positive constant step, exits when i reaches the limit).
+  // We deliberately exclude SH_CMP_EQ: an equality test `(= i limit)` would
+  // never exit if init > limit (discrete step may skip the equality point),
+  // making the loop potentially non-terminating.  Only strict and non-strict
+  // inequalities that form a proved upper bound are accepted.
   bool exit_direction_ok = false;
   if (limit_on_rhs) {
-    // i CMP limit, exit when true
-    // then_has_recur=false means then is exit branch (exit when test is true)
-    // then_has_recur=true means else is exit branch (exit when test is false)
+    // i CMP limit; then_has_recur=false means then is exit arm (exit when true)
     if (!then_has_recur) {
-      // exit when (i CMP limit) is true
-      exit_direction_ok = (cmpop == SH_CMP_GE || cmpop == SH_CMP_GT ||
-                           cmpop == SH_CMP_EQ);
+      exit_direction_ok = (cmpop == SH_CMP_GE || cmpop == SH_CMP_GT);
     } else {
-      // exit when (i CMP limit) is false, i.e. NOT(i CMP limit)
-      // i < limit -> continue, exit when i >= limit (the false branch exits? No.)
-      // Actually: else branch is exit, so we exit when cond is false
-      // cond = (i < limit), exits when false = i >= limit. OK.
+      // exit when condition is false; continue when (i < limit) or (i <= limit)
       exit_direction_ok = (cmpop == SH_CMP_LT || cmpop == SH_CMP_LE);
     }
   } else {
     // limit CMP i
     if (!then_has_recur) {
-      // exit when (limit CMP i) is true
-      exit_direction_ok = (cmpop == SH_CMP_LE || cmpop == SH_CMP_LT ||
-                           cmpop == SH_CMP_EQ);
+      exit_direction_ok = (cmpop == SH_CMP_LE || cmpop == SH_CMP_LT);
     } else {
-      // exit when cond false
       exit_direction_ok = (cmpop == SH_CMP_GT || cmpop == SH_CMP_GE);
     }
   }
@@ -555,11 +533,15 @@ static sh_status verify_loop_bound(verify_ctx *vc, uint32_t loop_idx,
 
   // Fill the bound
   if (limit_is_const && init_is_const) {
-    // Compute trip count ceiling: ceil((LIMIT - init) / step)
-    int64_t range = const_limit - init_val;
+    // Compute trip count ceiling: ceil((LIMIT - init) / step).
+    // Use unsigned arithmetic to avoid signed overflow when LIMIT is near
+    // INT64_MAX.  We only enter the computation when range > 0 && step > 0.
+    int64_t signed_range = const_limit - init_val;
     uint64_t trip = 0;
-    if (range > 0 && step > 0) {
-      trip = (uint64_t)((range + step - 1) / step);
+    if (signed_range > 0 && step > 0) {
+      uint64_t range  = (uint64_t)signed_range;
+      uint64_t ustep  = (uint64_t)step;
+      trip = (range + ustep - 1) / ustep;
     }
     lp->bound.kind = SH_BOUND_CONST;
     lp->bound.konst = trip;
@@ -577,16 +559,12 @@ static sh_status verify_loop_bound(verify_ctx *vc, uint32_t loop_idx,
                         "loop bound is not constant or parameter");
   }
 
-  // Output induction var slot (for bounds annotation use)
+  // Output induction var slot (for bounds annotation use at the call site)
   if (induction_var_slot_out) *induction_var_slot_out = ind_slot;
 
-  // If limit is region-len, record the region param for bounds annotation
-  if (limit_is_region_len) {
-    if (region_param_for_bounds) (void)region_param_for_bounds;
-    (void)region_param_idx;
-    // Stored separately in the call site
+  // Override param_idx for region-len limits (stored for future use)
+  if (limit_is_region_len)
     lp->bound.param_idx = region_len_param_idx;
-  }
 
   return SH_OK;
 }
@@ -862,7 +840,11 @@ static sh_status verify_node(verify_ctx *vc, sh_nref ref) {
       if (s != SH_OK) return s;
 
       sh_type tbody = node_type(p, n->b);
-      if (tbody.kind == (uint8_t)SH_K_VOID) {
+      // If the body returned VOID and it is a CONST literal, finalize it now.
+      // For non-CONST body ops (IF, BINOP, LOCAL, etc.) we leave the type as
+      // VOID and let the global finalize_all pass or a parent context resolve it.
+      if (tbody.kind == (uint8_t)SH_K_VOID &&
+          p->nodes[n->b].op == (uint16_t)SH_OP_CONST) {
         s = finalize_const(vc, n->b);
         if (s != SH_OK) return s;
         tbody = node_type(p, n->b);
@@ -1037,9 +1019,8 @@ static sh_status verify_node(verify_ctx *vc, sh_nref ref) {
       // rejected with SH_ERR_UNBOUNDED_LOOP rather than a spurious type error
       // from the RECUR arg check below.  Body cost is already in vc->node_cost.
       uint64_t body_cost = vc->node_cost[body];
-      sh_nref ind_slot_out = 0;
-      s = verify_loop_bound(vc, loop_idx, body, &ind_slot_out,
-                            body_cost, SH_NREF_NONE, 0);
+      uint32_t ind_slot_out = 0;
+      s = verify_loop_bound(vc, loop_idx, body, &ind_slot_out, body_cost);
       if (s != SH_OK) return s;
 
       // After the body is verified, finalize any still-unresolved induction var
@@ -1109,7 +1090,7 @@ static sh_status verify_node(verify_ctx *vc, sh_nref ref) {
               sh_type ta2 = node_type(p, mn->a);
               sh_type tb2 = node_type(p, mn->b);
               if (ta2.kind != (uint8_t)SH_K_VOID && sh_type_eq(ta2, tb2)) {
-                mn->type = (mn->op == (uint16_t)SH_OP_BINOP) ? ta2 : ta2;
+                mn->type = ta2;
                 changed = true;
               } else if (ta2.kind != (uint8_t)SH_K_VOID &&
                          tb2.kind == (uint8_t)SH_K_VOID) {
@@ -1219,47 +1200,57 @@ static sh_status verify_node(verify_ctx *vc, sh_nref ref) {
       n->type = tbody;
       vc->node_cost[ref] = loop_total_cost;
 
-      // Now try to annotate region accesses in the loop with SH_NF_BOUNDS_PROVEN.
-      // Look for REGION_LOAD/STORE nodes where the index is the loop induction var
-      // and the limit is REGION_LEN of the same region.
-      // We need to identify: which induction var is the counter and what its limit was.
+      // Annotate REGION_LOAD/STORE nodes with SH_NF_BOUNDS_PROVEN when the
+      // loop limit is (region-len buf) and the loop index is the induction var.
+      // We only annotate when the exit condition is `(>= i (region-len buf))` or
+      // equivalently `(<= (region-len buf) i)` (i exits when i >= len, so all
+      // accesses at i in [init .. len-1] are in-bounds).  We exclude `>` (GT)
+      // because `(> i len)` exits one iteration too late: i == len is still an
+      // in-loop body execution, making region-ref buf i out-of-bounds.
       {
         uint32_t ind_slot = ind_slot_out;
         sh_nref limit_ref_check = SH_NREF_NONE;
-        // Re-read the body's exit test
+        bool bounds_safe_cmp = false;  // only GE / LE (non-strict) qualifies
         if (valid_ref(p, body) && p->nodes[body].op == (uint16_t)SH_OP_IF) {
           sh_nref cond_r = p->nodes[body].a;
           if (valid_ref(p, cond_r) && p->nodes[cond_r].op == (uint16_t)SH_OP_CMP) {
             sh_nref la = p->nodes[cond_r].a;
             sh_nref lb = p->nodes[cond_r].b;
-            if (is_local_slot(p, la, ind_slot)) limit_ref_check = lb;
-            else if (is_local_slot(p, lb, ind_slot)) limit_ref_check = la;
+            sh_cmp bcmp = (sh_cmp)p->nodes[cond_r].sub;
+            bool then_has_r = (find_recur(p, p->nodes[body].b, 64) != SH_NREF_NONE);
+            if (is_local_slot(p, la, ind_slot)) {
+              limit_ref_check = lb;
+              // i CMP limit; exit on true (!then_has_r) with GE, or exit on false with LE
+              bounds_safe_cmp = (!then_has_r && bcmp == SH_CMP_GE) ||
+                                (then_has_r  && bcmp == SH_CMP_LT);
+            } else if (is_local_slot(p, lb, ind_slot)) {
+              limit_ref_check = la;
+              // limit CMP i; exit on true (!then_has_r) with LE, or exit on false with GT
+              bounds_safe_cmp = (!then_has_r && bcmp == SH_CMP_LE) ||
+                                (then_has_r  && bcmp == SH_CMP_GT);
+            }
           }
         }
-        if (limit_ref_check != SH_NREF_NONE &&
+        if (bounds_safe_cmp &&
+            limit_ref_check != SH_NREF_NONE &&
             valid_ref(p, limit_ref_check) &&
             p->nodes[limit_ref_check].op == (uint16_t)SH_OP_REGION_LEN) {
-          // The limit is (region-len REGION_PARAM)
           sh_nref region_node = p->nodes[limit_ref_check].a;
           uint32_t region_p_idx = 0;
           bool is_param = (valid_ref(p, region_node) &&
                            p->nodes[region_node].op == (uint16_t)SH_OP_PARAM);
           if (is_param) region_p_idx = p->nodes[region_node].a;
-          // Annotate REGION_LOAD/STORE nodes that index by the same induction var
           for (uint32_t j = 0; j < p->nnodes; j++) {
             sh_op jop = (sh_op)p->nodes[j].op;
             if (jop == SH_OP_REGION_LOAD || jop == SH_OP_REGION_STORE) {
               sh_nref jreg = p->nodes[j].a;
               sh_nref jidx = p->nodes[j].b;
-              // Check that the region is the same parameter
               bool same_region = (is_param && valid_ref(p, jreg) &&
                                   p->nodes[jreg].op == (uint16_t)SH_OP_PARAM &&
                                   p->nodes[jreg].a == region_p_idx);
-              // Check that the index is the induction var
               bool same_idx = is_local_slot(p, jidx, ind_slot);
-              if (same_region && same_idx) {
+              if (same_region && same_idx)
                 p->nodes[j].vflags |= SH_NF_BOUNDS_PROVEN;
-              }
             }
           }
         }
@@ -1567,6 +1558,58 @@ static sh_status validate_slots(verify_ctx *vc) {
 }
 
 // ---------------------------------------------------------------------------
+// Aux array bounds check -- validate all (aux_off, aux_len) pairs
+// ---------------------------------------------------------------------------
+
+static sh_status validate_aux_ranges(verify_ctx *vc) {
+  sh_program *p = vc->p;
+  // Per-node aux ranges
+  for (uint32_t i = 0; i < p->nnodes; i++) {
+    sh_node *n = &p->nodes[i];
+    if (n->aux_len > 0) {
+      // Check for overflow in aux_off + aux_len
+      if (n->aux_off > p->naux || n->aux_len > p->naux - n->aux_off)
+        return sh_set_error(vc->err, SH_ERR_INTERNAL, -1, -1,
+                            "node %u aux range [%u..+%u) out of bounds (naux=%u)",
+                            i, n->aux_off, n->aux_len, p->naux);
+    }
+  }
+  // Per-loop aux ranges (init exprs)
+  for (uint32_t li = 0; li < p->nloops; li++) {
+    sh_loop *lp = &p->loops[li];
+    if (lp->nvars > 0) {
+      if (lp->init_off > p->naux || lp->nvars > p->naux - lp->init_off)
+        return sh_set_error(vc->err, SH_ERR_INTERNAL, -1, -1,
+                            "loop %u init aux range [%u..+%u) out of bounds",
+                            li, lp->init_off, lp->nvars);
+    }
+  }
+  return SH_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Final VOID scan -- reject non-RECUR nodes that are still untyped
+// ---------------------------------------------------------------------------
+// After all type inference passes, every value-producing node must have a
+// concrete type.  A VOID node that is not SH_OP_RECUR indicates a verifier
+// bug or an expression the verifier could not prove safe; reject it so the
+// interpreter never receives an untyped node.
+
+static sh_status check_no_void_nodes(verify_ctx *vc) {
+  sh_program *p = vc->p;
+  for (uint32_t i = 0; i < p->nnodes; i++) {
+    sh_node *n = &p->nodes[i];
+    // RECUR is intentionally void (it does not produce a value)
+    if (n->op == (uint16_t)SH_OP_RECUR) continue;
+    if (n->type.kind == (uint8_t)SH_K_VOID)
+      return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                          "node %u (op=%u) has unresolved type after verification",
+                          i, n->op);
+  }
+  return SH_OK;
+}
+
+// ---------------------------------------------------------------------------
 // Compute worst-case cost from the root
 // ---------------------------------------------------------------------------
 
@@ -1627,8 +1670,10 @@ sh_status shv_verify(sh_program *p, const sh_prim_set *prims, uint32_t flags,
   vc.flags = flags;
   vc.err = err;
 
-  // Validate slot indices first (cheap safety check)
+  // Validate slot indices and aux array ranges before touching the arena
   sh_status s = validate_slots(&vc);
+  if (s != SH_OK) return s;
+  s = validate_aux_ranges(&vc);
   if (s != SH_OK) return s;
 
   // Bottom-up type inference from the root
@@ -1639,16 +1684,18 @@ sh_status shv_verify(sh_program *p, const sh_prim_set *prims, uint32_t flags,
   s = finalize_all(&vc);
   if (s != SH_OK) return s;
 
+  // Reject any non-RECUR node still untyped after all inference passes.
+  // A VOID result node means the verifier could not prove the type safe;
+  // the interpreter must never see such a node.
+  s = check_no_void_nodes(&vc);
+  if (s != SH_OK) return s;
+
   // Check return type agrees with the declared ret type
   sh_type actual = node_type(p, p->root);
-  if (!sh_type_eq(actual, p->ret)) {
-    // If the actual is VOID (e.g. unresolved), try to match
-    if (actual.kind != (uint8_t)SH_K_VOID) {
-      return sh_set_error(err, SH_ERR_TYPE, -1, -1,
-                          "return type mismatch: declared kind %u, got kind %u",
-                          p->ret.kind, actual.kind);
-    }
-  }
+  if (!sh_type_eq(actual, p->ret))
+    return sh_set_error(err, SH_ERR_TYPE, -1, -1,
+                        "return type mismatch: declared kind %u, got kind %u",
+                        p->ret.kind, actual.kind);
 
   // Compute worst-case cost
   compute_cost(&vc);
@@ -1658,5 +1705,6 @@ sh_status shv_verify(sh_program *p, const sh_prim_set *prims, uint32_t flags,
     return sh_set_error(err, SH_ERR_NONCONST_COST, -1, -1,
                         "SH_REQUIRE_CONST_COST: program has param-dependent cost");
 
+  p->verified = true;
   return SH_OK;
 }
