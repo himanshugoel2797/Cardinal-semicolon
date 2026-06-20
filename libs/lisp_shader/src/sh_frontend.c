@@ -1029,6 +1029,46 @@ static sh_nref parse_expr(parse_ctx *ctx, lisp_value v) {
     p->nodes[n].a = buf;
     return n;
   }
+  // (vregion-ref buf i N)  -> SH_OP_VREGION_LOAD; N is a literal fixnum
+  if (strcmp(hname, "vregion-ref") == 0) {
+    if (list_len(rest) != 3)
+      return SHF_FAIL(err, SH_ERR_ARITY, -1, -1, "vregion-ref requires 3 args");
+    sh_nref buf = parse_expr(ctx, list_ref(rest, 0));
+    if (buf == SH_NREF_NONE) return SH_NREF_NONE;
+    sh_nref idx = parse_expr(ctx, list_ref(rest, 1));
+    if (idx == SH_NREF_NONE) return SH_NREF_NONE;
+    lisp_value nv = list_ref(rest, 2);
+    if (!lisp_is_fixnum(nv))
+      return SHF_FAIL(err, SH_ERR_PARSE, -1, -1,
+                      "vregion-ref: lane count N must be a literal integer");
+    int64_t N = lisp_fixnum_val(nv);
+    if (N < 2 || N > SH_MAX_LANES)
+      return SHF_FAIL(err, SH_ERR_PARSE, -1, -1,
+                      "vregion-ref: N must be in [2, %d]", SH_MAX_LANES);
+    sh_nref n = sh_node_alloc(p, SH_OP_VREGION_LOAD);
+    if (n == SH_NREF_NONE) return SHF_FAIL(err, SH_ERR_OOM, -1, -1, "OOM");
+    p->nodes[n].a   = buf;
+    p->nodes[n].b   = idx;
+    p->nodes[n].imm = N;
+    return n;
+  }
+  // (vregion-set! buf i v)  -> SH_OP_VREGION_STORE
+  if (strcmp(hname, "vregion-set!") == 0) {
+    if (list_len(rest) != 3)
+      return SHF_FAIL(err, SH_ERR_ARITY, -1, -1, "vregion-set! requires 3 args");
+    sh_nref buf = parse_expr(ctx, list_ref(rest, 0));
+    if (buf == SH_NREF_NONE) return SH_NREF_NONE;
+    sh_nref idx = parse_expr(ctx, list_ref(rest, 1));
+    if (idx == SH_NREF_NONE) return SH_NREF_NONE;
+    sh_nref val = parse_expr(ctx, list_ref(rest, 2));
+    if (val == SH_NREF_NONE) return SH_NREF_NONE;
+    sh_nref n = sh_node_alloc(p, SH_OP_VREGION_STORE);
+    if (n == SH_NREF_NONE) return SHF_FAIL(err, SH_ERR_OOM, -1, -1, "OOM");
+    p->nodes[n].a = buf;
+    p->nodes[n].b = idx;
+    p->nodes[n].c = val;
+    return n;
+  }
 
   // --- VECTOR OPS ---
   // (splat x)  -> VSPLAT

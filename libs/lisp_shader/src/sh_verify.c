@@ -59,6 +59,13 @@ static bool kind_is_integer(sh_kind k) {
          k == SH_K_U64 || k == SH_K_I64;
 }
 
+// Returns true iff k is a valid scalar kind (not VOID, VEC, or REGION).
+// Declared early here for use in verify_node; also referenced from validate_type below.
+static bool kind_is_scalar(sh_kind k) {
+  return k == SH_K_BOOL || k == SH_K_U8 || k == SH_K_U16 || k == SH_K_U32 ||
+         k == SH_K_U64 || k == SH_K_I64 || k == SH_K_F32 || k == SH_K_F64;
+}
+
 // Check if a nref is a valid node index (declared early; used by all helpers)
 static bool valid_ref(const sh_program *p, sh_nref ref) {
   return ref != SH_NREF_NONE && ref < p->nnodes;
@@ -1558,6 +1565,115 @@ static sh_status verify_node(verify_ctx *vc, sh_nref ref) {
       return SH_OK;
     }
 
+    // --- VREGION_LOAD -------------------------------------------------
+    case SH_OP_VREGION_LOAD: {
+      if (!valid_ref(p, n->a) || !valid_ref(p, n->b))
+        return sh_set_error(vc->err, SH_ERR_INTERNAL, -1, -1,
+                            "VREGION_LOAD missing operands");
+      s = verify_node(vc, n->a);
+      if (s != SH_OK) return s;
+      s = verify_node(vc, n->b);
+      if (s != SH_OK) return s;
+
+      sh_type treg = node_type(p, n->a);
+      sh_type tidx = node_type(p, n->b);
+
+      if (treg.kind != (uint8_t)SH_K_REGION)
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_LOAD: first arg must be a region");
+
+      // Element kind must be a real scalar (not VOID, VEC, REGION)
+      sh_kind elem = (sh_kind)treg.lane_kind;
+      if (!kind_is_scalar(elem))
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_LOAD: region element must be a scalar kind");
+
+      // N must be in [2, SH_MAX_LANES] (already checked by frontend, but moat re-checks)
+      int64_t N = n->imm;
+      if (N < 2 || N > (int64_t)SH_MAX_LANES)
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_LOAD: N=%lld not in [2,%d]",
+                            (long long)N, SH_MAX_LANES);
+
+      // Resolve index type
+      if (tidx.kind == (uint8_t)SH_K_VOID) {
+        sh_node *idx_node = &p->nodes[n->b];
+        if (idx_node->op == (uint16_t)SH_OP_CONST)
+          resolve_int_const(vc, n->b, SH_K_U32);
+        else if (idx_node->op == (uint16_t)SH_OP_LOCAL)
+          retype_all_locals_for_slot(vc, idx_node->a, sh_type_scalar(SH_K_U32));
+      }
+      tidx = node_type(p, n->b);
+      if (!kind_is_integer((sh_kind)tidx.kind))
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_LOAD: index must be integer");
+
+      // Result type: vec<elem, N>. Do NOT set SH_NF_BOUNDS_PROVEN.
+      n->type = sh_type_vec(elem, (uint8_t)N);
+      vc->node_cost[ref] = (uint64_t)N * COST_REGION;
+      return SH_OK;
+    }
+
+    // --- VREGION_STORE ------------------------------------------------
+    case SH_OP_VREGION_STORE: {
+      if (!valid_ref(p, n->a) || !valid_ref(p, n->b) || !valid_ref(p, n->c))
+        return sh_set_error(vc->err, SH_ERR_INTERNAL, -1, -1,
+                            "VREGION_STORE missing operands");
+      s = verify_node(vc, n->a);
+      if (s != SH_OK) return s;
+      s = verify_node(vc, n->b);
+      if (s != SH_OK) return s;
+      s = verify_node(vc, n->c);
+      if (s != SH_OK) return s;
+
+      sh_type treg = node_type(p, n->a);
+      sh_type tidx = node_type(p, n->b);
+      sh_type tvec = node_type(p, n->c);
+
+      if (treg.kind != (uint8_t)SH_K_REGION)
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_STORE: first arg must be a region");
+      if (!(treg.flags & SH_TYPE_FLAG_MUTABLE))
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_STORE: region is not mutable");
+
+      sh_kind elem = (sh_kind)treg.lane_kind;
+      if (!kind_is_scalar(elem))
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_STORE: region element must be a scalar kind");
+
+      // Resolve index type
+      if (tidx.kind == (uint8_t)SH_K_VOID) {
+        sh_node *idx_node2 = &p->nodes[n->b];
+        if (idx_node2->op == (uint16_t)SH_OP_CONST)
+          resolve_int_const(vc, n->b, SH_K_U32);
+        else if (idx_node2->op == (uint16_t)SH_OP_LOCAL)
+          retype_all_locals_for_slot(vc, idx_node2->a, sh_type_scalar(SH_K_U32));
+      }
+      tidx = node_type(p, n->b);
+      if (!kind_is_integer((sh_kind)tidx.kind))
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_STORE: index must be integer");
+
+      // Vector operand must be a vec with lane_kind == elem
+      if (tvec.kind != (uint8_t)SH_K_VEC)
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_STORE: value must be a vector");
+      if ((sh_kind)tvec.lane_kind != elem)
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_STORE: vector lane_kind %u != region elem %u",
+                            tvec.lane_kind, (uint8_t)elem);
+      if (tvec.lanes < 2 || tvec.lanes > SH_MAX_LANES)
+        return sh_set_error(vc->err, SH_ERR_TYPE, -1, -1,
+                            "VREGION_STORE: vector lane count %u out of range",
+                            tvec.lanes);
+
+      // Result type is the vector itself (mirrors REGION_STORE returning stored value)
+      n->type = tvec;
+      vc->node_cost[ref] = (uint64_t)tvec.lanes * COST_REGION;
+      return SH_OK;
+    }
+
     default:
       return sh_set_error(vc->err, SH_ERR_INTERNAL, -1, -1,
                           "unknown op %u at node %u", n->op, ref);
@@ -1694,12 +1810,6 @@ static void compute_cost(verify_ctx *vc) {
 //   scalar kinds: anything that is not VOID, VEC, or REGION.
 //   SH_K_VOID:   never a valid param or return type.
 // ---------------------------------------------------------------------------
-
-// Returns true iff k is a valid scalar kind (not VOID, VEC, or REGION).
-static bool kind_is_scalar(sh_kind k) {
-  return k == SH_K_BOOL || k == SH_K_U8 || k == SH_K_U16 || k == SH_K_U32 ||
-         k == SH_K_U64 || k == SH_K_I64 || k == SH_K_F32 || k == SH_K_F64;
-}
 
 static bool validate_type(sh_type t) {
   sh_kind k = (sh_kind)t.kind;

@@ -500,6 +500,9 @@ sh_status sh_chunk_validate(const sh_chunk *c, sh_error *err) {
         break;
       // VLANE: reads a (source vector).
       case SHB_VLANE: CHK_REQ_VREG(a); break;
+      // VRLOAD/VRSTORE: vector region ops.
+      case SHB_VRLOAD:  CHK_REQ_VREG(a); CHK_REQ_VREG(b); break;
+      case SHB_VRSTORE: CHK_REQ_VREG(a); CHK_REQ_VREG(b); CHK_REQ_VREG(c); break;
       // CONST / PARAM / JMP / CALL: no required a/b/c vreg reads in the vm loop.
       default: break;
     }
@@ -512,6 +515,10 @@ sh_status sh_chunk_validate(const sh_chunk *c, sh_error *err) {
                           "validate: pc=%u op=%u: lanes=%u > SH_MAX_LANES=%u",
                           i, ins->op, (unsigned)ins->lanes,
                           (unsigned)SH_MAX_LANES);
+    if ((op == SHB_VRLOAD || op == SHB_VRSTORE) && ins->lanes < 2)
+      return sh_set_error(err, SH_ERR_INTERNAL, -1, -1,
+                          "validate: pc=%u op=%u: lanes=%u < 2",
+                          i, ins->op, (unsigned)ins->lanes);
 
     // Finding 5: PARAM.imm must be a valid parameter index.
     if (op == SHB_PARAM && ins->imm >= c->nparams)
@@ -1753,6 +1760,95 @@ sh_status sh_vm_run(const sh_chunk *c, const sh_value *args, uint32_t argc,
         }
         uint64_t bits = vec_lane_get(va, (uint8_t)li);
         vm_set_scalar(&slots[ins->dst], lk, bits);
+        break;
+      }
+
+      // -----------------------------------------------------------------------
+      // SHB_VRLOAD: dst = vec of N consecutive elements from region a at index b.
+      // SSE path: _mm_loadu_si128 for 128-bit strips (N*esz == 16 bytes).
+      // Scalar fallback for other widths.
+      // -----------------------------------------------------------------------
+      case SHB_VRLOAD: {
+        if (ins->dst == SH_VREG_NONE) break;
+        vm_value *va = &slots[ins->a];
+        vm_value *vb = &slots[ins->b];
+        uint64_t idx = vb->scalar;
+        if (vb->kind == SH_K_I64) idx = (uint64_t)(int64_t)vb->scalar;
+        uint64_t len = (uint64_t)va->region.len;
+        uint64_t N   = (uint64_t)ins->lanes;
+        sh_kind  ek  = va->region.elem;
+        // Overflow-free bounds check (same formula as interp oracle)
+        if (idx > len || (uint64_t)(len - idx) < N) {
+          status = sh_set_error(err, SH_ERR_BOUNDS, -1, -1,
+                                "vm: vregion-ref: bounds check failed"
+                                " (idx=%llu len=%llu N=%llu)",
+                                (unsigned long long)idx,
+                                (unsigned long long)len,
+                                (unsigned long long)N);
+          goto done;
+        }
+        uint32_t esz = sh_kind_size(ek);
+        const uint8_t *src = va->region.base + idx * esz;
+        vm_value dst;
+        memset(&dst, 0, sizeof(dst));
+        dst.kind      = SH_K_VEC;
+        dst.lanes     = (uint8_t)N;
+        dst.lane_kind = (uint8_t)ek;
+
+#if defined(__SSE2__)
+        if (!force_scalar && N * esz == 16) {
+          // 128-bit strip: use _mm_loadu_si128 (unaligned load from region).
+          __m128i r = _mm_loadu_si128((const __m128i *)src);
+          _mm_store_si128((__m128i *)dst.vec, r);
+          slots[ins->dst] = dst;
+          break;
+        }
+#endif
+        // Scalar fallback: memcpy N*esz bytes into the packed vec[].
+        memcpy(dst.vec, src, N * esz);
+        slots[ins->dst] = dst;
+        break;
+      }
+
+      // -----------------------------------------------------------------------
+      // SHB_VRSTORE: write N lanes of vector c to region a at index b.
+      // SSE path: _mm_storeu_si128 for 128-bit strips.
+      // Scalar fallback for other widths.
+      // -----------------------------------------------------------------------
+      case SHB_VRSTORE: {
+        vm_value *va = &slots[ins->a];
+        vm_value *vb = &slots[ins->b];
+        vm_value *vc = &slots[ins->c];
+        uint64_t idx = vb->scalar;
+        if (vb->kind == SH_K_I64) idx = (uint64_t)(int64_t)vb->scalar;
+        uint64_t len = (uint64_t)va->region.len;
+        uint64_t N   = (uint64_t)ins->lanes;
+        sh_kind  ek  = va->region.elem;
+        // Overflow-free bounds check (same formula as interp oracle)
+        if (idx > len || (uint64_t)(len - idx) < N) {
+          status = sh_set_error(err, SH_ERR_BOUNDS, -1, -1,
+                                "vm: vregion-set!: bounds check failed"
+                                " (idx=%llu len=%llu N=%llu)",
+                                (unsigned long long)idx,
+                                (unsigned long long)len,
+                                (unsigned long long)N);
+          goto done;
+        }
+        uint32_t esz  = sh_kind_size(ek);
+        uint8_t *dest = va->region.base + idx * esz;
+
+#if defined(__SSE2__)
+        if (!force_scalar && N * esz == 16) {
+          // 128-bit strip: use _mm_load_si128 from (aligned) vec, then storeu.
+          __m128i r = _mm_load_si128((const __m128i *)vc->vec);
+          _mm_storeu_si128((__m128i *)dest, r);
+          if (ins->dst != SH_VREG_NONE) slots[ins->dst] = *vc;
+          break;
+        }
+#endif
+        // Scalar fallback: memcpy N*esz bytes from packed vec[].
+        memcpy(dest, vc->vec, N * esz);
+        if (ins->dst != SH_VREG_NONE) slots[ins->dst] = *vc;
         break;
       }
 

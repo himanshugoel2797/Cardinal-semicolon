@@ -49,6 +49,11 @@ typedef enum {
     SHB_VSHUFFLE,    // dst = { a.lane[aux[k]] } ; constant indices in aux
     SHB_VREDUCE,     // dst = reduce(a) -> scalar  sub = sh_reduce (DOT uses b)
     SHB_VLANE,       // dst = a.lane[imm] -> scalar
+    // --- S3.5 vector region load/store ---
+    SHB_VRLOAD,   // dst=result vec; a=region vreg, b=index vreg;
+                  // imm=N (lane count), kind=elem kind, lanes=N.
+    SHB_VRSTORE,  // a=region vreg, b=index vreg, c=vector vreg;
+                  // kind=elem kind, lanes=lane count of c. dst=c (stored vec).
 } sh_bc_op;
 
 // One fixed-size instruction. Variadic operands (CALL args, VSHUFFLE indices)
