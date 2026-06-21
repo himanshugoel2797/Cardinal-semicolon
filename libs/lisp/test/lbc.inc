@@ -1876,217 +1876,201 @@ static bool rlbc_compile(lisp_value genv, lisp_value expr, bcchunk **out,
     return true;
 }
 
-// --- Register VM ------------------------------------------------------------
+// --- Register VM (contiguous register stack with register windows) ---------
+//
+// One preallocated value array R is the register stack; each active frame owns a
+// window R[base .. base+nregs). A non-tail call places the callee's window right
+// after the operator slot, so the args (already laid out at base+callbase+1..)
+// ARE the callee's parameter registers -- zero copy. A tail call moves the args
+// down to the current window's base and reuses the frame -- no allocation, ever.
+
+#define LBC_REGSTACK 65536
 
 typedef struct {
     bcchunk *chunk;
     bcclosure *clo;
-    lisp_value *regs;
+    int base;        // this frame's window start in R
     int pc;
-    int retbase;  // register in the CALLER's regs to receive our return; -1 top
-} rvframe;
+    int result_abs;  // absolute R index to receive this frame's return; -1 = top
+} rframe;
 
-static bool setup_rframe(rvframe *f, bcclosure *clo, lisp_value *args, int argc,
-                         int retbase, const char **err) {
-    bcchunk *k = clo->chunk;
-    lisp_value *regs = (lisp_value *)malloc(sizeof(lisp_value) * (size_t)(k->nregs > 0 ? k->nregs : 1));
-    if (regs == NULL) {
-        *err = "out of memory";
-        return false;
-    }
-    for (int i = 0; i < k->nregs; i++)
-        regs[i] = LISP_UNDEF;
+// Set up a callee's window at R[abase..]: args already sit at R[abase..abase+nargs);
+// check arity and collect any rest list. Registers above the params are NOT
+// cleared: the compiler assigns every register before it is read (allocated then
+// written by the producing op; locals bound before use), so leftover values in
+// the window are never observed -- and the fuzzer guards that invariant.
+static bool init_callee(lisp_value *R, int abase, bcchunk *k, int nargs,
+                        const char **err) {
     if (k->has_rest) {
-        if (argc < k->nparams) {
-            free(regs);
-            *err = "too few arguments";
-            return false;
-        }
-        for (int i = 0; i < k->nparams; i++)
-            regs[i] = args[i];
+        if (nargs < k->nparams) { *err = "too few arguments"; return false; }
         lisp_value rest = LISP_EMPTY;
-        for (int j = argc - 1; j >= k->nparams; j--) {
-            lisp_value c = lisp_cons(args[j], rest);
-            if (c == LISP_UNDEF) {
-                free(regs);
-                *err = "out of memory";
-                return false;
-            }
+        for (int j = nargs - 1; j >= k->nparams; j--) {
+            lisp_value c = lisp_cons(R[abase + j], rest);
+            if (c == LISP_UNDEF) { *err = "out of memory"; return false; }
             rest = c;
         }
-        regs[k->nparams] = rest;
-    } else {
-        if (argc != k->nparams) {
-            free(regs);
-            *err = "argument count mismatch";
-            return false;
-        }
-        for (int i = 0; i < argc; i++)
-            regs[i] = args[i];
+        R[abase + k->nparams] = rest;
+    } else if (nargs != k->nparams) {
+        *err = "argument count mismatch";
+        return false;
     }
-    f->chunk = k;
-    f->clo = clo;
-    f->regs = regs;
-    f->pc = 0;
-    f->retbase = retbase;
     return true;
 }
 
 static bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                     const char **errout) {
-    rvframe *frames = (rvframe *)malloc(sizeof(rvframe) * LBC_MAX_FRAMES);
-    if (frames == NULL) {
-        *errout = "out of memory";
-        return false;
+    lisp_value *R = (lisp_value *)malloc(sizeof(lisp_value) * LBC_REGSTACK);
+    rframe *frames = (rframe *)malloc(sizeof(rframe) * LBC_MAX_FRAMES);
+    if (R == NULL || frames == NULL) {
+        free(R); free(frames); *errout = "out of memory"; return false;
     }
     const char *err = NULL;
     int depth = 0;
-    if (!setup_rframe(&frames[0], top, NULL, 0, -1, &err))
-        goto fail;
+    if (top->chunk->nregs > LBC_REGSTACK) { err = "register stack overflow"; goto fail; }
+    for (int i = 0; i < top->chunk->nregs; i++)
+        R[i] = LISP_UNDEF;
+    frames[0] = (rframe){top->chunk, top, 0, 0, -1};
     depth = 1;
 
     for (;;) {
-        rvframe *f = &frames[depth - 1];
+        rframe *f = &frames[depth - 1];
+        lisp_value *Rf = R + f->base;  // frame-relative register window
         rinstr ins = f->chunk->rcode[f->pc++];
-        lisp_value *R = f->regs;
         switch (ins.op) {
-            case ROP_LOADK: R[ins.a] = f->chunk->consts[ins.b]; break;
-            case ROP_MOVE: R[ins.a] = R[ins.b]; break;
-            case ROP_LOADUP: R[ins.a] = f->clo->upvals[ins.b]; break;
+            case ROP_LOADK: Rf[ins.a] = f->chunk->consts[ins.b]; break;
+            case ROP_MOVE: Rf[ins.a] = Rf[ins.b]; break;
+            case ROP_LOADUP: Rf[ins.a] = f->clo->upvals[ins.b]; break;
             case ROP_LOADG: {
                 lisp_value v;
                 if (!lisp_env_lookup(genv, f->chunk->consts[ins.b], &v)) {
-                    err = "unbound variable";
-                    goto fail;
+                    err = "unbound variable"; goto fail;
                 }
-                R[ins.a] = v;
+                Rf[ins.a] = v;
                 break;
             }
-            case ROP_LOADGS: R[ins.a] = lisp_cdr(f->chunk->consts[ins.b]); break;
-            case ROP_LOADSELF: R[ins.a] = LBC_MK_CLO(f->clo); break;
+            case ROP_LOADGS: Rf[ins.a] = lisp_cdr(f->chunk->consts[ins.b]); break;
+            case ROP_LOADSELF: Rf[ins.a] = LBC_MK_CLO(f->clo); break;
             case ROP_SETG:
-                if (!lisp_env_set(genv, f->chunk->consts[ins.b], R[ins.a])) {
-                    err = "set! on unbound variable";
-                    goto fail;
+                if (!lisp_env_set(genv, f->chunk->consts[ins.b], Rf[ins.a])) {
+                    err = "set! on unbound variable"; goto fail;
                 }
                 break;
             case ROP_CLOSURE: {
                 bcchunk *child = f->chunk->children[ins.b];
                 bcclosure *c = (bcclosure *)malloc(
                     sizeof(bcclosure) + sizeof(lisp_value) * (size_t)child->nupdesc);
-                if (c == NULL) {
-                    err = "out of memory";
-                    goto fail;
-                }
+                if (c == NULL) { err = "out of memory"; goto fail; }
                 c->chunk = child;
                 for (int i = 0; i < child->nupdesc; i++)
                     c->upvals[i] = child->updesc[i].from_local
-                                       ? R[child->updesc[i].index]
+                                       ? Rf[child->updesc[i].index]
                                        : f->clo->upvals[child->updesc[i].index];
-                R[ins.a] = LBC_MK_CLO(c);
+                Rf[ins.a] = LBC_MK_CLO(c);
                 break;
             }
             case ROP_JMP: f->pc = ins.a; break;
-            case ROP_JMPF: if (!lisp_truthy(R[ins.a])) f->pc = ins.b; break;
-            case ROP_JMPT: if (lisp_truthy(R[ins.a])) f->pc = ins.b; break;
+            case ROP_JMPF: if (!lisp_truthy(Rf[ins.a])) f->pc = ins.b; break;
+            case ROP_JMPT: if (lisp_truthy(Rf[ins.a])) f->pc = ins.b; break;
             case ROP_ADD: case ROP_SUB: case ROP_MUL: {
-                lisp_value a = R[ins.b], b = R[ins.c];
+                lisp_value a = Rf[ins.b], b = Rf[ins.c];
                 if (lisp_is_fixnum(a) && lisp_is_fixnum(b)) {
                     int64_t x = lisp_fixnum_val(a), y = lisp_fixnum_val(b), r;
                     r = ins.op == ROP_ADD ? x + y : ins.op == ROP_SUB ? x - y : x * y;
-                    R[ins.a] = lisp_fixnum(r);
+                    Rf[ins.a] = lisp_fixnum(r);
                 } else {
                     lisp_value as[2] = {a, b};
                     lisp_value r = lbc_call_proc(f->chunk->consts[ins.d], as, 2, &err);
                     if (r == LISP_UNDEF && err != NULL) goto fail;
-                    R[ins.a] = r;
+                    Rf[ins.a] = r;
                 }
                 break;
             }
             case ROP_LT: case ROP_LE: case ROP_GT: case ROP_GE: case ROP_NUMEQ: {
-                lisp_value a = R[ins.b], b = R[ins.c];
+                lisp_value a = Rf[ins.b], b = Rf[ins.c];
                 if (lisp_is_fixnum(a) && lisp_is_fixnum(b)) {
                     int64_t x = lisp_fixnum_val(a), y = lisp_fixnum_val(b);
                     bool ok = ins.op == ROP_LT ? x < y : ins.op == ROP_LE ? x <= y
                               : ins.op == ROP_GT ? x > y : ins.op == ROP_GE ? x >= y
                               : x == y;
-                    R[ins.a] = ok ? LISP_TRUE : LISP_FALSE;
+                    Rf[ins.a] = ok ? LISP_TRUE : LISP_FALSE;
                 } else {
                     lisp_value as[2] = {a, b};
                     lisp_value r = lbc_call_proc(f->chunk->consts[ins.d], as, 2, &err);
                     if (r == LISP_UNDEF && err != NULL) goto fail;
-                    R[ins.a] = r;
+                    Rf[ins.a] = r;
                 }
                 break;
             }
             case ROP_CONS: {
-                lisp_value c = lisp_cons(R[ins.b], R[ins.c]);
+                lisp_value c = lisp_cons(Rf[ins.b], Rf[ins.c]);
                 if (c == LISP_UNDEF) { err = "out of memory"; goto fail; }
-                R[ins.a] = c;
+                Rf[ins.a] = c;
                 break;
             }
             case ROP_CAR:
-                if (!lisp_is_pair(R[ins.b])) { err = "car: not a pair"; goto fail; }
-                R[ins.a] = lisp_car(R[ins.b]);
+                if (!lisp_is_pair(Rf[ins.b])) { err = "car: not a pair"; goto fail; }
+                Rf[ins.a] = lisp_car(Rf[ins.b]);
                 break;
             case ROP_CDR:
-                if (!lisp_is_pair(R[ins.b])) { err = "cdr: not a pair"; goto fail; }
-                R[ins.a] = lisp_cdr(R[ins.b]);
+                if (!lisp_is_pair(Rf[ins.b])) { err = "cdr: not a pair"; goto fail; }
+                Rf[ins.a] = lisp_cdr(Rf[ins.b]);
                 break;
-            case ROP_NULLP: R[ins.a] = lisp_is_empty(R[ins.b]) ? LISP_TRUE : LISP_FALSE; break;
-            case ROP_PAIRP: R[ins.a] = lisp_is_pair(R[ins.b]) ? LISP_TRUE : LISP_FALSE; break;
-            case ROP_NOT: R[ins.a] = lisp_truthy(R[ins.b]) ? LISP_FALSE : LISP_TRUE; break;
+            case ROP_NULLP: Rf[ins.a] = lisp_is_empty(Rf[ins.b]) ? LISP_TRUE : LISP_FALSE; break;
+            case ROP_PAIRP: Rf[ins.a] = lisp_is_pair(Rf[ins.b]) ? LISP_TRUE : LISP_FALSE; break;
+            case ROP_NOT: Rf[ins.a] = lisp_truthy(Rf[ins.b]) ? LISP_FALSE : LISP_TRUE; break;
             case ROP_CALL: {
-                int base = ins.a, n = ins.b;
-                lisp_value callee = R[base];
+                int callbase = ins.a, n = ins.b;
+                lisp_value callee = Rf[callbase];
                 if (LBC_IS_CLO(callee)) {
+                    bcchunk *ck = LBC_CLO(callee)->chunk;
+                    int cbase = f->base + callbase + 1;  // args already here -> zero copy
+                    if (cbase + ck->nregs > LBC_REGSTACK) { err = "register stack overflow"; goto fail; }
                     if (depth >= LBC_MAX_FRAMES) { err = "call depth exceeded"; goto fail; }
-                    if (!setup_rframe(&frames[depth], LBC_CLO(callee), &R[base + 1], n, base, &err))
-                        goto fail;
+                    if (!init_callee(R, cbase, ck, n, &err)) goto fail;
+                    frames[depth] = (rframe){ck, LBC_CLO(callee), cbase, 0, f->base + callbase};
                     depth++;
                 } else {
-                    lisp_value r = lbc_call_proc(callee, &R[base + 1], n, &err);
+                    lisp_value r = lbc_call_proc(callee, &Rf[callbase + 1], n, &err);
                     if (r == LISP_UNDEF && err != NULL) goto fail;
-                    R[base] = r;
+                    Rf[callbase] = r;
                 }
                 break;
             }
             case ROP_TAILCALL: {
-                int base = ins.a, n = ins.b;
-                lisp_value callee = R[base];
+                int callbase = ins.a, n = ins.b;
+                lisp_value callee = Rf[callbase];
                 if (LBC_IS_CLO(callee)) {
-                    rvframe tmp;
-                    if (!setup_rframe(&tmp, LBC_CLO(callee), &R[base + 1], n, f->retbase, &err))
-                        goto fail;
-                    free(f->regs);
-                    *f = tmp;
+                    bcchunk *ck = LBC_CLO(callee)->chunk;
+                    for (int i = 0; i < n; i++)        // move args down to the window base
+                        Rf[i] = Rf[callbase + 1 + i];
+                    if (f->base + ck->nregs > LBC_REGSTACK) { err = "register stack overflow"; goto fail; }
+                    if (!init_callee(R, f->base, ck, n, &err)) goto fail;
+                    f->chunk = ck;
+                    f->clo = LBC_CLO(callee);
+                    f->pc = 0;  // base + result_abs unchanged -> returns to our caller
                 } else {
-                    lisp_value r = lbc_call_proc(callee, &R[base + 1], n, &err);
+                    lisp_value r = lbc_call_proc(callee, &Rf[callbase + 1], n, &err);
                     if (r == LISP_UNDEF && err != NULL) goto fail;
-                    int rb = f->retbase;
-                    free(f->regs);
+                    int ra = f->result_abs;
                     depth--;
-                    if (depth == 0) { *out = r; free(frames); return true; }
-                    frames[depth - 1].regs[rb] = r;
+                    if (depth == 0) { *out = r; free(R); free(frames); return true; }
+                    R[ra] = r;
                 }
                 break;
             }
             case ROP_RET: {
-                lisp_value r = R[ins.a];
-                int rb = f->retbase;
-                free(f->regs);
+                lisp_value r = Rf[ins.a];
+                int ra = f->result_abs;
                 depth--;
-                if (depth == 0) { *out = r; free(frames); return true; }
-                frames[depth - 1].regs[rb] = r;
+                if (depth == 0) { *out = r; free(R); free(frames); return true; }
+                R[ra] = r;
                 break;
             }
             default: err = "bad register opcode"; goto fail;
         }
     }
 fail:
-    for (int i = 0; i < depth; i++)
-        free(frames[i].regs);
-    free(frames);
+    free(R); free(frames);
     *errout = err != NULL ? err : "error";
     return false;
 }

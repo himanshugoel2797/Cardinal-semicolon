@@ -191,13 +191,28 @@ machinery; instructions name operand + destination registers, so a local read is
 free and `(+ x y)` is one dispatch vs the stack form's LOAD/LOAD/ADD. It is
 differential-tested against **both** `lisp_eval` and the stack VM (78 corpus + 40000
 fuzz cases, 0 failures). On the tail-loop bench it cuts static instructions
-**19 -> 14 (~26%)** but is only **~1.13x** faster than the stack VM -- because
-both prototype VMs `malloc`/`free` a register array **per call**, and at 2M
-tail-calls that allocation (~120 ms) dominates and masks the dispatch win. The
-real lever is therefore a **contiguous register stack** (frames are windows into
-one preallocated array; a tail call rewrites registers in place, no alloc) --
-that removes the confound and exposes the dispatch reduction in both VMs. That is
-the next prototype step.
+**19 -> 14 (~26%)**.
+
+The VM uses a **contiguous register stack with register windows**: one
+preallocated value array `R`; each frame owns a window `R[base..base+nregs)`; a
+non-tail call places the callee window right after the operator slot so the args
+**are** the callee's parameter registers (zero copy), and a tail call moves the
+args down to the window base and reuses the frame -- **no per-call allocation,
+ever** (also a hard requirement for the eventual kernel wiring). Registers are
+not cleared on entry: the compiler assigns every register before reading it, an
+invariant the 40000-case fuzzer guards. Measured progression on the 2M-iter tail
+loop, register VM vs the stack VM:
+
+| register-VM frame strategy | vs stack VM |
+|----------------------------|------------:|
+| per-call `malloc` of the register array | 1.13x |
+| register windows (no alloc, zero-copy args) | 1.28x |
+| + skip per-call register clear | **1.46x** |
+
+So once frame-management confounds are removed the ~26% fewer dispatches show
+through as ~1.46x over the stack VM (~27x over the tree-walker). Remaining gap to
+a machine-code JIT is dispatch itself (computed-goto threading, then native
+codegen) -- the documented later steps.
 
 **Churn measurement (the C-ABI question).** A loop doing an inlined `(+ a b)`
 opcode vs the same add forced through the call path (3-arg `+`, routed as
