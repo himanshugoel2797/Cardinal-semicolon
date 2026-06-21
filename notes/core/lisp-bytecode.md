@@ -191,20 +191,25 @@ Validation (`test/build-and-run.sh`, picks it up automatically):
 opcode vs the same add forced through the call path (3-arg `+`, routed as
 `LOADGLOBAL`+`CALL`), 2M iters x 2 adds:
 
-| path | ns/add |
-|------|-------:|
-| inlined opcode | ~72 |
-| call path, thin direct-`->fn` | ~173 |
-| call path, `lisp_apply` (full CEK) | ~258 |
+| call path (per add) | ns/add |
+|---------------------|-------:|
+| inlined opcode (no call) | ~57 |
+| `lisp_apply` + global hash lookup (original) | ~262 |
+| thin direct-`->fn` + global hash | ~176 |
+| thin direct-`->fn` + global **slot** | ~103 |
 
-Two conclusions: (1) **inlining dominates** -- a call is 2.4-3.6x an inlined op,
+Conclusions: (1) **inlining dominates** -- a call is several times an inlined op,
 so freezing+inlining the hot ops is the main lever; (2) for the calls that
 remain, **bypassing the C ABI is worth ~1.5x** -- calling a primitive's C `fn`
 directly with the operand-stack slice (zero-copy args, one err branch) instead of
-routing through `lisp_apply` saved ~85 ns/call (call-loop 1.49x faster). The
-prototype now uses that thin path by default. (Part of the call-path cost is also
-the per-call `LOADGLOBAL` hash lookup for `+`, which globals-as-repatchable-slots
-removes -- a further win not yet prototyped.)
+routing through `lisp_apply` (the full CEK machine) saved ~86 ns/call; (3)
+**globals-as-slots is worth ~1.7x** -- resolving a global to its binding cell once
+at compile time and loading it with a single `cdr` (the cell is a stable slot:
+define/set! mutate its cdr in place, never replace it, so it doubles as the
+live-redefinition jump-table) instead of a per-call hash lookup saved ~73 ns/call.
+Combined, thin `->fn` + slot is **2.54x** the original call path (262 -> 103
+ns/call) and cuts the residual call overhead over an inlined op from ~101 to
+~46 ns. Both are now the prototype defaults (all corpus + fuzz tests stay green).
 
 Next (P3+): widen coverage (the declined forms), then the reviewed step of
 wiring the compiler into the live `lisp_eval`/`lisp_ctx_resume` under the
