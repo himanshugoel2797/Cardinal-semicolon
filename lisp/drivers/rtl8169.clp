@@ -172,14 +172,19 @@
   (if (or (> len PKT-SIZE) (<= len 0))
       #f
       (let ((i (cell-ref free-cell)))
-        ;; Wait (yields between polls) for the NIC to release this descriptor.
-        (wait-until (lambda () (tx-desc-idle? txring i)) 100000000)   ; 100ms
-        (bytes-copy-into! txbuf (* i PKT-SIZE) frame len)
-        (tx-desc-build! txring i len (= i (- NTX 1)))
-        ;; Kick the Normal-Priority TX queue so the NIC fetches the descriptor.
-        (bytes-u8-set! regs TPPOLL TPPOLL-NPQ)
-        (cell-set! free-cell (modulo (+ i 1) NTX))
-        'sent)))
+        ;; Wait (yields between polls) for the NIC to release this descriptor. On
+        ;; timeout the descriptor is still NIC-owned: DROP the packet rather than
+        ;; overwrite the buffer/control word the NIC is reading (the bounded-wait,
+        ;; drop-on-timeout rule AUDIT.md records for the rtl TX path).
+        (if (not (wait-until (lambda () (tx-desc-idle? txring i)) 100000000)) ; 100ms
+            #f
+            (begin
+              (bytes-copy-into! txbuf (* i PKT-SIZE) frame len)
+              (tx-desc-build! txring i len (= i (- NTX 1)))
+              ;; Kick the Normal-Priority TX queue so the NIC fetches the descriptor.
+              (bytes-u8-set! regs TPPOLL TPPOLL-NPQ)
+              (cell-set! free-cell (modulo (+ i 1) NTX))
+              'sent)))))
 
 ;; --- RX pump -----------------------------------------------------------------
 ;; Sweep every RX descriptor; for each NIC-filled one, hand the frame (snapshotted
