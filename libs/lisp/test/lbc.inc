@@ -113,12 +113,43 @@ typedef struct {
     int32_t b;
 } instr;
 
+// Register-form instruction (3 register operands + an aux const index). The
+// register VM (rvm_run) reads these; a=dst, b/c=src registers, d=aux const.
+typedef enum {
+    ROP_LOADK,      // r[a] = consts[b]
+    ROP_MOVE,       // r[a] = r[b]
+    ROP_LOADUP,     // r[a] = upvals[b]
+    ROP_LOADG,      // r[a] = lookup(symbol consts[b]); error if unbound
+    ROP_LOADGS,     // r[a] = cdr consts[b]   (global slot)
+    ROP_LOADSELF,   // r[a] = running closure
+    ROP_SETG,       // set! symbol consts[b] = r[a]; error if unbound
+    ROP_CLOSURE,    // r[a] = closure of child chunk b
+    ROP_JMP,        // pc = a
+    ROP_JMPF,       // if !truthy(r[a]) pc = b
+    ROP_JMPT,       // if  truthy(r[a]) pc = b
+    ROP_CALL,       // call r[a] with b args at r[a+1..a+b]; result -> r[a]
+    ROP_TAILCALL,   // tail call (reuse frame); terminates
+    ROP_RET,        // return r[a]
+    ROP_ADD, ROP_SUB, ROP_MUL,         // r[a] = r[b] <op> r[c]; d=prim const (fallback)
+    ROP_LT, ROP_LE, ROP_GT, ROP_GE, ROP_NUMEQ,  // r[a] = r[b] <cmp> r[c]; d=prim
+    ROP_CONS,       // r[a] = cons(r[b], r[c])
+    ROP_CAR, ROP_CDR, ROP_NULLP, ROP_PAIRP, ROP_NOT,  // r[a] = op(r[b])
+} rop;
+
+typedef struct {
+    uint8_t op;
+    int32_t a, b, c, d;
+} rinstr;
+
 typedef struct bcchunk {
     instr *code;
     int ncode, capcode;
+    rinstr *rcode;     // register-form code (NULL if stack-compiled)
+    int nrcode, caprcode;
+    int nregs;         // register-file size for the register VM
     lisp_value *consts;
     int nconsts, capconsts;
-    int nlocals;       // size of the runtime locals array
+    int nlocals;       // size of the runtime locals array (stack VM)
     int nparams;
     bool has_rest;     // last param collects the rest as a list
     struct bcchunk **children;
@@ -147,6 +178,8 @@ typedef struct fnstate {
     int nlocals;          // active lexical bindings (a scope stack)
     int next_slot;        // monotonic slot high-water (== chunk->nlocals)
     lisp_value self_name; // this function's own name for self-recursion, or UNDEF
+    int freereg;          // register VM: next free register (locals + temps share)
+    int maxreg;           // register VM: high-water (== chunk->nregs)
 } fnstate;
 
 typedef struct {
@@ -1254,6 +1287,823 @@ static lbc_status lbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
     top->chunk = k;
     const char *err = NULL;
     if (!vm_run(top, genv, out, &err)) {
+        *msg = err;
+        return LBC_ERR;
+    }
+    return LBC_OK;
+}
+
+// ===========================================================================
+// Register-bytecode form (the dispatch-count lever). A parallel compiler + VM
+// reusing the shared scope/resolve/const/frozen-op/global-slot/thin-call
+// machinery above. Instructions name operand + destination registers explicitly,
+// so a local read is free (the op addresses the local's register directly) and
+// `(+ x y)` is ONE dispatch vs the stack form's LOAD, LOAD, ADD. Differential-
+// tested against BOTH lisp_eval and the stack VM.
+// ===========================================================================
+
+static int remit(compiler *C, bcchunk *k, rop op, int a, int b, int c, int d) {
+    if (k->nrcode == k->caprcode) {
+        int nc = k->caprcode ? k->caprcode * 2 : 32;
+        rinstr *ni = (rinstr *)realloc(k->rcode, (size_t)nc * sizeof(rinstr));
+        if (ni == NULL)
+            lbc_decline(C, "out of memory");
+        k->rcode = ni;
+        k->caprcode = nc;
+    }
+    int at = k->nrcode;
+    k->rcode[at].op = (uint8_t)op;
+    k->rcode[at].a = a;
+    k->rcode[at].b = b;
+    k->rcode[at].c = c;
+    k->rcode[at].d = d;
+    k->nrcode++;
+    return at;
+}
+
+static int ralloc(compiler *C, fnstate *fn) {
+    if (fn->freereg >= LBC_MAX_STACK)
+        lbc_decline(C, "register pressure");
+    int r = fn->freereg++;
+    if (fn->freereg > fn->maxreg)
+        fn->maxreg = fn->freereg;
+    return r;
+}
+
+// Bind a name to a freshly allocated register (param / let / internal define).
+static int rbind(compiler *C, fnstate *fn, lisp_value name) {
+    int slot = ralloc(C, fn);
+    bind_local(C, fn, name, slot);
+    return slot;
+}
+
+static int radd_child(compiler *C, bcchunk *parent, bcchunk *child) {
+    if (parent->nchildren == parent->capchildren) {
+        int nc = parent->capchildren ? parent->capchildren * 2 : 4;
+        bcchunk **nch =
+            (bcchunk **)realloc(parent->children, (size_t)nc * sizeof(bcchunk *));
+        if (nch == NULL)
+            lbc_decline(C, "out of memory");
+        parent->children = nch;
+        parent->capchildren = nc;
+    }
+    parent->children[parent->nchildren] = child;
+    return parent->nchildren++;
+}
+
+static const char *frozen_prim_name(bcop op, int v) {
+    if (op == OP_ARITH2)
+        return v == 0 ? "+" : v == 1 ? "-" : "*";
+    return v == 0 ? "<" : v == 1 ? "<=" : v == 2 ? ">" : v == 3 ? ">=" : "=";
+}
+
+static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst);
+static void rcompile_tail(compiler *C, fnstate *fn, lisp_value e);
+static bcchunk *rcompile_lambda(compiler *C, fnstate *parent, lisp_value params,
+                                lisp_value body, lisp_value self_name);
+
+// Produce e's value into some register and return it. A local resolves to its
+// own register with NO code emitted -- the dispatch-saving core of the register
+// form.
+static int rcompile_rvalue(compiler *C, fnstate *fn, lisp_value e) {
+    if (lisp_is_symbol(e)) {
+        int kind, idx = resolve(C, fn, e, &kind);
+        if (kind == R_LOCAL)
+            return idx;
+    }
+    int r = ralloc(C, fn);
+    rcompile_into(C, fn, e, r);
+    return r;
+}
+
+// Compile a body into dst (tail==false) or in tail position (tail==true, dst
+// ignored). Leading internal defines bind register-locals.
+static void rcompile_body(compiler *C, fnstate *fn, lisp_value body, int dst,
+                          bool tail) {
+    while (lisp_is_pair(body)) {
+        lisp_value form = lisp_car(body);
+        if (!(lisp_is_pair(form) && sym_is(lisp_car(form), "define")))
+            break;
+        lisp_value rest = lisp_cdr(form);
+        if (!lisp_is_pair(rest))
+            lbc_decline(C, "malformed define");
+        lisp_value target = lisp_car(rest);
+        if (lisp_is_symbol(target)) {
+            if (!lisp_is_pair(lisp_cdr(rest)))
+                lbc_decline(C, "malformed define");
+            int slot = ralloc(C, fn);
+            rcompile_into(C, fn, lisp_car(lisp_cdr(rest)), slot);
+            bind_local(C, fn, target, slot);
+        } else if (lisp_is_pair(target)) {
+            lisp_value name = lisp_car(target);
+            if (!lisp_is_symbol(name))
+                lbc_decline(C, "define: name must be a symbol");
+            int slot = ralloc(C, fn);
+            bind_local(C, fn, name, slot);
+            bcchunk *child =
+                rcompile_lambda(C, fn, lisp_cdr(target), lisp_cdr(rest), name);
+            int ci = radd_child(C, fn->chunk, child);
+            remit(C, fn->chunk, ROP_CLOSURE, slot, ci, 0, 0);
+        } else {
+            lbc_decline(C, "malformed define");
+        }
+        body = lisp_cdr(body);
+    }
+    if (!lisp_is_pair(body)) {
+        int r = tail ? ralloc(C, fn) : dst;
+        remit(C, fn->chunk, ROP_LOADK, r, add_const(C, fn->chunk, LISP_UNDEF), 0, 0);
+        if (tail)
+            remit(C, fn->chunk, ROP_RET, r, 0, 0, 0);
+        return;
+    }
+    while (lisp_is_pair(lisp_cdr(body))) {
+        int save = fn->freereg;
+        int t = ralloc(C, fn);
+        rcompile_into(C, fn, lisp_car(body), t);
+        fn->freereg = save;  // discard the for-effect value
+        body = lisp_cdr(body);
+    }
+    if (tail)
+        rcompile_tail(C, fn, lisp_car(body));
+    else
+        rcompile_into(C, fn, lisp_car(body), dst);
+}
+
+static bcchunk *rcompile_lambda(compiler *C, fnstate *parent, lisp_value params,
+                                lisp_value body, lisp_value self_name) {
+    fnstate fn;
+    memset(&fn, 0, sizeof(fn));
+    fn.parent = parent;
+    fn.chunk = chunk_new(C);
+    fn.self_name = (self_name == 0) ? LISP_UNDEF : self_name;
+    int np = 0;
+    lisp_value p = params;
+    while (lisp_is_pair(p)) {
+        if (!lisp_is_symbol(lisp_car(p)))
+            lbc_decline(C, "bad parameter");
+        rbind(C, &fn, lisp_car(p));
+        np++;
+        p = lisp_cdr(p);
+    }
+    if (lisp_is_symbol(p)) {
+        rbind(C, &fn, p);
+        fn.chunk->has_rest = true;
+    } else if (!lisp_is_empty(p)) {
+        lbc_decline(C, "malformed parameter list");
+    }
+    fn.chunk->nparams = np;
+    rcompile_body(C, &fn, body, -1, true);
+    fn.chunk->nregs = fn.maxreg;
+    return fn.chunk;
+}
+
+// Emit a call: operator into base, args into base+1.., then CALL/TAILCALL.
+static int rcompile_callseq(compiler *C, fnstate *fn, lisp_value e) {
+    lisp_value head = lisp_car(e), args = lisp_cdr(e);
+    lisp_value t = args;
+    while (lisp_is_pair(t))
+        t = lisp_cdr(t);
+    if (!lisp_is_empty(t))
+        lbc_decline(C, "improper argument list");
+    int base = ralloc(C, fn);
+    rcompile_into(C, fn, head, base);
+    int n = 0;
+    for (lisp_value a = args; lisp_is_pair(a); a = lisp_cdr(a)) {
+        int r = ralloc(C, fn);
+        rcompile_into(C, fn, lisp_car(a), r);
+        (void)r;
+        n++;
+    }
+    return (base << 8) | n;  // pack base + nargs (n < 256, base < 256 in practice)
+}
+
+static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst) {
+    bcchunk *k = fn->chunk;
+    if (lisp_is_fixnum(e) || lisp_is_flonum(e) || lisp_is_string(e) ||
+        lisp_is_char(e) || lisp_is_keyword(e) || e == LISP_TRUE ||
+        e == LISP_FALSE || e == LISP_UNDEF) {
+        remit(C, k, ROP_LOADK, dst, add_const(C, k, e), 0, 0);
+        return;
+    }
+    if (lisp_is_symbol(e)) {
+        int kind, idx = resolve(C, fn, e, &kind);
+        switch (kind) {
+            case R_LOCAL:
+                if (idx != dst)
+                    remit(C, k, ROP_MOVE, dst, idx, 0, 0);
+                return;
+            case R_UPVAL: remit(C, k, ROP_LOADUP, dst, idx, 0, 0); return;
+            case R_SELF: remit(C, k, ROP_LOADSELF, dst, 0, 0, 0); return;
+            case R_GLOBAL: {
+                if (g_global_slots) {
+                    lisp_value cell = find_global_cell(C->genv, e);
+                    if (cell != LISP_EMPTY) {
+                        remit(C, k, ROP_LOADGS, dst, add_const(C, k, cell), 0, 0);
+                        return;
+                    }
+                }
+                remit(C, k, ROP_LOADG, dst, add_const(C, k, e), 0, 0);
+                return;
+            }
+        }
+        return;
+    }
+    if (!lisp_is_pair(e)) {
+        if (lisp_is_empty(e))
+            lbc_decline(C, "cannot evaluate ()");
+        remit(C, k, ROP_LOADK, dst, add_const(C, k, e), 0, 0);
+        return;
+    }
+    lisp_value head = lisp_car(e), rest = lisp_cdr(e);
+    if (lisp_is_symbol(head)) {
+        if (sym_is(head, "quote")) {
+            remit(C, k, ROP_LOADK, dst, add_const(C, k, lisp_car(rest)), 0, 0);
+            return;
+        }
+        if (sym_is(head, "if")) {
+            int tc = rcompile_rvalue(C, fn, lisp_car(rest));
+            int jf = remit(C, k, ROP_JMPF, tc, -1, 0, 0);
+            rcompile_into(C, fn, lisp_car(lisp_cdr(rest)), dst);
+            int je = remit(C, k, ROP_JMP, -1, 0, 0, 0);
+            k->rcode[jf].b = k->nrcode;
+            lisp_value elsep = lisp_cdr(lisp_cdr(rest));
+            if (lisp_is_pair(elsep))
+                rcompile_into(C, fn, lisp_car(elsep), dst);
+            else
+                remit(C, k, ROP_LOADK, dst, add_const(C, k, LISP_UNDEF), 0, 0);
+            k->rcode[je].a = k->nrcode;
+            return;
+        }
+        if (sym_is(head, "begin")) {
+            if (!lisp_is_pair(rest)) {
+                remit(C, k, ROP_LOADK, dst, add_const(C, k, LISP_UNDEF), 0, 0);
+                return;
+            }
+            rcompile_body(C, fn, rest, dst, false);
+            return;
+        }
+        if (sym_is(head, "lambda")) {
+            bcchunk *child = rcompile_lambda(C, fn, lisp_car(rest), lisp_cdr(rest), 0);
+            int ci = radd_child(C, k, child);
+            remit(C, k, ROP_CLOSURE, dst, ci, 0, 0);
+            return;
+        }
+        if (sym_is(head, "and") || sym_is(head, "or")) {
+            bool is_and = sym_is(head, "and");
+            if (!lisp_is_pair(rest)) {
+                remit(C, k, ROP_LOADK, dst, add_const(C, k, is_and ? LISP_TRUE : LISP_FALSE), 0, 0);
+                return;
+            }
+            int jmps[64], n = 0;
+            lisp_value a = rest;
+            while (lisp_is_pair(lisp_cdr(a))) {
+                rcompile_into(C, fn, lisp_car(a), dst);
+                if (n >= 64)
+                    lbc_decline(C, "and/or too long");
+                jmps[n++] = remit(C, k, is_and ? ROP_JMPF : ROP_JMPT, dst, -1, 0, 0);
+                a = lisp_cdr(a);
+            }
+            rcompile_into(C, fn, lisp_car(a), dst);
+            for (int i = 0; i < n; i++)
+                k->rcode[jmps[i]].b = k->nrcode;
+            return;
+        }
+        if (sym_is(head, "when") || sym_is(head, "unless")) {
+            bool want = sym_is(head, "when");
+            int tc = rcompile_rvalue(C, fn, lisp_car(rest));
+            int jf = remit(C, k, want ? ROP_JMPF : ROP_JMPT, tc, -1, 0, 0);
+            rcompile_body(C, fn, lisp_cdr(rest), dst, false);
+            int je = remit(C, k, ROP_JMP, -1, 0, 0, 0);
+            k->rcode[jf].b = k->nrcode;
+            remit(C, k, ROP_LOADK, dst, add_const(C, k, LISP_UNDEF), 0, 0);
+            k->rcode[je].a = k->nrcode;
+            return;
+        }
+        if (sym_is(head, "cond")) {
+            int endj[64], ne = 0;
+            lisp_value cl = rest;
+            bool had_else = false;
+            while (lisp_is_pair(cl)) {
+                lisp_value clause = lisp_car(cl);
+                if (!lisp_is_pair(clause))
+                    lbc_decline(C, "malformed cond clause");
+                lisp_value test = lisp_car(clause), cbody = lisp_cdr(clause);
+                if (sym_is(test, "else")) {
+                    rcompile_body(C, fn, cbody, dst, false);
+                    had_else = true;
+                    break;
+                }
+                if (!lisp_is_pair(cbody))
+                    lbc_decline(C, "cond clause without body unsupported");
+                int tc = rcompile_rvalue(C, fn, test);
+                int jf = remit(C, k, ROP_JMPF, tc, -1, 0, 0);
+                rcompile_body(C, fn, cbody, dst, false);
+                if (ne >= 64)
+                    lbc_decline(C, "cond too long");
+                endj[ne++] = remit(C, k, ROP_JMP, -1, 0, 0, 0);
+                k->rcode[jf].b = k->nrcode;
+                cl = lisp_cdr(cl);
+            }
+            if (!had_else)
+                remit(C, k, ROP_LOADK, dst, add_const(C, k, LISP_UNDEF), 0, 0);
+            for (int i = 0; i < ne; i++)
+                k->rcode[endj[i]].a = k->nrcode;
+            return;
+        }
+        if (sym_is(head, "let") && lisp_is_pair(rest) && lisp_is_symbol(lisp_car(rest))) {
+            // named let -> self-recursive lambda applied to inits.
+            lisp_value name = lisp_car(rest);
+            lisp_value binds = lisp_car(lisp_cdr(rest));
+            lisp_value lbody = lisp_cdr(lisp_cdr(rest));
+            lisp_value pl = LISP_EMPTY, pt = LISP_EMPTY;
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+                lisp_value pc = lisp_cons(lisp_car(lisp_car(b)), LISP_EMPTY);
+                if (pl == LISP_EMPTY) pl = pc; else set_cdr_lbc(pt, pc);
+                pt = pc;
+            }
+            bcchunk *child = rcompile_lambda(C, fn, pl, lbody, name);
+            int ci = radd_child(C, k, child);
+            int base = ralloc(C, fn);
+            remit(C, k, ROP_CLOSURE, base, ci, 0, 0);
+            int n = 0;
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+                int r = ralloc(C, fn);
+                rcompile_into(C, fn, lisp_car(lisp_cdr(lisp_car(b))), r);
+                (void)r;
+                n++;
+            }
+            remit(C, k, ROP_CALL, base, n, 0, 0);
+            if (dst != base)
+                remit(C, k, ROP_MOVE, dst, base, 0, 0);
+            fn->freereg = base;
+            return;
+        }
+        if (sym_is(head, "let")) {
+            lisp_value binds = lisp_car(rest), lbody = lisp_cdr(rest);
+            int save_fr = fn->freereg, save_nl = fn->nlocals;
+            int slots[LBC_MAX_LOCALS], nb = 0;
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+                int slot = ralloc(C, fn);  // init evaluated in OUTER scope
+                rcompile_into(C, fn, lisp_car(lisp_cdr(lisp_car(b))), slot);
+                slots[nb++] = slot;
+            }
+            int i = 0;
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b), i++)
+                bind_local(C, fn, lisp_car(lisp_car(b)), slots[i]);
+            rcompile_body(C, fn, lbody, dst, false);
+            fn->freereg = save_fr;
+            fn->nlocals = save_nl;
+            return;
+        }
+        if (sym_is(head, "let*")) {
+            lisp_value binds = lisp_car(rest), lbody = lisp_cdr(rest);
+            int save_fr = fn->freereg, save_nl = fn->nlocals;
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+                lisp_value bd = lisp_car(b);
+                int slot = ralloc(C, fn);
+                rcompile_into(C, fn, lisp_car(lisp_cdr(bd)), slot);
+                bind_local(C, fn, lisp_car(bd), slot);
+            }
+            rcompile_body(C, fn, lbody, dst, false);
+            fn->freereg = save_fr;
+            fn->nlocals = save_nl;
+            return;
+        }
+        if (sym_is(head, "set!")) {
+            lisp_value target = lisp_car(rest);
+            int kind, idx = resolve(C, fn, target, &kind);
+            if (kind == R_UPVAL || kind == R_SELF)
+                lbc_decline(C, "set! on captured/self binding unsupported");
+            if (kind == R_LOCAL) {
+                rcompile_into(C, fn, lisp_car(lisp_cdr(rest)), idx);
+            } else {
+                int v = rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
+                remit(C, k, ROP_SETG, v, add_const(C, k, target), 0, 0);
+            }
+            remit(C, k, ROP_LOADK, dst, add_const(C, k, LISP_UNDEF), 0, 0);
+            return;
+        }
+        if (sym_is(head, "define"))
+            lbc_decline(C, "define only supported at body head");
+        if (is_special_head(head))
+            lbc_decline(C, "form not supported by prototype");
+
+        // frozen op?
+        bcop bop;
+        int variant, argc = list_len(rest);
+        if (frozen_op(C, fn, head, argc, &bop, &variant)) {
+            int save = fn->freereg;
+            if (argc == 2) {
+                int ra = rcompile_rvalue(C, fn, lisp_car(rest));
+                int rb = rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
+                rop r;
+                int prim = 0;
+                if (bop == OP_ARITH2) {
+                    r = (rop)(ROP_ADD + variant);
+                    prim = frozen_prim_const(C, k, frozen_prim_name(bop, variant));
+                } else if (bop == OP_CMP2) {
+                    r = (rop)(ROP_LT + variant);
+                    prim = frozen_prim_const(C, k, frozen_prim_name(bop, variant));
+                } else {  // OP_CONS
+                    r = ROP_CONS;
+                }
+                remit(C, k, r, dst, ra, rb, prim);
+            } else {  // unary: car/cdr/null?/pair?/not
+                int ra = rcompile_rvalue(C, fn, lisp_car(rest));
+                rop r = bop == OP_CAR ? ROP_CAR : bop == OP_CDR ? ROP_CDR
+                        : bop == OP_NULLP ? ROP_NULLP : bop == OP_PAIRP ? ROP_PAIRP
+                        : ROP_NOT;
+                remit(C, k, r, dst, ra, 0, 0);
+            }
+            fn->freereg = save;
+            return;
+        }
+    }
+    // general application
+    int save = fn->freereg;
+    int packed = rcompile_callseq(C, fn, e);
+    int base = packed >> 8, n = packed & 0xff;
+    remit(C, k, ROP_CALL, base, n, 0, 0);
+    if (dst != base)
+        remit(C, k, ROP_MOVE, dst, base, 0, 0);
+    fn->freereg = save;
+}
+
+static void rcompile_tail(compiler *C, fnstate *fn, lisp_value e) {
+    bcchunk *k = fn->chunk;
+    if (lisp_is_pair(e) && lisp_is_symbol(lisp_car(e))) {
+        lisp_value head = lisp_car(e), rest = lisp_cdr(e);
+        if (sym_is(head, "if")) {
+            int tc = rcompile_rvalue(C, fn, lisp_car(rest));
+            int jf = remit(C, k, ROP_JMPF, tc, -1, 0, 0);
+            rcompile_tail(C, fn, lisp_car(lisp_cdr(rest)));
+            k->rcode[jf].b = k->nrcode;
+            lisp_value elsep = lisp_cdr(lisp_cdr(rest));
+            if (lisp_is_pair(elsep)) {
+                rcompile_tail(C, fn, lisp_car(elsep));
+            } else {
+                int r = ralloc(C, fn);
+                remit(C, k, ROP_LOADK, r, add_const(C, k, LISP_UNDEF), 0, 0);
+                remit(C, k, ROP_RET, r, 0, 0, 0);
+            }
+            return;
+        }
+        if (sym_is(head, "begin") && lisp_is_pair(rest)) {
+            rcompile_body(C, fn, rest, -1, true);
+            return;
+        }
+        if (sym_is(head, "when") || sym_is(head, "unless")) {
+            bool want = sym_is(head, "when");
+            int tc = rcompile_rvalue(C, fn, lisp_car(rest));
+            int jf = remit(C, k, want ? ROP_JMPF : ROP_JMPT, tc, -1, 0, 0);
+            rcompile_body(C, fn, lisp_cdr(rest), -1, true);
+            k->rcode[jf].b = k->nrcode;
+            int r = ralloc(C, fn);
+            remit(C, k, ROP_LOADK, r, add_const(C, k, LISP_UNDEF), 0, 0);
+            remit(C, k, ROP_RET, r, 0, 0, 0);
+            return;
+        }
+        if (sym_is(head, "cond")) {
+            lisp_value cl = rest;
+            bool had_else = false;
+            while (lisp_is_pair(cl)) {
+                lisp_value clause = lisp_car(cl);
+                if (!lisp_is_pair(clause))
+                    lbc_decline(C, "malformed cond clause");
+                lisp_value test = lisp_car(clause), cbody = lisp_cdr(clause);
+                if (sym_is(test, "else")) {
+                    rcompile_body(C, fn, cbody, -1, true);
+                    had_else = true;
+                    break;
+                }
+                if (!lisp_is_pair(cbody))
+                    lbc_decline(C, "cond clause without body unsupported");
+                int tc = rcompile_rvalue(C, fn, test);
+                int jf = remit(C, k, ROP_JMPF, tc, -1, 0, 0);
+                rcompile_body(C, fn, cbody, -1, true);
+                k->rcode[jf].b = k->nrcode;
+                cl = lisp_cdr(cl);
+            }
+            if (!had_else) {
+                int r = ralloc(C, fn);
+                remit(C, k, ROP_LOADK, r, add_const(C, k, LISP_UNDEF), 0, 0);
+                remit(C, k, ROP_RET, r, 0, 0, 0);
+            }
+            return;
+        }
+        if (sym_is(head, "let") && lisp_is_pair(rest) && lisp_is_symbol(lisp_car(rest))) {
+            // named let in tail position -> tail call of the loop closure.
+            lisp_value name = lisp_car(rest);
+            lisp_value binds = lisp_car(lisp_cdr(rest));
+            lisp_value lbody = lisp_cdr(lisp_cdr(rest));
+            lisp_value pl = LISP_EMPTY, pt = LISP_EMPTY;
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+                lisp_value pc = lisp_cons(lisp_car(lisp_car(b)), LISP_EMPTY);
+                if (pl == LISP_EMPTY) pl = pc; else set_cdr_lbc(pt, pc);
+                pt = pc;
+            }
+            bcchunk *child = rcompile_lambda(C, fn, pl, lbody, name);
+            int ci = radd_child(C, k, child);
+            int base = ralloc(C, fn);
+            remit(C, k, ROP_CLOSURE, base, ci, 0, 0);
+            int n = 0;
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+                int r = ralloc(C, fn);
+                rcompile_into(C, fn, lisp_car(lisp_cdr(lisp_car(b))), r);
+                (void)r;
+                n++;
+            }
+            remit(C, k, ROP_TAILCALL, base, n, 0, 0);
+            return;
+        }
+        if ((sym_is(head, "let") || sym_is(head, "let*"))) {
+            bool star = sym_is(head, "let*");
+            lisp_value binds = lisp_car(rest), lbody = lisp_cdr(rest);
+            int save_nl = fn->nlocals;
+            int slots[LBC_MAX_LOCALS], nb = 0;
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+                lisp_value bd = lisp_car(b);
+                int slot = ralloc(C, fn);
+                rcompile_into(C, fn, lisp_car(lisp_cdr(bd)), slot);
+                if (star)
+                    bind_local(C, fn, lisp_car(bd), slot);
+                else
+                    slots[nb++] = slot;
+            }
+            if (!star) {
+                int i = 0;
+                for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b), i++)
+                    bind_local(C, fn, lisp_car(lisp_car(b)), slots[i]);
+            }
+            rcompile_body(C, fn, lbody, -1, true);
+            fn->nlocals = save_nl;
+            return;
+        }
+        // frozen op or special form: produce a value then RET.
+        bcop bop;
+        int variant;
+        if (!is_special_head(head) &&
+            !frozen_op(C, fn, head, list_len(rest), &bop, &variant)) {
+            int packed = rcompile_callseq(C, fn, e);
+            remit(C, k, ROP_TAILCALL, packed >> 8, packed & 0xff, 0, 0);
+            return;
+        }
+    } else if (lisp_is_pair(e)) {
+        int packed = rcompile_callseq(C, fn, e);
+        remit(C, k, ROP_TAILCALL, packed >> 8, packed & 0xff, 0, 0);
+        return;
+    }
+    int r = rcompile_rvalue(C, fn, e);
+    remit(C, k, ROP_RET, r, 0, 0, 0);
+}
+
+static bool rlbc_compile(lisp_value genv, lisp_value expr, bcchunk **out,
+                         const char **why) {
+    compiler C;
+    memset(&C, 0, sizeof(C));
+    C.genv = genv;
+    if (setjmp(C.decline)) {
+        *why = C.why;
+        return false;
+    }
+    fnstate fn;
+    memset(&fn, 0, sizeof(fn));
+    fn.chunk = chunk_new(&C);
+    fn.self_name = LISP_UNDEF;
+    rcompile_body(&C, &fn, lisp_cons(expr, LISP_EMPTY), -1, true);
+    fn.chunk->nregs = fn.maxreg;
+    *out = fn.chunk;
+    return true;
+}
+
+// --- Register VM ------------------------------------------------------------
+
+typedef struct {
+    bcchunk *chunk;
+    bcclosure *clo;
+    lisp_value *regs;
+    int pc;
+    int retbase;  // register in the CALLER's regs to receive our return; -1 top
+} rvframe;
+
+static bool setup_rframe(rvframe *f, bcclosure *clo, lisp_value *args, int argc,
+                         int retbase, const char **err) {
+    bcchunk *k = clo->chunk;
+    lisp_value *regs = (lisp_value *)malloc(sizeof(lisp_value) * (size_t)(k->nregs > 0 ? k->nregs : 1));
+    if (regs == NULL) {
+        *err = "out of memory";
+        return false;
+    }
+    for (int i = 0; i < k->nregs; i++)
+        regs[i] = LISP_UNDEF;
+    if (k->has_rest) {
+        if (argc < k->nparams) {
+            free(regs);
+            *err = "too few arguments";
+            return false;
+        }
+        for (int i = 0; i < k->nparams; i++)
+            regs[i] = args[i];
+        lisp_value rest = LISP_EMPTY;
+        for (int j = argc - 1; j >= k->nparams; j--) {
+            lisp_value c = lisp_cons(args[j], rest);
+            if (c == LISP_UNDEF) {
+                free(regs);
+                *err = "out of memory";
+                return false;
+            }
+            rest = c;
+        }
+        regs[k->nparams] = rest;
+    } else {
+        if (argc != k->nparams) {
+            free(regs);
+            *err = "argument count mismatch";
+            return false;
+        }
+        for (int i = 0; i < argc; i++)
+            regs[i] = args[i];
+    }
+    f->chunk = k;
+    f->clo = clo;
+    f->regs = regs;
+    f->pc = 0;
+    f->retbase = retbase;
+    return true;
+}
+
+static bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
+                    const char **errout) {
+    rvframe *frames = (rvframe *)malloc(sizeof(rvframe) * LBC_MAX_FRAMES);
+    if (frames == NULL) {
+        *errout = "out of memory";
+        return false;
+    }
+    const char *err = NULL;
+    int depth = 0;
+    if (!setup_rframe(&frames[0], top, NULL, 0, -1, &err))
+        goto fail;
+    depth = 1;
+
+    for (;;) {
+        rvframe *f = &frames[depth - 1];
+        rinstr ins = f->chunk->rcode[f->pc++];
+        lisp_value *R = f->regs;
+        switch (ins.op) {
+            case ROP_LOADK: R[ins.a] = f->chunk->consts[ins.b]; break;
+            case ROP_MOVE: R[ins.a] = R[ins.b]; break;
+            case ROP_LOADUP: R[ins.a] = f->clo->upvals[ins.b]; break;
+            case ROP_LOADG: {
+                lisp_value v;
+                if (!lisp_env_lookup(genv, f->chunk->consts[ins.b], &v)) {
+                    err = "unbound variable";
+                    goto fail;
+                }
+                R[ins.a] = v;
+                break;
+            }
+            case ROP_LOADGS: R[ins.a] = lisp_cdr(f->chunk->consts[ins.b]); break;
+            case ROP_LOADSELF: R[ins.a] = LBC_MK_CLO(f->clo); break;
+            case ROP_SETG:
+                if (!lisp_env_set(genv, f->chunk->consts[ins.b], R[ins.a])) {
+                    err = "set! on unbound variable";
+                    goto fail;
+                }
+                break;
+            case ROP_CLOSURE: {
+                bcchunk *child = f->chunk->children[ins.b];
+                bcclosure *c = (bcclosure *)malloc(
+                    sizeof(bcclosure) + sizeof(lisp_value) * (size_t)child->nupdesc);
+                if (c == NULL) {
+                    err = "out of memory";
+                    goto fail;
+                }
+                c->chunk = child;
+                for (int i = 0; i < child->nupdesc; i++)
+                    c->upvals[i] = child->updesc[i].from_local
+                                       ? R[child->updesc[i].index]
+                                       : f->clo->upvals[child->updesc[i].index];
+                R[ins.a] = LBC_MK_CLO(c);
+                break;
+            }
+            case ROP_JMP: f->pc = ins.a; break;
+            case ROP_JMPF: if (!lisp_truthy(R[ins.a])) f->pc = ins.b; break;
+            case ROP_JMPT: if (lisp_truthy(R[ins.a])) f->pc = ins.b; break;
+            case ROP_ADD: case ROP_SUB: case ROP_MUL: {
+                lisp_value a = R[ins.b], b = R[ins.c];
+                if (lisp_is_fixnum(a) && lisp_is_fixnum(b)) {
+                    int64_t x = lisp_fixnum_val(a), y = lisp_fixnum_val(b), r;
+                    r = ins.op == ROP_ADD ? x + y : ins.op == ROP_SUB ? x - y : x * y;
+                    R[ins.a] = lisp_fixnum(r);
+                } else {
+                    lisp_value as[2] = {a, b};
+                    lisp_value r = lbc_call_proc(f->chunk->consts[ins.d], as, 2, &err);
+                    if (r == LISP_UNDEF && err != NULL) goto fail;
+                    R[ins.a] = r;
+                }
+                break;
+            }
+            case ROP_LT: case ROP_LE: case ROP_GT: case ROP_GE: case ROP_NUMEQ: {
+                lisp_value a = R[ins.b], b = R[ins.c];
+                if (lisp_is_fixnum(a) && lisp_is_fixnum(b)) {
+                    int64_t x = lisp_fixnum_val(a), y = lisp_fixnum_val(b);
+                    bool ok = ins.op == ROP_LT ? x < y : ins.op == ROP_LE ? x <= y
+                              : ins.op == ROP_GT ? x > y : ins.op == ROP_GE ? x >= y
+                              : x == y;
+                    R[ins.a] = ok ? LISP_TRUE : LISP_FALSE;
+                } else {
+                    lisp_value as[2] = {a, b};
+                    lisp_value r = lbc_call_proc(f->chunk->consts[ins.d], as, 2, &err);
+                    if (r == LISP_UNDEF && err != NULL) goto fail;
+                    R[ins.a] = r;
+                }
+                break;
+            }
+            case ROP_CONS: {
+                lisp_value c = lisp_cons(R[ins.b], R[ins.c]);
+                if (c == LISP_UNDEF) { err = "out of memory"; goto fail; }
+                R[ins.a] = c;
+                break;
+            }
+            case ROP_CAR:
+                if (!lisp_is_pair(R[ins.b])) { err = "car: not a pair"; goto fail; }
+                R[ins.a] = lisp_car(R[ins.b]);
+                break;
+            case ROP_CDR:
+                if (!lisp_is_pair(R[ins.b])) { err = "cdr: not a pair"; goto fail; }
+                R[ins.a] = lisp_cdr(R[ins.b]);
+                break;
+            case ROP_NULLP: R[ins.a] = lisp_is_empty(R[ins.b]) ? LISP_TRUE : LISP_FALSE; break;
+            case ROP_PAIRP: R[ins.a] = lisp_is_pair(R[ins.b]) ? LISP_TRUE : LISP_FALSE; break;
+            case ROP_NOT: R[ins.a] = lisp_truthy(R[ins.b]) ? LISP_FALSE : LISP_TRUE; break;
+            case ROP_CALL: {
+                int base = ins.a, n = ins.b;
+                lisp_value callee = R[base];
+                if (LBC_IS_CLO(callee)) {
+                    if (depth >= LBC_MAX_FRAMES) { err = "call depth exceeded"; goto fail; }
+                    if (!setup_rframe(&frames[depth], LBC_CLO(callee), &R[base + 1], n, base, &err))
+                        goto fail;
+                    depth++;
+                } else {
+                    lisp_value r = lbc_call_proc(callee, &R[base + 1], n, &err);
+                    if (r == LISP_UNDEF && err != NULL) goto fail;
+                    R[base] = r;
+                }
+                break;
+            }
+            case ROP_TAILCALL: {
+                int base = ins.a, n = ins.b;
+                lisp_value callee = R[base];
+                if (LBC_IS_CLO(callee)) {
+                    rvframe tmp;
+                    if (!setup_rframe(&tmp, LBC_CLO(callee), &R[base + 1], n, f->retbase, &err))
+                        goto fail;
+                    free(f->regs);
+                    *f = tmp;
+                } else {
+                    lisp_value r = lbc_call_proc(callee, &R[base + 1], n, &err);
+                    if (r == LISP_UNDEF && err != NULL) goto fail;
+                    int rb = f->retbase;
+                    free(f->regs);
+                    depth--;
+                    if (depth == 0) { *out = r; free(frames); return true; }
+                    frames[depth - 1].regs[rb] = r;
+                }
+                break;
+            }
+            case ROP_RET: {
+                lisp_value r = R[ins.a];
+                int rb = f->retbase;
+                free(f->regs);
+                depth--;
+                if (depth == 0) { *out = r; free(frames); return true; }
+                frames[depth - 1].regs[rb] = r;
+                break;
+            }
+            default: err = "bad register opcode"; goto fail;
+        }
+    }
+fail:
+    for (int i = 0; i < depth; i++)
+        free(frames[i].regs);
+    free(frames);
+    *errout = err != NULL ? err : "error";
+    return false;
+}
+
+static lbc_status rlbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
+                            const char **msg) {
+    bcchunk *k = NULL;
+    const char *why = NULL;
+    if (!rlbc_compile(genv, expr, &k, &why)) {
+        *msg = why;
+        return LBC_DECLINED;
+    }
+    bcclosure *top = (bcclosure *)calloc(1, sizeof(bcclosure));
+    if (top == NULL) { *msg = "out of memory"; return LBC_ERR; }
+    top->chunk = k;
+    const char *err = NULL;
+    if (!rvm_run(top, genv, out, &err)) {
         *msg = err;
         return LBC_ERR;
     }
