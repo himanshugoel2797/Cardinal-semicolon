@@ -407,6 +407,66 @@ static void bench(lisp_value genv) {
     printf("  speedup     %8.2fx\n", t_or / t_vm);
 }
 
+static bcclosure *compile_top(lisp_value genv, const char *src) {
+    lisp_value e = read1(src);
+    bcchunk *k = NULL;
+    const char *why = NULL;
+    if (!lbc_compile(genv, e, &k, &why)) {
+        printf("compile declined: %s\n", why);
+        exit(3);
+    }
+    bcclosure *top = (bcclosure *)calloc(1, sizeof(bcclosure));
+    top->chunk = k;
+    return top;
+}
+
+static double time_run(bcclosure *top, lisp_value genv, lisp_value *out) {
+    const char *err = NULL;
+    double t0 = now_sec();
+    vm_run(top, genv, out, &err);
+    return now_sec() - t0;
+}
+
+// Quantify the "C ABI churn": compare an INLINED arithmetic loop against the same
+// loop where the add is forced through the call path (3-arg +, which the compiler
+// routes as LOADGLOBAL + CALL), under both the thin direct->fn convention and the
+// heavyweight lisp_apply path. EN iterations, 2 adds/iter.
+#define EN 2000000
+static void churn_experiment(lisp_value genv) {
+    const char *A =  // both adds inlined (2-arg frozen op)
+        "(let loop ((i 0) (acc 0)) (if (= i 2000000) acc (loop (+ i 1) (+ acc 1))))";
+    const char *B =  // both adds via the call path (3-arg, not a frozen opcode)
+        "(let loop ((i 0) (acc 0)) (if (= i 2000000) acc (loop (+ i 1 0) (+ acc 1 0))))";
+    bcclosure *ta = compile_top(genv, A);
+    bcclosure *tb = compile_top(genv, B);
+    lisp_value o = LISP_UNDEF;
+
+    g_thin_prim = 1;
+    time_run(ta, genv, &o);
+    time_run(tb, genv, &o);  // warm
+    double t_inline = time_run(ta, genv, &o);
+    double t_thin = time_run(tb, genv, &o);
+    g_thin_prim = 0;
+    double t_apply = time_run(tb, genv, &o);
+    g_thin_prim = 1;
+
+    double per = 2.0 * (double)EN;  // primitive ops per loop
+    printf("\n=== churn experiment: inline vs call-path vs lisp_apply ===\n");
+    printf("  (2,000,000 iters, 2 adds/iter)\n");
+    printf("  inlined opcode (+ a b)        %8.2f ms   %5.1f ns/add\n",
+           t_inline * 1000, t_inline * 1e9 / per);
+    printf("  call path, thin ->fn          %8.2f ms   %5.1f ns/add\n",
+           t_thin * 1000, t_thin * 1e9 / per);
+    printf("  call path, lisp_apply         %8.2f ms   %5.1f ns/add\n",
+           t_apply * 1000, t_apply * 1e9 / per);
+    printf("  --\n");
+    printf("  marginal cost of a call over an inlined op:\n");
+    printf("    thin ->fn       %6.1f ns/add\n", (t_thin - t_inline) * 1e9 / per);
+    printf("    lisp_apply      %6.1f ns/add\n", (t_apply - t_inline) * 1e9 / per);
+    printf("  lisp_apply overhead over thin ->fn: %.1f ns/add  (%.2fx the call-loop)\n",
+           (t_apply - t_thin) * 1e9 / per, t_apply / t_thin);
+}
+
 int main(void) {
     lisp_set_output(host_out, NULL);
     lisp_value genv = lisp_default_env();
@@ -419,6 +479,7 @@ int main(void) {
 
     int fuzz_fails = fuzz(genv, 20000);
     bench(genv);
+    churn_experiment(genv);
 
     int total_fail = fail + fuzz_fails;
     printf("\n[bytecode] %s\n", total_fail == 0 ? "ALL TESTS PASSED" : "FAILURES PRESENT");

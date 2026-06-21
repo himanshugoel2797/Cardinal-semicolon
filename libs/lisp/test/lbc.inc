@@ -36,6 +36,23 @@
 #include <string.h>
 
 #include "lisp.h"
+#include "../src/internal.h"  // lisp_prim_t (for the thin VM->primitive call path)
+
+// When set, a VM call to a built-in primitive invokes its C function pointer
+// directly with the operand-stack slice (zero-copy args, one err branch) instead
+// of routing through lisp_apply (which drives the full CEK machine). This is the
+// "break the C ABI for the hot path" experiment; toggled by the bench.
+static int g_thin_prim = 1;
+
+// Call a Lisp procedure value with args (already contiguous, e.g. on the operand
+// stack). Primitives go through the thin path when enabled; closures (and the
+// non-thin mode) go through lisp_apply.
+static lisp_value lbc_call_proc(lisp_value callee, lisp_value *args, int n,
+                                const char **err) {
+    if (g_thin_prim && lisp_is_objtype(callee, LISP_OBJ_PRIMITIVE))
+        return ((lisp_prim_t *)lisp_obj(callee))->fn(args, n, err);
+    return lisp_apply(callee, args, n, err);
+}
 
 // A compiled-closure pointer is carried inside a lisp_value using tag 0b11, which
 // the core value representation reserves and never produces. The VM is the only
@@ -1026,7 +1043,7 @@ static bool vm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                     f->stk[f->sp++] = lisp_fixnum(r);
                 } else {
                     lisp_value as[2] = {a, b};
-                    lisp_value r = lisp_apply(f->chunk->consts[ins.b], as, 2, &err);
+                    lisp_value r = lbc_call_proc(f->chunk->consts[ins.b], as, 2, &err);
                     if (r == LISP_UNDEF && err != NULL)
                         goto fail;
                     f->stk[f->sp++] = r;
@@ -1048,7 +1065,7 @@ static bool vm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                     f->stk[f->sp++] = ok ? LISP_TRUE : LISP_FALSE;
                 } else {
                     lisp_value as[2] = {a, b};
-                    lisp_value r = lisp_apply(f->chunk->consts[ins.b], as, 2, &err);
+                    lisp_value r = lbc_call_proc(f->chunk->consts[ins.b], as, 2, &err);
                     if (r == LISP_UNDEF && err != NULL)
                         goto fail;
                     f->stk[f->sp++] = r;
@@ -1117,7 +1134,7 @@ static bool vm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                     f->sp -= n + 1;
                     depth++;
                 } else {
-                    lisp_value r = lisp_apply(callee, args, n, &err);
+                    lisp_value r = lbc_call_proc(callee, args, n, &err);
                     if (r == LISP_UNDEF && err != NULL)
                         goto fail;
                     f->sp -= n + 1;
@@ -1135,7 +1152,7 @@ static bool vm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                         goto fail;
                     *f = tmp;  // reuse this frame slot -> O(1) loop depth
                 } else {
-                    lisp_value r = lisp_apply(callee, args, n, &err);
+                    lisp_value r = lbc_call_proc(callee, args, n, &err);
                     if (r == LISP_UNDEF && err != NULL)
                         goto fail;
                     depth--;
