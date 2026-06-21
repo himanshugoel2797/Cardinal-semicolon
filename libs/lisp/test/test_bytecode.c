@@ -437,34 +437,47 @@ static void churn_experiment(lisp_value genv) {
         "(let loop ((i 0) (acc 0)) (if (= i 2000000) acc (loop (+ i 1) (+ acc 1))))";
     const char *B =  // both adds via the call path (3-arg, not a frozen opcode)
         "(let loop ((i 0) (acc 0)) (if (= i 2000000) acc (loop (+ i 1 0) (+ acc 1 0))))";
+    // Compile the call-path loop B in two ways: globals resolved to slots, and
+    // globals resolved by per-call hash lookup.
+    g_global_slots = 1;
     bcclosure *ta = compile_top(genv, A);
-    bcclosure *tb = compile_top(genv, B);
+    bcclosure *tb_slot = compile_top(genv, B);
+    g_global_slots = 0;
+    bcclosure *tb_hash = compile_top(genv, B);
+    g_global_slots = 1;
     lisp_value o = LISP_UNDEF;
 
+    time_run(ta, genv, &o);  // warm
+    time_run(tb_slot, genv, &o);
+
     g_thin_prim = 1;
-    time_run(ta, genv, &o);
-    time_run(tb, genv, &o);  // warm
     double t_inline = time_run(ta, genv, &o);
-    double t_thin = time_run(tb, genv, &o);
+    double t_thin_slot = time_run(tb_slot, genv, &o);
+    double t_thin_hash = time_run(tb_hash, genv, &o);
     g_thin_prim = 0;
-    double t_apply = time_run(tb, genv, &o);
+    double t_apply_hash = time_run(tb_hash, genv, &o);
     g_thin_prim = 1;
 
     double per = 2.0 * (double)EN;  // primitive ops per loop
-    printf("\n=== churn experiment: inline vs call-path vs lisp_apply ===\n");
+    printf("\n=== churn experiment: inline / call-path / ABI / global-slots ===\n");
     printf("  (2,000,000 iters, 2 adds/iter)\n");
-    printf("  inlined opcode (+ a b)        %8.2f ms   %5.1f ns/add\n",
+    printf("  inlined opcode (+ a b)             %8.2f ms   %5.1f ns/add\n",
            t_inline * 1000, t_inline * 1e9 / per);
-    printf("  call path, thin ->fn          %8.2f ms   %5.1f ns/add\n",
-           t_thin * 1000, t_thin * 1e9 / per);
-    printf("  call path, lisp_apply         %8.2f ms   %5.1f ns/add\n",
-           t_apply * 1000, t_apply * 1e9 / per);
+    printf("  call: lisp_apply + global hash     %8.2f ms   %5.1f ns/add\n",
+           t_apply_hash * 1000, t_apply_hash * 1e9 / per);
+    printf("  call: thin ->fn   + global hash    %8.2f ms   %5.1f ns/add\n",
+           t_thin_hash * 1000, t_thin_hash * 1e9 / per);
+    printf("  call: thin ->fn   + global slot    %8.2f ms   %5.1f ns/add\n",
+           t_thin_slot * 1000, t_thin_slot * 1e9 / per);
     printf("  --\n");
-    printf("  marginal cost of a call over an inlined op:\n");
-    printf("    thin ->fn       %6.1f ns/add\n", (t_thin - t_inline) * 1e9 / per);
-    printf("    lisp_apply      %6.1f ns/add\n", (t_apply - t_inline) * 1e9 / per);
-    printf("  lisp_apply overhead over thin ->fn: %.1f ns/add  (%.2fx the call-loop)\n",
-           (t_apply - t_thin) * 1e9 / per, t_apply / t_thin);
+    printf("  thin ->fn vs lisp_apply (hash):     %.2fx  (-%.1f ns/add)\n",
+           t_apply_hash / t_thin_hash, (t_apply_hash - t_thin_hash) * 1e9 / per);
+    printf("  global slot vs hash (thin ->fn):    %.2fx  (-%.1f ns/add)\n",
+           t_thin_hash / t_thin_slot, (t_thin_hash - t_thin_slot) * 1e9 / per);
+    printf("  combined (thin+slot vs apply+hash): %.2fx\n",
+           t_apply_hash / t_thin_slot);
+    printf("  residual call overhead over inlined: %.1f ns/add\n",
+           (t_thin_slot - t_inline) * 1e9 / per);
 }
 
 int main(void) {

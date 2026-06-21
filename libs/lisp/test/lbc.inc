@@ -44,6 +44,13 @@
 // "break the C ABI for the hot path" experiment; toggled by the bench.
 static int g_thin_prim = 1;
 
+// When set, a reference to a global resolves to its binding CELL at compile time
+// and loads via one cdr deref at runtime (the env stores each binding as a
+// mutable (sym . val) cons that define/set! mutate in place, so the cell is a
+// stable, repatchable slot) -- instead of a per-execution hash lookup. Toggled
+// by the bench.
+static int g_global_slots = 1;
+
 // Call a Lisp procedure value with args (already contiguous, e.g. on the operand
 // stack). Primitives go through the thin path when enabled; closures (and the
 // non-thin mode) go through lisp_apply.
@@ -72,7 +79,8 @@ typedef enum {
     OP_CONST,        // push consts[a]
     OP_LOADLOCAL,    // push locals[a]
     OP_LOADUPVAL,    // push upvals[a]
-    OP_LOADGLOBAL,   // push (lookup consts[a] in genv); error if unbound
+    OP_LOADGLOBAL,   // push (lookup symbol consts[a] in genv); error if unbound
+    OP_LOADGLOBAL_SLOT,  // push (cdr consts[a]) -- consts[a] is the binding cell
     OP_LOADSELF,     // push the running closure (for self-recursion)
     OP_STORELOCAL,   // locals[a] = pop          (let init / internal define)
     OP_STOREGLOBAL,  // define/set! consts[a] = top (leaves value on stack)
@@ -293,6 +301,32 @@ static bool sym_is(lisp_value s, const char *name) {
 // (param/init list spines), never on user data.
 static void set_cdr_lbc(lisp_value pair, lisp_value v) {
     ((lisp_pair *)lisp_obj(pair))->cdr = v;
+}
+
+// Find the (sym . val) binding cell for `sym` walking `env`'s chain, or
+// LISP_EMPTY. Mirrors the evaluator's frame_find/lisp_env_lookup. The cell is a
+// stable slot: define/set! mutate its cdr in place, never replace it, so caching
+// it at compile time stays valid across redefinition (the jump-table model).
+static lisp_value find_global_cell(lisp_value env, lisp_value sym) {
+    while (lisp_is_objtype(env, LISP_OBJ_ENV)) {
+        lisp_env_t *e = (lisp_env_t *)lisp_obj(env);
+        lisp_value chain;
+        if (e->table != LISP_EMPTY) {
+            size_t nb = lisp_vector_length(e->table);
+            size_t b = (size_t)((lisp_named *)lisp_obj(sym))->hash & (nb - 1);
+            chain = lisp_vector_ref(e->table, b);
+        } else {
+            chain = e->bindings;
+        }
+        while (lisp_is_pair(chain)) {
+            lisp_value cell = lisp_car(chain);
+            if (lisp_is_pair(cell) && lisp_car(cell) == sym)
+                return cell;
+            chain = lisp_cdr(chain);
+        }
+        env = e->parent;
+    }
+    return LISP_EMPTY;
 }
 
 // Is `head` the name of any special form (handled or declined)? Used in tail
@@ -545,7 +579,17 @@ static void compile_value(compiler *C, fnstate *fn, lisp_value e) {
             case R_LOCAL: emit(C, k, OP_LOADLOCAL, idx, 0); return;
             case R_UPVAL: emit(C, k, OP_LOADUPVAL, idx, 0); return;
             case R_SELF: emit(C, k, OP_LOADSELF, 0, 0); return;
-            case R_GLOBAL: emit(C, k, OP_LOADGLOBAL, add_const(C, k, e), 0); return;
+            case R_GLOBAL: {
+                if (g_global_slots) {
+                    lisp_value cell = find_global_cell(C->genv, e);
+                    if (cell != LISP_EMPTY) {
+                        emit(C, k, OP_LOADGLOBAL_SLOT, add_const(C, k, cell), 0);
+                        return;
+                    }
+                }
+                emit(C, k, OP_LOADGLOBAL, add_const(C, k, e), 0);
+                return;
+            }
         }
         return;
     }
@@ -984,6 +1028,9 @@ static bool vm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                 f->stk[f->sp++] = v;
                 break;
             }
+            case OP_LOADGLOBAL_SLOT:
+                f->stk[f->sp++] = lisp_cdr(f->chunk->consts[ins.a]);
+                break;
             case OP_STORELOCAL: f->locals[ins.a] = f->stk[--f->sp]; break;
             case OP_STOREGLOBAL:
                 lisp_env_define(genv, f->chunk->consts[ins.a], f->stk[f->sp - 1]);
