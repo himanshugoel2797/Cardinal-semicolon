@@ -153,6 +153,45 @@ and the in-OS boot are the regression gate.
 - **P4 — Measure + tune**; document the speedup; leave the chunk as a documented
   JIT input for later (shares the shader emitter's approach).
 
+## Prototype status (what's built)
+
+`libs/lisp/test/lbc.inc` + `test/test_bytecode.c` are a first working cut,
+host-only (the `.inc` is `#include`d by that one test, so it never enters the
+kernel build or other tests). It implements P1+P2 for a covered subset and
+proves the architecture end-to-end:
+
+- **Covered:** literals, variable refs (local/upvalue/self/global), `if`,
+  `begin`, `lambda` (incl. rest args), internal `define` (self-recursive),
+  `let`/`let*`/named-`let`, `and`/`or`, `when`/`unless`, `cond`, `set!` on a
+  non-captured local/global, the frozen ops (`+ - * < <= > >= =` with exact
+  prim fallback for non-fixnums; `cons car cdr null? pair? not`), and calls to
+  any existing primitive/prelude procedure via `lisp_apply`.
+- **Declines to the oracle:** `letrec`, `case`, `while`, `quasiquote`,
+  `define-module`/`import`/`include`, n-ary frozen ops (routed as exact calls),
+  `set!` of a captured/`self` binding, and forward/mutual *local* recursion
+  (top-level mutual recursion works -- globals resolve at call time).
+- **The model in practice:** the prototype confirmed two design bets cost zero:
+  immutable bindings make upvalue capture a by-value copy (no escape analysis,
+  no cells), and self-recursion via an `OP_SELF` slot keeps named-`let` loops in
+  O(1) frames without a recursive binding.
+
+Validation (`test/build-and-run.sh`, picks it up automatically):
+
+- 39-case curated differential corpus: all match the tree-walker (or both error),
+  2 forms correctly decline, 0 failures.
+- A random-expression **fuzzer**: 20000 exprs, every one either value-matches or
+  error-matches the tree-walker. It found a real `and`/`or` double-pop bug.
+- Microbench (2,000,000-iteration tail loop): the bytecode VM runs **~18x**
+  faster than the tree-walker, with no machine-code emission (a threaded stack
+  VM). NOTE: the prototype VM is **stack-based**; the register form the spec
+  targets (to match the shader IR and ease a future machine-code JIT) is a
+  backend follow-up -- stack->register is a known, local transform.
+
+Next (P3+): widen coverage (the declined forms), then the reviewed step of
+wiring the compiler into the live `lisp_eval`/`lisp_ctx_resume` under the
+suspend/precise-GC contract, globals-as-repatchable-slots, and the reflection
+metadata. Until then the kernel keeps using the tree-walker.
+
 ## Non-goals
 
 - Not statically typed (shader's job). Not a machine-code JIT yet (the bytecode is
