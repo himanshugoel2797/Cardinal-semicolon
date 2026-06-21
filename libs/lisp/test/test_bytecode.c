@@ -63,47 +63,51 @@ static lisp_value read1(const char *src) {
 
 static int pass = 0, fail = 0, declined = 0;
 
+// Compare an engine's outcome against the oracle. 0 = agree (value match or both
+// error), 1 = disagree, 2 = engine declined.
+static int diff_engine(lisp_value ro, bool oe, lbc_status st, lisp_value rv) {
+    if (st == LBC_DECLINED)
+        return 2;
+    bool ve = (st == LBC_ERR);
+    if (oe || ve)
+        return (oe && ve) ? 0 : 1;
+    return vequal(ro, rv) ? 0 : 1;
+}
+
+// Run one engine and fold its result into the counters / output.
+static void run_engine(const char *eng, const char *src, lisp_value ro, bool oe,
+                       lbc_status st, lisp_value rv, const char *msg) {
+    int d = diff_engine(ro, oe, st, rv);
+    if (d == 2) {
+        declined++;
+        printf("  declined[%s] %-44s (%s)\n", eng, src, msg ? msg : "?");
+        return;
+    }
+    if (d == 0) {
+        pass++;
+        return;
+    }
+    fail++;
+    char a[256], b[256];
+    lisp_print(ro, a, sizeof(a));
+    lisp_print(rv, b, sizeof(b));
+    printf("  FAIL[%s] %s\n", eng, src);
+    printf("        oracle %s%s  vm %s%s\n", oe ? "errored" : "=", oe ? "" : a,
+           st == LBC_ERR ? "errored" : "=", st == LBC_ERR ? "" : b);
+}
+
 static void check(lisp_value genv, const char *src) {
     lisp_value expr = read1(src);
-
     const char *eo = NULL;
     lisp_value ro = lisp_eval(expr, genv, &eo);
+    bool oe = (eo != NULL);
 
-    lisp_value rv = LISP_UNDEF;
-    const char *msg = NULL;
-    lbc_status st = lbc_eval(genv, expr, &rv, &msg);
-
-    char buf[256];
-    if (st == LBC_DECLINED) {
-        declined++;
-        printf("  declined  %-52s (%s)\n", src, msg ? msg : "?");
-        return;
-    }
-    bool oracle_err = (eo != NULL);
-    bool vm_err = (st == LBC_ERR);
-    if (oracle_err || vm_err) {
-        if (oracle_err && vm_err) {
-            pass++;
-            printf("  ok(err)   %s\n", src);
-        } else {
-            fail++;
-            printf("  FAIL      %s\n", src);
-            printf("            oracle %s, vm %s\n",
-                   oracle_err ? "errored" : "ok", vm_err ? "errored" : "ok");
-        }
-        return;
-    }
-    if (vequal(ro, rv)) {
-        pass++;
-        lisp_print(rv, buf, sizeof(buf));
-        printf("  ok        %-52s => %s\n", src, buf);
-    } else {
-        fail++;
-        char b2[256];
-        lisp_print(ro, buf, sizeof(buf));
-        lisp_print(rv, b2, sizeof(b2));
-        printf("  FAIL      %s\n            oracle=%s  vm=%s\n", src, buf, b2);
-    }
+    lisp_value sv = LISP_UNDEF, rv = LISP_UNDEF;
+    const char *sm = NULL, *rm = NULL;
+    lbc_status ss = lbc_eval(genv, expr, &sv, &sm);
+    lbc_status rs = rlbc_eval(genv, expr, &rv, &rm);
+    run_engine("stack", src, ro, oe, ss, sv, sm);
+    run_engine("reg", src, ro, oe, rs, rv, rm);
 }
 
 static const char *CORPUS[] = {
@@ -324,47 +328,55 @@ static int fuzz(lisp_value genv, int iters) {
 
         const char *eo = NULL;
         lisp_value ro = lisp_eval(expr, genv, &eo);
-        lisp_value rv = LISP_UNDEF;
-        const char *msg = NULL;
-        lbc_status st = lbc_eval(genv, expr, &rv, &msg);
+        bool oe = (eo != NULL);
 
-        if (st == LBC_DECLINED) {
-            dec++;
-            continue;
-        }
-        bool oe = (eo != NULL), ve = (st == LBC_ERR);
-        if (oe || ve) {
-            if (oe && ve) {
-                both_err++;
+        lisp_value sv = LISP_UNDEF, rv = LISP_UNDEF;
+        const char *sm = NULL, *rm = NULL;
+        lbc_status ss = lbc_eval(genv, expr, &sv, &sm);
+        lbc_status rs = rlbc_eval(genv, expr, &rv, &rm);
+
+        struct {
+            const char *eng;
+            lbc_status st;
+            lisp_value v;
+        } engs[2] = {{"stack", ss, sv}, {"reg", rs, rv}};
+        for (int e = 0; e < 2; e++) {
+            int d = diff_engine(ro, oe, engs[e].st, engs[e].v);
+            if (d == 2) {
+                dec++;
+            } else if (d == 0) {
+                if (oe)
+                    both_err++;
+                else
+                    values++;
             } else {
                 fails++;
                 if (fails <= 8) {
                     char b[256];
                     lisp_print(expr, b, sizeof(b));
-                    printf("  FUZZ FAIL %s  (oracle %s, vm %s: %s)\n", b,
-                           oe ? "err" : "ok", ve ? "err" : "ok",
-                           oe ? (eo ? eo : "?") : (msg ? msg : "?"));
+                    printf("  FUZZ FAIL[%s] %s\n", engs[e].eng, b);
                 }
-            }
-            continue;
-        }
-        if (vequal(ro, rv)) {
-            values++;
-        } else {
-            fails++;
-            if (fails <= 5) {
-                char b[256], b1[64], b2[64];
-                lisp_print(expr, b, sizeof(b));
-                lisp_print(ro, b1, sizeof(b1));
-                lisp_print(rv, b2, sizeof(b2));
-                printf("  FUZZ FAIL %s\n            oracle=%s vm=%s\n", b, b1, b2);
             }
         }
     }
-    printf("\n=== fuzz: %d random exprs ===\n", iters);
+    printf("\n=== fuzz: %d random exprs x 2 engines ===\n", iters);
     printf("  %d value-match, %d error-parity, %d declined, %d FAILED\n", values,
            both_err, dec, fails);
     return fails;
+}
+
+// Static instruction counts across a chunk tree (proxy for dispatch density).
+static int count_stack_instrs(bcchunk *k) {
+    int n = k->ncode;
+    for (int i = 0; i < k->nchildren; i++)
+        n += count_stack_instrs(k->children[i]);
+    return n;
+}
+static int count_reg_instrs(bcchunk *k) {
+    int n = k->nrcode;
+    for (int i = 0; i < k->nchildren; i++)
+        n += count_reg_instrs(k->children[i]);
+    return n;
 }
 
 static void bench(lisp_value genv) {
@@ -373,38 +385,44 @@ static void bench(lisp_value genv) {
         "(let loop ((i 0) (acc 0)) (if (= i 2000000) acc (loop (+ i 1) (+ acc 1))))";
     lisp_value expr = read1(src);
 
-    bcchunk *k = NULL;
+    bcchunk *ks = NULL, *kr = NULL;
     const char *why = NULL;
-    if (!lbc_compile(genv, expr, &k, &why)) {
+    if (!lbc_compile(genv, expr, &ks, &why) || !rlbc_compile(genv, expr, &kr, &why)) {
         printf("\n[bench] compile declined: %s\n", why);
         return;
     }
-    bcclosure *top = (bcclosure *)calloc(1, sizeof(bcclosure));
-    top->chunk = k;
+    bcclosure *tops = (bcclosure *)calloc(1, sizeof(bcclosure));
+    bcclosure *topr = (bcclosure *)calloc(1, sizeof(bcclosure));
+    tops->chunk = ks;
+    topr->chunk = kr;
 
-    // correctness once
-    lisp_value rv = LISP_UNDEF, ro = LISP_UNDEF;
+    lisp_value sv = LISP_UNDEF, rv = LISP_UNDEF, ro = LISP_UNDEF;
     const char *err = NULL, *eo = NULL;
-    vm_run(top, genv, &rv, &err);
+    vm_run(tops, genv, &sv, &err);
+    rvm_run(topr, genv, &rv, &err);  // warm + correctness
     ro = lisp_eval(expr, genv, &eo);
-    char b1[64], b2[64];
-    lisp_print(rv, b1, sizeof(b1));
-    lisp_print(ro, b2, sizeof(b2));
 
     double t0 = now_sec();
-    vm_run(top, genv, &rv, &err);
-    double t_vm = now_sec() - t0;
-
+    vm_run(tops, genv, &sv, &err);
+    double t_stk = now_sec() - t0;
+    t0 = now_sec();
+    rvm_run(topr, genv, &rv, &err);
+    double t_reg = now_sec() - t0;
     t0 = now_sec();
     (void)lisp_eval(expr, genv, &eo);
     double t_or = now_sec() - t0;
 
     printf("\n=== bench: 2,000,000-iteration tail loop ===\n");
-    printf("  result      vm=%s oracle=%s %s\n", b1, b2,
-           vequal(rv, ro) ? "(match)" : "(MISMATCH)");
-    printf("  tree-walker %8.2f ms\n", t_or * 1000);
-    printf("  bytecode VM %8.2f ms\n", t_vm * 1000);
-    printf("  speedup     %8.2fx\n", t_or / t_vm);
+    printf("  results: stack=%s reg=%s oracle %s\n",
+           vequal(sv, ro) ? "ok" : "BAD", vequal(rv, ro) ? "ok" : "BAD",
+           (vequal(sv, ro) && vequal(rv, ro)) ? "(match)" : "(MISMATCH)");
+    printf("  static instrs (chunk tree):  stack %d  ->  register %d\n",
+           count_stack_instrs(ks), count_reg_instrs(kr));
+    printf("  tree-walker   %8.2f ms\n", t_or * 1000);
+    printf("  stack VM      %8.2f ms   %6.2fx vs tree-walker\n", t_stk * 1000,
+           t_or / t_stk);
+    printf("  register VM   %8.2f ms   %6.2fx vs tree-walker   %5.2fx vs stack VM\n",
+           t_reg * 1000, t_or / t_reg, t_stk / t_reg);
 }
 
 static bcclosure *compile_top(lisp_value genv, const char *src) {

@@ -181,11 +181,23 @@ Validation (`test/build-and-run.sh`, picks it up automatically):
   2 forms correctly decline, 0 failures.
 - A random-expression **fuzzer**: 20000 exprs, every one either value-matches or
   error-matches the tree-walker. It found a real `and`/`or` double-pop bug.
-- Microbench (2,000,000-iteration tail loop): the bytecode VM runs **~18x**
-  faster than the tree-walker, with no machine-code emission (a threaded stack
-  VM). NOTE: the prototype VM is **stack-based**; the register form the spec
-  targets (to match the shader IR and ease a future machine-code JIT) is a
-  backend follow-up -- stack->register is a known, local transform.
+- Microbench (2,000,000-iteration tail loop): the stack bytecode VM runs **~18x**
+  faster than the tree-walker, with no machine-code emission.
+
+**Register-bytecode form (the dispatch-count lever).** A parallel register
+compiler + VM (`rcompile_*` / `rvm_run`) now exists alongside the stack one,
+reusing the shared scope/resolve/const/frozen-op/global-slot/thin-call
+machinery; instructions name operand + destination registers, so a local read is
+free and `(+ x y)` is one dispatch vs the stack form's LOAD/LOAD/ADD. It is
+differential-tested against **both** `lisp_eval` and the stack VM (78 corpus + 40000
+fuzz cases, 0 failures). On the tail-loop bench it cuts static instructions
+**19 -> 14 (~26%)** but is only **~1.13x** faster than the stack VM -- because
+both prototype VMs `malloc`/`free` a register array **per call**, and at 2M
+tail-calls that allocation (~120 ms) dominates and masks the dispatch win. The
+real lever is therefore a **contiguous register stack** (frames are windows into
+one preallocated array; a tail call rewrites registers in place, no alloc) --
+that removes the confound and exposes the dispatch reduction in both VMs. That is
+the next prototype step.
 
 **Churn measurement (the C-ABI question).** A loop doing an inlined `(+ a b)`
 opcode vs the same add forced through the call path (3-arg `+`, routed as
