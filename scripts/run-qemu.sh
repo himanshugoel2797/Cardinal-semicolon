@@ -97,8 +97,9 @@ case "${USB:-none}" in
   none) ;;
   uhci-kbd)     usb_args=(-device piix3-usb-uhci,id=uhci -device usb-kbd,bus=uhci.0) ;;
   xhci-kbd)     usb_args=(-device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0) ;;
-  uhci-hub)     usb_args=(-device piix3-usb-uhci,id=uhci -device usb-hub,bus=uhci.0,id=hub0
-                          -device usb-kbd,bus=hub0.0) ;;
+  uhci-hub)     usb_args=(-device piix3-usb-uhci,id=uhci
+                          -device usb-hub,bus=uhci.0,port=1
+                          -device usb-kbd,bus=uhci.0,port=1.1) ;;
   xhci-storage|uhci-storage)
     ctl="qemu-xhci"; bus="xhci"
     [ "${USB}" = uhci-storage ] && { ctl="piix3-usb-uhci"; bus="uhci"; }

@@ -21,12 +21,15 @@
           ;; class-driver transfer API + descriptor accessors
           usb-control-in usb-control-out usb-interrupt-in usb-bulk-in usb-bulk-out
           usb-find-endpoint usb-iface-class usb-iface-protocol usb-iface-number
-          usb-dev-address usb-dev-speed usb-dev-config usb-dev-config-len
+          usb-mark-hub usb-enumerate-downstream usb-disconnect-downstream
+          usb-dev-hci usb-dev-address usb-dev-speed usb-dev-config usb-dev-config-len
+          complete-n complete-data
           ;; request/descriptor/class/speed constants used by class drivers
           USB-REQ-DIR-IN USB-REQ-DIR-OUT USB-REQ-TYPE-CLASS
           USB-REQ-RECIP-INTERFACE USB-REQ-RECIP-OTHER
           USB-REQ-GET-STATUS USB-REQ-CLEAR-FEATURE USB-REQ-SET-FEATURE
           USB-REQ-GET-DESCRIPTOR USB-REQ-SET-INTERFACE
+          USB-REQ-SET-ADDRESS USB-REQ-SET-CONFIGURATION
           USB-DESC-DEVICE USB-DESC-CONFIG USB-DESC-INTERFACE USB-DESC-ENDPOINT
           USB-CLASS-HID USB-CLASS-MASS-STORAGE USB-CLASS-HUB
           USB-XFER-BULK USB-XFER-INTERRUPT

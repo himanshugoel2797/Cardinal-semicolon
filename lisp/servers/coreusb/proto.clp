@@ -165,6 +165,17 @@
                      (bytes-u16-ref cfg (+ off 4))))
               (else (loop (+ off len)))))))))
 
+;; Hub-driver helpers. mark-hub goes to the controller (tells it the device is a
+;; hub so it routes to devices behind it; a no-op reply on UHCI). enumerate- /
+;; disconnect-downstream go to the COREUSB service (`usb`), which spawns/tears
+;; down an enumerator for the downstream port with this hub as the parent.
+(define (usb-mark-hub dev nports)
+  (complete-n (hci-mark-hub (usb-dev-hci dev) (usb-dev-address dev) nports)))
+(define (usb-enumerate-downstream usb dev port speed)
+  (send usb (list 'enumerate-downstream (usb-dev-hci dev) (usb-dev-address dev) port speed)))
+(define (usb-disconnect-downstream usb dev port)
+  (send usb (list 'disconnect-downstream (usb-dev-hci dev) (usb-dev-address dev) port)))
+
 ;; First interface descriptor's fields (bInterfaceClass / Protocol / Number), or
 ;; -1 if no interface descriptor is present.
 (define (usb-iface-field dev which)

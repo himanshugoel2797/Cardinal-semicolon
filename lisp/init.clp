@@ -18,7 +18,7 @@
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
           ps2 virtio-net rtl8139 virtio-gpu lfb ahci
-          coreusb uhci usb-hid sys-pci)
+          coreusb uhci xhci usb-hid usb-hub usb-storage sys-pci)
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -42,21 +42,25 @@
     (let ((input (setup-input)))
     (start-audio-service)
     (start-power-service)
-    ;; USB: start the enumeration/dispatch service (coreusb), register the HID
-    ;; class driver (feeding the same coreinput service the ps2 keyboard uses),
-    ;; then bring up the host controllers. Each *-init is gated on pci-find, so a
-    ;; boot with no USB controller just logs + returns. Class drivers must be
-    ;; registered BEFORE a controller scans its ports; coreusb processes the
-    ;; register-class message (sent here, synchronously) ahead of any later
-    ;; port-connect, so the class table is populated when the first device arrives.
-    (let ((usb (start-usb-service)))
+    ;; Storage registry (the AHCI block driver and the USB mass-storage class
+    ;; driver both feed it). ahci-init is gated on pci-find, so a default
+    ;; (no-disk) boot just logs "no device" and returns.
+    (let ((storage (start-storage-service))
+          ;; USB enumeration/dispatch service.
+          (usb (start-usb-service)))
+      (ahci-init storage)
+      ;; Register the USB class drivers FIRST -- coreusb processes these
+      ;; register-class messages (sent synchronously here) ahead of any later
+      ;; port-connect, so the class table is populated when the first device
+      ;; arrives. HID feeds the same coreinput service the ps2 keyboard uses;
+      ;; mass storage feeds the storage registry; the hub recurses through coreusb.
       (usb-hid-init usb input)
-      (uhci-init usb))
-    ;; Storage: start the registry, capture its handle (formerly dropped), then
-    ;; bring up the AHCI driver feeding it. ahci-init is gated on pci-find, so a
-    ;; default (no-disk) boot just logs "no device" and returns -- unaffected.
-    (let ((storage (start-storage-service)))
-      (ahci-init storage))
+      (usb-hub-init usb)
+      (usb-storage-init usb storage)
+      ;; Then bring up the host controllers; each is pci-find-gated, so a boot
+      ;; with no USB controller just logs + returns.
+      (uhci-init usb)
+      (xhci-init usb))
     ;; Bring up the display registry, then the GPU driver, which brings the
     ;; virtio-gpu device to DRIVER_OK, paints a framebuffer, and registers itself
     ;; with the display service. Guarded: with no GPU present it just logs and
