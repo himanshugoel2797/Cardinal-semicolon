@@ -204,88 +204,114 @@ typedef struct {
     int nvars;
 } fscope;
 
-static lisp_value gen(fscope *s, int depth);
+// Well-typed generation: gen_num always yields a numeric-valued expression and
+// gen_bool a boolean-valued one, so the vast majority of fuzz cases produce
+// real values to compare (deeply exercising nested closures/upvalues/control
+// flow), while flonum literals still mix in to drive the prim fallback path.
+// Introduced variables are numeric (used only in numeric positions).
+static lisp_value gen_num(fscope *s, int depth);
+static lisp_value gen_bool(fscope *s, int depth);
 
-static lisp_value gen_atom(fscope *s) {
+static lisp_value num_atom(fscope *s) {
     int k = (int)(rnd() % 10);
-    if (s->nvars > 0 && k < 4)
+    if (s->nvars > 0 && k < 5)
         return s->vars[rnd() % (uint32_t)s->nvars];
-    if (k < 5)
-        return (rnd() & 1) ? LISP_TRUE : LISP_FALSE;
     if (k < 6)
         return lisp_make_flonum((double)((int)(rnd() % 200) - 100) / 10.0);
     return lisp_fixnum((int)(rnd() % 41) - 20);
 }
 
-static lisp_value gen(fscope *s, int depth) {
+static lisp_value gen_num(fscope *s, int depth) {
     if (depth <= 0)
-        return gen_atom(s);
-    int k = (int)(rnd() % 9);
+        return num_atom(s);
     lisp_value xs[4];
-    switch (k) {
-        case 0: {  // arithmetic
+    switch ((int)(rnd() % 6)) {
+        case 0:  // arithmetic
             xs[0] = g_ops[rnd() % 3];
-            xs[1] = gen(s, depth - 1);
-            xs[2] = gen(s, depth - 1);
+            xs[1] = gen_num(s, depth - 1);
+            xs[2] = gen_num(s, depth - 1);
             return lst(3, xs);
-        }
-        case 1: {  // comparison
-            xs[0] = g_ops[OPC_LT + rnd() % 5];
-            xs[1] = gen(s, depth - 1);
-            xs[2] = gen(s, depth - 1);
-            return lst(3, xs);
-        }
-        case 2: {  // if
+        case 1:  // (if BOOL NUM NUM)
             xs[0] = g_ops[OP_S_IF];
-            xs[1] = gen(s, depth - 1);
-            xs[2] = gen(s, depth - 1);
-            xs[3] = gen(s, depth - 1);
+            xs[1] = gen_bool(s, depth - 1);
+            xs[2] = gen_num(s, depth - 1);
+            xs[3] = gen_num(s, depth - 1);
             return lst(4, xs);
-        }
-        case 3: {  // and / or
-            xs[0] = g_ops[(rnd() & 1) ? OP_S_AND : OP_S_OR];
-            xs[1] = gen(s, depth - 1);
-            xs[2] = gen(s, depth - 1);
-            return lst(3, xs);
-        }
-        case 4: {  // not
-            xs[0] = g_ops[OP_S_NOT];
-            xs[1] = gen(s, depth - 1);
-            return lst(2, xs);
-        }
-        case 5: {  // (let ((v INIT)) BODY)
+        case 2: {  // (let ((v NUM)) NUM)
             if (s->nvars >= 15)
-                return gen_atom(s);
+                return num_atom(s);
             lisp_value v = g_vpool[s->nvars];
-            lisp_value init = gen(s, depth - 1);
-            lisp_value bind = lisp_cons(v, lisp_cons(init, LISP_EMPTY));
-            lisp_value binds = lisp_cons(bind, LISP_EMPTY);
+            lisp_value init = gen_num(s, depth - 1);
+            lisp_value binds =
+                lisp_cons(lisp_cons(v, lisp_cons(init, LISP_EMPTY)), LISP_EMPTY);
             s->vars[s->nvars++] = v;
-            lisp_value body = gen(s, depth - 1);
+            lisp_value body = gen_num(s, depth - 1);
             s->nvars--;
             xs[0] = g_ops[OP_S_LET];
             xs[1] = binds;
             xs[2] = body;
             return lst(3, xs);
         }
-        case 6: {  // ((lambda (v) BODY) ARG)
+        case 3: {  // ((lambda (v) NUM) NUM) -- closure + by-value capture
             if (s->nvars >= 15)
-                return gen_atom(s);
+                return num_atom(s);
             lisp_value v = g_vpool[s->nvars];
-            lisp_value arg = gen(s, depth - 1);
+            lisp_value arg = gen_num(s, depth - 1);
             s->vars[s->nvars++] = v;
-            lisp_value body = gen(s, depth - 1);
+            lisp_value body = gen_num(s, depth - 1);
             s->nvars--;
-            lisp_value params = lisp_cons(v, LISP_EMPTY);
-            lisp_value lam = lisp_cons(g_ops[OP_S_LAMBDA],
-                                       lisp_cons(params, lisp_cons(body, LISP_EMPTY)));
+            lisp_value lam = lisp_cons(
+                g_ops[OP_S_LAMBDA],
+                lisp_cons(lisp_cons(v, LISP_EMPTY), lisp_cons(body, LISP_EMPTY)));
             xs[0] = lam;
             xs[1] = arg;
             return lst(2, xs);
         }
         default:
-            return gen_atom(s);
+            return num_atom(s);
     }
+}
+
+static lisp_value gen_bool(fscope *s, int depth) {
+    if (depth <= 0)
+        return (rnd() & 1) ? LISP_TRUE : LISP_FALSE;
+    lisp_value xs[4];
+    switch ((int)(rnd() % 6)) {
+        case 0:  // comparison of two numerics
+            xs[0] = g_ops[OPC_LT + rnd() % 5];
+            xs[1] = gen_num(s, depth - 1);
+            xs[2] = gen_num(s, depth - 1);
+            return lst(3, xs);
+        case 1:  // and
+            xs[0] = g_ops[OP_S_AND];
+            xs[1] = gen_bool(s, depth - 1);
+            xs[2] = gen_bool(s, depth - 1);
+            return lst(3, xs);
+        case 2:  // or
+            xs[0] = g_ops[OP_S_OR];
+            xs[1] = gen_bool(s, depth - 1);
+            xs[2] = gen_bool(s, depth - 1);
+            return lst(3, xs);
+        case 3:  // not
+            xs[0] = g_ops[OP_S_NOT];
+            xs[1] = gen_bool(s, depth - 1);
+            return lst(2, xs);
+        case 4:  // (if BOOL BOOL BOOL)
+            xs[0] = g_ops[OP_S_IF];
+            xs[1] = gen_bool(s, depth - 1);
+            xs[2] = gen_bool(s, depth - 1);
+            xs[3] = gen_bool(s, depth - 1);
+            return lst(4, xs);
+        default:
+            xs[0] = g_ops[OPC_LT + rnd() % 5];
+            xs[1] = gen_num(s, depth - 1);
+            xs[2] = gen_num(s, depth - 1);
+            return lst(3, xs);
+    }
+}
+
+static lisp_value gen(fscope *s, int depth) {
+    return (rnd() & 1) ? gen_num(s, depth) : gen_bool(s, depth);
 }
 
 static int fuzz(lisp_value genv, int iters) {
