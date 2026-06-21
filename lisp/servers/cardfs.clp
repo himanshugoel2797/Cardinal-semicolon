@@ -73,7 +73,7 @@
 
   ;; #t if the NUL-padded 64-byte key at off+8 equals string `key` (strncmp-style).
   (define (entry-key=? blk off key)
-    (let ((n (string-length key)))
+    (let ((n (min (string-length key) KEY-LEN)))   ; strncmp caps at KEY-LEN
       (and (or (>= n KEY-LEN) (= 0 (bytes-u8-ref blk (+ off 8 n))))
            (let loop ((i 0))
              (cond ((>= i n) #t)
