@@ -187,6 +187,25 @@ Validation (`test/build-and-run.sh`, picks it up automatically):
   targets (to match the shader IR and ease a future machine-code JIT) is a
   backend follow-up -- stack->register is a known, local transform.
 
+**Churn measurement (the C-ABI question).** A loop doing an inlined `(+ a b)`
+opcode vs the same add forced through the call path (3-arg `+`, routed as
+`LOADGLOBAL`+`CALL`), 2M iters x 2 adds:
+
+| path | ns/add |
+|------|-------:|
+| inlined opcode | ~72 |
+| call path, thin direct-`->fn` | ~173 |
+| call path, `lisp_apply` (full CEK) | ~258 |
+
+Two conclusions: (1) **inlining dominates** -- a call is 2.4-3.6x an inlined op,
+so freezing+inlining the hot ops is the main lever; (2) for the calls that
+remain, **bypassing the C ABI is worth ~1.5x** -- calling a primitive's C `fn`
+directly with the operand-stack slice (zero-copy args, one err branch) instead of
+routing through `lisp_apply` saved ~85 ns/call (call-loop 1.49x faster). The
+prototype now uses that thin path by default. (Part of the call-path cost is also
+the per-call `LOADGLOBAL` hash lookup for `+`, which globals-as-repatchable-slots
+removes -- a further win not yet prototyped.)
+
 Next (P3+): widen coverage (the declined forms), then the reviewed step of
 wiring the compiler into the live `lisp_eval`/`lisp_ctx_resume` under the
 suspend/precise-GC contract, globals-as-repatchable-slots, and the reflection
