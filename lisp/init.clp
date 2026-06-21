@@ -17,7 +17,8 @@
 (define-module init
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
-          ps2 virtio-net rtl8139 virtio-gpu lfb ahci sys-pci)
+          ps2 virtio-net rtl8139 virtio-gpu lfb ahci
+          coreusb uhci usb-hid sys-pci)
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -38,9 +39,19 @@
   ;; them yet -- they idle parked on recv -- but the endpoints are present for the
   ;; drivers that will attach (the same posture the C servers held).
   (define (system-init)
-    (setup-input)
+    (let ((input (setup-input)))
     (start-audio-service)
     (start-power-service)
+    ;; USB: start the enumeration/dispatch service (coreusb), register the HID
+    ;; class driver (feeding the same coreinput service the ps2 keyboard uses),
+    ;; then bring up the host controllers. Each *-init is gated on pci-find, so a
+    ;; boot with no USB controller just logs + returns. Class drivers must be
+    ;; registered BEFORE a controller scans its ports; coreusb processes the
+    ;; register-class message (sent here, synchronously) ahead of any later
+    ;; port-connect, so the class table is populated when the first device arrives.
+    (let ((usb (start-usb-service)))
+      (usb-hid-init usb input)
+      (uhci-init usb))
     ;; Storage: start the registry, capture its handle (formerly dropped), then
     ;; bring up the AHCI driver feeding it. ahci-init is gated on pci-find, so a
     ;; default (no-disk) boot just logs "no device" and returns -- unaffected.
@@ -72,7 +83,7 @@
             ((pci-find #x10ec #x8139) (rtl8139-init net))
             (else (display "[init] no supported NIC") (newline)))
       (send net (list 'arp-request (list 10 0 2 2))))       ; who-has the gateway
-    'system-up)
+    'system-up))
 
   ;; The interactive serial REPL (started only under cardinal.repl). A root context
   ;; -- a serial shell for debugging the OS is exactly the case that wants full
