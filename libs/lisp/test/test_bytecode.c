@@ -160,6 +160,187 @@ static const char *CORPUS[] = {
     "(letrec ((f (lambda (n) (if (< n 1) 0 (f (- n 1)))))) (f 3))",
 };
 
+// --- Randomized differential fuzzer -----------------------------------------
+// Builds random expressions (as ASTs directly) over the supported subset and
+// asserts the VM and the tree-walker agree -- both on values AND on which inputs
+// error. Forms: arithmetic/comparison/if/and/or/not/let/immediately-applied
+// lambda over fixnums, flonums, and booleans (the booleans deliberately flow
+// into numeric positions to exercise the error-parity path + the prim fallback).
+
+static uint64_t rng_state = 0x9e3779b97f4a7c15ULL;
+static uint32_t rnd(void) {
+    rng_state ^= rng_state << 13;
+    rng_state ^= rng_state >> 7;
+    rng_state ^= rng_state << 17;
+    return (uint32_t)(rng_state >> 32);
+}
+
+static lisp_value g_ops[16];  // interned operator/keyword symbols
+enum { OPA_ADD, OPA_SUB, OPA_MUL, OPC_LT, OPC_LE, OPC_GT, OPC_GE, OPC_EQ,
+       OP_S_IF, OP_S_AND, OP_S_OR, OP_S_NOT, OP_S_LET, OP_S_LAMBDA };
+static lisp_value g_vpool[16];  // fresh variable-name symbols v0..v15
+
+static void fuzz_init(void) {
+    const char *names[] = {"+", "-", "*", "<", "<=", ">", ">=", "=",
+                           "if", "and", "or", "not", "let", "lambda"};
+    for (int i = 0; i < 14; i++)
+        g_ops[i] = lisp_make_symbol(names[i], strlen(names[i]));
+    for (int i = 0; i < 16; i++) {
+        char nm[8];
+        snprintf(nm, sizeof(nm), "v%d", i);
+        g_vpool[i] = lisp_make_symbol(nm, strlen(nm));
+    }
+}
+
+static lisp_value lst(int n, lisp_value *xs) {
+    lisp_value r = LISP_EMPTY;
+    for (int i = n - 1; i >= 0; i--)
+        r = lisp_cons(xs[i], r);
+    return r;
+}
+
+typedef struct {
+    lisp_value vars[16];
+    int nvars;
+} fscope;
+
+static lisp_value gen(fscope *s, int depth);
+
+static lisp_value gen_atom(fscope *s) {
+    int k = (int)(rnd() % 10);
+    if (s->nvars > 0 && k < 4)
+        return s->vars[rnd() % (uint32_t)s->nvars];
+    if (k < 5)
+        return (rnd() & 1) ? LISP_TRUE : LISP_FALSE;
+    if (k < 6)
+        return lisp_make_flonum((double)((int)(rnd() % 200) - 100) / 10.0);
+    return lisp_fixnum((int)(rnd() % 41) - 20);
+}
+
+static lisp_value gen(fscope *s, int depth) {
+    if (depth <= 0)
+        return gen_atom(s);
+    int k = (int)(rnd() % 9);
+    lisp_value xs[4];
+    switch (k) {
+        case 0: {  // arithmetic
+            xs[0] = g_ops[rnd() % 3];
+            xs[1] = gen(s, depth - 1);
+            xs[2] = gen(s, depth - 1);
+            return lst(3, xs);
+        }
+        case 1: {  // comparison
+            xs[0] = g_ops[OPC_LT + rnd() % 5];
+            xs[1] = gen(s, depth - 1);
+            xs[2] = gen(s, depth - 1);
+            return lst(3, xs);
+        }
+        case 2: {  // if
+            xs[0] = g_ops[OP_S_IF];
+            xs[1] = gen(s, depth - 1);
+            xs[2] = gen(s, depth - 1);
+            xs[3] = gen(s, depth - 1);
+            return lst(4, xs);
+        }
+        case 3: {  // and / or
+            xs[0] = g_ops[(rnd() & 1) ? OP_S_AND : OP_S_OR];
+            xs[1] = gen(s, depth - 1);
+            xs[2] = gen(s, depth - 1);
+            return lst(3, xs);
+        }
+        case 4: {  // not
+            xs[0] = g_ops[OP_S_NOT];
+            xs[1] = gen(s, depth - 1);
+            return lst(2, xs);
+        }
+        case 5: {  // (let ((v INIT)) BODY)
+            if (s->nvars >= 15)
+                return gen_atom(s);
+            lisp_value v = g_vpool[s->nvars];
+            lisp_value init = gen(s, depth - 1);
+            lisp_value bind = lisp_cons(v, lisp_cons(init, LISP_EMPTY));
+            lisp_value binds = lisp_cons(bind, LISP_EMPTY);
+            s->vars[s->nvars++] = v;
+            lisp_value body = gen(s, depth - 1);
+            s->nvars--;
+            xs[0] = g_ops[OP_S_LET];
+            xs[1] = binds;
+            xs[2] = body;
+            return lst(3, xs);
+        }
+        case 6: {  // ((lambda (v) BODY) ARG)
+            if (s->nvars >= 15)
+                return gen_atom(s);
+            lisp_value v = g_vpool[s->nvars];
+            lisp_value arg = gen(s, depth - 1);
+            s->vars[s->nvars++] = v;
+            lisp_value body = gen(s, depth - 1);
+            s->nvars--;
+            lisp_value params = lisp_cons(v, LISP_EMPTY);
+            lisp_value lam = lisp_cons(g_ops[OP_S_LAMBDA],
+                                       lisp_cons(params, lisp_cons(body, LISP_EMPTY)));
+            xs[0] = lam;
+            xs[1] = arg;
+            return lst(2, xs);
+        }
+        default:
+            return gen_atom(s);
+    }
+}
+
+static int fuzz(lisp_value genv, int iters) {
+    fuzz_init();
+    int values = 0, both_err = 0, fails = 0, dec = 0;
+    for (int i = 0; i < iters; i++) {
+        fscope s;
+        s.nvars = 0;
+        lisp_value expr = gen(&s, 4);
+
+        const char *eo = NULL;
+        lisp_value ro = lisp_eval(expr, genv, &eo);
+        lisp_value rv = LISP_UNDEF;
+        const char *msg = NULL;
+        lbc_status st = lbc_eval(genv, expr, &rv, &msg);
+
+        if (st == LBC_DECLINED) {
+            dec++;
+            continue;
+        }
+        bool oe = (eo != NULL), ve = (st == LBC_ERR);
+        if (oe || ve) {
+            if (oe && ve) {
+                both_err++;
+            } else {
+                fails++;
+                if (fails <= 8) {
+                    char b[256];
+                    lisp_print(expr, b, sizeof(b));
+                    printf("  FUZZ FAIL %s  (oracle %s, vm %s: %s)\n", b,
+                           oe ? "err" : "ok", ve ? "err" : "ok",
+                           oe ? (eo ? eo : "?") : (msg ? msg : "?"));
+                }
+            }
+            continue;
+        }
+        if (vequal(ro, rv)) {
+            values++;
+        } else {
+            fails++;
+            if (fails <= 5) {
+                char b[256], b1[64], b2[64];
+                lisp_print(expr, b, sizeof(b));
+                lisp_print(ro, b1, sizeof(b1));
+                lisp_print(rv, b2, sizeof(b2));
+                printf("  FUZZ FAIL %s\n            oracle=%s vm=%s\n", b, b1, b2);
+            }
+        }
+    }
+    printf("\n=== fuzz: %d random exprs ===\n", iters);
+    printf("  %d value-match, %d error-parity, %d declined, %d FAILED\n", values,
+           both_err, dec, fails);
+    return fails;
+}
+
 static void bench(lisp_value genv) {
     // A tail-recursive counting loop -- the hot shape (named-let, frozen ops).
     const char *src =
@@ -210,8 +391,10 @@ int main(void) {
 
     printf("\n  %d passed, %d declined, %d FAILED\n", pass, declined, fail);
 
+    int fuzz_fails = fuzz(genv, 20000);
     bench(genv);
 
-    printf("\n[bytecode] %s\n", fail == 0 ? "ALL TESTS PASSED" : "FAILURES PRESENT");
-    return fail == 0 ? 0 : 1;
+    int total_fail = fail + fuzz_fails;
+    printf("\n[bytecode] %s\n", total_fail == 0 ? "ALL TESTS PASSED" : "FAILURES PRESENT");
+    return total_fail == 0 ? 0 : 1;
 }

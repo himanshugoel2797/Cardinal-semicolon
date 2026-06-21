@@ -583,8 +583,8 @@ static void compile_value(compiler *C, fnstate *fn, lisp_value e) {
                 compile_value(C, fn, lisp_car(a));
                 if (n >= 64)
                     lbc_decline(C, "and too long");
+                // JMPF_KEEP pops the value on fall-through (truthy) itself.
                 jmps[n++] = emit(C, k, OP_JMPF_KEEP, -1, 0);
-                emit(C, k, OP_POP, 0, 0);
                 a = lisp_cdr(a);
             }
             compile_value(C, fn, lisp_car(a));  // last value is the result
@@ -604,8 +604,8 @@ static void compile_value(compiler *C, fnstate *fn, lisp_value e) {
                 compile_value(C, fn, lisp_car(a));
                 if (n >= 64)
                     lbc_decline(C, "or too long");
+                // JMPT_KEEP pops the value on fall-through (falsey) itself.
                 jmps[n++] = emit(C, k, OP_JMPT_KEEP, -1, 0);
-                emit(C, k, OP_POP, 0, 0);
                 a = lisp_cdr(a);
             }
             compile_value(C, fn, lisp_car(a));
