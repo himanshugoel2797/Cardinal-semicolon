@@ -60,7 +60,10 @@ jobs:
           echo "Signed modules:"; echo "$modules"
           count=$(echo "$modules" | grep -c . || true)
           echo "module count: $count"
-          test "$count" -ge 30
+          # The C USB stack + CoreDriver + the orphaned rtl8169/intel_*/hdaudio C
+          # drivers were removed (USB is Lisp now; binding is lisp/init.clp), so the
+          # tree builds ~28 .celf. Keep a floor that catches a broken build.
+          test "$count" -ge 24
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

@@ -66,9 +66,10 @@ interactive 3D desktop and is not used for smoke tests.
 
 `.github/workflows/build.yml` reuses `scripts/devenv/environment.yml` as the
 single source of truth for the toolchain, builds host tools + target, and
-asserts `kernel.bin` exists and ≥30 `.celf` modules were produced. Keep that
+asserts `kernel.bin` exists and ≥24 `.celf` modules were produced. Keep that
 module count in mind when adding/removing modules (the tree currently builds
-~40 `.celf`s).
+~28 `.celf`s — down from ~40 after the USB stack moved to Lisp and the orphaned
+C drivers were removed).
 
 ## Repository layout
 
@@ -76,8 +77,8 @@ module count in mind when adding/removing modules (the tree currently builds
 |------|------|
 | `kernel/` | The tiny core: ELF/relocatable loader, initrd (tar) parsing, boot-script interpreter, bootstrap allocator, symbol DB, DWARF. Linked at a fixed high virtual address. |
 | `modules/` | `Sys*` kernel-privileged modules: memory (`SysPhysicalMemory`, `SysVirtualMemory`, `SysMemory`), `SysInterrupts`, `SysMP`, `SysTimer`, `SysFP`, `SysObj` (object model), `SysReg` (registry), `SysUser` (syscalls), `SysTaskMgr` (scheduler), `SysDebug`, `SysGdb` (GDB remote-serial-protocol stub — debug the OS over serial/USB-serial; see `notes/debugging-gdb.md`). |
-| `servers/` | `Core*` OS services: `CoreDisplay`, `CoreAudio`, `CoreInput`, `CoreNetwork` (ARP/ICMP/IPv4 + a UDP port layer and a reliable delivery transport `RDT`, exported via `servers/inc/CoreNetwork/{udp,rdt}.h`), `CoreNetDebug` (optional, `cardinal.netdbg`-gated network debug endpoint: UDP echo + reliable blob upload), `CoreStorage` (block-device registry + the `cardfs` object-store exploration), `CoreUsb` (controller-agnostic transfer/enumeration + class-driver registration), `CorePower`, `CoreDriver`. |
-| `drivers/` | Device drivers: `virtio` (gpu/net/common), `intel_gfx`, `intel_wifi`, `hdaudio`, `rtl8139`, `rtl8169`, `ahci`, USB host controllers `uhci`/`xhci` (both implement the CoreUsb transfer backend; `ehci` is a stub) + USB class drivers `usb_hid` (kbd/mouse), `usb_storage` (BBB/SCSI block device), `usb_hub`, `usb_serial` (FTDI, routes the GDB stub), `ps2`, `lfb`, `tarfs`. |
+| `servers/` | `Core*` OS services: `CoreDisplay`, `CoreAudio`, `CoreInput`, `CoreNetwork` (ARP/ICMP/IPv4 + a UDP port layer and a reliable delivery transport `RDT`, exported via `servers/inc/CoreNetwork/{udp,rdt}.h`), `CoreNetDebug` (optional, `cardinal.netdbg`-gated network debug endpoint: UDP echo + reliable blob upload), `CoreStorage` (block-device registry + the `cardfs` object-store exploration), `CorePower`. (`CoreUsb` is now Lisp — `lisp/servers/coreusb`; `CoreDriver`, the C PCI→driver binder, was removed: `lisp/init.clp` binds devices.) |
+| `drivers/` | C device drivers: `virtio` (gpu/net/common), `rtl8139`, `ahci`, `lfb`, `tarfs`, `cardfs`. The USB stack is **Lisp** now (`lisp/drivers/{uhci,xhci}.clp` host controllers + `lisp/drivers/usb-{hid,hub,storage}.clp` class drivers over `lisp/servers/coreusb`); `ps2` is Lisp (`lisp/ps2.clp`). The orphaned C `rtl8169`/`intel_wifi`/`intel_gfx`/`hdaudio`/`ehci`/`usb_*`/`uhci`/`xhci` drivers were removed. |
 | `libs/` | Static libs linked into modules: `crypto` (sha256/hmac), `miniz`, `module_lib` (CELF header build/verify), `kvs`, `ubsan_handlers`, plus header-only `pci/` and `syscalls/`. `pci/` holds `pci.h` (config space, BAR scan), `pci_irq.h` (MSI/MSI-X setup), `pci_alloc.h` (BAR + bridge-window self-assignment for firmware-unconfigured devices), `pci_debug.h` (`pci_msix_debug_dump`). |
 | `common/` | Freestanding mini-libc (`string`, `stdlib`, `stdio`, lists/queues, `time`) + platform type headers. Included as a SYSTEM include everywhere. |
 | `platform/<isa>/<plat>/` | Per-target CMake fragments (`flags.cmake`), `linker.ld`, GRUB configs, and the `image`/`run` custom targets. |
@@ -110,15 +111,21 @@ The kernel reads these text scripts; `LOAD:` loads a `.celf`, `CALL:` invokes an
 already-resolved exported function by name.
 
 - `loadscript.txt` — bring-up order for the `Sys*` modules (memory → interrupts
-  → MP → timer → object/user/taskmgr), interleaved with `CALL:` init steps.
+  → MP → timer → object/user/taskmgr), ending with `LOAD:./SysLisp.celf` +
+  `CALL:lisp_scheduler_enter` (which never returns — the boot thread becomes the
+  per-core Lisp scheduler loop).
 - `apscript.txt` — per-AP (application processor) init sequence for SMP.
-- `servicescript.txt` — loads the `Core*` servers and device drivers.
-- `devices.txt` — PCI match table: `./<driver>.celf|VID|DID|class|subclass|progif`
-  (`FFFF`/`00` = wildcard). This is how drivers get bound to hardware.
 
-When you add a module/server/driver, you almost always also touch its
-`CMakeLists.txt`, the parent `CMakeLists.txt` (`ADD_SUBDIRECTORY`), and the
-relevant boot script (and `devices.txt` for a PCI driver).
+The old C service/driver binding (`servicescript.txt` + `devices.txt` read by
+`CoreDriver`) is **gone**. Servers and drivers are now Lisp modules under `lisp/`,
+and **`lisp/init.clp`** is the single place boot policy lives: it brings up the
+`Core*` services and binds drivers to hardware (each gated on `pci-find`). The
+kernel only `(import init)`s it and calls `(system-init)`.
+
+When you add a *Sys\** module you touch its `CMakeLists.txt`, the parent
+`CMakeLists.txt` (`ADD_SUBDIRECTORY`), and `loadscript.txt`. When you add a
+Lisp server/driver you add its `.clp` under `lisp/` (auto-packaged into the
+initrd) and wire its bring-up into `lisp/init.clp` — no CMake/boot-script change.
 
 ## Conventions
 
@@ -222,21 +229,23 @@ before invoking it, since the handler may reply.
   (`CoreAudio`/`tarfs` `module_init` still empty; `CoreStorage` now has a
   block-device registry + the `cardfs` object-store exploration; `CoreNetwork`
   ARP/ICMP/IPv4 + UDP (port bind/send) + reliable transport (`RDT`) work, TCP and
-  the *userspace* socket API still TODO; the USB stack works over UHCI/xHCI;
-  Haswell `intel_gfx` largely absent). Check it before assuming something is
-  broken vs. intentionally unfinished.
+  the *userspace* socket API still TODO; the USB stack (now Lisp) enumerates over
+  UHCI/xHCI with HID/hub/mass-storage class drivers). Check it before assuming
+  something is broken vs. intentionally unfinished.
 - **Boot timing knobs that bit recent work** (all detailed in `notes/AUDIT.md` /
   `notes/debugging-gdb.md`): `task_sleep` itself is now fixed and reliable for
   normal delays (it actually deschedules — see AUDIT), but it can't be used by
-  code already holding `cli()` (e.g. AHCI/UHCI init), which still busy-spins via
+  code already holding `cli()` (e.g. AHCI init), which still busy-spins via
   the TSC-calibrated `SysTimer` waits; the boot-script files
-  (`loadscript.txt`/`servicescript.txt`) use **CRLF** line endings — keep them
+  (`loadscript.txt`/`apscript.txt`) use **CRLF** line endings — keep them
   CRLF or the parser panics with "Unknown Command".
 
 ## Debugging
 
-`SysGdb` is a GDB remote-serial-protocol stub: attach GDB over COM2, or over a
-USB-serial (FTDI) adapter that `drivers/usb_serial` brings up (works on real
-hardware). See **`notes/debugging-gdb.md`** for the QEMU recipes and how to break
+`SysGdb` is a GDB remote-serial-protocol stub: attach GDB over COM2. (The FTDI
+USB-serial GDB transport `drivers/usb_serial` was removed with the rest of the C
+USB stack; the in-OS serial REPL over COM1 — see `lisp/init.clp` `start-repl` —
+is the interactive debug path now.) See **`notes/debugging-gdb.md`** for the QEMU
+recipes and how to break
 in. The full boot now also works under `-accel kvm` (fast) thanks to the
 APIC-timer ordering fix; before that it booted only under TCG.

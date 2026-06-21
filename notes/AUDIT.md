@@ -14,6 +14,11 @@ Line numbers are as of the revival branch; they drift as fixes land.
 
 ## Display stack (intel_gfx + CoreDisplay) — primary focus
 
+> **NOTE (USB→Lisp cleanup):** the C `intel_gfx` driver was **removed** (orphaned
+> — never bound by any boot path; no Lisp port exists yet). The findings below
+> are historical; `CoreDisplay` remains. Lisp display drivers today are
+> `lisp/drivers/virtio-gpu` and `lfb`.
+
 ### [VERIFIED] EDID monitor-name parse copies one byte 13×
 `servers/CoreDisplay/src/edid.c:103`
 ```c
@@ -515,7 +520,11 @@ if (queue_trydequeue(&devices, (uint64_t*)device)) { ... }
 of `device` dereferences NULL. Must be `(uint64_t*)&device`. *(Fixed in the
 correctness-fixes PR.)*
 
-### [FIXED] USB enumeration / type field uninitialised
+### [OBSOLETE — code removed] USB enumeration / type field uninitialised
+*(The entire C USB stack — `CoreUsb`, `uhci`/`xhci`/`ehci`, the `usb_*` class
+drivers — was removed when USB moved to Lisp (`lisp/servers/coreusb` +
+`lisp/drivers/{uhci,xhci,usb-hid,usb-hub,usb-storage}`). The note below is
+historical.)*
 `servers/CoreUsb/src/main.c` `usb_register_device` — `def->idx =
 devIDs[def->type]++` indexed `devIDs` with an uninitialised `def->type` (an OOB
 read/write on garbage). *(Fixed: `def->type` is now pinned to
