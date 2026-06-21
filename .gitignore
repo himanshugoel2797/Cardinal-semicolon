@@ -79,3 +79,12 @@ CMakeSettings.json
 /.cache/
 .claude/
 tests_build/
+
+# Cardinal; documentation system (generated)
+lisp/docs-db.clp
+_site/
+build/docs/
+
+# Python bytecode
+__pycache__/
+*.pyc

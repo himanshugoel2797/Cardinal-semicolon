@@ -20,6 +20,10 @@ COMMAND rm -rf "ISO/isodir/boot/lisp"
 
 COMMAND cp "${LOAD_SCRIPT}" "ISO/isodir/boot/loadscript.txt"
 COMMAND cp "${AP_SCRIPT}" "ISO/isodir/boot/apscript.txt"
+# Regenerate the documentation DB module (lisp/docs-db.clp) from docs/api/*.md so
+# the initrd always carries docs matching the checked-out source. extract.py
+# anchors every path to the repo root, so the build-dir CWD here is irrelevant.
+COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/docs/extract.py"
 # Lisp driver/source files, shipped in the initrd as ./lisp/*.clp.
 COMMAND cp -r "${CMAKE_CURRENT_SOURCE_DIR}/lisp" "ISO/isodir/boot/lisp"
 COMMAND tar -cvf "ISO/isodir/boot/initrd" -C "ISO/isodir/boot" .

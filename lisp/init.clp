@@ -18,7 +18,13 @@
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
           ps2 virtio-net rtl8139 virtio-gpu lfb ahci
-          coreusb uhci xhci usb-hid usb-hub usb-storage sys-pci)
+          coreusb uhci xhci usb-hid usb-hub usb-storage sys-pci
+          ;; manpage (the in-OS doc browser) is imported here so docs-db + manpage
+          ;; are LOADED single-core, before the shared heap freezes -- the REPL then
+          ;; only re-binds the already-loaded exports (no post-freeze source load).
+          ;; The generated docs-db.clp is produced by scripts/docs/extract.py during
+          ;; the normal build/image flow, so the initrd always carries it.
+          manpage)
 
   ;; Bring up keyboard input: start the generic input service (coreinput, a
   ;; reusable server module -- mechanism), run i8042 bring-up here in the root
@@ -105,7 +111,12 @@
             (begin (display "[repl] irq-register failed") (newline))
             (begin
               (console-arm-rx)                     ; enable COM1 RX IRQ now it is routed
-              (display "[repl] serial REPL ready on COM1") (newline)
+              ;; Bind man/apropos into the persistent REPL env (g_repl_env, where
+              ;; typed input evaluates). repl-eval runs this in that env; manpage is
+              ;; already loaded (init imported it pre-freeze) so this only re-binds
+              ;; the cached exports -- no source load, GC-safe after the freeze.
+              (repl-eval "(import manpage)")
+              (display "[repl] serial REPL ready on COM1 -- (man 'sym) / (apropos \"text\")") (newline)
               (console-flush)                        ; log is batched -- push the banner out now
               (let loop ((seen (irq-count irq)))
                 (let ((in (console-poll)))
