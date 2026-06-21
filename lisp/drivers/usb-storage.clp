@@ -60,7 +60,8 @@
                         (cons -1 #f)
                         (let ((csw (bulk in-ep in-mps #f 13 #t)))
                           (if (or (< (complete-n csw) 13)
-                                  (not (= (bytes-u32-ref (complete-data csw) 0) CSW-SIG)))
+                                  (not (= (bytes-u32-ref (complete-data csw) 0) CSW-SIG))
+                                  (not (= (bytes-u32-ref (complete-data csw) 4) tag)))   ; dCSWTag must echo the CBW tag
                               (cons -1 #f)
                               (cons (bytes-u8-ref (complete-data csw) 12) ddata))))))))
           ;; SCSI helpers.
@@ -117,18 +118,23 @@
                 (begin (display "[usb-storage] READ CAPACITY failed") (newline) (set! bcount 0))))
           (if (= bcount 0)
               (begin (display "[usb-storage] no usable capacity; not registering") (newline)
-                     (let park () (recv) (park)))      ; stay alive (stop-aware via remove)
+                     ;; stay alive until remove sends (stop), then exit cleanly.
+                     (let park () (if (eq? (car (recv)) 'stop) 'stopped (park))))
               (begin
                 (send storage (list 'register-blockdev 'usb0 bsize bcount (self)))
                 (display "[usb-storage] registered usb0 with corestorage") (newline)
                 ;; serve block requests, draining the stash (FIFO) before fresh recv.
+                ;; A (stop) from remove exits the loop so the context ends cleanly;
+                ;; every message here is a list, so (car req) is always valid.
                 (let mainloop ()
                   (let ((req (if (null? stash) (recv)
                                  (let ((m (car stash))) (set! stash (cdr stash)) m))))
-                    (cond ((eq? (car req) 'read)  (do-read (cadr req) (caddr req) (cadddr req)))
-                          ((eq? (car req) 'write) (do-write (cadr req) (caddr req) (cadddr req) (nth req 4)))
-                          (else 'ignore))
-                    (mainloop)))))))))
+                    (cond ((eq? (car req) 'stop)  'stopped)   ; exit -- do NOT recurse
+                          (else
+                           (cond ((eq? (car req) 'read)  (do-read (cadr req) (caddr req) (cadddr req)))
+                                 ((eq? (car req) 'write) (do-write (cadr req) (caddr req) (cadddr req) (nth req 4)))
+                                 (else 'ignore))
+                           (mainloop)))))))))))
 
   (define (stor-on-probe dev storage devs)
     (let ((inep (usb-find-endpoint dev USB-XFER-BULK #t))
@@ -146,7 +152,7 @@
   (define (stor-on-remove addr devs)
     (let loop ((ds devs) (keep '()))
       (cond ((null? ds) keep)
-            ((= (caar ds) addr) (send (cdar ds) 'stop)
+            ((= (caar ds) addr) (send (cdar ds) (list 'stop))   ; a list, so the server's (car req) is valid
                                 (display "[usb-storage] device removed") (newline)
                                 (loop (cdr ds) keep))
             (else (loop (cdr ds) (cons (car ds) keep))))))

@@ -132,7 +132,13 @@
           (bytes-u32-set! input (+ ec 4) (bitwise-or (arithmetic-shift EP-TYPE-CONTROL 3)
                                                      (arithmetic-shift 3 1)
                                                      (arithmetic-shift (speed-mps0 (sl-speed sl)) 16)))
-          (let ((trdp (bitwise-or (ring-phys ring) 1)))
+          ;; TR Dequeue Pointer = the ring's CURRENT enqueue position + producer
+          ;; cycle, not the ring base. On the second Address Device (BSR=0, after
+          ;; the BSR=1 phase already pushed the initial GET_DESCRIPTOR TRBs) this
+          ;; avoids re-pointing the controller at the already-consumed stale TRBs
+          ;; (which it would otherwise re-execute). For a fresh ring (enq=0,cyc=1)
+          ;; this is exactly ring-base|1, so the BSR=1 path is unchanged.
+          (let ((trdp (bitwise-or (+ (ring-phys ring) (* (ring-enq ring) 16)) (ring-cyc ring))))
             (bytes-u32-set! input (+ ec 8) (bitwise-and trdp #xFFFFFFFF))
             (bytes-u32-set! input (+ ec 12) (arithmetic-shift trdp -32)))
           (bytes-u32-set! input (+ ec 16) 8)

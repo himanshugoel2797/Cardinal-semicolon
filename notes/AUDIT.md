@@ -520,6 +520,18 @@ if (queue_trydequeue(&devices, (uint64_t*)device)) { ... }
 of `device` dereferences NULL. Must be `(uint64_t*)&device`. *(Fixed in the
 correctness-fixes PR.)*
 
+### [KNOWN LIMITATION] Lisp xHCI control IN ignores short-packet residual
+`lisp/drivers/xhci/driver.clp` `do-control` returns the *requested* byte count
+on an IN transfer even when the completion is `SHORT_PACKET`: the DATA TRB has no
+ISP bit, so only the STATUS TRB raises a Transfer Event and the data-stage
+residual is unrecoverable from it. Compliant devices return standard descriptors
+at full length, so enumeration is unaffected; a device that short-packets a
+control IN would have the tail of the bounce buffer read as stale data. Inherited
+verbatim from the old C `xhci` driver. Fix = set ISP on the DATA TRB and wait for
+the DATA event first to read the residual. (The sibling C-driver bug where Address
+Device BSR=0 re-pointed EP0 at stale TRBs is *fixed* in the Lisp port — the TRDP
+is set to the ring's current enqueue, not its base.)
+
 ### [OBSOLETE — code removed] USB enumeration / type field uninitialised
 *(The entire C USB stack — `CoreUsb`, `uhci`/`xhci`/`ehci`, the `usb_*` class
 drivers — was removed when USB moved to Lisp (`lisp/servers/coreusb` +
