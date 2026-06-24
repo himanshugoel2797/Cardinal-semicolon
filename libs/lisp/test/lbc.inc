@@ -130,16 +130,38 @@ typedef enum {
     ROP_CALL,       // call r[a] with b args at r[a+1..a+b]; result -> r[a]
     ROP_TAILCALL,   // tail call (reuse frame); terminates
     ROP_RET,        // return r[a]
-    ROP_ADD, ROP_SUB, ROP_MUL,         // r[a] = r[b] <op> r[c]; d=prim const (fallback)
-    ROP_LT, ROP_LE, ROP_GT, ROP_GE, ROP_NUMEQ,  // r[a] = r[b] <cmp> r[c]; d=prim
-    ROP_CONS,       // r[a] = cons(r[b], r[c])
-    ROP_CAR, ROP_CDR, ROP_NULLP, ROP_PAIRP, ROP_NOT,  // r[a] = op(r[b])
+    ROP_OPCALL,     // r[a] = inline-cached op ics[d] on r[b] (and r[c] if binary)
 } rop;
 
 typedef struct {
     uint8_t op;
     int32_t a, b, c, d;
 } rinstr;
+
+// Inline-cache fast-op selectors. These name the CANONICAL semantics of a core
+// operator; the IC's `expected` pins the builtin primitive that implements them
+// (Decision 2: core ops stay redefinable -- the inlined path runs ONLY while the
+// operator still resolves to that exact builtin; otherwise we call whatever it
+// is now). FK_*_BIN take r[b],r[c]; FK_*_UN take r[b].
+typedef enum {
+    FK_ADD, FK_SUB, FK_MUL,                  // binary fixnum arithmetic
+    FK_LT, FK_LE, FK_GT, FK_GE, FK_NUMEQ,    // binary numeric comparison
+    FK_EQ, FK_CONS,                          // binary: identity, cons
+    FK_CAR, FK_CDR, FK_NULLP, FK_PAIRP, FK_NOT,  // unary
+} fastkind;
+
+static bool fastkind_unary(fastkind fk) { return fk >= FK_CAR; }
+
+// One inline cache: the operator's global binding CELL (a stable (sym . val)
+// cons that define/set! mutate in place), the builtin primitive `expected` that
+// was canonical when this site compiled, and the fast-op `kind`. At runtime the
+// VM reads cur = cdr(cell); if cur == expected the inlined path is valid,
+// otherwise it calls cur (handles redefinition + off-type operands uniformly).
+typedef struct {
+    lisp_value cell;
+    lisp_value expected;
+    uint8_t kind;
+} bcic;
 
 typedef struct bcchunk {
     instr *code;
@@ -149,6 +171,8 @@ typedef struct bcchunk {
     int nregs;         // register-file size for the register VM
     lisp_value *consts;
     int nconsts, capconsts;
+    bcic *ics;         // inline caches for ROP_OPCALL sites
+    int nics, capics;
     int nlocals;       // size of the runtime locals array (stack VM)
     int nparams;
     bool has_rest;     // last param collects the rest as a list
@@ -413,6 +437,105 @@ static int frozen_prim_const(compiler *C, bcchunk *k, const char *name) {
     if (!lisp_env_lookup(C->genv, lisp_make_symbol(name, strlen(name)), &v))
         lbc_decline(C, "frozen primitive unbound");
     return add_const(C, k, v);
+}
+
+// --- inline-cache (register form, no frozen ops) ----------------------------
+
+// Canonical name for each fast-op selector (NULL-terminated lookups by index).
+static const char *fastkind_name(fastkind fk) {
+    switch (fk) {
+        case FK_ADD: return "+";   case FK_SUB: return "-";   case FK_MUL: return "*";
+        case FK_LT: return "<";    case FK_LE: return "<=";   case FK_GT: return ">";
+        case FK_GE: return ">=";   case FK_NUMEQ: return "=";
+        case FK_EQ: return "eq?";  case FK_CONS: return "cons";
+        case FK_CAR: return "car"; case FK_CDR: return "cdr";
+        case FK_NULLP: return "null?"; case FK_PAIRP: return "pair?";
+        case FK_NOT: return "not";
+    }
+    return "";
+}
+
+// The canonical builtin primitive for each fast op, captured once (in a real OS,
+// at builtin-install time; here, lazily on first compile -- before any test
+// redefines an op). An IC inlines ONLY for this exact identity, so the inlined
+// fixnum/pair semantics are guaranteed to match the operator's real meaning.
+#define NFAST (FK_NOT + 1)
+static lisp_value g_canon[NFAST];
+static int g_canon_ready = 0;
+static void ensure_canon(lisp_value genv) {
+    if (g_canon_ready)
+        return;
+    for (int fk = 0; fk < NFAST; fk++) {
+        const char *nm = fastkind_name((fastkind)fk);
+        lisp_value v;
+        g_canon[fk] = lisp_env_lookup(genv, lisp_make_symbol(nm, strlen(nm)), &v)
+                          ? v : LISP_UNDEF;
+    }
+    g_canon_ready = 1;
+}
+
+static int add_ic(compiler *C, bcchunk *k, lisp_value cell, lisp_value expected,
+                  fastkind kind) {
+    if (k->nics == k->capics) {
+        int nc = k->capics ? k->capics * 2 : 8;
+        bcic *ni = (bcic *)realloc(k->ics, (size_t)nc * sizeof(bcic));
+        if (ni == NULL)
+            lbc_decline(C, "out of memory");
+        k->ics = ni;
+        k->capics = nc;
+    }
+    k->ics[k->nics].cell = cell;
+    k->ics[k->nics].expected = expected;
+    k->ics[k->nics].kind = (uint8_t)kind;
+    return k->nics++;
+}
+
+// Recognize `head` as a fast op at this arity that is (a) not shadowed by a
+// local/upvalue and (b) CURRENTLY bound to its canonical builtin. On success
+// fills *kind/*cell/*expected (but does NOT add an IC -- so it is safe to call
+// as a pure predicate). Otherwise returns false and the caller emits a general
+// call, which is also the correct lowering when the op has been redefined.
+static bool reg_fastop(compiler *C, fnstate *fn, lisp_value head, int argc,
+                       fastkind *kind, lisp_value *cell_out, lisp_value *exp_out) {
+    if (!lisp_is_symbol(head))
+        return false;
+    int rk;
+    (void)resolve(C, fn, head, &rk);
+    if (rk != R_GLOBAL)
+        return false;  // shadowed -> not the builtin
+    fastkind fk;
+    bool found = false;
+    if (argc == 2) {
+        if (sym_is(head, "+")) { fk = FK_ADD; found = true; }
+        else if (sym_is(head, "-")) { fk = FK_SUB; found = true; }
+        else if (sym_is(head, "*")) { fk = FK_MUL; found = true; }
+        else if (sym_is(head, "<")) { fk = FK_LT; found = true; }
+        else if (sym_is(head, "<=")) { fk = FK_LE; found = true; }
+        else if (sym_is(head, ">")) { fk = FK_GT; found = true; }
+        else if (sym_is(head, ">=")) { fk = FK_GE; found = true; }
+        else if (sym_is(head, "=")) { fk = FK_NUMEQ; found = true; }
+        else if (sym_is(head, "eq?")) { fk = FK_EQ; found = true; }
+        else if (sym_is(head, "cons")) { fk = FK_CONS; found = true; }
+    } else if (argc == 1) {
+        if (sym_is(head, "car")) { fk = FK_CAR; found = true; }
+        else if (sym_is(head, "cdr")) { fk = FK_CDR; found = true; }
+        else if (sym_is(head, "null?")) { fk = FK_NULLP; found = true; }
+        else if (sym_is(head, "pair?")) { fk = FK_PAIRP; found = true; }
+        else if (sym_is(head, "not")) { fk = FK_NOT; found = true; }
+    }
+    if (!found)
+        return false;
+    ensure_canon(C->genv);
+    lisp_value cell = find_global_cell(C->genv, head);
+    if (cell == LISP_EMPTY)
+        return false;  // unbound at compile -> general path (will error like oracle)
+    lisp_value cur = lisp_cdr(cell);
+    if (cur != g_canon[fk] || g_canon[fk] == LISP_UNDEF)
+        return false;  // already redefined / non-canonical -> call it normally
+    *kind = fk;
+    *cell_out = cell;
+    *exp_out = g_canon[fk];
+    return true;
 }
 
 // --- list helpers -----------------------------------------------------------
@@ -1351,12 +1474,6 @@ static int radd_child(compiler *C, bcchunk *parent, bcchunk *child) {
     return parent->nchildren++;
 }
 
-static const char *frozen_prim_name(bcop op, int v) {
-    if (op == OP_ARITH2)
-        return v == 0 ? "+" : v == 1 ? "-" : "*";
-    return v == 0 ? "<" : v == 1 ? "<=" : v == 2 ? ">" : v == 3 ? ">=" : "=";
-}
-
 static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst);
 static void rcompile_tail(compiler *C, fnstate *fn, lisp_value e);
 static bcchunk *rcompile_lambda(compiler *C, fnstate *parent, lisp_value params,
@@ -1688,33 +1805,19 @@ static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst) {
         if (is_special_head(head))
             lbc_decline(C, "form not supported by prototype");
 
-        // frozen op?
-        bcop bop;
-        int variant, argc = list_len(rest);
-        if (frozen_op(C, fn, head, argc, &bop, &variant)) {
+        // inline-cached fast op? (no frozen ops -- the op stays redefinable; the
+        // IC guards on its binding cell at runtime, deopting to a real call.)
+        fastkind fk;
+        lisp_value cell, expected;
+        int argc = list_len(rest);
+        if (reg_fastop(C, fn, head, argc, &fk, &cell, &expected)) {
             int save = fn->freereg;
-            if (argc == 2) {
-                int ra = rcompile_rvalue(C, fn, lisp_car(rest));
-                int rb = rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
-                rop r;
-                int prim = 0;
-                if (bop == OP_ARITH2) {
-                    r = (rop)(ROP_ADD + variant);
-                    prim = frozen_prim_const(C, k, frozen_prim_name(bop, variant));
-                } else if (bop == OP_CMP2) {
-                    r = (rop)(ROP_LT + variant);
-                    prim = frozen_prim_const(C, k, frozen_prim_name(bop, variant));
-                } else {  // OP_CONS
-                    r = ROP_CONS;
-                }
-                remit(C, k, r, dst, ra, rb, prim);
-            } else {  // unary: car/cdr/null?/pair?/not
-                int ra = rcompile_rvalue(C, fn, lisp_car(rest));
-                rop r = bop == OP_CAR ? ROP_CAR : bop == OP_CDR ? ROP_CDR
-                        : bop == OP_NULLP ? ROP_NULLP : bop == OP_PAIRP ? ROP_PAIRP
-                        : ROP_NOT;
-                remit(C, k, r, dst, ra, 0, 0);
-            }
+            int ra = rcompile_rvalue(C, fn, lisp_car(rest));
+            int rb = fastkind_unary(fk)
+                         ? 0
+                         : rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
+            int ic = add_ic(C, k, cell, expected, fk);
+            remit(C, k, ROP_OPCALL, dst, ra, rb, ic);
             fn->freereg = save;
             return;
         }
@@ -1839,11 +1942,12 @@ static void rcompile_tail(compiler *C, fnstate *fn, lisp_value e) {
             fn->nlocals = save_nl;
             return;
         }
-        // frozen op or special form: produce a value then RET.
-        bcop bop;
-        int variant;
+        // fast op or special form: produce a value then RET (below). A plain
+        // application becomes a tail call.
+        fastkind fk;
+        lisp_value cell, expected;
         if (!is_special_head(head) &&
-            !frozen_op(C, fn, head, list_len(rest), &bop, &variant)) {
+            !reg_fastop(C, fn, head, list_len(rest), &fk, &cell, &expected)) {
             int packed = rcompile_callseq(C, fn, e);
             remit(C, k, ROP_TAILCALL, packed >> 8, packed & 0xff, 0, 0);
             return;
@@ -1971,53 +2075,86 @@ static bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
             case ROP_JMP: f->pc = ins.a; break;
             case ROP_JMPF: if (!lisp_truthy(Rf[ins.a])) f->pc = ins.b; break;
             case ROP_JMPT: if (lisp_truthy(Rf[ins.a])) f->pc = ins.b; break;
-            case ROP_ADD: case ROP_SUB: case ROP_MUL: {
-                lisp_value a = Rf[ins.b], b = Rf[ins.c];
-                if (lisp_is_fixnum(a) && lisp_is_fixnum(b)) {
-                    int64_t x = lisp_fixnum_val(a), y = lisp_fixnum_val(b), r;
-                    r = ins.op == ROP_ADD ? x + y : ins.op == ROP_SUB ? x - y : x * y;
-                    Rf[ins.a] = lisp_fixnum(r);
+            case ROP_OPCALL: {
+                // No frozen ops: the operator is still an ordinary global. The IC
+                // pins the builtin that was canonical when this site compiled;
+                // the inlined path runs ONLY while cur == expected and the
+                // operands are the fast type, else we call cur (which handles
+                // redefinition and off-type/flonum operands with oracle parity).
+                bcic *ic = &f->chunk->ics[ins.d];
+                lisp_value cur = lisp_cdr(ic->cell);
+                lisp_value a = Rf[ins.b];
+                bool slow = false;
+                if (cur == ic->expected) {
+                    switch (ic->kind) {
+                        case FK_ADD: case FK_SUB: case FK_MUL: {
+                            lisp_value b = Rf[ins.c];
+                            if (lisp_is_fixnum(a) && lisp_is_fixnum(b)) {
+                                int64_t x = lisp_fixnum_val(a), y = lisp_fixnum_val(b);
+                                int64_t r = ic->kind == FK_ADD ? x + y
+                                            : ic->kind == FK_SUB ? x - y : x * y;
+                                Rf[ins.a] = lisp_fixnum(r);
+                            } else {
+                                slow = true;
+                            }
+                            break;
+                        }
+                        case FK_LT: case FK_LE: case FK_GT: case FK_GE: case FK_NUMEQ: {
+                            lisp_value b = Rf[ins.c];
+                            if (lisp_is_fixnum(a) && lisp_is_fixnum(b)) {
+                                int64_t x = lisp_fixnum_val(a), y = lisp_fixnum_val(b);
+                                bool ok = ic->kind == FK_LT ? x < y
+                                          : ic->kind == FK_LE ? x <= y
+                                          : ic->kind == FK_GT ? x > y
+                                          : ic->kind == FK_GE ? x >= y : x == y;
+                                Rf[ins.a] = ok ? LISP_TRUE : LISP_FALSE;
+                            } else {
+                                slow = true;
+                            }
+                            break;
+                        }
+                        case FK_EQ:
+                            Rf[ins.a] = (a == Rf[ins.c]) ? LISP_TRUE : LISP_FALSE;
+                            break;
+                        case FK_CONS: {
+                            lisp_value c = lisp_cons(a, Rf[ins.c]);
+                            if (c == LISP_UNDEF) { err = "out of memory"; goto fail; }
+                            Rf[ins.a] = c;
+                            break;
+                        }
+                        case FK_CAR:
+                            if (lisp_is_pair(a)) Rf[ins.a] = lisp_car(a);
+                            else slow = true;  // call builtin car -> oracle's error
+                            break;
+                        case FK_CDR:
+                            if (lisp_is_pair(a)) Rf[ins.a] = lisp_cdr(a);
+                            else slow = true;
+                            break;
+                        case FK_NULLP:
+                            Rf[ins.a] = lisp_is_empty(a) ? LISP_TRUE : LISP_FALSE;
+                            break;
+                        case FK_PAIRP:
+                            Rf[ins.a] = lisp_is_pair(a) ? LISP_TRUE : LISP_FALSE;
+                            break;
+                        case FK_NOT:
+                            Rf[ins.a] = lisp_truthy(a) ? LISP_FALSE : LISP_TRUE;
+                            break;
+                        default: slow = true; break;
+                    }
                 } else {
-                    lisp_value as[2] = {a, b};
-                    lisp_value r = lbc_call_proc(f->chunk->consts[ins.d], as, 2, &err);
+                    slow = true;  // operator was redefined -> call the new binding
+                }
+                if (slow) {
+                    lisp_value as[2];
+                    int n = fastkind_unary((fastkind)ic->kind) ? 1 : 2;
+                    as[0] = a;
+                    if (n == 2) as[1] = Rf[ins.c];
+                    lisp_value r = lbc_call_proc(cur, as, n, &err);
                     if (r == LISP_UNDEF && err != NULL) goto fail;
                     Rf[ins.a] = r;
                 }
                 break;
             }
-            case ROP_LT: case ROP_LE: case ROP_GT: case ROP_GE: case ROP_NUMEQ: {
-                lisp_value a = Rf[ins.b], b = Rf[ins.c];
-                if (lisp_is_fixnum(a) && lisp_is_fixnum(b)) {
-                    int64_t x = lisp_fixnum_val(a), y = lisp_fixnum_val(b);
-                    bool ok = ins.op == ROP_LT ? x < y : ins.op == ROP_LE ? x <= y
-                              : ins.op == ROP_GT ? x > y : ins.op == ROP_GE ? x >= y
-                              : x == y;
-                    Rf[ins.a] = ok ? LISP_TRUE : LISP_FALSE;
-                } else {
-                    lisp_value as[2] = {a, b};
-                    lisp_value r = lbc_call_proc(f->chunk->consts[ins.d], as, 2, &err);
-                    if (r == LISP_UNDEF && err != NULL) goto fail;
-                    Rf[ins.a] = r;
-                }
-                break;
-            }
-            case ROP_CONS: {
-                lisp_value c = lisp_cons(Rf[ins.b], Rf[ins.c]);
-                if (c == LISP_UNDEF) { err = "out of memory"; goto fail; }
-                Rf[ins.a] = c;
-                break;
-            }
-            case ROP_CAR:
-                if (!lisp_is_pair(Rf[ins.b])) { err = "car: not a pair"; goto fail; }
-                Rf[ins.a] = lisp_car(Rf[ins.b]);
-                break;
-            case ROP_CDR:
-                if (!lisp_is_pair(Rf[ins.b])) { err = "cdr: not a pair"; goto fail; }
-                Rf[ins.a] = lisp_cdr(Rf[ins.b]);
-                break;
-            case ROP_NULLP: Rf[ins.a] = lisp_is_empty(Rf[ins.b]) ? LISP_TRUE : LISP_FALSE; break;
-            case ROP_PAIRP: Rf[ins.a] = lisp_is_pair(Rf[ins.b]) ? LISP_TRUE : LISP_FALSE; break;
-            case ROP_NOT: Rf[ins.a] = lisp_truthy(Rf[ins.b]) ? LISP_FALSE : LISP_TRUE; break;
             case ROP_CALL: {
                 int callbase = ins.a, n = ins.b;
                 lisp_value callee = Rf[callbase];
