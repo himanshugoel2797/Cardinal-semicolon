@@ -135,6 +135,7 @@ typedef enum {
     ROP_CELLSET,    // cell-set!(r[a], r[b]) -- write through a captured binding
     ROP_JEQK,       // if r[a] == consts[b] then pc = c (raw identity; for `case`)
     ROP_MODOP,      // r[a] = module-op(consts[b]=form) against this chunk's genv
+    ROP_DEFG,       // define consts[b] = r[a] in this chunk's genv (top-level define)
 } rop;
 
 typedef struct {
@@ -227,6 +228,8 @@ typedef struct fnstate {
     lisp_value self_name; // this function's own name for self-recursion, or UNDEF
     int freereg;          // register VM: next free register (locals + temps share)
     int maxreg;           // register VM: high-water (== chunk->nregs)
+    bool toplevel;        // current body is global scope -> `define` is a GLOBAL
+                          // define (set false on entering a lambda/let body)
 } fnstate;
 
 typedef struct {
@@ -1792,62 +1795,115 @@ static void rcompile_body(compiler *C, fnstate *fn, lisp_value body, int dst,
     // self-call still uses the fast LOADSELF; a sibling call goes through f's
     // cell.
     bcchunk *k = fn->chunk;
-    int dslot[LBC_MAX_LOCALS], nd = 0;
-    lisp_value dname[LBC_MAX_LOCALS], dform[LBC_MAX_LOCALS];
-    bool dlam[LBC_MAX_LOCALS];
-    while (lisp_is_pair(body)) {
-        lisp_value form = lisp_car(body);
-        if (!(lisp_is_pair(form) && sym_is(lisp_car(form), "define")))
-            break;
-        lisp_value rest = lisp_cdr(form);
-        if (!lisp_is_pair(rest))
-            lbc_decline(C, "malformed define");
-        lisp_value target = lisp_car(rest);
-        lisp_value nm;
-        bool islam;
-        if (lisp_is_symbol(target)) {
-            if (!lisp_is_pair(lisp_cdr(rest)))
+    if (fn->toplevel) {
+        // Top-level defines are GLOBAL definitions (lisp_env_define on genv). A
+        // (define (f ...) ...) lambda keeps self_name f so a self-call still uses
+        // the fast LOADSELF; sibling/forward references resolve as ordinary
+        // globals (looked up at call time, like the tree-walker).
+        lisp_value lastsym = LISP_UNDEF;  // a define's value is its name (tree-walker parity)
+        while (lisp_is_pair(body)) {
+            lisp_value form = lisp_car(body);
+            if (!(lisp_is_pair(form) && sym_is(lisp_car(form), "define")))
+                break;
+            lisp_value rest = lisp_cdr(form);
+            if (!lisp_is_pair(rest))
                 lbc_decline(C, "malformed define");
-            nm = target;
-            islam = false;
-        } else if (lisp_is_pair(target)) {
-            nm = lisp_car(target);
-            if (!lisp_is_symbol(nm))
-                lbc_decline(C, "define: name must be a symbol");
-            islam = true;
-        } else {
-            lbc_decline(C, "malformed define");
-            return;  // unreachable; silences -Wmaybe-uninitialized
-        }
-        if (nd >= LBC_MAX_LOCALS)
-            lbc_decline(C, "too many internal defines");
-        int slot = ralloc(C, fn);
-        remit(C, k, ROP_LOADK, slot, add_const(C, k, LISP_UNDEF), 0, 0);
-        remit(C, k, ROP_MKCELL, slot, 0, 0, 0);
-        bind_local(C, fn, nm, slot);
-        mark_boxed(fn);
-        dname[nd] = nm;
-        dslot[nd] = slot;
-        dform[nd] = form;
-        dlam[nd] = islam;
-        nd++;
-        body = lisp_cdr(body);
-    }
-    for (int i = 0; i < nd; i++) {
-        int save2 = fn->freereg, v;
-        lisp_value rest = lisp_cdr(dform[i]);
-        if (dlam[i]) {  // (define (f . a) body...)
             lisp_value target = lisp_car(rest);
-            bcchunk *child = rcompile_lambda(C, fn, lisp_cdr(target),
-                                             lisp_cdr(rest), dname[i]);
-            int ci = radd_child(C, k, child);
-            v = ralloc(C, fn);
-            remit(C, k, ROP_CLOSURE, v, ci, 0, 0);
-        } else {  // (define x val)
-            v = rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
+            int save2 = fn->freereg, v;
+            lisp_value nm;
+            if (lisp_is_symbol(target)) {
+                if (!lisp_is_pair(lisp_cdr(rest)))
+                    lbc_decline(C, "malformed define");
+                nm = target;
+                v = rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
+            } else if (lisp_is_pair(target)) {
+                nm = lisp_car(target);
+                if (!lisp_is_symbol(nm))
+                    lbc_decline(C, "define: name must be a symbol");
+                bcchunk *child =
+                    rcompile_lambda(C, fn, lisp_cdr(target), lisp_cdr(rest), nm);
+                int ci = radd_child(C, k, child);
+                v = ralloc(C, fn);
+                remit(C, k, ROP_CLOSURE, v, ci, 0, 0);
+            } else {
+                lbc_decline(C, "malformed define");
+                return;  // unreachable
+            }
+            remit(C, k, ROP_DEFG, v, add_const(C, k, nm), 0, 0);
+            fn->freereg = save2;
+            lastsym = nm;
+            body = lisp_cdr(body);
         }
-        remit(C, k, ROP_CELLSET, dslot[i], v, 0, 0);
-        fn->freereg = save2;
+        // A trailing/standalone define yields its NAME (matches the tree-walker),
+        // not unspecified.
+        if (!lisp_is_pair(body) && lastsym != LISP_UNDEF) {
+            int r = tail ? ralloc(C, fn) : dst;
+            remit(C, k, ROP_LOADK, r, add_const(C, k, lastsym), 0, 0);
+            if (tail)
+                remit(C, k, ROP_RET, r, 0, 0, 0);
+            return;
+        }
+    } else {
+        // Leading INTERNAL defines: a mutually-recursive group (letrec*). Bind
+        // every name to an undef cell up front so the inits can reference each
+        // other (forward + mutual recursion), then compile each init in scope.
+        int dslot[LBC_MAX_LOCALS], nd = 0;
+        lisp_value dname[LBC_MAX_LOCALS], dform[LBC_MAX_LOCALS];
+        bool dlam[LBC_MAX_LOCALS];
+        while (lisp_is_pair(body)) {
+            lisp_value form = lisp_car(body);
+            if (!(lisp_is_pair(form) && sym_is(lisp_car(form), "define")))
+                break;
+            lisp_value rest = lisp_cdr(form);
+            if (!lisp_is_pair(rest))
+                lbc_decline(C, "malformed define");
+            lisp_value target = lisp_car(rest);
+            lisp_value nm;
+            bool islam;
+            if (lisp_is_symbol(target)) {
+                if (!lisp_is_pair(lisp_cdr(rest)))
+                    lbc_decline(C, "malformed define");
+                nm = target;
+                islam = false;
+            } else if (lisp_is_pair(target)) {
+                nm = lisp_car(target);
+                if (!lisp_is_symbol(nm))
+                    lbc_decline(C, "define: name must be a symbol");
+                islam = true;
+            } else {
+                lbc_decline(C, "malformed define");
+                return;  // unreachable; silences -Wmaybe-uninitialized
+            }
+            if (nd >= LBC_MAX_LOCALS)
+                lbc_decline(C, "too many internal defines");
+            int slot = ralloc(C, fn);
+            remit(C, k, ROP_LOADK, slot, add_const(C, k, LISP_UNDEF), 0, 0);
+            remit(C, k, ROP_MKCELL, slot, 0, 0, 0);
+            bind_local(C, fn, nm, slot);
+            mark_boxed(fn);
+            dname[nd] = nm;
+            dslot[nd] = slot;
+            dform[nd] = form;
+            dlam[nd] = islam;
+            nd++;
+            body = lisp_cdr(body);
+        }
+        for (int i = 0; i < nd; i++) {
+            int save2 = fn->freereg, v;
+            lisp_value rest = lisp_cdr(dform[i]);
+            if (dlam[i]) {  // (define (f . a) body...)
+                lisp_value target = lisp_car(rest);
+                bcchunk *child = rcompile_lambda(C, fn, lisp_cdr(target),
+                                                 lisp_cdr(rest), dname[i]);
+                int ci = radd_child(C, k, child);
+                v = ralloc(C, fn);
+                remit(C, k, ROP_CLOSURE, v, ci, 0, 0);
+            } else {  // (define x val)
+                v = rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
+            }
+            remit(C, k, ROP_CELLSET, dslot[i], v, 0, 0);
+            fn->freereg = save2;
+        }
     }
     if (!lisp_is_pair(body)) {
         int r = tail ? ralloc(C, fn) : dst;
@@ -1948,7 +2004,10 @@ static void rcompile_let(compiler *C, fnstate *fn, int kind, lisp_value binds,
             }
         }
     }
+    bool save_tl = fn->toplevel;
+    fn->toplevel = false;  // a let body is a new scope -> defines are local
     rcompile_body(C, fn, lbody, tail ? -1 : dst, tail);
+    fn->toplevel = save_tl;
     fn->freereg = save_fr;
     fn->nlocals = save_nl;
 }
@@ -2449,6 +2508,7 @@ bool rlbc_compile(lisp_value genv, lisp_value expr, bcchunk **out,
     memset(&fn, 0, sizeof(fn));
     fn.chunk = chunk_new(&C);
     fn.self_name = LISP_UNDEF;
+    fn.toplevel = true;  // a `define` in this body is a GLOBAL definition
     rcompile_body(&C, &fn, lisp_cons(expr, LISP_EMPTY), -1, true);
     fn.chunk->nregs = fn.maxreg;
     *out = fn.chunk;
@@ -2520,6 +2580,33 @@ typedef struct lbc_vm {
     int depth, framecap;
 } lbc_vm;
 
+// Grow the register / frame stacks on demand so recursion depth is bounded by
+// memory (like the tree-walker's heap-linked frames), not a fixed cap. Frame
+// windows are offsets into R, so a realloc that moves R keeps them valid; the
+// caller refreshes its local R/frames pointers afterward.
+static bool lbc_vm_grow_regs(lbc_vm *vm, int need) {
+    int nc = vm->regcap * 2;
+    if (nc < need)
+        nc = need;
+    lisp_value *nr = (lisp_value *)realloc(vm->R, sizeof(lisp_value) * (size_t)nc);
+    if (nr == NULL)
+        return false;
+    vm->R = nr;
+    vm->regcap = nc;
+    return true;
+}
+static bool lbc_vm_grow_frames(lbc_vm *vm, int need) {
+    int nc = vm->framecap * 2;
+    if (nc < need)
+        nc = need;
+    rframe *nf = (rframe *)realloc(vm->frames, sizeof(rframe) * (size_t)nc);
+    if (nf == NULL)
+        return false;
+    vm->frames = nf;
+    vm->framecap = nc;
+    return true;
+}
+
 // Run `vm` until its budget is exhausted (SUSPENDED), it finishes (DONE; result
 // in *out), or it errors (ERROR; message in *errout). Budget is charged per call
 // + loop back-edge against cx->budget; a primitive that parks the context (e.g.
@@ -2533,17 +2620,19 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
     int depth = vm->depth;
     const char *err = NULL;
     for (;;) {
+        // Publish depth EVERY iteration so the precise GC root scan (lbc_ctx_mark)
+        // sees the correct frame stack even for a collection triggered mid-
+        // instruction -- e.g. by an allocation inside a primitive call, or by a
+        // nested context run (ctx-step) re-entering the collector. frames[i].pc
+        // already lives in the frame array, so the whole resume state is current.
+        vm->depth = depth;
         if (cx != NULL) {
             // Safe point: the register prefix + frame closures are the complete
             // root set, so a collection here strands nothing in a C temporary.
-            if (cx->heap != NULL && lisp_heap_wants_gc(cx->heap)) {
-                vm->depth = depth;
+            if (cx->heap != NULL && lisp_heap_wants_gc(cx->heap))
                 lisp_heap_collect(cx->heap);
-            }
-            if (cx->budget <= 0) {
-                vm->depth = depth;
+            if (cx->budget <= 0)
                 return LISP_CTX_SUSPENDED;
-            }
         }
         rframe *f = &frames[depth - 1];
         lisp_value *Rf = R + f->base;  // frame-relative register window
@@ -2686,6 +2775,9 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
                 Rf[ins.a] = r;
                 break;
             }
+            case ROP_DEFG:
+                lisp_env_define(f->chunk->genv, f->chunk->consts[ins.b], Rf[ins.a]);
+                break;
             case ROP_CALL: {
                 if (cx != NULL) cx->budget--;  // a call is a reduction
                 int callbase = ins.a, n = ins.b;
@@ -2693,8 +2785,15 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
                 if (LBC_IS_CLO(callee)) {
                     bcchunk *ck = LBC_CLO(callee)->chunk;
                     int cbase = f->base + callbase + 1;  // args already here -> zero copy
-                    if (cbase + ck->nregs > vm->regcap) { err = "register stack overflow"; goto fail; }
-                    if (depth >= vm->framecap) { err = "call depth exceeded"; goto fail; }
+                    if (cbase + ck->nregs > vm->regcap) {
+                        if (!lbc_vm_grow_regs(vm, cbase + ck->nregs)) { err = "out of memory"; goto fail; }
+                        R = vm->R;  // realloc may have moved the register stack
+                    }
+                    if (depth >= vm->framecap) {
+                        if (!lbc_vm_grow_frames(vm, depth + 1)) { err = "out of memory"; goto fail; }
+                        frames = vm->frames;
+                        f = &frames[depth - 1];
+                    }
                     if (!init_callee(R, cbase, ck, n, &err)) goto fail;
                     frames[depth] = (rframe){ck, LBC_CLO(callee), cbase, 0, f->base + callbase};
                     depth++;
@@ -2713,7 +2812,10 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
                     bcchunk *ck = LBC_CLO(callee)->chunk;
                     for (int i = 0; i < n; i++)        // move args down to the window base
                         Rf[i] = Rf[callbase + 1 + i];
-                    if (f->base + ck->nregs > vm->regcap) { err = "register stack overflow"; goto fail; }
+                    if (f->base + ck->nregs > vm->regcap) {
+                        if (!lbc_vm_grow_regs(vm, f->base + ck->nregs)) { err = "out of memory"; goto fail; }
+                        R = vm->R;  // realloc may have moved the register stack
+                    }
                     if (!init_callee(R, f->base, ck, n, &err)) goto fail;
                     f->chunk = ck;
                     f->clo = LBC_CLO(callee);
@@ -2802,7 +2904,7 @@ lbc_status rlbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
 // so bring-up stays boot-safe. Gated by g_lbc_eval until validated.
 // ===========================================================================
 
-int g_lbc_eval = 0;  // route eval through the VM (off until P3b is validated)
+int g_lbc_eval = 1;  // route eval through the VM (off until P3b is validated)
 
 #define LBC_CTX_REGS 8192     // per-context register stack (bounds recursion depth)
 #define LBC_CTX_FRAMES 1024

@@ -419,8 +419,7 @@ static lisp_value prim_vectorp(lisp_value *a, int n, const char **e) {
 }
 static lisp_value prim_procp(lisp_value *a, int n, const char **e) {
     if (n != 1) return prim_err(e, "procedure? expects one argument");
-    return bool_val(lisp_is_objtype(a[0], LISP_OBJ_PRIMITIVE) ||
-                    lisp_is_objtype(a[0], LISP_OBJ_CLOSURE));
+    return bool_val(lisp_is_procedure(a[0]));
 }
 
 // --- More list operations ---------------------------------------------------
@@ -958,6 +957,7 @@ static void out(const char *s, size_t len) {
     if (g_out != NULL)
         g_out(s, len, g_out_ctx);
 }
+
 
 // Render `v` (write or display form) and push it to the output sink, growing past
 // the stack buffer if needed.

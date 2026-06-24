@@ -141,7 +141,7 @@ int main(void) {
     lisp_sched_init(&s2, 100000);
     s2.per_context_heaps = 1;
     lisp_value worker = lisp_eval_string(
-        "(spawn (lambda () (let loop ((i 0) (n 200000)) (if (= n 0) i (loop (+ i 1) (- n 1))))))",
+        "(spawn (lambda () (let loop ((i 0) (n 200000)) (if (= n 0) i (begin (cons i n) (loop (+ i 1) (- n 1)))))))",
         env, &err);
     g_core = 0;
     lisp_sched_run(&s2, 0);
