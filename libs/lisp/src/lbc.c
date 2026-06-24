@@ -2121,7 +2121,13 @@ static int rcompile_callseq(compiler *C, fnstate *fn, lisp_value e) {
     for (lisp_value a = args; lisp_is_pair(a); a = lisp_cdr(a)) {
         int r = ralloc(C, fn);
         rcompile_into(C, fn, lisp_car(a), r);
-        (void)r;
+        // The call needs its args in CONSECUTIVE registers base+1..base+n. A
+        // compound argument (e.g. an `if`) can leave scratch registers allocated
+        // above its result, so pin freereg back to r+1 -- otherwise the next arg
+        // lands one slot too high, leaving a gap the call then reads as a stale
+        // temporary (the bug behind scrambled multi-arg calls like (list (if ...)
+        // (if ...))).
+        fn->freereg = r + 1;
         n++;
     }
     return (base << 8) | n;  // pack base + nargs (n < 256, base < 256 in practice)
@@ -2300,7 +2306,7 @@ static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst) {
             for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
                 int r = ralloc(C, fn);
                 rcompile_into(C, fn, lisp_car(lisp_cdr(lisp_car(b))), r);
-                (void)r;
+                fn->freereg = r + 1;  // keep loop-init args consecutive (see rcompile_callseq)
                 n++;
             }
             remit(C, k, ROP_CALL, base, n, 0, 0);
@@ -2545,7 +2551,7 @@ static void rcompile_tail(compiler *C, fnstate *fn, lisp_value e) {
             for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
                 int r = ralloc(C, fn);
                 rcompile_into(C, fn, lisp_car(lisp_cdr(lisp_car(b))), r);
-                (void)r;
+                fn->freereg = r + 1;  // keep loop-init args consecutive (see rcompile_callseq)
                 n++;
             }
             remit(C, k, ROP_TAILCALL, base, n, 0, 0);
