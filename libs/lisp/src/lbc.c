@@ -3,53 +3,44 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-// lbc -- a prototype bytecode compiler + threaded VM for the base Lisp, built
-// per notes/core/lisp-bytecode.md. This is a HOST-ONLY prototype #included by a
-// single test (test_bytecode.c); it is deliberately NOT in libs/lisp/src (so it
-// never enters the kernel build or other tests) until the design is reviewed and
-// wired into the live evaluator as a real S-stage.
+// lbc -- the bytecode compiler + threaded register VM for the base Lisp, built
+// per notes/core/lisp-vm.md. Public surface in lbc.h.
 //
-// It demonstrates the architecture the note proposes:
+// Architecture:
 //   - cons-AST -> flat bytecode `chunk` with LEXICAL ADDRESSING (locals are
-//     slots, resolved at compile time; no runtime frame_find scan),
-//   - FLAT, BY-VALUE upvalue capture (immutable bindings => no escape analysis,
-//     no shared mutable env cells),
-//   - FROZEN-OP fast paths (+, -, *, comparisons, cons/car/cdr/null?/pair?/not,
-//     eq?) inlined as opcodes, with an exact fallback to the real primitive for
-//     the non-fixnum cases so results match the tree-walker bit-for-bit,
-//   - a THREADED VM with an explicit frame stack and PROPER TAIL CALLS, so loops
-//     (named-let / tail self-calls) run in O(1) frames,
-//   - DECLINE-TO-ORACLE: anything outside coverage makes the compiler decline,
-//     and the harness runs the form on the tree-walker -- so adding the backend
-//     can never regress correctness (the shader-JIT discipline).
+//     register slots, resolved at compile time; no runtime frame_find scan),
+//   - captured bindings are heap CELLS captured by reference (so set!-on-captured
+//     and mutual/forward local recursion work); non-captured locals are flat
+//     registers,
+//   - core operators stay redefinable: a hot op compiles to an inline-cached
+//     OPCALL that runs the inlined fixnum/pair path only while the operator still
+//     resolves to its builtin, else calls whatever it is now,
+//   - a THREADED VM with an explicit register stack + frame windows and PROPER
+//     TAIL CALLS, so loops run in O(1) frames with no per-call allocation.
 //
 // Values flowing through the VM are ordinary `lisp_value`s (dynamic typing is
-// preserved). Compiled closures are C-heap `bcclosure` structs referenced inside
-// the VM with the otherwise-unused tag 0b11 (LISP_TAG reserved); they never reach
-// the GC or the oracle. The prototype runs with the GC uninitialized (grow-only),
-// so there are no rooting concerns for a bounded test corpus.
+// preserved). Compiled closures are carried inside a lisp_value with the
+// otherwise-unused tag 0b11 (reserved by the core representation).
+//
+// FREESTANDING: no setjmp (the compiler's error path uses __builtin_setjmp /
+// __builtin_longjmp, which need no libc). This compiles into the kernel lisp
+// library; wiring it into the live evaluator (GC rooting of the register stack +
+// per-context suspend/resume) is the remaining P2/P3 work.
 
-#include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "lisp.h"
-#include "../src/internal.h"  // lisp_prim_t (for the thin VM->primitive call path)
+#include "lbc.h"
+#include "internal.h"  // lisp_prim_t (for the thin VM->primitive call path)
 
-// When set, a VM call to a built-in primitive invokes its C function pointer
-// directly with the operand-stack slice (zero-copy args, one err branch) instead
-// of routing through lisp_apply (which drives the full CEK machine). This is the
-// "break the C ABI for the hot path" experiment; toggled by the bench.
-static int g_thin_prim = 1;
+// A compile-time error unwinds to the top-level compile entry. __builtin_setjmp
+// needs a 5-word buffer and no libc -- the freestanding replacement for setjmp.
+typedef void *lbc_jmp_buf[5];
 
-// When set, a reference to a global resolves to its binding CELL at compile time
-// and loads via one cdr deref at runtime (the env stores each binding as a
-// mutable (sym . val) cons that define/set! mutate in place, so the cell is a
-// stable, repatchable slot) -- instead of a per-execution hash lookup. Toggled
-// by the bench.
-static int g_global_slots = 1;
+int g_thin_prim = 1;     // call a primitive's C fn directly (zero-copy args)
+int g_global_slots = 1;  // resolve a global to its binding cell at compile time
 
 // Call a Lisp procedure value with args (already contiguous, e.g. on the operand
 // stack). Primitives go through the thin path when enabled; closures (and the
@@ -59,6 +50,15 @@ static lisp_value lbc_call_proc(lisp_value callee, lisp_value *args, int n,
     if (g_thin_prim && lisp_is_objtype(callee, LISP_OBJ_PRIMITIVE))
         return ((lisp_prim_t *)lisp_obj(callee))->fn(args, n, err);
     return lisp_apply(callee, args, n, err);
+}
+
+// Zeroing allocation. The freestanding libc (common/) provides malloc but not
+// calloc, so zero the block explicitly.
+static void *lbc_zalloc(size_t n) {
+    void *p = malloc(n);
+    if (p != NULL)
+        memset(p, 0, n);
+    return p;
 }
 
 // A compiled-closure pointer is carried inside a lisp_value using tag 0b11, which
@@ -167,7 +167,7 @@ typedef struct {
     uint8_t kind;
 } bcic;
 
-typedef struct bcchunk {
+struct bcchunk {  // opaque typedef in lbc.h
     instr *code;
     int ncode, capcode;
     rinstr *rcode;     // register-form code (NULL if stack-compiled)
@@ -187,12 +187,12 @@ typedef struct bcchunk {
         int index;
     } updesc[LBC_MAX_LOCALS];
     int nupdesc;
-} bcchunk;
+};
 
-typedef struct bcclosure {
+struct bcclosure {  // opaque typedef in lbc.h
     bcchunk *chunk;
-    lisp_value upvals[];  // nupdesc entries, captured by value
-} bcclosure;
+    lisp_value upvals[];  // nupdesc entries, captured by reference (shared cells)
+};
 
 // --- Compiler ---------------------------------------------------------------
 
@@ -213,17 +213,17 @@ typedef struct fnstate {
 
 typedef struct {
     lisp_value genv;       // global env, for resolving globals + frozen prims
-    jmp_buf decline;       // longjmp target when a form is unsupported
+    lbc_jmp_buf decline;   // __builtin_longjmp target on a compile error
     const char *why;       // decline reason
 } compiler;
 
 static void lbc_decline(compiler *C, const char *why) {
     C->why = why;
-    longjmp(C->decline, 1);
+    __builtin_longjmp(C->decline, 1);
 }
 
 static void *lbc_xalloc(compiler *C, size_t n) {
-    void *p = calloc(1, n);
+    void *p = lbc_zalloc(n);
     if (p == NULL)
         lbc_decline(C, "out of memory");
     return p;
@@ -1356,12 +1356,12 @@ static void compile_tail(compiler *C, fnstate *fn, lisp_value e) {
 
 // --- Top-level compile entry ------------------------------------------------
 
-static bool lbc_compile(lisp_value genv, lisp_value expr, bcchunk **out,
+bool lbc_compile(lisp_value genv, lisp_value expr, bcchunk **out,
                         const char **why) {
     compiler C;
     memset(&C, 0, sizeof(C));
     C.genv = genv;
-    if (setjmp(C.decline)) {
+    if (__builtin_setjmp(C.decline)) {
         *why = C.why;
         return false;
     }
@@ -1424,7 +1424,7 @@ static bool setup_frame(vframe *f, bcclosure *clo, lisp_value *args, int argc,
     return true;
 }
 
-static bool vm_run(bcclosure *top, lisp_value genv, lisp_value *out,
+bool vm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                    const char **errout) {
     vframe *frames = (vframe *)malloc(sizeof(vframe) * LBC_MAX_FRAMES);
     if (frames == NULL) {
@@ -1662,9 +1662,7 @@ fail:
 
 // --- Public-ish prototype API -----------------------------------------------
 
-typedef enum { LBC_OK, LBC_DECLINED, LBC_ERR } lbc_status;
-
-static lbc_status lbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
+lbc_status lbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
                            const char **msg) {
     bcchunk *k = NULL;
     const char *why = NULL;
@@ -1672,7 +1670,7 @@ static lbc_status lbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
         *msg = why;
         return LBC_DECLINED;
     }
-    bcclosure *top = (bcclosure *)calloc(1, sizeof(bcclosure));
+    bcclosure *top = (bcclosure *)lbc_zalloc(sizeof(bcclosure));
     if (top == NULL) {
         *msg = "out of memory";
         return LBC_ERR;
@@ -2415,12 +2413,12 @@ static void rcompile_tail(compiler *C, fnstate *fn, lisp_value e) {
     remit(C, k, ROP_RET, r, 0, 0, 0);
 }
 
-static bool rlbc_compile(lisp_value genv, lisp_value expr, bcchunk **out,
+bool rlbc_compile(lisp_value genv, lisp_value expr, bcchunk **out,
                          const char **why) {
     compiler C;
     memset(&C, 0, sizeof(C));
     C.genv = genv;
-    if (setjmp(C.decline)) {
+    if (__builtin_setjmp(C.decline)) {
         *why = C.why;
         return false;
     }
@@ -2475,7 +2473,7 @@ static bool init_callee(lisp_value *R, int abase, bcchunk *k, int nargs,
     return true;
 }
 
-static bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
+bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                     const char **errout) {
     lisp_value *R = (lisp_value *)malloc(sizeof(lisp_value) * LBC_REGSTACK);
     rframe *frames = (rframe *)malloc(sizeof(rframe) * LBC_MAX_FRAMES);
@@ -2678,7 +2676,7 @@ fail:
     return false;
 }
 
-static lbc_status rlbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
+lbc_status rlbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
                             const char **msg) {
     bcchunk *k = NULL;
     const char *why = NULL;
@@ -2686,7 +2684,7 @@ static lbc_status rlbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
         *msg = why;
         return LBC_DECLINED;
     }
-    bcclosure *top = (bcclosure *)calloc(1, sizeof(bcclosure));
+    bcclosure *top = (bcclosure *)lbc_zalloc(sizeof(bcclosure));
     if (top == NULL) { *msg = "out of memory"; return LBC_ERR; }
     top->chunk = k;
     const char *err = NULL;
@@ -2696,3 +2694,28 @@ static lbc_status rlbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
     }
     return LBC_OK;
 }
+
+// --- accessors for the host differential test (lbc.h) -----------------------
+
+bcclosure *lbc_top(bcchunk *k) {
+    bcclosure *top = (bcclosure *)lbc_zalloc(sizeof(bcclosure));
+    if (top != NULL)
+        top->chunk = k;
+    return top;
+}
+
+int lbc_count_stack(bcchunk *k) {
+    int n = k->ncode;
+    for (int i = 0; i < k->nchildren; i++)
+        n += lbc_count_stack(k->children[i]);
+    return n;
+}
+
+int lbc_count_reg(bcchunk *k) {
+    int n = k->nrcode;
+    for (int i = 0; i < k->nchildren; i++)
+        n += lbc_count_reg(k->children[i]);
+    return n;
+}
+
+int lbc_chunk_nics(bcchunk *k) { return k->nics; }

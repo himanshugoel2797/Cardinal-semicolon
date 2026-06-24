@@ -3,16 +3,16 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-// Differential test + microbenchmark for the prototype bytecode backend
-// (lbc.inc), per notes/core/lisp-bytecode.md. For each program in a corpus it
-// compiles+runs the expression through the bytecode VM and compares the result
-// (and error-ness) bit-for-bit against the tree-walking evaluator (lisp_eval),
-// the oracle. Anything the compiler declines is run on the oracle and reported,
-// never failed -- decline-to-oracle keeps correctness a non-regression.
+// Differential test + microbenchmark for the bytecode backend (libs/lisp/src/
+// lbc.c, public surface lbc.h), per notes/core/lisp-vm.md. For each program in a
+// corpus it compiles+runs the expression through the bytecode VM and compares the
+// result (and error-ness) bit-for-bit against the tree-walking evaluator
+// (lisp_eval), the oracle. The register engine covers every expression form; the
+// legacy stack engine declines what it cannot do and is run on the oracle.
 //
-// Host-only: lbc.inc is #included here and nowhere else, so none of this enters
-// the kernel build. The GC is left uninitialized (grow-only heap), so a bounded
-// corpus has no rooting concerns.
+// lbc.c is now real kernel-lisp source (so the kernel and this host test compile
+// the same code); this harness drives it with the GC left uninitialized
+// (grow-only heap), so a bounded corpus has no rooting concerns.
 
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
@@ -21,7 +21,7 @@
 #include <time.h>
 
 #include "lisp.h"
-#include "lbc.inc"
+#include "../src/lbc.h"
 
 static void host_out(const char *s, size_t len, void *ctx) {
     (void)ctx;
@@ -234,12 +234,11 @@ static void test_redefinition(lisp_value genv) {
         redef_fails++;
         return;
     }
-    if (k->nics < 1) {
+    if (lbc_chunk_nics(k) < 1) {
         printf("  REDEF FAIL: expected an inline cache for (+ 2 3)\n");
         redef_fails++;
     }
-    bcclosure *top = (bcclosure *)calloc(1, sizeof(bcclosure));
-    top->chunk = k;
+    bcclosure *top = lbc_top(k);
     lisp_value out = LISP_UNDEF;
     const char *err = NULL;
     rvm_run(top, genv, &out, &err);
@@ -256,12 +255,11 @@ static void test_redefinition(lisp_value genv) {
     //    deopt) and still produce 6 via a normal call.
     bcchunk *k2 = NULL;
     if (rlbc_compile(genv, read1("(+ 2 3)"), &k2, &why)) {
-        if (k2->nics != 0) {
+        if (lbc_chunk_nics(k2) != 0) {
             printf("  REDEF FAIL: inline cache emitted for a redefined op\n");
             redef_fails++;
         }
-        bcclosure *t2 = (bcclosure *)calloc(1, sizeof(bcclosure));
-        t2->chunk = k2;
+        bcclosure *t2 = lbc_top(k2);
         out = LISP_UNDEF; err = NULL;
         rvm_run(t2, genv, &out, &err);
         expect_eq("compile-time deopt", out, 6);
@@ -503,19 +501,6 @@ static int fuzz(lisp_value genv, int iters) {
     return fails;
 }
 
-// Static instruction counts across a chunk tree (proxy for dispatch density).
-static int count_stack_instrs(bcchunk *k) {
-    int n = k->ncode;
-    for (int i = 0; i < k->nchildren; i++)
-        n += count_stack_instrs(k->children[i]);
-    return n;
-}
-static int count_reg_instrs(bcchunk *k) {
-    int n = k->nrcode;
-    for (int i = 0; i < k->nchildren; i++)
-        n += count_reg_instrs(k->children[i]);
-    return n;
-}
 
 static void bench(lisp_value genv) {
     // A tail-recursive counting loop -- the hot shape (named-let, frozen ops).
@@ -529,10 +514,8 @@ static void bench(lisp_value genv) {
         printf("\n[bench] compile declined: %s\n", why);
         return;
     }
-    bcclosure *tops = (bcclosure *)calloc(1, sizeof(bcclosure));
-    bcclosure *topr = (bcclosure *)calloc(1, sizeof(bcclosure));
-    tops->chunk = ks;
-    topr->chunk = kr;
+    bcclosure *tops = lbc_top(ks);
+    bcclosure *topr = lbc_top(kr);
 
     lisp_value sv = LISP_UNDEF, rv = LISP_UNDEF, ro = LISP_UNDEF;
     const char *err = NULL, *eo = NULL;
@@ -555,7 +538,7 @@ static void bench(lisp_value genv) {
            vequal(sv, ro) ? "ok" : "BAD", vequal(rv, ro) ? "ok" : "BAD",
            (vequal(sv, ro) && vequal(rv, ro)) ? "(match)" : "(MISMATCH)");
     printf("  static instrs (chunk tree):  stack %d  ->  register %d\n",
-           count_stack_instrs(ks), count_reg_instrs(kr));
+           lbc_count_stack(ks), lbc_count_reg(kr));
     printf("  tree-walker   %8.2f ms\n", t_or * 1000);
     printf("  stack VM      %8.2f ms   %6.2fx vs tree-walker\n", t_stk * 1000,
            t_or / t_stk);
@@ -571,8 +554,7 @@ static bcclosure *compile_top(lisp_value genv, const char *src) {
         printf("compile declined: %s\n", why);
         exit(3);
     }
-    bcclosure *top = (bcclosure *)calloc(1, sizeof(bcclosure));
-    top->chunk = k;
+    bcclosure *top = lbc_top(k);
     return top;
 }
 
