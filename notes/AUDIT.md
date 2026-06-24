@@ -116,6 +116,45 @@ atomic to preemption. Race on concurrent callers. *(Fixed: a dedicated
 keeps its LIFO-only release behaviour — only the most recent allocation can be
 returned — which is inherent to a bump allocator, not a bug.)*
 
+### [FIXED] Unsynchronised physical page allocator on SMP
+`modules/SysPhysicalMemory/src/page_allocator.c` — `physmem_alloc`/`physmem_free`
+mutated the free list (`btm_level`, a plain non-atomic ring buffer) with **no
+lock**, yet are called concurrently from every core (vmem page-table pages,
+`SysMemory` heap growth, `dma-alloc` device buffers). Two cores racing on the queue
+can corrupt it and hand out **overlapping physical pages**, after which one
+allocation's writes stomp another's live data. *(Fixed: a leaf `physmem_lock`
+(`local_spinlock`, taken after `cli()` like the bootstrap/SysMemory allocators)
+serialises both entry points; it nests inside vmem's `kmem.lock` and SysMemory's
+`alloc_lock` and takes no other lock, so there is no ordering hazard. Single-core
+behaviour unchanged.)*
+
+### [FIXED] AP/BSP kernel stack too small for the resident Lisp runtime — *the* intermittent SMP boot fault
+`kernel/src/platform/x86_64/pc/main.c` `alloc_ap_stack` gave each application
+processor a **16 KiB** stack (`malloc(4096*4)`); `boot.S` reserves the BSP the same
+16 KiB ("enough until threading is setup"). That sufficed for early single-threaded
+bring-up, but each core now runs the **whole resident Lisp runtime** on that stack —
+the compiler, the bytecode VM, the GC, and nested interrupt handlers. A deep compile
+interrupted by the periodic APIC timer tick overflows 16 KiB, and because the AP
+stack is `malloc`'d in the shared kernel heap arena the overflow **silently corrupts
+whatever module data sits just below it** — e.g. SysTimer's `apic_state` (a NOBITS
+`.lbss` global `elf_load` places in that arena), overwritten with a stack-resident
+heap pointer. The APIC timer handler then reads `apic_state` as a per-core TLS offset
+via `%gs` and faults on the garbage value. Different overflow victims → different
+faulting rips, so it read as a mysterious **~10%-of-boots `#GP`/`#PF`** during
+multi-core bring-up; `SMP=1` never hit it (one stack, and its overflow lands in
+kernel `.bss` slack, not `malloc`'d module data).
+
+> NB: this is exactly the "stack overflow" the older SysTaskMgr-era AP-fault
+> investigation below **ruled out** for *that* fault — 16 KiB was fine for the native
+> task scheduler, but not for the Lisp evaluator that replaced it.
+
+*(Fixed: both stacks enlarged **16 KiB → 256 KiB** — `AP_STACK_SIZE` in
+`alloc_ap_stack`; the `.bootstrap_stack` `.skip` in `boot.S` (`@nobits`, so no image
+cost). 80+ consecutive `SMP=2` boots clean (was ~1 in 10 faulting); `SMP=1` clean.
+Root-caused with a new panic-time **stack backtrace + active/kernel GS-base dump**
+added to `dump_trap_frame` in `modules/SysInterrupts/src/platform/x86_64/pc/idt.c` —
+worth keeping for future SMP crash triage.)*
+
 ### [FIXED] SMP application-processor (AP) bring-up — race resolved, APs active by default
 > **SUPERSEDED BY DESIGN CHANGE (per-core run queues).** The whole class of
 > cross-core scheduler races below was eliminated structurally rather than patched:
@@ -210,7 +249,11 @@ Ruled out so far:
 - **Stack overflow** — a canary at the bottom of the AP's 16 KiB bootstrap stack
   (`alloc_ap_stack`) stayed intact across runs where the `#PF` still fired, so the AP
   is not overflowing its bootstrap stack into adjacent heap. (Both bootstrap stacks are
-  16 KiB; not the cause here.)
+  16 KiB; not the cause here.) **[Later footnote]** correct *for this native-task
+  fault*, but the 16 KiB stack DID later prove too small once the resident **Lisp**
+  evaluator (compiler/VM/GC + interrupt nesting) ran on it — a separate intermittent
+  SMP boot fault, now fixed by enlarging both stacks to 256 KiB (see "[FIXED] AP/BSP
+  kernel stack too small for the resident Lisp runtime" above).
 
 Refined diagnosis (from the legible IST dumps): the restored task's saved registers
 are **foreign context**, not the task's own — in one build `rax` = the APIC physmap
