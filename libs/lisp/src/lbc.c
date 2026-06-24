@@ -2485,22 +2485,43 @@ static bool init_callee(lisp_value *R, int abase, bcchunk *k, int nargs,
     return true;
 }
 
-bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
-                    const char **errout) {
-    lisp_value *R = (lisp_value *)malloc(sizeof(lisp_value) * LBC_REGSTACK);
-    rframe *frames = (rframe *)malloc(sizeof(rframe) * LBC_MAX_FRAMES);
-    if (R == NULL || frames == NULL) {
-        free(R); free(frames); *errout = "out of memory"; return false;
-    }
-    const char *err = NULL;
-    int depth = 0;
-    if (top->chunk->nregs > LBC_REGSTACK) { err = "register stack overflow"; goto fail; }
-    for (int i = 0; i < top->chunk->nregs; i++)
-        R[i] = LISP_UNDEF;
-    frames[0] = (rframe){top->chunk, top, 0, 0, -1};
-    depth = 1;
+// Per-context VM execution state: the register stack + the frame-window stack,
+// persisted across suspensions so a context can yield at an instruction boundary
+// and resume exactly where it left off. The live prefix of R (and each active
+// frame's closure) is the precise GC root set of a suspended context
+// (lbc_ctx_mark). Sizes are per-vm so a context and the host driver can differ.
+typedef struct lbc_vm {
+    lisp_value *R;
+    int regcap;
+    rframe *frames;
+    int depth, framecap;
+} lbc_vm;
 
+// Run `vm` until its budget is exhausted (SUSPENDED), it finishes (DONE; result
+// in *out), or it errors (ERROR; message in *errout). Budget is charged per call
+// + loop back-edge against cx->budget; a primitive that parks the context (e.g.
+// %block / sleep) zeroes cx->budget, so the next safe-point check suspends. cx
+// may be NULL (the host driver): then the run is unbounded and never suspends and
+// there is no per-context heap to collect.
+static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_value genv, lisp_ctx_t *cx,
+                                   lisp_value *out, const char **errout) {
+    lisp_value *R = vm->R;
+    rframe *frames = vm->frames;
+    int depth = vm->depth;
+    const char *err = NULL;
     for (;;) {
+        if (cx != NULL) {
+            // Safe point: the register prefix + frame closures are the complete
+            // root set, so a collection here strands nothing in a C temporary.
+            if (cx->heap != NULL && lisp_heap_wants_gc(cx->heap)) {
+                vm->depth = depth;
+                lisp_heap_collect(cx->heap);
+            }
+            if (cx->budget <= 0) {
+                vm->depth = depth;
+                return LISP_CTX_SUSPENDED;
+            }
+        }
         rframe *f = &frames[depth - 1];
         lisp_value *Rf = R + f->base;  // frame-relative register window
         rinstr ins = f->chunk->rcode[f->pc++];
@@ -2534,7 +2555,13 @@ bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                 Rf[ins.a] = LBC_MK_CLO(c);
                 break;
             }
-            case ROP_JMP: f->pc = ins.a; break;
+            case ROP_JMP: {
+                int from = f->pc;
+                f->pc = ins.a;
+                if (cx != NULL && ins.a < from)
+                    cx->budget--;  // a loop back-edge is a reduction (safe point)
+                break;
+            }
             case ROP_JMPF: if (!lisp_truthy(Rf[ins.a])) f->pc = ins.b; break;
             case ROP_JMPT: if (lisp_truthy(Rf[ins.a])) f->pc = ins.b; break;
             case ROP_OPCALL: {
@@ -2630,13 +2657,14 @@ bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                     f->pc = ins.c;
                 break;
             case ROP_CALL: {
+                if (cx != NULL) cx->budget--;  // a call is a reduction
                 int callbase = ins.a, n = ins.b;
                 lisp_value callee = Rf[callbase];
                 if (LBC_IS_CLO(callee)) {
                     bcchunk *ck = LBC_CLO(callee)->chunk;
                     int cbase = f->base + callbase + 1;  // args already here -> zero copy
-                    if (cbase + ck->nregs > LBC_REGSTACK) { err = "register stack overflow"; goto fail; }
-                    if (depth >= LBC_MAX_FRAMES) { err = "call depth exceeded"; goto fail; }
+                    if (cbase + ck->nregs > vm->regcap) { err = "register stack overflow"; goto fail; }
+                    if (depth >= vm->framecap) { err = "call depth exceeded"; goto fail; }
                     if (!init_callee(R, cbase, ck, n, &err)) goto fail;
                     frames[depth] = (rframe){ck, LBC_CLO(callee), cbase, 0, f->base + callbase};
                     depth++;
@@ -2648,13 +2676,14 @@ bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                 break;
             }
             case ROP_TAILCALL: {
+                if (cx != NULL) cx->budget--;
                 int callbase = ins.a, n = ins.b;
                 lisp_value callee = Rf[callbase];
                 if (LBC_IS_CLO(callee)) {
                     bcchunk *ck = LBC_CLO(callee)->chunk;
                     for (int i = 0; i < n; i++)        // move args down to the window base
                         Rf[i] = Rf[callbase + 1 + i];
-                    if (f->base + ck->nregs > LBC_REGSTACK) { err = "register stack overflow"; goto fail; }
+                    if (f->base + ck->nregs > vm->regcap) { err = "register stack overflow"; goto fail; }
                     if (!init_callee(R, f->base, ck, n, &err)) goto fail;
                     f->chunk = ck;
                     f->clo = LBC_CLO(callee);
@@ -2664,7 +2693,7 @@ bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                     if (r == LISP_UNDEF && err != NULL) goto fail;
                     int ra = f->result_abs;
                     depth--;
-                    if (depth == 0) { *out = r; free(R); free(frames); return true; }
+                    if (depth == 0) { *out = r; vm->depth = 0; return LISP_CTX_DONE; }
                     R[ra] = r;
                 }
                 break;
@@ -2673,7 +2702,7 @@ bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                 lisp_value r = Rf[ins.a];
                 int ra = f->result_abs;
                 depth--;
-                if (depth == 0) { *out = r; free(R); free(frames); return true; }
+                if (depth == 0) { *out = r; vm->depth = 0; return LISP_CTX_DONE; }
                 R[ra] = r;
                 break;
             }
@@ -2681,9 +2710,37 @@ bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
         }
     }
 fail:
-    free(R); free(frames);
+    vm->depth = depth;
     *errout = err != NULL ? err : "error";
-    return false;
+    return LISP_CTX_ERROR;
+}
+
+// Host driver: run a top-level closure to completion in a transient, unbounded
+// vm (cx == NULL, so it never suspends). Used by the differential test/bench.
+bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out, const char **errout) {
+    lbc_vm vm;
+    vm.R = (lisp_value *)malloc(sizeof(lisp_value) * LBC_REGSTACK);
+    vm.frames = (rframe *)malloc(sizeof(rframe) * LBC_MAX_FRAMES);
+    if (vm.R == NULL || vm.frames == NULL) {
+        free(vm.R); free(vm.frames); *errout = "out of memory"; return false;
+    }
+    vm.regcap = LBC_REGSTACK;
+    vm.framecap = LBC_MAX_FRAMES;
+    bool ok = true;
+    if (top->chunk->nregs > vm.regcap) { *errout = "register stack overflow"; ok = false; }
+    if (ok) {
+        for (int i = 0; i < top->chunk->nregs; i++)
+            vm.R[i] = LISP_UNDEF;
+        vm.frames[0] = (rframe){top->chunk, top, 0, 0, -1};
+        vm.depth = 1;
+        lisp_value result = LISP_UNDEF;
+        if (lbc_vm_exec(&vm, genv, NULL, &result, errout) == LISP_CTX_ERROR)
+            ok = false;
+        else
+            *out = result;
+    }
+    free(vm.R); free(vm.frames);
+    return ok;
 }
 
 lbc_status rlbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
