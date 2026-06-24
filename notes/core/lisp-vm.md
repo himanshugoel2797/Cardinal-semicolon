@@ -224,13 +224,17 @@ the regression gate.
 - **P0 — Remove the shader tier + write this note.** `libs/lisp_shader/` was an
   unwired, host-only compute-kernel compiler (zero call sites in the OS); deleted
   wholesale. *Done.*
-- **P1 — Full-coverage compiler: cons AST → register chunk.** Lexical addressing;
-  flat registers + boxed cells (capture/`set!`/`letrec` analysis); **every** form
-  in the table above, including the ones the prototype declined (`letrec`, `case`,
-  `while`, `quasiquote`, mutual local recursion). No frozen ops — operators lower
-  to `CALL`/`OPCALL` through global slots. Differential-test the compiler by
-  running chunks under a reference chunk-walker and against `lisp_eval`; extend the
-  fuzzer to the full grammar.
+- **P1 — Full-coverage compiler: cons AST → register chunk.** *Done (expression
+  forms).* Lexical addressing; flat registers + boxed cells (a safe
+  over-approximating capture analysis) so `set!`-on-captured and mutual/forward
+  local recursion work; **every** expression-level special form compiles,
+  including the ones the prototype declined (`letrec`, `case`, `while`,
+  `quasiquote`). No frozen ops — core operators lower to a guarded inline-cache
+  `OPCALL` through their global slot; `case` matches by raw identity (`JEQK`);
+  quasiquote expands to `quote`/`cons`/`append`. Differential + fuzz green against
+  `lisp_eval` (corpus + 20000-case fuzzer, including redefinition deopt,
+  `set!`-on-captured, and `case`). Only `define-module`/`import`/`include` remain
+  — they are loader-level and land with the module system in P3.
 - **P2 — Threaded register VM** executing chunks under the `lisp_ctx` contract
   (budget/suspend/precise roots/heap-resident stack). Inline caches: `OPCALL` fast
   paths + monomorphic `CALL` caches; globals-as-slots. Differential + fuzz green.
