@@ -307,6 +307,7 @@ static void trace(lisp_value v) {
             mark_push(c->kont);
             mark_push(c->mailbox);
             mark_push(c->caps);  // the context's capability list (system heap)
+            lbc_ctx_mark(c);     // bytecode VM state (register stack + frames), if any
             break;
         }
         case LISP_OBJ_BCCLOSURE:
@@ -408,6 +409,7 @@ static void collect_heap_locked(struct lisp_heap *h) {
         mark_push(o->caps);  // caps live in the system heap (external here), but
                              // marking is a no-op past the firewall and keeps the
                              // ctx-root set in one place
+        lbc_ctx_mark(o);     // bytecode VM register stack + frame closures
     }
 
     while (g_ms_len > 0)

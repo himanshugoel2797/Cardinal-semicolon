@@ -74,6 +74,8 @@ typedef struct {
     const char *err;
     int64_t budget;
     lisp_heap_t *heap;   // own per-context heap (K3), or NULL to use the system heap
+    void *vm;            // bytecode VM state (lbc.c, lbc_ctxvm*), or NULL: NULL = not
+                         // yet prepared / tree-walker context; set on first resume
 } lisp_ctx_t;
 
 // GC-tracked allocation (gc.c). All heap Lisp objects are allocated through this
@@ -114,6 +116,21 @@ void lisp_gc_mark(lisp_value v);
 // and every lisp_value constant / inline-cache reachable through its chunk tree.
 // gc.c calls this; lbc.c owns the (opaque) chunk/closure layout.
 void lbc_closure_trace(lisp_value clo);
+
+// Bytecode VM <-> live-evaluator bridge (lbc.c). g_lbc_eval routes lisp_eval /
+// lisp_apply / lisp_ctx_resume through the VM when nonzero. lbc_ctx_prepare
+// compiles a context's control expr on first resume and returns its mode (1 = run
+// on the VM, 2 = declined -> tree-walker); lbc_ctx_run drives a VM-mode context;
+// lbc_ctx_mark roots its VM state during a collection; lbc_apply runs a procedure
+// to completion on the VM.
+extern int g_lbc_eval;
+int lbc_ctx_prepare(lisp_ctx_t *cx);
+lisp_ctx_status lbc_ctx_run(lisp_ctx_t *cx);
+void lbc_ctx_mark(lisp_ctx_t *cx);
+void lbc_ctx_free(lisp_ctx_t *cx);
+lisp_value lbc_apply(lisp_value proc, lisp_value *args, int argc, const char **err);
+lisp_value lbc_apply_reuse(lisp_value ctxv, lisp_value proc, lisp_value *args,
+                           int argc, const char **err);
 
 // The intern table, exposed so the GC can treat interned symbols as roots
 // (intern.c). Returns the slot array; *cap_out is its length. Slots are 0

@@ -134,6 +134,7 @@ typedef enum {
     ROP_CELLGET,    // r[a] = cell-ref(r[b]) -- read through a captured binding
     ROP_CELLSET,    // cell-set!(r[a], r[b]) -- write through a captured binding
     ROP_JEQK,       // if r[a] == consts[b] then pc = c (raw identity; for `case`)
+    ROP_MODOP,      // r[a] = module-op(consts[b]=form) against this chunk's genv
 } rop;
 
 typedef struct {
@@ -167,6 +168,9 @@ typedef struct {
 } bcic;
 
 struct bcchunk {  // opaque typedef in lbc.h
+    lisp_value genv;   // the env this chunk's globals resolve against (set!/LOADG/
+                       // module ops). Per-chunk because a run can call closures
+                       // compiled in different module envs.
     instr *code;
     int ncode, capcode;
     rinstr *rcode;     // register-form code (NULL if stack-compiled)
@@ -244,7 +248,9 @@ static void *lbc_xalloc(compiler *C, size_t n) {
 }
 
 static bcchunk *chunk_new(compiler *C) {
-    return (bcchunk *)lbc_xalloc(C, sizeof(bcchunk));
+    bcchunk *k = (bcchunk *)lbc_xalloc(C, sizeof(bcchunk));
+    k->genv = C->genv;  // every chunk in this compile shares the compile env
+    return k;
 }
 
 static int emit(compiler *C, bcchunk *k, bcop op, int32_t a, int32_t b) {
@@ -2284,6 +2290,11 @@ static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst) {
         }
         if (sym_is(head, "define"))
             lbc_decline(C, "define only supported at body head");
+        if (sym_is(head, "define-module") || sym_is(head, "import") ||
+            sym_is(head, "include")) {
+            remit(C, k, ROP_MODOP, dst, add_const(C, k, e), 0, 0);
+            return;
+        }
         if (is_special_head(head))
             lbc_decline(C, "form not supported by prototype");
 
@@ -2485,6 +2496,18 @@ static bool init_callee(lisp_value *R, int abase, bcchunk *k, int nargs,
     return true;
 }
 
+// Run a module special form (define-module / import / include) at runtime by
+// dispatching to its C handler (module.c). These do nested lisp_eval of the module
+// body, so they are compiled as an opcode rather than inlined.
+static lisp_value lbc_module_op(lisp_value form, lisp_value env, const char **err) {
+    lisp_value head = lisp_car(form);
+    if (sym_is(head, "define-module"))
+        return lisp_module_define(form, env, err);
+    if (sym_is(head, "import"))
+        return lisp_module_import(form, env, err);
+    return lisp_module_include(form, env, err);
+}
+
 // Per-context VM execution state: the register stack + the frame-window stack,
 // persisted across suspensions so a context can yield at an instruction boundary
 // and resume exactly where it left off. The live prefix of R (and each active
@@ -2503,7 +2526,7 @@ typedef struct lbc_vm {
 // %block / sleep) zeroes cx->budget, so the next safe-point check suspends. cx
 // may be NULL (the host driver): then the run is unbounded and never suspends and
 // there is no per-context heap to collect.
-static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_value genv, lisp_ctx_t *cx,
+static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
                                    lisp_value *out, const char **errout) {
     lisp_value *R = vm->R;
     rframe *frames = vm->frames;
@@ -2531,7 +2554,7 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_value genv, lisp_ctx_t *cx,
             case ROP_LOADUP: Rf[ins.a] = f->clo->upvals[ins.b]; break;
             case ROP_LOADG: {
                 lisp_value v;
-                if (!lisp_env_lookup(genv, f->chunk->consts[ins.b], &v)) {
+                if (!lisp_env_lookup(f->chunk->genv, f->chunk->consts[ins.b], &v)) {
                     err = "unbound variable"; goto fail;
                 }
                 Rf[ins.a] = v;
@@ -2540,7 +2563,7 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_value genv, lisp_ctx_t *cx,
             case ROP_LOADGS: Rf[ins.a] = lisp_cdr(f->chunk->consts[ins.b]); break;
             case ROP_LOADSELF: Rf[ins.a] = LBC_MK_CLO(f->clo); break;
             case ROP_SETG:
-                if (!lisp_env_set(genv, f->chunk->consts[ins.b], Rf[ins.a])) {
+                if (!lisp_env_set(f->chunk->genv, f->chunk->consts[ins.b], Rf[ins.a])) {
                     err = "set! on unbound variable"; goto fail;
                 }
                 break;
@@ -2656,6 +2679,13 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_value genv, lisp_ctx_t *cx,
                 if (Rf[ins.a] == f->chunk->consts[ins.b])
                     f->pc = ins.c;
                 break;
+            case ROP_MODOP: {
+                lisp_value r = lbc_module_op(f->chunk->consts[ins.b], f->chunk->genv,
+                                             &err);
+                if (r == LISP_UNDEF && err != NULL) goto fail;
+                Rf[ins.a] = r;
+                break;
+            }
             case ROP_CALL: {
                 if (cx != NULL) cx->budget--;  // a call is a reduction
                 int callbase = ins.a, n = ins.b;
@@ -2734,7 +2764,8 @@ bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out, const char **erro
         vm.frames[0] = (rframe){top->chunk, top, 0, 0, -1};
         vm.depth = 1;
         lisp_value result = LISP_UNDEF;
-        if (lbc_vm_exec(&vm, genv, NULL, &result, errout) == LISP_CTX_ERROR)
+        (void)genv;  // the vm resolves globals per-frame via chunk->genv
+        if (lbc_vm_exec(&vm, NULL, &result, errout) == LISP_CTX_ERROR)
             ok = false;
         else
             *out = result;
@@ -2762,6 +2793,228 @@ lbc_status rlbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
     return LBC_OK;
 }
 
+// ===========================================================================
+// Live-evaluator integration (internal.h): run a context on the VM.
+//
+// A context lazily compiles its control expr on first resume. If it compiles, the
+// context runs on the VM (mode 1); if the compiler declines (a form not yet
+// lowered -- e.g. nothing, currently), it falls back to the tree-walker (mode 2),
+// so bring-up stays boot-safe. Gated by g_lbc_eval until validated.
+// ===========================================================================
+
+int g_lbc_eval = 0;  // route eval through the VM (off until P3b is validated)
+
+#define LBC_CTX_REGS 8192     // per-context register stack (bounds recursion depth)
+#define LBC_CTX_FRAMES 1024
+#define LBC_BUDGET_BIG ((int64_t)1 << 60)
+
+typedef struct lbc_ctxvm {
+    lbc_vm vm;
+    lisp_value top;     // top-level closure (GC root)
+    lisp_value result;  // DONE value
+    int mode;           // 0 undecided, 1 VM, 2 tree-walker (declined)
+} lbc_ctxvm;
+
+static bool lbc_vm_alloc(lbc_vm *vm) {
+    vm->R = (lisp_value *)malloc(sizeof(lisp_value) * LBC_CTX_REGS);
+    vm->frames = (rframe *)malloc(sizeof(rframe) * LBC_CTX_FRAMES);
+    if (vm->R == NULL || vm->frames == NULL) {
+        free(vm->R); free(vm->frames); vm->R = NULL; vm->frames = NULL; return false;
+    }
+    vm->regcap = LBC_CTX_REGS;
+    vm->framecap = LBC_CTX_FRAMES;
+    vm->depth = 0;
+    return true;
+}
+
+// Compile a context's control expr and set up its VM on first resume. Returns the
+// mode (1 = VM ready, 2 = declined / OOM -> tree-walker). Idempotent.
+int lbc_ctx_prepare(lisp_ctx_t *cx) {
+    if (cx->vm != NULL)
+        return ((lbc_ctxvm *)cx->vm)->mode;
+    lbc_ctxvm *cv = (lbc_ctxvm *)lbc_zalloc(sizeof(lbc_ctxvm));
+    if (cv == NULL)
+        return 2;  // OOM -> tree-walker
+    cv->top = LISP_UNDEF;
+    cv->result = LISP_UNDEF;
+    cx->vm = cv;  // publish before compiling: a GC now finds cv (mode 0 -> only
+                  // top/result, both UNDEF, are marked; the vm fields are unread)
+    // Compile + the top closure live in the SYSTEM heap: chunks are immortal, and
+    // this keeps compile-time intermediates rooted by the conservative scan rather
+    // than stranded in a per-context heap that collects precisely.
+    lisp_heap_t *prev = lisp_gc_set_alloc_heap(lisp_gc_system_heap());
+    bcchunk *k = NULL;
+    const char *why = NULL;
+    bool ok = rlbc_compile(cx->env, cx->control, &k, &why);
+    bcclosure *top = ok ? lbc_top(k) : NULL;
+    if (top != NULL)
+        cv->top = LBC_MK_CLO(top);  // root it before lbc_vm_alloc / any later GC
+    bool vmok = (top != NULL) && lbc_vm_alloc(&cv->vm);
+    lisp_gc_set_alloc_heap(prev);
+    const char *err = NULL;
+    if (!vmok || k->nregs > cv->vm.regcap || k->nparams != 0 || k->has_rest) {
+        cv->mode = 2;  // decline / OOM / not a 0-arg thunk -> tree-walker
+        return 2;
+    }
+    for (int i = 0; i < k->nregs; i++)
+        cv->vm.R[i] = LISP_UNDEF;
+    cv->vm.frames[0] = (rframe){k, top, 0, 0, -1};
+    cv->vm.depth = 1;
+    cv->mode = 1;
+    (void)err;
+    return 1;
+}
+
+// Drive a VM-mode context for cx->budget reductions, translating the VM status
+// into the context status. Runs (and collects) in the context's own heap if any.
+lisp_ctx_status lbc_ctx_run(lisp_ctx_t *cx) {
+    lbc_ctxvm *cv = (lbc_ctxvm *)cx->vm;
+    lisp_heap_t *prev = (cx->heap != NULL) ? lisp_gc_set_alloc_heap(cx->heap) : NULL;
+    const char *err = NULL;
+    lisp_ctx_status st = lbc_vm_exec(&cv->vm, cx, &cv->result, &err);
+    if (cx->heap != NULL)
+        lisp_gc_set_alloc_heap(prev);
+    if (st == LISP_CTX_DONE) {
+        cx->accum = cv->result;
+        cx->status = LISP_CTX_DONE;
+    } else if (st == LISP_CTX_ERROR) {
+        cx->err = err;
+        cx->status = LISP_CTX_ERROR;
+    }
+    return st;
+}
+
+// Precise GC roots of a (possibly suspended) VM-mode context (gc.c).
+void lbc_ctx_mark(lisp_ctx_t *cx) {
+    lbc_ctxvm *cv = (lbc_ctxvm *)cx->vm;
+    if (cv == NULL)
+        return;
+    lisp_gc_mark(cv->top);
+    lisp_gc_mark(cv->result);
+    if (cv->mode != 1 || cv->vm.depth <= 0)
+        return;
+    // The contiguous register prefix up to the deepest frame's window end covers
+    // every live register across all frames; each active frame's closure too.
+    rframe *deep = &cv->vm.frames[cv->vm.depth - 1];
+    int high = deep->base + deep->chunk->nregs;
+    for (int i = 0; i < high; i++)
+        lisp_gc_mark(cv->vm.R[i]);
+    for (int i = 0; i < cv->vm.depth; i++)
+        lisp_gc_mark(LBC_MK_CLO(cv->vm.frames[i].clo));
+}
+
+// Free a context's VM state (transient apply contexts + completed eval contexts).
+void lbc_ctx_free(lisp_ctx_t *cx) {
+    lbc_ctxvm *cv = (lbc_ctxvm *)cx->vm;
+    if (cv == NULL)
+        return;
+    free(cv->vm.R);
+    free(cv->vm.frames);
+    free(cv);
+    cx->vm = NULL;
+}
+
+// Set up frame 0 of `cv` to apply closure `clo` to args. depth/frame are set
+// before init_callee (which may alloc a rest list -> a GC that must see the args
+// as roots). Returns false + *err on overflow/arity.
+static bool lbc_setup_apply(lbc_ctxvm *cv, bcclosure *clo, lisp_value *args,
+                            int argc, const char **err) {
+    bcchunk *k = clo->chunk;
+    if (k->nregs > cv->vm.regcap || argc > cv->vm.regcap) {
+        *err = "register stack overflow";
+        return false;
+    }
+    cv->top = LBC_MK_CLO(clo);
+    cv->result = LISP_UNDEF;
+    cv->mode = 1;
+    for (int i = 0; i < argc; i++)
+        cv->vm.R[i] = args[i];
+    cv->vm.frames[0] = (rframe){k, clo, 0, 0, -1};
+    cv->vm.depth = 1;
+    if (!init_callee(cv->vm.R, 0, k, argc, err))
+        return false;
+    int nset = k->has_rest ? k->nparams + 1 : argc;
+    for (int i = nset; i < k->nregs; i++)
+        cv->vm.R[i] = LISP_UNDEF;
+    return true;
+}
+
+// Drive a prepared apply context to completion (unbounded).
+static lisp_value lbc_run_apply(lisp_ctx_t *cx, const char **err) {
+    lisp_ctx_status st;
+    do {
+        cx->budget = LBC_BUDGET_BIG;
+        st = lbc_ctx_run(cx);
+    } while (st == LISP_CTX_SUSPENDED);
+    if (st == LISP_CTX_ERROR) {
+        *err = cx->err;
+        return LISP_UNDEF;
+    }
+    return cx->accum;
+}
+
+// apply: run `proc` to completion on the VM. A primitive is called directly; a
+// compiled closure runs in a transient context (a GC object on the C stack, so
+// its registers are rooted via lbc_ctx_mark while the run allocates). The
+// transient vm is freed at the end (the run is synchronous).
+lisp_value lbc_apply(lisp_value proc, lisp_value *args, int argc, const char **err) {
+    if (lisp_is_objtype(proc, LISP_OBJ_PRIMITIVE))
+        return ((lisp_prim_t *)lisp_obj(proc))->fn(args, argc, err);
+    if (!LBC_IS_CLO(proc)) {
+        *err = "attempt to call a non-procedure";
+        return LISP_UNDEF;
+    }
+    lisp_value ctxv = lisp_ctx_make(LISP_UNDEF, LISP_EMPTY);
+    if (ctxv == LISP_UNDEF) {
+        *err = "out of memory";
+        return LISP_UNDEF;
+    }
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    lbc_ctxvm *cv = (lbc_ctxvm *)lbc_zalloc(sizeof(lbc_ctxvm));
+    if (cv == NULL || !lbc_vm_alloc(&cv->vm)) {
+        free(cv);
+        *err = "out of memory";
+        return LISP_UNDEF;
+    }
+    cv->top = LISP_UNDEF;
+    cv->result = LISP_UNDEF;
+    cx->vm = cv;  // published before setup so a GC roots the args
+    lisp_value r = lbc_setup_apply(cv, LBC_CLO(proc), args, argc, err)
+                       ? lbc_run_apply(cx, err)
+                       : LISP_UNDEF;
+    lbc_ctx_free(cx);
+    return r;
+}
+
+// Like lbc_apply but reuses `ctxv`'s persistent VM state (the caller keeps ctxv
+// rooted across a loop), avoiding a per-call register-stack allocation -- the
+// path map/for-each/fold take.
+lisp_value lbc_apply_reuse(lisp_value ctxv, lisp_value proc, lisp_value *args,
+                           int argc, const char **err) {
+    if (lisp_is_objtype(proc, LISP_OBJ_PRIMITIVE))
+        return ((lisp_prim_t *)lisp_obj(proc))->fn(args, argc, err);
+    if (!LBC_IS_CLO(proc)) {
+        *err = "attempt to call a non-procedure";
+        return LISP_UNDEF;
+    }
+    lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    lbc_ctxvm *cv = (lbc_ctxvm *)cx->vm;
+    if (cv == NULL) {
+        cv = (lbc_ctxvm *)lbc_zalloc(sizeof(lbc_ctxvm));
+        if (cv == NULL || !lbc_vm_alloc(&cv->vm)) {
+            free(cv);
+            *err = "out of memory";
+            return LISP_UNDEF;
+        }
+        cv->top = LISP_UNDEF;
+        cv->result = LISP_UNDEF;
+        cx->vm = cv;
+    }
+    if (!lbc_setup_apply(cv, LBC_CLO(proc), args, argc, err))
+        return LISP_UNDEF;
+    return lbc_run_apply(cx, err);
+}
+
 // --- accessors for the host differential test (lbc.h) -----------------------
 
 bcclosure *lbc_top(bcchunk *k) { return lbc_alloc_closure(k, 0); }
@@ -2772,6 +3025,7 @@ bcclosure *lbc_top(bcchunk *k) { return lbc_alloc_closure(k, 0); }
 // inline-cache cells/expected primitives, and recursively its child chunks. The
 // chunk structs themselves are immortal C memory and are not GC objects.
 static void lbc_mark_chunk(bcchunk *k) {
+    lisp_gc_mark(k->genv);
     for (int i = 0; i < k->nconsts; i++)
         lisp_gc_mark(k->consts[i]);
     for (int i = 0; i < k->nics; i++) {
