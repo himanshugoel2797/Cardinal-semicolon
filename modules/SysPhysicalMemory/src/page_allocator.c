@@ -1,6 +1,7 @@
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysReg/registry.h"
 
+#include <cardinal/local_spinlock.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -32,6 +33,16 @@
 static queue_t btm_level;
 static uint64_t mem_size;
 static uint64_t free_mem;
+
+// The free-list (btm_level), free_mem, and the compaction scratch are shared by
+// every core: vmem_map allocates page-table pages and SysMemory grows its heap,
+// both through physmem_alloc, from any core. The underlying queue is a plain
+// non-atomic ring buffer, so concurrent alloc/free corrupt it (handing out
+// overlapping physical pages -> memory corruption). Serialise every mutation on
+// this leaf spinlock. Taken after cli() so a same-core interrupt that allocates
+// cannot deadlock against the holder; it is the innermost lock (it nests inside
+// vmem's kmem.lock and SysMemory's alloc_lock and takes no other lock itself).
+static int physmem_lock = 0;
 
 static uint64_t data_multiple;
 static uint64_t instr_multiple;
@@ -126,6 +137,10 @@ void physmem_free(uintptr_t addr, size_t size) {
         PANIC("Misaligned size");
 
     uint64_t page_cnt = size / BTM_LEVEL;
+
+    int cli_state = cli();
+    local_spinlock_lock(&physmem_lock);
+
     free_mem += size;
 
 #ifdef PHYSMEM_DEBUG_VERBOSE_HIGH
@@ -150,6 +165,9 @@ void physmem_free(uintptr_t addr, size_t size) {
         addr += cur_pg * BTM_LEVEL;
         insert_queue(val);
     }
+
+    local_spinlock_unlock(&physmem_lock);
+    sti(cli_state);
 }
 
 uintptr_t physmem_alloc(int domain, int color, physmem_alloc_flags_t flags,
@@ -172,6 +190,9 @@ uintptr_t physmem_alloc(int domain, int color, physmem_alloc_flags_t flags,
     // cleanly as OOM, not wrap to a tiny/zero count and spuriously "succeed".
     size = ALIGN_UP(size, BTM_LEVEL);
     uint64_t pg_cnt = size / BTM_LEVEL;
+
+    int cli_state = cli();
+    local_spinlock_lock(&physmem_lock);
 
     // dequeue and enqueue until a unit large enough for this allocation is found
     for (int32_t j = 0; j < 2; j++) {
@@ -213,6 +234,8 @@ uintptr_t physmem_alloc(int domain, int color, physmem_alloc_flags_t flags,
                 }
 #endif
 
+                local_spinlock_unlock(&physmem_lock);
+                sti(cli_state);
                 return ret_addr;
             } else
                 insert_queue(deq);
@@ -220,6 +243,8 @@ uintptr_t physmem_alloc(int domain, int color, physmem_alloc_flags_t flags,
         compact_queue();
     }
 
+    local_spinlock_unlock(&physmem_lock);
+    sti(cli_state);
     return PHYSMEM_NO_ALLOC;
 }
 
