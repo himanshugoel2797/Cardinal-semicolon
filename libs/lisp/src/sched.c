@@ -328,6 +328,24 @@ static lisp_value prim_yield(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// A context's mailbox + blocked flag are written by a cross-core `send` and read/
+// mutated by the owner in recv, so both sides serialise on the context's heap lock
+// (its messages live in that heap). A receiver without its own heap (system heap)
+// uses the runtime lock instead. No-ops single-core. The owner calls these from
+// its own core and allocates nothing while holding them (no nested re-lock).
+static void ctx_io_lock(lisp_ctx_t *cx) {
+    if (cx->heap != NULL)
+        lisp_heap_lock(cx->heap);
+    else
+        lisp_rt_lock();
+}
+static void ctx_io_unlock(lisp_ctx_t *cx) {
+    if (cx->heap != NULL)
+        lisp_heap_unlock(cx->heap);
+    else
+        lisp_rt_unlock();
+}
+
 // (send target message) -- deep-copy the message into target's mailbox and wake
 // it. Returns the (unspecified) void value.
 static lisp_value prim_send(lisp_value *a, int n, const char **e) {
@@ -341,15 +359,24 @@ static lisp_value prim_send(lisp_value *a, int n, const char **e) {
     // owns its messages and no SENDER-heap pointer survives across the boundary
     // (shared-nothing). A receiver with no own heap uses the system heap -- never
     // leave the copy in the sender's heap, or the sender's GC would free it under
-    // the receiver. Always switch (and always restore, including the error path).
+    // the receiver. The deposit, the mailbox append, and the wake all happen under
+    // the receiver's heap lock: the receiver may be running on another core, and
+    // its lock-free allocator/collector must not see a half-built message or a
+    // torn mailbox spine. Clearing `blocked` under the same lock that `%block`
+    // re-checks the mailbox under closes the check-then-block lost-wakeup window.
+    // Always restore the alloc heap and release the lock, including on the error
+    // path. (The lock is a no-op single-core, where there is no second core.)
     lisp_heap_t *dst = (tcx->heap != NULL) ? tcx->heap : lisp_gc_system_heap();
+    lisp_gc_xfer_lock(dst);
     lisp_heap_t *prev = lisp_gc_set_alloc_heap(dst);
     lisp_value copy = deep_copy(a[1], 0, e);
     bool ok = !(copy == LISP_UNDEF && *e != NULL) && mailbox_push(tcx, copy, e);
+    if (ok)
+        tcx->blocked = 0;  // a waiting receiver becomes runnable
     lisp_gc_set_alloc_heap(prev);
+    lisp_gc_xfer_unlock(dst);
     if (!ok)
         return LISP_UNDEF;  // deep_copy or mailbox_push set *e
-    tcx->blocked = 0;  // a waiting receiver becomes runnable
     return LISP_UNDEF;
 }
 
@@ -360,7 +387,11 @@ static lisp_value prim_mailbox_empty(lisp_value *a, int n, const char **e) {
     lisp_value self = lisp_current_ctx();
     if (self == LISP_EMPTY)
         return prim_err(e, "recv: not running under a scheduler");
-    return lisp_is_pair(as_ctx(self)->mailbox) ? LISP_FALSE : LISP_TRUE;
+    lisp_ctx_t *cx = as_ctx(self);
+    ctx_io_lock(cx);
+    bool empty = !lisp_is_pair(cx->mailbox);
+    ctx_io_unlock(cx);
+    return empty ? LISP_TRUE : LISP_FALSE;
 }
 
 // (%mailbox-pop) -- remove and return the oldest message of the current context.
@@ -371,15 +402,22 @@ static lisp_value prim_mailbox_pop(lisp_value *a, int n, const char **e) {
     if (self == LISP_EMPTY)
         return prim_err(e, "recv: not running under a scheduler");
     lisp_ctx_t *cx = as_ctx(self);
-    if (!lisp_is_pair(cx->mailbox))
+    ctx_io_lock(cx);
+    if (!lisp_is_pair(cx->mailbox)) {
+        ctx_io_unlock(cx);
         return prim_err(e, "recv: mailbox is empty");
+    }
     lisp_value msg = lisp_car(cx->mailbox);
     cx->mailbox = lisp_cdr(cx->mailbox);
+    ctx_io_unlock(cx);
     return msg;
 }
 
 // (%block) -- park the current context until a message arrives (a send clears the
-// blocked flag and wakes it). Suspends at the next safe point.
+// blocked flag and wakes it). Suspends at the next safe point. The mailbox is
+// re-checked under the lock: a `send` that lands between recv's %mailbox-empty?
+// and here would otherwise be lost (we would park on top of a delivered message),
+// so if one arrived we stay runnable and let (recv) retry and pop it.
 static lisp_value prim_block(lisp_value *a, int n, const char **e) {
     (void)a;
     (void)n;
@@ -387,8 +425,12 @@ static lisp_value prim_block(lisp_value *a, int n, const char **e) {
     if (self == LISP_EMPTY)
         return prim_err(e, "recv: not running under a scheduler");
     lisp_ctx_t *cx = as_ctx(self);
-    cx->blocked = 1;
-    cx->budget = 0;
+    ctx_io_lock(cx);
+    if (!lisp_is_pair(cx->mailbox)) {
+        cx->blocked = 1;
+        cx->budget = 0;
+    }
+    ctx_io_unlock(cx);
     return LISP_UNDEF;
 }
 
