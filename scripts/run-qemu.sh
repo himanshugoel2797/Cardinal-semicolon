@@ -87,6 +87,30 @@ if [ -n "${DISK:-}" ]; then
              -device ide-hd,drive=disk,bus=ahci0.0)
 fi
 
+# Optional USB. USB=<controller>-<device> attaches a host controller the Lisp USB
+# stack binds (uhci -> piix3-usb-uhci 8086:7020; xhci -> qemu-xhci 1b36:000d) plus
+# a device the class drivers claim: kbd (usb-kbd, HID), storage (usb-storage on a
+# small raw disk), hub (usb-hub with a kbd behind it). Drives coreusb + the HCI +
+# class drivers end to end.
+usb_args=()
+case "${USB:-none}" in
+  none) ;;
+  uhci-kbd)     usb_args=(-device piix3-usb-uhci,id=uhci -device usb-kbd,bus=uhci.0) ;;
+  xhci-kbd)     usb_args=(-device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0) ;;
+  uhci-hub)     usb_args=(-device piix3-usb-uhci,id=uhci
+                          -device usb-hub,bus=uhci.0,port=1
+                          -device usb-kbd,bus=uhci.0,port=1.1) ;;
+  xhci-storage|uhci-storage)
+    ctl="qemu-xhci"; bus="xhci"
+    [ "${USB}" = uhci-storage ] && { ctl="piix3-usb-uhci"; bus="uhci"; }
+    usbdisk="${USB_DISK:-/tmp/cardinal-usb-disk.img}"
+    [ -f "$usbdisk" ] || { command -v qemu-img >/dev/null && qemu-img create -f raw "$usbdisk" 8M >/dev/null; }
+    usb_args=(-device "$ctl,id=$bus"
+              -drive id=usbdisk,file="$usbdisk",format=raw,if=none
+              -device "usb-storage,drive=usbdisk,bus=$bus.0") ;;
+  *) echo "error: unknown USB=$USB (none|uhci-kbd|xhci-kbd|uhci-hub|uhci-storage|xhci-storage)" >&2; exit 1 ;;
+esac
+
 [ -f "$ISO" ] || { echo "error: ISO not found: $ISO (run the 'image' target first)" >&2; exit 1; }
 command -v qemu-system-x86_64 >/dev/null || { echo "error: qemu-system-x86_64 not installed" >&2; exit 1; }
 
@@ -110,6 +134,7 @@ common_args=(
   "${gpu_args[@]}"
   "${nic_args[@]}"
   "${disk_args[@]}"
+  "${usb_args[@]}"
   -no-reboot -no-shutdown
   -d guest_errors
 )
