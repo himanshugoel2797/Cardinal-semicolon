@@ -160,9 +160,27 @@ static const char *CORPUS[] = {
     // shared errors (both must error)
     "(car 5)",
     "(+ 1 'a)",
+    // boxed cells: set! on a captured variable (counter closures)
+    "(let ((c 0)) (let ((inc (lambda () (set! c (+ c 1)) c))) (inc) (inc) (inc)))",
+    "(let ((n 0)) (let ((get (lambda () n)) (put (lambda (v) (set! n v)))) (put 42) (get)))",
+    "(((lambda () (let ((n 0)) (lambda () (set! n (+ n 1)) n)))))",  // one-shot counter
+    // independent captured cells per closure instance
+    "(let ((mk (lambda () (let ((n 0)) (lambda () (set! n (+ n 1)) n)))))"
+    "  (let ((f (mk)) (g (mk))) (+ (f) (f) (g))))",  // 1+2+1 = 4
+    // letrec: mutual + forward local recursion
+    "(letrec ((ev? (lambda (n) (if (= n 0) #t (od? (- n 1)))))"
+    "         (od? (lambda (n) (if (= n 0) #f (ev? (- n 1)))))) (ev? 10))",
+    "(letrec ((f (lambda (n) (if (< n 1) 0 (f (- n 1)))))) (f 3))",
+    "(letrec ((a 1) (b (+ a 1))) (+ a b))",  // forward value reference (letrec*)
+    // mutual recursion via internal defines (letrec* group)
+    "(let () (define (ev n) (if (= n 0) #t (od (- n 1))))"
+    "        (define (od n) (if (= n 0) #f (ev (- n 1)))) (ev 8))",
+    // a deeper capture: closure over a loop variable, returned and called later
+    "(let ((fs (let loop ((i 0) (acc '()))"
+    "            (if (= i 3) acc (loop (+ i 1) (cons (lambda () i) acc))))))"
+    "  (+ ((car fs)) ((car (cdr fs)))))",  // captured loop vars are distinct per frame
     // declines (run on oracle; reported, not failed)
     "(case 1 ((1) 'a) (else 'b))",
-    "(letrec ((f (lambda (n) (if (< n 1) 0 (f (- n 1)))))) (f 3))",
 };
 
 // --- Redefinition / deopt test ----------------------------------------------
@@ -254,12 +272,15 @@ static lisp_value g_ops[16];  // interned operator/keyword symbols
 enum { OPA_ADD, OPA_SUB, OPA_MUL, OPC_LT, OPC_LE, OPC_GT, OPC_GE, OPC_EQ,
        OP_S_IF, OP_S_AND, OP_S_OR, OP_S_NOT, OP_S_LET, OP_S_LAMBDA };
 static lisp_value g_vpool[16];  // fresh variable-name symbols v0..v15
+static lisp_value g_set, g_begin;  // set! / begin, for the mutate-captured path
 
 static void fuzz_init(void) {
     const char *names[] = {"+", "-", "*", "<", "<=", ">", ">=", "=",
                            "if", "and", "or", "not", "let", "lambda"};
     for (int i = 0; i < 14; i++)
         g_ops[i] = lisp_make_symbol(names[i], strlen(names[i]));
+    g_set = lisp_make_symbol("set!", 4);
+    g_begin = lisp_make_symbol("begin", 5);
     for (int i = 0; i < 16; i++) {
         char nm[8];
         snprintf(nm, sizeof(nm), "v%d", i);
@@ -341,6 +362,16 @@ static lisp_value gen_num(fscope *s, int depth) {
             xs[0] = lam;
             xs[1] = arg;
             return lst(2, xs);
+        }
+        case 4: {  // ((lambda () (set! v NUM) v)) -- mutate a CAPTURED var via cell
+            if (s->nvars == 0)
+                return num_atom(s);
+            lisp_value v = s->vars[rnd() % (uint32_t)s->nvars];
+            lisp_value setf = lst(3, (lisp_value[]){g_set, v, gen_num(s, depth - 1)});
+            lisp_value body = lst(3, (lisp_value[]){g_begin, setf, v});
+            lisp_value lam = lisp_cons(g_ops[OP_S_LAMBDA],
+                                       lisp_cons(LISP_EMPTY, lisp_cons(body, LISP_EMPTY)));
+            return lst(1, (lisp_value[]){lam});  // immediately applied, 0 args
         }
         default:
             return num_atom(s);
