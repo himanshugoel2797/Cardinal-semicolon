@@ -1899,35 +1899,35 @@ static void rcompile_body(compiler *C, fnstate *fn, lisp_value body, int dst,
             return;
         }
     } else {
-        // Leading INTERNAL defines: a mutually-recursive group (letrec*). Bind
-        // every name to an undef cell up front so the inits can reference each
-        // other (forward + mutual recursion), then compile each init in scope.
+        // INTERNAL defines form a letrec* group. R7RS-small puts them at the body
+        // head, but the tree-walker (and R7RS-large) also allow a define AFTER an
+        // expression -- ported driver code relies on it (e.g. a let* body that
+        // set!s a binding, then defines its helpers). So pre-bind EVERY internal
+        // define name to an undef cell up front (forward/mutual refs resolve), then
+        // compile the body forms IN ORDER: a define evaluates its init and CELLSETs
+        // its cell in textual position; an expression compiles normally. This arm
+        // compiles the whole non-toplevel body and returns.
         int dslot[LBC_MAX_LOCALS], nd = 0;
-        lisp_value dname[LBC_MAX_LOCALS], dform[LBC_MAX_LOCALS];
-        bool dlam[LBC_MAX_LOCALS];
-        while (lisp_is_pair(body)) {
-            lisp_value form = lisp_car(body);
+        lisp_value dname[LBC_MAX_LOCALS];
+        for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b)) {
+            lisp_value form = lisp_car(b);
             if (!(lisp_is_pair(form) && sym_is(lisp_car(form), "define")))
-                break;
+                continue;
             lisp_value rest = lisp_cdr(form);
             if (!lisp_is_pair(rest))
                 lbc_decline(C, "malformed define");
-            lisp_value target = lisp_car(rest);
-            lisp_value nm;
-            bool islam;
+            lisp_value target = lisp_car(rest), nm;
             if (lisp_is_symbol(target)) {
                 if (!lisp_is_pair(lisp_cdr(rest)))
                     lbc_decline(C, "malformed define");
                 nm = target;
-                islam = false;
             } else if (lisp_is_pair(target)) {
                 nm = lisp_car(target);
                 if (!lisp_is_symbol(nm))
                     lbc_decline(C, "define: name must be a symbol");
-                islam = true;
             } else {
                 lbc_decline(C, "malformed define");
-                return;  // unreachable; silences -Wmaybe-uninitialized
+                return;
             }
             if (nd >= LBC_MAX_LOCALS)
                 lbc_decline(C, "too many internal defines");
@@ -1938,27 +1938,59 @@ static void rcompile_body(compiler *C, fnstate *fn, lisp_value body, int dst,
             mark_boxed(fn);
             dname[nd] = nm;
             dslot[nd] = slot;
-            dform[nd] = form;
-            dlam[nd] = islam;
             nd++;
+        }
+        if (!lisp_is_pair(body)) {  // empty body -> undef
+            int r = tail ? ralloc(C, fn) : dst;
+            remit(C, k, ROP_LOADK, r, add_const(C, k, LISP_UNDEF), 0, 0);
+            if (tail)
+                remit(C, k, ROP_RET, r, 0, 0, 0);
+            return;
+        }
+        while (lisp_is_pair(body)) {
+            lisp_value form = lisp_car(body);
+            bool islast = !lisp_is_pair(lisp_cdr(body));
+            if (lisp_is_pair(form) && sym_is(lisp_car(form), "define")) {
+                lisp_value rest = lisp_cdr(form), target = lisp_car(rest), nm;
+                int save2 = fn->freereg, v;
+                if (lisp_is_symbol(target)) {
+                    nm = target;
+                    v = rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
+                } else {
+                    nm = lisp_car(target);
+                    bcchunk *child = rcompile_lambda(C, fn, lisp_cdr(target),
+                                                     lisp_cdr(rest), nm);
+                    int ci = radd_child(C, k, child);
+                    v = ralloc(C, fn);
+                    remit(C, k, ROP_CLOSURE, v, ci, 0, 0);
+                }
+                int slot = -1;
+                for (int i = 0; i < nd; i++)
+                    if (dname[i] == nm) { slot = dslot[i]; break; }
+                remit(C, k, ROP_CELLSET, slot, v, 0, 0);
+                fn->freereg = save2;
+                if (islast) {  // a body ending in a define yields undef
+                    int r = tail ? ralloc(C, fn) : dst;
+                    remit(C, k, ROP_LOADK, r, add_const(C, k, LISP_UNDEF), 0, 0);
+                    if (tail)
+                        remit(C, k, ROP_RET, r, 0, 0, 0);
+                    return;
+                }
+            } else if (islast) {
+                if (tail)
+                    rcompile_tail(C, fn, form);
+                else
+                    rcompile_into(C, fn, form, dst);
+                return;
+            } else {
+                int save = fn->freereg;
+                int t = ralloc(C, fn);
+                rcompile_into(C, fn, form, t);
+                fn->freereg = save;  // discard the for-effect value
+            }
             body = lisp_cdr(body);
         }
-        for (int i = 0; i < nd; i++) {
-            int save2 = fn->freereg, v;
-            lisp_value rest = lisp_cdr(dform[i]);
-            if (dlam[i]) {  // (define (f . a) body...)
-                lisp_value target = lisp_car(rest);
-                bcchunk *child = rcompile_lambda(C, fn, lisp_cdr(target),
-                                                 lisp_cdr(rest), dname[i]);
-                int ci = radd_child(C, k, child);
-                v = ralloc(C, fn);
-                remit(C, k, ROP_CLOSURE, v, ci, 0, 0);
-            } else {  // (define x val)
-                v = rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
-            }
-            remit(C, k, ROP_CELLSET, dslot[i], v, 0, 0);
-            fn->freereg = save2;
-        }
+        return;
     }
     if (!lisp_is_pair(body)) {
         int r = tail ? ralloc(C, fn) : dst;
