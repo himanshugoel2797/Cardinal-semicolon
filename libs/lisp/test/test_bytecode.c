@@ -179,8 +179,28 @@ static const char *CORPUS[] = {
     "(let ((fs (let loop ((i 0) (acc '()))"
     "            (if (= i 3) acc (loop (+ i 1) (cons (lambda () i) acc))))))"
     "  (+ ((car fs)) ((car (cdr fs)))))",  // captured loop vars are distinct per frame
-    // declines (run on oracle; reported, not failed)
+    // case: identity match, multi-datum, else, no-match (-> unspecified)
     "(case 1 ((1) 'a) (else 'b))",
+    "(case 2 ((1) 'a) ((2 3) 'b) (else 'c))",
+    "(case 9 ((1) 'a) ((2 3) 'b) (else 'c))",
+    "(case 'y ((a b) 1) ((x y) 2) (else 3))",
+    "(case 5 ((1) 'a) ((2) 'b))",                 // no clause matches -> unspecified
+    "(let ((k 3)) (case k ((1 2) 10) ((3 4) 20) (else 30)))",
+    // while: counting loop with set! on flat locals; always yields unspecified
+    "(let ((i 0) (n 0)) (while (< i 5) (set! n (+ n i)) (set! i (+ i 1))) n)",
+    "(let ((i 0)) (while #f (set! i 99)) i)",
+    // while driving a captured (boxed) accumulator
+    "(let ((acc '()) (i 0))"
+    "  (while (< i 3) (set! acc (cons i acc)) (set! i (+ i 1)))"
+    "  ((lambda () acc)))",
+    // quasiquote: literals, unquote, splicing, leading/trailing splice, nesting
+    "(quasiquote (1 2 3))",
+    "(let ((x 5)) (quasiquote (a (unquote x) (unquote (+ x 1)) c)))",
+    "(quasiquote (0 (unquote-splicing (list 1 2)) 3))",
+    "(quasiquote ((unquote-splicing (list 1 2)) (unquote-splicing (list 3 4))))",
+    "(let ((x 7)) (quasiquote (unquote x)))",
+    "(quasiquote (1 (quasiquote (2 (unquote (+ 1 2))))))",  // nested: inner not evaluated
+    "(let ((xs (list 'b 'c))) (quasiquote (a (unquote-splicing xs) d)))",
 };
 
 // --- Redefinition / deopt test ----------------------------------------------
@@ -272,7 +292,7 @@ static lisp_value g_ops[16];  // interned operator/keyword symbols
 enum { OPA_ADD, OPA_SUB, OPA_MUL, OPC_LT, OPC_LE, OPC_GT, OPC_GE, OPC_EQ,
        OP_S_IF, OP_S_AND, OP_S_OR, OP_S_NOT, OP_S_LET, OP_S_LAMBDA };
 static lisp_value g_vpool[16];  // fresh variable-name symbols v0..v15
-static lisp_value g_set, g_begin;  // set! / begin, for the mutate-captured path
+static lisp_value g_set, g_begin, g_case, g_else;  // set!/begin/case/else
 
 static void fuzz_init(void) {
     const char *names[] = {"+", "-", "*", "<", "<=", ">", ">=", "=",
@@ -281,6 +301,8 @@ static void fuzz_init(void) {
         g_ops[i] = lisp_make_symbol(names[i], strlen(names[i]));
     g_set = lisp_make_symbol("set!", 4);
     g_begin = lisp_make_symbol("begin", 5);
+    g_case = lisp_make_symbol("case", 4);
+    g_else = lisp_make_symbol("else", 4);
     for (int i = 0; i < 16; i++) {
         char nm[8];
         snprintf(nm, sizeof(nm), "v%d", i);
@@ -321,7 +343,7 @@ static lisp_value gen_num(fscope *s, int depth) {
     if (depth <= 0)
         return num_atom(s);
     lisp_value xs[4];
-    switch ((int)(rnd() % 6)) {
+    switch ((int)(rnd() % 8)) {
         case 0:  // arithmetic
             xs[0] = g_ops[rnd() % 3];
             xs[1] = gen_num(s, depth - 1);
@@ -372,6 +394,20 @@ static lisp_value gen_num(fscope *s, int depth) {
             lisp_value lam = lisp_cons(g_ops[OP_S_LAMBDA],
                                        lisp_cons(LISP_EMPTY, lisp_cons(body, LISP_EMPTY)));
             return lst(1, (lisp_value[]){lam});  // immediately applied, 0 args
+        }
+        case 5: {  // (case NUM ((d..) NUM) ((d..) NUM) (else NUM)) -- terminating
+            lisp_value key = gen_num(s, depth - 1);
+            // datums are small fixnums (same range as num_atom) so matches happen
+            lisp_value d1 = lisp_fixnum((int)(rnd() % 41) - 20);
+            lisp_value d2 = lisp_fixnum((int)(rnd() % 41) - 20);
+            lisp_value d3 = lisp_fixnum((int)(rnd() % 41) - 20);
+            lisp_value c1 = lisp_cons(lisp_cons(d1, LISP_EMPTY),
+                                      lisp_cons(gen_num(s, depth - 1), LISP_EMPTY));
+            lisp_value c2 = lisp_cons(lst(2, (lisp_value[]){d2, d3}),
+                                      lisp_cons(gen_num(s, depth - 1), LISP_EMPTY));
+            lisp_value ce = lisp_cons(g_else,
+                                      lisp_cons(gen_num(s, depth - 1), LISP_EMPTY));
+            return lisp_cons(g_case, lisp_cons(key, lst(3, (lisp_value[]){c1, c2, ce})));
         }
         default:
             return num_atom(s);
