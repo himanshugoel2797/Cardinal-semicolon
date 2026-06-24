@@ -77,6 +77,7 @@ typedef enum {
     LISP_OBJ_KONT = 10,      // a continuation frame (explicit-stack evaluator)
     LISP_OBJ_CTX = 11,       // an execution context (the CEK machine state)
     LISP_OBJ_BYTES = 12,     // a mutable byte buffer (driver MMIO/DMA + bulk IPC)
+    LISP_OBJ_BCCLOSURE = 13, // a compiled closure: a bytecode chunk + captured cells (lbc.c)
     // reserved for later phases: MAP, BYTEVECTOR, BOX, ...
 } lisp_objtype;
 
