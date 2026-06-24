@@ -264,6 +264,15 @@ static void dump_trap_frame(regs_t *regs)
         dump_u64("cr2    : 0x", read_cr2());
     dump_u64("rip    : 0x", regs->rip);
     dump_u64("cs     : 0x", regs->cs);
+    {
+        // Active + kernel GS bases: a garbage active GS makes any per-core TLS
+        // (%gs:...) access -- e.g. the APIC timer handler's apic_state -- fault.
+        uint32_t lo, hi;
+        __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000101));
+        dump_u64("gsbase : 0x", ((uint64_t)hi << 32) | lo);
+        __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000102));
+        dump_u64("kgsbase: 0x", ((uint64_t)hi << 32) | lo);
+    }
     dump_u64("rflags : 0x", regs->rflags);
     dump_u64("rsp    : 0x", regs->useresp);
     dump_u64("ss     : 0x", regs->ss);
@@ -282,6 +291,23 @@ static void dump_trap_frame(regs_t *regs)
     dump_u64("r13    : 0x", regs->r13);
     dump_u64("r14    : 0x", regs->r14);
     dump_u64("r15    : 0x", regs->r15);
+    // Stack scan: a wild jump (a CALL through a corrupted code pointer) leaves the
+    // caller's return address near the top of stack -- print every kernel/module
+    // high-half word from rsp so the call chain that reached the bad pointer can be
+    // resolved offline (addr2line against build/kernel/kernel.bin). Guarded on a
+    // sane, aligned rsp so a smashed stack pointer can't cascade into a double fault.
+    uint64_t sp = regs->useresp;
+    if (sp >= 0xffffffff80000000ull && (sp & 7) == 0)
+    {
+        DEBUG_PRINT("stack  :\r\n");
+        uint64_t *s = (uint64_t *)sp;
+        for (int i = 0; i < 64; i++)
+        {
+            uint64_t w = s[i];
+            if (w >= 0xffffffff80000000ull)
+                dump_u64("  [stk] 0x", w);
+        }
+    }
     DEBUG_PRINT("=======================\r\n");
 }
 
