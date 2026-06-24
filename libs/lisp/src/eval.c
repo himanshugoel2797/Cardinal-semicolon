@@ -1348,6 +1348,7 @@ static lisp_value ctx_alloc(lisp_value expr, lisp_value env) {
     cx->err = NULL;
     cx->budget = 0;
     cx->heap = NULL;  // uses the system heap unless given its own (K3)
+    cx->vm = NULL;    // bytecode VM state, lazily prepared on first resume
     return lisp_from_obj(cx);
 }
 
@@ -1395,6 +1396,11 @@ size_t lisp_ctx_heap_collections(lisp_value ctxv) {
 lisp_ctx_status lisp_ctx_resume(lisp_value ctxv, int64_t budget) {
     lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
     cx->budget = budget;
+    // Run on the bytecode VM if it can compile this context's expression; a
+    // context whose form the compiler declines falls back to the tree-walker.
+    if (g_lbc_eval && cx->status != LISP_CTX_DONE && cx->status != LISP_CTX_ERROR &&
+        lbc_ctx_prepare(cx) == 1)
+        return lbc_ctx_run(cx);
     return ctx_run(cx);
 }
 
@@ -1458,6 +1464,16 @@ lisp_value lisp_eval(lisp_value expr, lisp_value env, const char **err) {
     if (ctxv == LISP_UNDEF)
         return fail(err, "out of memory");
     lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
+    if (g_lbc_eval && lbc_ctx_prepare(cx) == 1) {
+        lisp_ctx_status st;
+        do {
+            cx->budget = CTX_BUDGET_UNBOUNDED;
+            st = lbc_ctx_run(cx);
+        } while (st == LISP_CTX_SUSPENDED);
+        lisp_value r = (st == LISP_CTX_ERROR) ? fail(err, cx->err) : cx->accum;
+        lbc_ctx_free(cx);  // transient context: reclaim its VM
+        return r;
+    }
     if (run_to_completion(cx) == LISP_CTX_ERROR)
         return fail(err, cx->err);
     return cx->accum;
@@ -1466,6 +1482,11 @@ lisp_value lisp_eval(lisp_value expr, lisp_value env, const char **err) {
 lisp_value lisp_apply(lisp_value proc, lisp_value *args, int argc, const char **err) {
     if (err != NULL)
         *err = NULL;
+    if (g_lbc_eval) {
+        const char *e = NULL;
+        lisp_value r = lbc_apply(proc, args, argc, &e);
+        return (e != NULL) ? fail(err, e) : r;
+    }
     lisp_value ctxv = ctx_alloc(LISP_UNDEF, LISP_EMPTY);
     if (ctxv == LISP_UNDEF)
         return fail(err, "out of memory");
@@ -1487,6 +1508,11 @@ lisp_value lisp_apply_reuse(lisp_value ctxv, lisp_value proc, lisp_value *args,
                             int argc, const char **err) {
     if (err != NULL)
         *err = NULL;
+    if (g_lbc_eval) {
+        const char *e = NULL;
+        lisp_value r = lbc_apply_reuse(ctxv, proc, args, argc, &e);
+        return (e != NULL) ? fail(err, e) : r;
+    }
     lisp_ctx_t *cx = (lisp_ctx_t *)lisp_obj(ctxv);
     cx->kont = LISP_EMPTY;
     cx->accum = LISP_UNDEF;
