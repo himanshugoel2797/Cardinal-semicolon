@@ -134,6 +134,7 @@ typedef enum {
     ROP_MKCELL,     // r[a] = box(r[a])      -- wrap a captured binding in a cell
     ROP_CELLGET,    // r[a] = cell-ref(r[b]) -- read through a captured binding
     ROP_CELLSET,    // cell-set!(r[a], r[b]) -- write through a captured binding
+    ROP_JEQK,       // if r[a] == consts[b] then pc = c (raw identity; for `case`)
 } rop;
 
 typedef struct {
@@ -746,6 +747,63 @@ static void captures_of_body(compiler *C, lisp_value body, const symset *frame,
                              symset *out) {
     for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b))
         collect_captures(C, lisp_car(b), frame, out);
+}
+
+// --- quasiquote expansion ---------------------------------------------------
+//
+// Rather than special-case quasiquote in the code generator, expand the template
+// to an equivalent s-expression built from quote / cons / append and the live
+// (unquoted) subexpressions, then compile THAT. This mirrors the tree-walker's
+// qq_expand exactly: literal parts become quote, `,x` at depth 1 evaluates x,
+// `,@x` splices via append, and deeper nestings are rebuilt with the depth
+// reduced. (cons compiles to the inline-cached fast op; append to a call.)
+
+static lisp_value qq_list2(lisp_value a, lisp_value b) {
+    return lisp_cons(a, lisp_cons(b, LISP_EMPTY));
+}
+static lisp_value qq_list3(lisp_value a, lisp_value b, lisp_value c) {
+    return lisp_cons(a, lisp_cons(b, lisp_cons(c, LISP_EMPTY)));
+}
+static lisp_value qq_quote(lisp_value v) {  // (quote v)
+    return qq_list2(lisp_make_symbol("quote", 5), v);
+}
+static lisp_value qq_consform(lisp_value a, lisp_value b) {  // (cons a b)
+    return qq_list3(lisp_make_symbol("cons", 4), a, b);
+}
+
+static lisp_value qq_transform(compiler *C, lisp_value t, int depth) {
+    if (!lisp_is_pair(t))
+        return qq_quote(t);  // atom -> literal datum
+    lisp_value head = lisp_car(t);
+    if (sym_is(head, "unquote")) {
+        if (!lisp_is_pair(lisp_cdr(t)) || !lisp_is_empty(lisp_cdr(lisp_cdr(t))))
+            lbc_decline(C, "malformed unquote");
+        lisp_value x = lisp_car(lisp_cdr(t));
+        if (depth == 1)
+            return x;  // live: evaluate it
+        return qq_consform(qq_quote(lisp_make_symbol("unquote", 7)),
+                           qq_consform(qq_transform(C, x, depth - 1), qq_quote(LISP_EMPTY)));
+    }
+    if (sym_is(head, "quasiquote")) {
+        if (!lisp_is_pair(lisp_cdr(t)))
+            lbc_decline(C, "malformed quasiquote");
+        return qq_consform(qq_quote(lisp_make_symbol("quasiquote", 10)),
+                           qq_consform(qq_transform(C, lisp_car(lisp_cdr(t)), depth + 1),
+                                       qq_quote(LISP_EMPTY)));
+    }
+    if (lisp_is_pair(head) && sym_is(lisp_car(head), "unquote-splicing")) {
+        if (!lisp_is_pair(lisp_cdr(head)) || !lisp_is_empty(lisp_cdr(lisp_cdr(head))))
+            lbc_decline(C, "malformed unquote-splicing");
+        lisp_value x = lisp_car(lisp_cdr(head));
+        lisp_value rest = qq_transform(C, lisp_cdr(t), depth);
+        if (depth == 1)  // (append x rest)
+            return qq_list3(lisp_make_symbol("append", 6), x, rest);
+        lisp_value inner =
+            qq_consform(qq_quote(lisp_make_symbol("unquote-splicing", 16)),
+                        qq_consform(qq_transform(C, x, depth - 1), qq_quote(LISP_EMPTY)));
+        return qq_consform(inner, rest);
+    }
+    return qq_consform(qq_transform(C, head, depth), qq_transform(C, lisp_cdr(t), depth));
 }
 
 // --- forward decls ----------------------------------------------------------
@@ -2146,6 +2204,74 @@ static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst) {
             remit(C, k, ROP_LOADK, dst, add_const(C, k, LISP_UNDEF), 0, 0);
             return;
         }
+        if (sym_is(head, "quasiquote")) {
+            if (!lisp_is_pair(rest))
+                lbc_decline(C, "malformed quasiquote");
+            rcompile_into(C, fn, qq_transform(C, lisp_car(rest), 1), dst);
+            return;
+        }
+        if (sym_is(head, "while")) {
+            // (while test body...) -> loop; value is always unspecified.
+            if (!lisp_is_pair(rest))
+                lbc_decline(C, "malformed while");
+            int save_fr = fn->freereg;
+            int top = k->nrcode;  // loop head: re-evaluate the test each pass
+            int tc = rcompile_rvalue(C, fn, lisp_car(rest));
+            int jf = remit(C, k, ROP_JMPF, tc, -1, 0, 0);  // exit when test is false
+            for (lisp_value b = lisp_cdr(rest); lisp_is_pair(b); b = lisp_cdr(b)) {
+                int save2 = fn->freereg;
+                int t = ralloc(C, fn);
+                rcompile_into(C, fn, lisp_car(b), t);  // body forms for effect
+                fn->freereg = save2;
+            }
+            remit(C, k, ROP_JMP, top, 0, 0, 0);  // back-edge
+            k->rcode[jf].b = k->nrcode;          // exit target
+            fn->freereg = save_fr;
+            remit(C, k, ROP_LOADK, dst, add_const(C, k, LISP_UNDEF), 0, 0);
+            return;
+        }
+        if (sym_is(head, "case")) {
+            // (case key (datums body...) ... (else body...)); datums match by raw
+            // identity, exactly like the tree-walker's `lisp_car(d) == key`.
+            if (!lisp_is_pair(rest))
+                lbc_decline(C, "malformed case");
+            int save_fr = fn->freereg;
+            int keyr = rcompile_rvalue(C, fn, lisp_car(rest));
+            int endjs[64], ne = 0;
+            bool had_else = false;
+            for (lisp_value cl = lisp_cdr(rest); lisp_is_pair(cl); cl = lisp_cdr(cl)) {
+                lisp_value clause = lisp_car(cl);
+                if (!lisp_is_pair(clause))
+                    lbc_decline(C, "malformed case clause");
+                lisp_value datums = lisp_car(clause), cbody = lisp_cdr(clause);
+                if (sym_is(datums, "else")) {
+                    rcompile_body(C, fn, cbody, dst, false);
+                    had_else = true;
+                    break;
+                }
+                int jeqks[64], nj = 0;
+                for (lisp_value d = datums; lisp_is_pair(d); d = lisp_cdr(d)) {
+                    if (nj >= 64)
+                        lbc_decline(C, "case clause too long");
+                    jeqks[nj++] =
+                        remit(C, k, ROP_JEQK, keyr, add_const(C, k, lisp_car(d)), -1, 0);
+                }
+                int skip = remit(C, k, ROP_JMP, -1, 0, 0, 0);  // no datum matched
+                for (int i = 0; i < nj; i++)
+                    k->rcode[jeqks[i]].c = k->nrcode;  // matched -> clause body
+                rcompile_body(C, fn, cbody, dst, false);
+                if (ne >= 64)
+                    lbc_decline(C, "case too long");
+                endjs[ne++] = remit(C, k, ROP_JMP, -1, 0, 0, 0);
+                k->rcode[skip].a = k->nrcode;
+            }
+            if (!had_else)
+                remit(C, k, ROP_LOADK, dst, add_const(C, k, LISP_UNDEF), 0, 0);
+            for (int i = 0; i < ne; i++)
+                k->rcode[endjs[i]].a = k->nrcode;
+            fn->freereg = save_fr;
+            return;
+        }
         if (sym_is(head, "define"))
             lbc_decline(C, "define only supported at body head");
         if (is_special_head(head))
@@ -2491,6 +2617,10 @@ static bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
             }
             case ROP_CELLGET: Rf[ins.a] = lisp_car(Rf[ins.b]); break;
             case ROP_CELLSET: set_car_lbc(Rf[ins.a], Rf[ins.b]); break;
+            case ROP_JEQK:
+                if (Rf[ins.a] == f->chunk->consts[ins.b])
+                    f->pc = ins.c;
+                break;
             case ROP_CALL: {
                 int callbase = ins.a, n = ins.b;
                 lisp_value callee = Rf[callbase];
