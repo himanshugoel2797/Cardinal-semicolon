@@ -1768,6 +1768,61 @@ static void rcompile_tail(compiler *C, fnstate *fn, lisp_value e);
 static bcchunk *rcompile_lambda(compiler *C, fnstate *parent, lisp_value params,
                                 lisp_value body, lisp_value self_name);
 
+// True if `name` is referenced from INSIDE a lambda/named-let nested in `e` --
+// i.e. captured as an upvalue, not a same-frame self reference (`under` tracks
+// whether we have descended through a closure boundary). A named-let whose loop
+// name escapes this way needs a real boxed cell (a nested lambda that calls the
+// outer loop -- idiomatic nested loops), which the plain fast-path self-closure
+// does not provide. Over-approximates: ignores shadowing, so a false positive
+// only costs the slower boxed-cell loop, never correctness.
+static int name_escapes(lisp_value name, lisp_value e, int under) {
+    if (lisp_is_symbol(e))
+        return under && e == name;
+    if (!lisp_is_pair(e))
+        return 0;
+    int now = under;
+    lisp_value h = lisp_car(e);
+    if (lisp_is_symbol(h)) {
+        if (sym_is(h, "lambda"))
+            now = 1;
+        else if (sym_is(h, "let") && lisp_is_pair(lisp_cdr(e)) &&
+                 lisp_is_symbol(lisp_car(lisp_cdr(e))))
+            now = 1;  // named-let introduces its own closure
+    }
+    for (lisp_value p = e; lisp_is_pair(p); p = lisp_cdr(p))
+        if (name_escapes(name, lisp_car(p), now))
+            return 1;
+    return 0;
+}
+
+// R7RS desugaring of a named-let whose loop name is captured by a nested lambda:
+//   (let NAME ((v init)...) body...)
+//     -> ((letrec ((NAME (lambda (v...) body...))) NAME) init...)
+// NAME becomes a boxed letrec cell that nested lambdas can capture, while direct
+// self-calls in the body still resolve to the fast R_SELF path (the letrec init
+// is compiled with self_name = NAME). The inits stay in the enclosing scope (they
+// are arguments to the closure the letrec yields), preserving named-let scoping.
+static lisp_value desugar_named_let(lisp_value name, lisp_value binds,
+                                    lisp_value lbody) {
+    lisp_value sym_lambda = lisp_make_symbol("lambda", 6);
+    lisp_value sym_letrec = lisp_make_symbol("letrec", 6);
+    lisp_value pl = LISP_EMPTY, pt = LISP_EMPTY, il = LISP_EMPTY, it = LISP_EMPTY;
+    for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+        lisp_value pc = lisp_cons(lisp_car(lisp_car(b)), LISP_EMPTY);
+        if (pl == LISP_EMPTY) pl = pc; else set_cdr_lbc(pt, pc);
+        pt = pc;
+        lisp_value ic = lisp_cons(lisp_car(lisp_cdr(lisp_car(b))), LISP_EMPTY);
+        if (il == LISP_EMPTY) il = ic; else set_cdr_lbc(it, ic);
+        it = ic;
+    }
+    lisp_value lam = lisp_cons(sym_lambda, lisp_cons(pl, lbody));
+    lisp_value bnd = lisp_cons(name, lisp_cons(lam, LISP_EMPTY));
+    lisp_value lr = lisp_cons(sym_letrec,
+                             lisp_cons(lisp_cons(bnd, LISP_EMPTY),
+                                       lisp_cons(name, LISP_EMPTY)));
+    return lisp_cons(lr, il);  // ((letrec ((name lam)) name) . inits)
+}
+
 // Produce e's value into some register and return it. A local resolves to its
 // own register with NO code emitted -- the dispatch-saving core of the register
 // form.
@@ -2224,6 +2279,13 @@ static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst) {
             lisp_value name = lisp_car(rest);
             lisp_value binds = lisp_car(lisp_cdr(rest));
             lisp_value lbody = lisp_cdr(lisp_cdr(rest));
+            // If the loop name is captured by a nested lambda (e.g. an inner loop
+            // that calls this one), it needs a real boxed cell -- desugar to a
+            // letrec, which provides one (and still gives direct self-calls R_SELF).
+            if (name_escapes(name, lbody, 0)) {
+                rcompile_into(C, fn, desugar_named_let(name, binds, lbody), dst);
+                return;
+            }
             lisp_value pl = LISP_EMPTY, pt = LISP_EMPTY;
             for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
                 lisp_value pc = lisp_cons(lisp_car(lisp_car(b)), LISP_EMPTY);
@@ -2465,6 +2527,10 @@ static void rcompile_tail(compiler *C, fnstate *fn, lisp_value e) {
             lisp_value name = lisp_car(rest);
             lisp_value binds = lisp_car(lisp_cdr(rest));
             lisp_value lbody = lisp_cdr(lisp_cdr(rest));
+            if (name_escapes(name, lbody, 0)) {  // captured loop name -> boxed cell
+                rcompile_tail(C, fn, desugar_named_let(name, binds, lbody));
+                return;
+            }
             lisp_value pl = LISP_EMPTY, pt = LISP_EMPTY;
             for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
                 lisp_value pc = lisp_cons(lisp_car(lisp_car(b)), LISP_EMPTY);
