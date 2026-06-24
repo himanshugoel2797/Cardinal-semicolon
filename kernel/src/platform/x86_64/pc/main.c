@@ -116,10 +116,18 @@ int32_t main(void *param, uint64_t magic)
 SECTION(".tramp_handler")
 uint64_t tramp_stack = 0xffffffff80000000;
 
+// Each AP runs the full resident Lisp runtime -- compiler, bytecode VM, GC, and
+// nested interrupt handlers -- on this stack, so the 16 KiB that sufficed for the
+// BSP's early single-threaded init is not enough: a deep compile interrupted by
+// the timer tick overflows it, and because this stack is malloc'd in the shared
+// heap arena the overflow silently corrupts whatever module data sits just below
+// it (e.g. SysTimer's apic_state), surfacing as an intermittent multi-core fault.
+// Give it a generous 256 KiB.
+#define AP_STACK_SIZE (4096 * 64)
 void alloc_ap_stack(void)
 {
-    uint64_t stack = (uint64_t)malloc(4096 * 4);
-    tramp_stack = stack + 4096 * 4;
+    uint64_t stack = (uint64_t)malloc(AP_STACK_SIZE);
+    tramp_stack = stack + AP_STACK_SIZE;
 }
 
 SECTION(".tramp_handler_code")
