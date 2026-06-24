@@ -237,7 +237,7 @@ multiboot_end:
                                # header) past GRUB's 32 KiB header scan window.
                                .section .bootstrap_stack, "aw", @nobits
                                stack_bottom:
-                               .skip 16384 # 16 KiB	(16 KiB is enough for initialization until threading is setup)
+                               .skip 262144 # 256 KiB. 16 KiB was enough for early single-threaded init, but the BSP goes on to run the resident Lisp runtime (compiler + bytecode VM + GC + nested interrupt handlers) on this same stack, so it needs the same headroom the APs were given (see alloc_ap_stack). .bootstrap_stack is @nobits, so this costs no image size. The overflow here lands in kernel .bss rather than the malloc'd heap (so single-core never faulted), but the headroom matters once a deep compile is interrupted by the timer tick.
                                stack_top:
                                storage:
                                .skip 16384
