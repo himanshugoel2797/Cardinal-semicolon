@@ -131,6 +131,9 @@ typedef enum {
     ROP_TAILCALL,   // tail call (reuse frame); terminates
     ROP_RET,        // return r[a]
     ROP_OPCALL,     // r[a] = inline-cached op ics[d] on r[b] (and r[c] if binary)
+    ROP_MKCELL,     // r[a] = box(r[a])      -- wrap a captured binding in a cell
+    ROP_CELLGET,    // r[a] = cell-ref(r[b]) -- read through a captured binding
+    ROP_CELLSET,    // cell-set!(r[a], r[b]) -- write through a captured binding
 } rop;
 
 typedef struct {
@@ -198,6 +201,7 @@ typedef struct fnstate {
     struct {
         lisp_value name;  // interned symbol
         int slot;
+        bool boxed;       // captured by an inner lambda -> stored as a heap cell
     } locals[LBC_MAX_LOCALS];
     int nlocals;          // active lexical bindings (a scope stack)
     int next_slot;        // monotonic slot high-water (== chunk->nlocals)
@@ -277,7 +281,14 @@ static void bind_local(compiler *C, fnstate *fn, lisp_value name, int slot) {
         lbc_decline(C, "too many locals");
     fn->locals[fn->nlocals].name = name;
     fn->locals[fn->nlocals].slot = slot;
+    fn->locals[fn->nlocals].boxed = false;
     fn->nlocals++;
+}
+
+// Mark the most recently bound local as captured (stored in a heap cell).
+static void mark_boxed(fnstate *fn) {
+    if (fn->nlocals > 0)
+        fn->locals[fn->nlocals - 1].boxed = true;
 }
 
 // Resolution result kinds.
@@ -307,28 +318,44 @@ static int resolve_upval(compiler *C, fnstate *fn, lisp_value name, int *kindout
         return -1;
     for (int i = p->nlocals - 1; i >= 0; i--)
         if (p->locals[i].name == name) {
+            // A captured parent local is always boxed (the capture analysis ran
+            // on the parent), so the upvalue refers to its heap cell by
+            // reference -- shared mutable state, which is what makes set! on a
+            // captured binding and mutual/forward recursion work.
             *kindout = R_UPVAL;
             return add_upval(C, fn, true, p->locals[i].slot);
         }
-    if (name == p->self_name) {
-        // The parent's own self-closure becomes an upvalue. Capturing a
-        // mutually/forward recursive sibling by value is unsound; self capture
-        // of an already-existing closure is fine.
-        lbc_decline(C, "capture of enclosing self not supported");
-    }
+    // p->self_name is only a fast-path alias usable inside p's OWN frame
+    // (R_SELF); from a child, the name resolves to its real boxed binding in an
+    // ancestor frame, so we keep climbing. A name bound as a sibling/ancestor
+    // cell resolves fine (mutual/forward recursion). The one case we cannot do
+    // is capturing a frame's OWN self-closure that has no cell -- a named-let
+    // loop name or simple internal define referenced from a nested lambda; that
+    // name is bound nowhere as a local, so the climb returns -1 and we decline.
     int pk;
     int up = resolve_upval(C, p, name, &pk);
-    if (up < 0)
+    if (up < 0) {
+        if (name == p->self_name)
+            lbc_decline(C, "capture of enclosing self not supported");
         return -1;
+    }
     *kindout = R_UPVAL;
     return add_upval(C, fn, false, up);
 }
 
-// Resolve a name in fn: local slot, self, an upvalue index, or global.
-static int resolve(compiler *C, fnstate *fn, lisp_value name, int *kind) {
+// Resolve a name in fn: local slot, self, an upvalue index, or global. If
+// `boxed` is non-NULL it reports whether the binding is a heap cell (every
+// R_UPVAL is, since captured locals are always boxed; an R_LOCAL is iff it was
+// captured by an inner lambda).
+static int resolve(compiler *C, fnstate *fn, lisp_value name, int *kind,
+                   bool *boxed) {
+    if (boxed != NULL)
+        *boxed = false;
     for (int i = fn->nlocals - 1; i >= 0; i--)
         if (fn->locals[i].name == name) {
             *kind = R_LOCAL;
+            if (boxed != NULL)
+                *boxed = fn->locals[i].boxed;
             return fn->locals[i].slot;
         }
     if (name == fn->self_name) {
@@ -339,6 +366,8 @@ static int resolve(compiler *C, fnstate *fn, lisp_value name, int *kind) {
     int up = resolve_upval(C, fn, name, &k2);
     if (up >= 0) {
         *kind = R_UPVAL;
+        if (boxed != NULL)
+            *boxed = true;
         return up;
     }
     *kind = R_GLOBAL;
@@ -358,6 +387,14 @@ static bool sym_is(lisp_value s, const char *name) {
 // (param/init list spines), never on user data.
 static void set_cdr_lbc(lisp_value pair, lisp_value v) {
     ((lisp_pair *)lisp_obj(pair))->cdr = v;
+}
+
+// A captured (boxed) binding is a one-slot mutable heap cell, represented as a
+// pair with the value in its car (a real GC object, so the value stays rooted
+// and shared by every closure that captured the binding). set_car_lbc mutates a
+// cell built by MKCELL; cell-ref reads it.
+static void set_car_lbc(lisp_value cell, lisp_value v) {
+    ((lisp_pair *)lisp_obj(cell))->car = v;
 }
 
 // Find the (sym . val) binding cell for `sym` walking `env`'s chain, or
@@ -407,7 +444,7 @@ static bool frozen_op(compiler *C, fnstate *fn, lisp_value head, int argc, bcop 
     if (!lisp_is_symbol(head))
         return false;
     int kind;
-    (void)resolve(C, fn, head, &kind);
+    (void)resolve(C, fn, head, &kind, NULL);
     if (kind != R_GLOBAL)
         return false;  // shadowed -> not the frozen primitive
     if (argc == 2) {
@@ -500,7 +537,7 @@ static bool reg_fastop(compiler *C, fnstate *fn, lisp_value head, int argc,
     if (!lisp_is_symbol(head))
         return false;
     int rk;
-    (void)resolve(C, fn, head, &rk);
+    (void)resolve(C, fn, head, &rk, NULL);
     if (rk != R_GLOBAL)
         return false;  // shadowed -> not the builtin
     fastkind fk;
@@ -549,6 +586,168 @@ static int list_len(lisp_value l) {
     return n;
 }
 
+// --- capture analysis (which bindings must be boxed) ------------------------
+//
+// A frame's binding must be a heap cell iff it is referenced from inside a
+// lexically-nested lambda (capture by reference). We compute this with a free-
+// variable walk that is deliberately a SAFE OVER-APPROXIMATION: it may report a
+// few extra captures (boxing a binding that didn't need it -- a tiny perf cost)
+// but never misses a real one (which would be a correctness bug). The only
+// invariant that matters is: never remove a name from `bound` unless that name
+// is genuinely bound at the use site.
+
+#define SS_CAP 128
+typedef struct {
+    lisp_value items[SS_CAP];
+    int n;
+} symset;
+
+static bool ss_has(const symset *s, lisp_value v) {
+    for (int i = 0; i < s->n; i++)
+        if (s->items[i] == v)
+            return true;
+    return false;
+}
+
+static void ss_add(compiler *C, symset *s, lisp_value v) {
+    if (ss_has(s, v))
+        return;
+    if (s->n >= SS_CAP)
+        lbc_decline(C, "capture analysis: too many names");
+    s->items[s->n++] = v;
+}
+
+// Add a parameter list's names (incl. a dotted/rest tail) to a set.
+static void ss_add_params(compiler *C, symset *s, lisp_value params) {
+    lisp_value p = params;
+    while (lisp_is_pair(p)) {
+        if (lisp_is_symbol(lisp_car(p)))
+            ss_add(C, s, lisp_car(p));
+        p = lisp_cdr(p);
+    }
+    if (lisp_is_symbol(p))
+        ss_add(C, s, p);
+}
+
+static void fv(compiler *C, lisp_value e, const symset *bound, symset *out);
+
+static void fv_seq(compiler *C, lisp_value body, const symset *bound, symset *out) {
+    for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b))
+        fv(C, lisp_car(b), bound, out);
+}
+
+// Free variables of `e` not in `bound`, accumulated into `out`.
+static void fv(compiler *C, lisp_value e, const symset *bound, symset *out) {
+    if (lisp_is_symbol(e)) {
+        if (!ss_has(bound, e))
+            ss_add(C, out, e);
+        return;
+    }
+    if (!lisp_is_pair(e))
+        return;
+    lisp_value h = lisp_car(e), rest = lisp_cdr(e);
+    if (lisp_is_symbol(h)) {
+        if (sym_is(h, "quote"))
+            return;
+        if (sym_is(h, "lambda") && lisp_is_pair(rest)) {
+            symset nb = *bound;
+            ss_add_params(C, &nb, lisp_car(rest));
+            fv_seq(C, lisp_cdr(rest), &nb, out);
+            return;
+        }
+        if (sym_is(h, "let") && lisp_is_pair(rest) && lisp_is_symbol(lisp_car(rest))) {
+            // named let: inits in the outer scope; body sees loopname + params.
+            lisp_value binds = lisp_car(lisp_cdr(rest));
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b))
+                if (lisp_is_pair(lisp_cdr(lisp_car(b))))
+                    fv(C, lisp_car(lisp_cdr(lisp_car(b))), bound, out);
+            symset nb = *bound;
+            ss_add(C, &nb, lisp_car(rest));
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b))
+                ss_add(C, &nb, lisp_car(lisp_car(b)));
+            fv_seq(C, lisp_cdr(lisp_cdr(rest)), &nb, out);
+            return;
+        }
+        if ((sym_is(h, "let") || sym_is(h, "let*") || sym_is(h, "letrec")) &&
+            lisp_is_pair(rest)) {
+            // inits scanned in the outer `bound` (over-approx for let*/letrec is
+            // safe); body sees the binding names.
+            lisp_value binds = lisp_car(rest);
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b))
+                if (lisp_is_pair(lisp_car(b)) && lisp_is_pair(lisp_cdr(lisp_car(b))))
+                    fv(C, lisp_car(lisp_cdr(lisp_car(b))), bound, out);
+            symset nb = *bound;
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b))
+                if (lisp_is_pair(lisp_car(b)))
+                    ss_add(C, &nb, lisp_car(lisp_car(b)));
+            fv_seq(C, lisp_cdr(rest), &nb, out);
+            return;
+        }
+        if (sym_is(h, "define") && lisp_is_pair(rest)) {
+            lisp_value tgt = lisp_car(rest);
+            if (lisp_is_pair(tgt)) {  // (define (f . a) body...)
+                symset nb = *bound;
+                ss_add_params(C, &nb, lisp_cdr(tgt));
+                fv_seq(C, lisp_cdr(rest), &nb, out);
+            } else {  // (define x val)
+                fv_seq(C, lisp_cdr(rest), bound, out);
+            }
+            return;
+        }
+        // if/begin/and/or/cond/when/unless/while/case/set!/quasiquote/apply:
+        // scan every subform (over-approx-safe).
+    }
+    for (lisp_value p = e; lisp_is_pair(p); p = lisp_cdr(p))
+        fv(C, lisp_car(p), bound, out);
+}
+
+// Find variables in `frame` that are captured by a lambda nested in `e`.
+static void collect_captures(compiler *C, lisp_value e, const symset *frame,
+                             symset *out) {
+    if (!lisp_is_pair(e))
+        return;
+    lisp_value h = lisp_car(e), rest = lisp_cdr(e);
+    if (lisp_is_symbol(h)) {
+        if (sym_is(h, "quote"))
+            return;
+        if (sym_is(h, "lambda") && lisp_is_pair(rest)) {
+            symset params = {.n = 0}, lf = {.n = 0};
+            ss_add_params(C, &params, lisp_car(rest));
+            fv_seq(C, lisp_cdr(rest), &params, &lf);  // covers deeper lambdas too
+            for (int i = 0; i < lf.n; i++)
+                if (ss_has(frame, lf.items[i]))
+                    ss_add(C, out, lf.items[i]);
+            return;
+        }
+        if (sym_is(h, "let") && lisp_is_pair(rest) && lisp_is_symbol(lisp_car(rest))) {
+            // named-let body is a lambda over loopname + params.
+            lisp_value binds = lisp_car(lisp_cdr(rest));
+            symset params = {.n = 0}, lf = {.n = 0};
+            ss_add(C, &params, lisp_car(rest));
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b))
+                if (lisp_is_pair(lisp_car(b)))
+                    ss_add(C, &params, lisp_car(lisp_car(b)));
+            fv_seq(C, lisp_cdr(lisp_cdr(rest)), &params, &lf);
+            for (int i = 0; i < lf.n; i++)
+                if (ss_has(frame, lf.items[i]))
+                    ss_add(C, out, lf.items[i]);
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b))  // inits
+                if (lisp_is_pair(lisp_car(b)) && lisp_is_pair(lisp_cdr(lisp_car(b))))
+                    collect_captures(C, lisp_car(lisp_cdr(lisp_car(b))), frame, out);
+            return;
+        }
+    }
+    for (lisp_value p = e; lisp_is_pair(p); p = lisp_cdr(p))
+        collect_captures(C, lisp_car(p), frame, out);
+}
+
+// Captures of a whole body sequence (list of forms) for a frame.
+static void captures_of_body(compiler *C, lisp_value body, const symset *frame,
+                             symset *out) {
+    for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b))
+        collect_captures(C, lisp_car(b), frame, out);
+}
+
 // --- forward decls ----------------------------------------------------------
 
 static void compile_value(compiler *C, fnstate *fn, lisp_value e);
@@ -567,7 +766,20 @@ static void compile_body(compiler *C, fnstate *fn, lisp_value body, bool tail) {
             emit(C, fn->chunk, OP_RET, 0, 0);
         return;
     }
-    // Leading internal defines.
+    // Leading internal defines. The legacy stack form captures upvalues by value
+    // and binds defines sequentially, so it cannot express mutual/forward local
+    // recursion; decline a group of 2+ (the register form handles them as a
+    // letrec* group) rather than mis-compiling a forward reference as a global.
+    {
+        int ndef = 0;
+        for (lisp_value b = body; lisp_is_pair(b); b = lisp_cdr(b)) {
+            if (!(lisp_is_pair(lisp_car(b)) && sym_is(lisp_car(lisp_car(b)), "define")))
+                break;
+            ndef++;
+        }
+        if (ndef > 1)
+            lbc_decline(C, "stack form: mutual internal defines unsupported");
+    }
     while (lisp_is_pair(body)) {
         lisp_value form = lisp_car(body);
         if (!(lisp_is_pair(form) && sym_is(lisp_car(form), "define")))
@@ -730,7 +942,7 @@ static void compile_value(compiler *C, fnstate *fn, lisp_value e) {
         return;
     }
     if (lisp_is_symbol(e)) {
-        int kind, idx = resolve(C, fn, e, &kind);
+        int kind, idx = resolve(C, fn, e, &kind, NULL);
         switch (kind) {
             case R_LOCAL: emit(C, k, OP_LOADLOCAL, idx, 0); return;
             case R_UPVAL: emit(C, k, OP_LOADUPVAL, idx, 0); return;
@@ -941,7 +1153,7 @@ static void compile_value(compiler *C, fnstate *fn, lisp_value e) {
         }
         if (sym_is(head, "set!")) {
             lisp_value target = lisp_car(rest);
-            int kind, idx = resolve(C, fn, target, &kind);
+            int kind, idx = resolve(C, fn, target, &kind, NULL);
             if (kind == R_UPVAL || kind == R_SELF)
                 lbc_decline(C, "set! on captured/self binding unsupported");
             compile_value(C, fn, lisp_car(lisp_cdr(rest)));
@@ -1484,9 +1696,11 @@ static bcchunk *rcompile_lambda(compiler *C, fnstate *parent, lisp_value params,
 // form.
 static int rcompile_rvalue(compiler *C, fnstate *fn, lisp_value e) {
     if (lisp_is_symbol(e)) {
-        int kind, idx = resolve(C, fn, e, &kind);
-        if (kind == R_LOCAL)
-            return idx;
+        int kind;
+        bool boxed;
+        int idx = resolve(C, fn, e, &kind, &boxed);
+        if (kind == R_LOCAL && !boxed)
+            return idx;  // an unboxed local IS its register -- zero code
     }
     int r = ralloc(C, fn);
     rcompile_into(C, fn, e, r);
@@ -1497,6 +1711,16 @@ static int rcompile_rvalue(compiler *C, fnstate *fn, lisp_value e) {
 // ignored). Leading internal defines bind register-locals.
 static void rcompile_body(compiler *C, fnstate *fn, lisp_value body, int dst,
                           bool tail) {
+    // Leading internal defines form a mutually-recursive group (letrec*): bind
+    // every name to an undef cell up front so the inits can reference each other
+    // (forward + mutual recursion), then compile each init in that scope. A
+    // (define (f ...) ...) init is a lambda compiled with self_name f, so a
+    // self-call still uses the fast LOADSELF; a sibling call goes through f's
+    // cell.
+    bcchunk *k = fn->chunk;
+    int dslot[LBC_MAX_LOCALS], nd = 0;
+    lisp_value dname[LBC_MAX_LOCALS], dform[LBC_MAX_LOCALS];
+    bool dlam[LBC_MAX_LOCALS];
     while (lisp_is_pair(body)) {
         lisp_value form = lisp_car(body);
         if (!(lisp_is_pair(form) && sym_is(lisp_car(form), "define")))
@@ -1505,26 +1729,51 @@ static void rcompile_body(compiler *C, fnstate *fn, lisp_value body, int dst,
         if (!lisp_is_pair(rest))
             lbc_decline(C, "malformed define");
         lisp_value target = lisp_car(rest);
+        lisp_value nm;
+        bool islam;
         if (lisp_is_symbol(target)) {
             if (!lisp_is_pair(lisp_cdr(rest)))
                 lbc_decline(C, "malformed define");
-            int slot = ralloc(C, fn);
-            rcompile_into(C, fn, lisp_car(lisp_cdr(rest)), slot);
-            bind_local(C, fn, target, slot);
+            nm = target;
+            islam = false;
         } else if (lisp_is_pair(target)) {
-            lisp_value name = lisp_car(target);
-            if (!lisp_is_symbol(name))
+            nm = lisp_car(target);
+            if (!lisp_is_symbol(nm))
                 lbc_decline(C, "define: name must be a symbol");
-            int slot = ralloc(C, fn);
-            bind_local(C, fn, name, slot);
-            bcchunk *child =
-                rcompile_lambda(C, fn, lisp_cdr(target), lisp_cdr(rest), name);
-            int ci = radd_child(C, fn->chunk, child);
-            remit(C, fn->chunk, ROP_CLOSURE, slot, ci, 0, 0);
+            islam = true;
         } else {
             lbc_decline(C, "malformed define");
+            return;  // unreachable; silences -Wmaybe-uninitialized
         }
+        if (nd >= LBC_MAX_LOCALS)
+            lbc_decline(C, "too many internal defines");
+        int slot = ralloc(C, fn);
+        remit(C, k, ROP_LOADK, slot, add_const(C, k, LISP_UNDEF), 0, 0);
+        remit(C, k, ROP_MKCELL, slot, 0, 0, 0);
+        bind_local(C, fn, nm, slot);
+        mark_boxed(fn);
+        dname[nd] = nm;
+        dslot[nd] = slot;
+        dform[nd] = form;
+        dlam[nd] = islam;
+        nd++;
         body = lisp_cdr(body);
+    }
+    for (int i = 0; i < nd; i++) {
+        int save2 = fn->freereg, v;
+        lisp_value rest = lisp_cdr(dform[i]);
+        if (dlam[i]) {  // (define (f . a) body...)
+            lisp_value target = lisp_car(rest);
+            bcchunk *child = rcompile_lambda(C, fn, lisp_cdr(target),
+                                             lisp_cdr(rest), dname[i]);
+            int ci = radd_child(C, k, child);
+            v = ralloc(C, fn);
+            remit(C, k, ROP_CLOSURE, v, ci, 0, 0);
+        } else {  // (define x val)
+            v = rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
+        }
+        remit(C, k, ROP_CELLSET, dslot[i], v, 0, 0);
+        fn->freereg = save2;
     }
     if (!lisp_is_pair(body)) {
         int r = tail ? ralloc(C, fn) : dst;
@@ -1546,6 +1795,90 @@ static void rcompile_body(compiler *C, fnstate *fn, lisp_value body, int dst,
         rcompile_into(C, fn, lisp_car(body), dst);
 }
 
+// let / let* / letrec with capture analysis -> boxed cells. kind: 0=let (inits in
+// the outer scope), 1=let* (sequential), 2=letrec (all names pre-bound to undef
+// cells so the inits can mutually reference each other). Used in both value
+// (tail==false, value into dst) and tail position.
+static void rcompile_let(compiler *C, fnstate *fn, int kind, lisp_value binds,
+                         lisp_value lbody, int dst, bool tail) {
+    bcchunk *k = fn->chunk;
+    int save_fr = fn->freereg, save_nl = fn->nlocals;
+    symset frame = {.n = 0}, cap = {.n = 0};
+    for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b))
+        if (lisp_is_pair(lisp_car(b)))
+            ss_add(C, &frame, lisp_car(lisp_car(b)));
+    if (kind == 2) {  // letrec: box every binding (forward-cell semantics)
+        for (int i = 0; i < frame.n; i++)
+            ss_add(C, &cap, frame.items[i]);
+    } else {
+        if (kind == 1)  // let*: a later init may capture an earlier binding
+            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b))
+                if (lisp_is_pair(lisp_car(b)) && lisp_is_pair(lisp_cdr(lisp_car(b))))
+                    collect_captures(C, lisp_car(lisp_cdr(lisp_car(b))), &frame, &cap);
+        captures_of_body(C, lbody, &frame, &cap);
+    }
+
+    if (kind == 2) {
+        int slots[LBC_MAX_LOCALS], nb = 0;
+        for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+            int slot = ralloc(C, fn);
+            remit(C, k, ROP_LOADK, slot, add_const(C, k, LISP_UNDEF), 0, 0);
+            remit(C, k, ROP_MKCELL, slot, 0, 0, 0);
+            bind_local(C, fn, lisp_car(lisp_car(b)), slot);
+            mark_boxed(fn);
+            slots[nb++] = slot;
+        }
+        int i = 0;
+        for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b), i++) {
+            lisp_value nm = lisp_car(lisp_car(b));
+            lisp_value ie = lisp_car(lisp_cdr(lisp_car(b)));
+            int save2 = fn->freereg, v;
+            if (lisp_is_pair(ie) && sym_is(lisp_car(ie), "lambda")) {
+                bcchunk *child = rcompile_lambda(C, fn, lisp_car(lisp_cdr(ie)),
+                                                 lisp_cdr(lisp_cdr(ie)), nm);
+                int ci = radd_child(C, k, child);
+                v = ralloc(C, fn);
+                remit(C, k, ROP_CLOSURE, v, ci, 0, 0);
+            } else {
+                v = rcompile_rvalue(C, fn, ie);
+            }
+            remit(C, k, ROP_CELLSET, slots[i], v, 0, 0);
+            fn->freereg = save2;
+        }
+    } else if (kind == 0) {  // let: all inits in outer scope, then bind + box
+        int slots[LBC_MAX_LOCALS], nb = 0;
+        for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+            int slot = ralloc(C, fn);
+            rcompile_into(C, fn, lisp_car(lisp_cdr(lisp_car(b))), slot);
+            slots[nb++] = slot;
+        }
+        int i = 0;
+        for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b), i++) {
+            lisp_value nm = lisp_car(lisp_car(b));
+            bind_local(C, fn, nm, slots[i]);
+            if (ss_has(&cap, nm)) {
+                mark_boxed(fn);
+                remit(C, k, ROP_MKCELL, slots[i], 0, 0, 0);
+            }
+        }
+    } else {  // let*: sequential bind + box
+        for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
+            lisp_value bd = lisp_car(b);
+            int slot = ralloc(C, fn);
+            rcompile_into(C, fn, lisp_car(lisp_cdr(bd)), slot);
+            lisp_value nm = lisp_car(bd);
+            bind_local(C, fn, nm, slot);
+            if (ss_has(&cap, nm)) {
+                mark_boxed(fn);
+                remit(C, k, ROP_MKCELL, slot, 0, 0, 0);
+            }
+        }
+    }
+    rcompile_body(C, fn, lbody, tail ? -1 : dst, tail);
+    fn->freereg = save_fr;
+    fn->nlocals = save_nl;
+}
+
 static bcchunk *rcompile_lambda(compiler *C, fnstate *parent, lisp_value params,
                                 lisp_value body, lisp_value self_name) {
     fnstate fn;
@@ -1553,17 +1886,29 @@ static bcchunk *rcompile_lambda(compiler *C, fnstate *parent, lisp_value params,
     fn.parent = parent;
     fn.chunk = chunk_new(C);
     fn.self_name = (self_name == 0) ? LISP_UNDEF : self_name;
+    // Which parameters are captured by a nested lambda -> box them at entry.
+    symset frame = {.n = 0}, cap = {.n = 0};
+    ss_add_params(C, &frame, params);
+    captures_of_body(C, body, &frame, &cap);
     int np = 0;
     lisp_value p = params;
     while (lisp_is_pair(p)) {
         if (!lisp_is_symbol(lisp_car(p)))
             lbc_decline(C, "bad parameter");
-        rbind(C, &fn, lisp_car(p));
+        int slot = rbind(C, &fn, lisp_car(p));
+        if (ss_has(&cap, lisp_car(p))) {
+            mark_boxed(&fn);
+            remit(C, fn.chunk, ROP_MKCELL, slot, 0, 0, 0);  // wrap the arg value
+        }
         np++;
         p = lisp_cdr(p);
     }
     if (lisp_is_symbol(p)) {
-        rbind(C, &fn, p);
+        int slot = rbind(C, &fn, p);
+        if (ss_has(&cap, p)) {
+            mark_boxed(&fn);
+            remit(C, fn.chunk, ROP_MKCELL, slot, 0, 0, 0);
+        }
         fn.chunk->has_rest = true;
     } else if (!lisp_is_empty(p)) {
         lbc_decline(C, "malformed parameter list");
@@ -1603,13 +1948,20 @@ static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst) {
         return;
     }
     if (lisp_is_symbol(e)) {
-        int kind, idx = resolve(C, fn, e, &kind);
+        int kind;
+        bool boxed;
+        int idx = resolve(C, fn, e, &kind, &boxed);
         switch (kind) {
             case R_LOCAL:
-                if (idx != dst)
+                if (boxed)
+                    remit(C, k, ROP_CELLGET, dst, idx, 0, 0);  // read through cell
+                else if (idx != dst)
                     remit(C, k, ROP_MOVE, dst, idx, 0, 0);
                 return;
-            case R_UPVAL: remit(C, k, ROP_LOADUP, dst, idx, 0, 0); return;
+            case R_UPVAL:  // upvalue is always a cell: load it, then read its car
+                remit(C, k, ROP_LOADUP, dst, idx, 0, 0);
+                remit(C, k, ROP_CELLGET, dst, dst, 0, 0);
+                return;
             case R_SELF: remit(C, k, ROP_LOADSELF, dst, 0, 0, 0); return;
             case R_GLOBAL: {
                 if (g_global_slots) {
@@ -1756,47 +2108,41 @@ static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst) {
             return;
         }
         if (sym_is(head, "let")) {
-            lisp_value binds = lisp_car(rest), lbody = lisp_cdr(rest);
-            int save_fr = fn->freereg, save_nl = fn->nlocals;
-            int slots[LBC_MAX_LOCALS], nb = 0;
-            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
-                int slot = ralloc(C, fn);  // init evaluated in OUTER scope
-                rcompile_into(C, fn, lisp_car(lisp_cdr(lisp_car(b))), slot);
-                slots[nb++] = slot;
-            }
-            int i = 0;
-            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b), i++)
-                bind_local(C, fn, lisp_car(lisp_car(b)), slots[i]);
-            rcompile_body(C, fn, lbody, dst, false);
-            fn->freereg = save_fr;
-            fn->nlocals = save_nl;
+            rcompile_let(C, fn, 0, lisp_car(rest), lisp_cdr(rest), dst, false);
             return;
         }
         if (sym_is(head, "let*")) {
-            lisp_value binds = lisp_car(rest), lbody = lisp_cdr(rest);
-            int save_fr = fn->freereg, save_nl = fn->nlocals;
-            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
-                lisp_value bd = lisp_car(b);
-                int slot = ralloc(C, fn);
-                rcompile_into(C, fn, lisp_car(lisp_cdr(bd)), slot);
-                bind_local(C, fn, lisp_car(bd), slot);
-            }
-            rcompile_body(C, fn, lbody, dst, false);
-            fn->freereg = save_fr;
-            fn->nlocals = save_nl;
+            rcompile_let(C, fn, 1, lisp_car(rest), lisp_cdr(rest), dst, false);
+            return;
+        }
+        if (sym_is(head, "letrec")) {
+            rcompile_let(C, fn, 2, lisp_car(rest), lisp_cdr(rest), dst, false);
             return;
         }
         if (sym_is(head, "set!")) {
             lisp_value target = lisp_car(rest);
-            int kind, idx = resolve(C, fn, target, &kind);
-            if (kind == R_UPVAL || kind == R_SELF)
-                lbc_decline(C, "set! on captured/self binding unsupported");
-            if (kind == R_LOCAL) {
-                rcompile_into(C, fn, lisp_car(lisp_cdr(rest)), idx);
-            } else {
-                int v = rcompile_rvalue(C, fn, lisp_car(lisp_cdr(rest)));
+            int kind;
+            bool boxed;
+            int idx = resolve(C, fn, target, &kind, &boxed);
+            if (kind == R_SELF)
+                lbc_decline(C, "set! on a self binding unsupported");
+            lisp_value valexpr = lisp_car(lisp_cdr(rest));
+            int save = fn->freereg;
+            if (kind == R_LOCAL && !boxed) {
+                rcompile_into(C, fn, valexpr, idx);  // direct register write
+            } else if (kind == R_LOCAL) {            // boxed local: write its cell
+                int v = rcompile_rvalue(C, fn, valexpr);
+                remit(C, k, ROP_CELLSET, idx, v, 0, 0);
+            } else if (kind == R_UPVAL) {            // captured: cell via upvalue
+                int v = rcompile_rvalue(C, fn, valexpr);
+                int cellr = ralloc(C, fn);
+                remit(C, k, ROP_LOADUP, cellr, idx, 0, 0);
+                remit(C, k, ROP_CELLSET, cellr, v, 0, 0);
+            } else {                                 // global slot
+                int v = rcompile_rvalue(C, fn, valexpr);
                 remit(C, k, ROP_SETG, v, add_const(C, k, target), 0, 0);
             }
+            fn->freereg = save;
             remit(C, k, ROP_LOADK, dst, add_const(C, k, LISP_UNDEF), 0, 0);
             return;
         }
@@ -1919,27 +2265,9 @@ static void rcompile_tail(compiler *C, fnstate *fn, lisp_value e) {
             remit(C, k, ROP_TAILCALL, base, n, 0, 0);
             return;
         }
-        if ((sym_is(head, "let") || sym_is(head, "let*"))) {
-            bool star = sym_is(head, "let*");
-            lisp_value binds = lisp_car(rest), lbody = lisp_cdr(rest);
-            int save_nl = fn->nlocals;
-            int slots[LBC_MAX_LOCALS], nb = 0;
-            for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b)) {
-                lisp_value bd = lisp_car(b);
-                int slot = ralloc(C, fn);
-                rcompile_into(C, fn, lisp_car(lisp_cdr(bd)), slot);
-                if (star)
-                    bind_local(C, fn, lisp_car(bd), slot);
-                else
-                    slots[nb++] = slot;
-            }
-            if (!star) {
-                int i = 0;
-                for (lisp_value b = binds; lisp_is_pair(b); b = lisp_cdr(b), i++)
-                    bind_local(C, fn, lisp_car(lisp_car(b)), slots[i]);
-            }
-            rcompile_body(C, fn, lbody, -1, true);
-            fn->nlocals = save_nl;
+        if (sym_is(head, "let") || sym_is(head, "let*") || sym_is(head, "letrec")) {
+            int kind = sym_is(head, "letrec") ? 2 : sym_is(head, "let*") ? 1 : 0;
+            rcompile_let(C, fn, kind, lisp_car(rest), lisp_cdr(rest), -1, true);
             return;
         }
         // fast op or special form: produce a value then RET (below). A plain
@@ -2155,6 +2483,14 @@ static bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                 }
                 break;
             }
+            case ROP_MKCELL: {
+                lisp_value c = lisp_cons(Rf[ins.a], LISP_EMPTY);
+                if (c == LISP_UNDEF) { err = "out of memory"; goto fail; }
+                Rf[ins.a] = c;
+                break;
+            }
+            case ROP_CELLGET: Rf[ins.a] = lisp_car(Rf[ins.b]); break;
+            case ROP_CELLSET: set_car_lbc(Rf[ins.a], Rf[ins.b]); break;
             case ROP_CALL: {
                 int callbase = ins.a, n = ins.b;
                 lisp_value callee = Rf[callbase];
