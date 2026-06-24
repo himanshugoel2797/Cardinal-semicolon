@@ -152,6 +152,7 @@ static const char *CORPUS[] = {
     "(quote (1 2 3))",
     "(length (list 1 2 3 4))",     // global call via lisp_apply
     "(let ((x 1)) (set! x 5) x)",  // set! on a non-captured local
+    "(let ((+ -)) (+ 5 3))",       // a local shadows the builtin -> no inline cache
     // flonum / mixed -> exact prim fallback
     "(+ 1.5 2.5)",
     "(< 1.5 2)",
@@ -163,6 +164,76 @@ static const char *CORPUS[] = {
     "(case 1 ((1) 'a) (else 'b))",
     "(letrec ((f (lambda (n) (if (< n 1) 0 (f (- n 1)))))) (f 3))",
 };
+
+// --- Redefinition / deopt test ----------------------------------------------
+// The fuzzer never rebinds an operator, so it cannot exercise the inline cache's
+// deopt path -- the whole point of Decision 2 (core ops stay redefinable). This
+// drives it directly: an op compiled to an IC must, when the operator is later
+// rebound, transparently call the NEW binding (runtime guard fail), and a fresh
+// compile after the rebind must not inline at all (compile-time deopt).
+static int redef_fails = 0;
+static void expect_eq(const char *what, lisp_value got, int want) {
+    if (lisp_is_fixnum(got) && lisp_fixnum_val(got) == want)
+        return;
+    char b[128];
+    lisp_print(got, b, sizeof(b));
+    printf("  REDEF FAIL[%s]: got %s want %d\n", what, b, want);
+    redef_fails++;
+}
+
+static void test_redefinition(lisp_value genv) {
+    lisp_value plus = lisp_make_symbol("+", 1);
+    lisp_value orig;
+    if (!lisp_env_lookup(genv, plus, &orig))
+        return;
+
+    // 1) Compile (+ 2 3) while + is the canonical builtin: emits an IC. Running
+    //    it now must give 5.
+    bcchunk *k = NULL;
+    const char *why = NULL;
+    if (!rlbc_compile(genv, read1("(+ 2 3)"), &k, &why)) {
+        printf("  REDEF FAIL: compile declined (%s)\n", why);
+        redef_fails++;
+        return;
+    }
+    if (k->nics < 1) {
+        printf("  REDEF FAIL: expected an inline cache for (+ 2 3)\n");
+        redef_fails++;
+    }
+    bcclosure *top = (bcclosure *)calloc(1, sizeof(bcclosure));
+    top->chunk = k;
+    lisp_value out = LISP_UNDEF;
+    const char *err = NULL;
+    rvm_run(top, genv, &out, &err);
+    expect_eq("builtin +", out, 5);
+
+    // 2) Rebind + to a closure computing a*b, then re-run the SAME chunk. The IC
+    //    guard (cdr(cell) == expected) now fails, so OPCALL must call the new +.
+    lisp_eval(read1("(set! + (lambda (a b) (* a b)))"), genv, &err);
+    out = LISP_UNDEF; err = NULL;
+    rvm_run(top, genv, &out, &err);
+    expect_eq("runtime deopt", out, 6);
+
+    // 3) A fresh compile while + is non-canonical must not inline (compile-time
+    //    deopt) and still produce 6 via a normal call.
+    bcchunk *k2 = NULL;
+    if (rlbc_compile(genv, read1("(+ 2 3)"), &k2, &why)) {
+        if (k2->nics != 0) {
+            printf("  REDEF FAIL: inline cache emitted for a redefined op\n");
+            redef_fails++;
+        }
+        bcclosure *t2 = (bcclosure *)calloc(1, sizeof(bcclosure));
+        t2->chunk = k2;
+        out = LISP_UNDEF; err = NULL;
+        rvm_run(t2, genv, &out, &err);
+        expect_eq("compile-time deopt", out, 6);
+    }
+
+    // Restore the canonical + so the bench / churn paths stay representative.
+    lisp_env_set(genv, plus, orig);
+    printf("\n=== redefinition / inline-cache deopt ===\n");
+    printf("  %s\n", redef_fails == 0 ? "ok (runtime + compile-time deopt)" : "FAILED");
+}
 
 // --- Randomized differential fuzzer -----------------------------------------
 // Builds random expressions (as ASTs directly) over the supported subset and
@@ -508,11 +579,12 @@ int main(void) {
 
     printf("\n  %d passed, %d declined, %d FAILED\n", pass, declined, fail);
 
+    test_redefinition(genv);
     int fuzz_fails = fuzz(genv, 20000);
     bench(genv);
     churn_experiment(genv);
 
-    int total_fail = fail + fuzz_fails;
+    int total_fail = fail + fuzz_fails + redef_fails;
     printf("\n[bytecode] %s\n", total_fail == 0 ? "ALL TESTS PASSED" : "FAILURES PRESENT");
     return total_fail == 0 ? 0 : 1;
 }
