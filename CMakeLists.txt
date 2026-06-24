@@ -64,8 +64,7 @@ ADD_SUBDIRECTORY("${CMAKE_CURRENT_SOURCE_DIR}/libs/ubsan_handlers")
 #Build modules
 ADD_SUBDIRECTORY("${CMAKE_CURRENT_SOURCE_DIR}/modules")
 
-#Build servers
-ADD_SUBDIRECTORY("${CMAKE_CURRENT_SOURCE_DIR}/servers")
+# (servers/ is gone -- the Core* services are all Lisp now, lisp/servers/*.clp)
 
 #Build drivers
 ADD_SUBDIRECTORY("${CMAKE_CURRENT_SOURCE_DIR}/drivers")

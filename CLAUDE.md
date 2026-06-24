@@ -77,8 +77,8 @@ C drivers were removed).
 |------|------|
 | `kernel/` | The tiny core: ELF/relocatable loader, initrd (tar) parsing, boot-script interpreter, bootstrap allocator, symbol DB, DWARF. Linked at a fixed high virtual address. |
 | `modules/` | `Sys*` kernel-privileged modules: memory (`SysPhysicalMemory`, `SysVirtualMemory`, `SysMemory`), `SysInterrupts`, `SysMP`, `SysTimer`, `SysFP`, `SysObj` (object model), `SysReg` (registry), `SysUser` (syscalls), `SysTaskMgr` (scheduler), `SysDebug`, `SysGdb` (GDB remote-serial-protocol stub — debug the OS over serial/USB-serial; see `notes/debugging-gdb.md`). |
-| `servers/` | `Core*` OS services: `CoreDisplay`, `CoreAudio`, `CoreInput`, `CoreNetwork` (ARP/ICMP/IPv4 + a UDP port layer and a reliable delivery transport `RDT`, exported via `servers/inc/CoreNetwork/{udp,rdt}.h`), `CoreNetDebug` (optional, `cardinal.netdbg`-gated network debug endpoint: UDP echo + reliable blob upload), `CoreStorage` (block-device registry + the `cardfs` object-store exploration), `CorePower`. (`CoreUsb` is now Lisp — `lisp/servers/coreusb`; `CoreDriver`, the C PCI→driver binder, was removed: `lisp/init.clp` binds devices.) |
-| `drivers/` | C device drivers: `virtio` (gpu/net/common), `rtl8139`, `ahci`, `lfb`, `tarfs`, `cardfs`. The USB stack is **Lisp** now (`lisp/drivers/{uhci,xhci}.clp` host controllers + `lisp/drivers/usb-{hid,hub,storage}.clp` class drivers over `lisp/servers/coreusb`); `ps2` is Lisp (`lisp/ps2.clp`). The orphaned C `rtl8169`/`intel_wifi`/`intel_gfx`/`hdaudio`/`ehci`/`usb_*`/`uhci`/`xhci` drivers were removed. |
+| `lisp/` | The OS above the `Sys*` core is **Lisp**, run by the kernel-resident bytecode VM (`libs/lisp`, compiled into `modules/SysLisp`). `lisp/servers/*.clp` are the `Core*` services (`coreinput`, `coreaudio`, `corepower`, `corestorage` + `cardfs`, `coredisplay`, `corenetwork` — ARP/ICMP/IPv4 + UDP + the reliable `RDT` transport — `corenetdebug`, `coreusb`); `lisp/drivers/*.clp` are the drivers (`ps2`, `rtl8139`, `virtio-net`, `virtio-gpu`, `lfb`, `ahci`, `hdaudio`, `rtl8169`, the USB stack `uhci`/`xhci` + `usb-{hid,hub,storage}`); `lisp/lib/` is the prelude/substrate; **`lisp/init.clp`** is the boot policy and sole device binder (it `pci-find`s hardware and calls each driver's init). The old C `servers/` tree and the C `CoreDriver`/`devices.txt` binder were deleted. |
+| `drivers/` | Only `tarfs` remains in C (a stub). Every actively-bound driver is Lisp under `lisp/drivers/` (see the `lisp/` row); the orphaned C drivers (`rtl8169`/`intel_wifi`/`intel_gfx`/`hdaudio`/`ehci`/`usb_*`/`uhci`/`xhci`, plus the now-Lisp `virtio`/`rtl8139`/`lfb`/`ahci`/`ps2`/`cardfs`) were removed. |
 | `libs/` | Static libs linked into modules: `crypto` (sha256/hmac), `miniz`, `module_lib` (CELF header build/verify), `kvs`, `ubsan_handlers`, plus header-only `pci/` and `syscalls/`. `pci/` holds `pci.h` (config space, BAR scan), `pci_irq.h` (MSI/MSI-X setup), `pci_alloc.h` (BAR + bridge-window self-assignment for firmware-unconfigured devices), `pci_debug.h` (`pci_msix_debug_dump`). |
 | `common/` | Freestanding mini-libc (`string`, `stdlib`, `stdio`, lists/queues, `time`) + platform type headers. Included as a SYSTEM include everywhere. |
 | `platform/<isa>/<plat>/` | Per-target CMake fragments (`flags.cmake`), `linker.ld`, GRUB configs, and the `image`/`run` custom targets. |
@@ -102,7 +102,7 @@ C drivers were removed).
 - **Two signing keys** (plain-text hex in repo root, read by the root
   CMakeLists):
   - `KMOD_HMAC_Key.txt` — used by **`modules/` (`Sys*`)**.
-  - `SERV_HMAC_Key.txt` — used by **`servers/` and `drivers/`**.
+  - `SERV_HMAC_Key.txt` — used by **`drivers/`** (and formerly `servers/`, now Lisp).
   Regenerate with `printf <source> | xxd -pu > KMOD_HMAC_Key.txt`.
 
 ### Boot-time scripts (in the repo root, copied into the initrd)
@@ -178,8 +178,10 @@ MIT copyright header used across the tree:
 
 ### Inter-module APIs
 
-Public headers live in `modules/inc/Sys*/`, `servers/inc/Core*/`, and driver
-`inc/` dirs, included via the `TARGET_INCLUDE_DIRECTORIES` lists. Key
+Public headers live in `modules/inc/Sys*/` and driver `inc/` dirs, included via
+the `TARGET_INCLUDE_DIRECTORIES` lists (the C `servers/inc/Core*/` headers are
+gone — the `Core*` services are Lisp now and talk over message protocols, not C
+ABIs). Key
 facilities: the **registry** (`SysReg` — a hierarchical key/value store,
 `registry_addkey_*`/`registry_readkey_*`), the **object model** (`SysObj`),
 **syscalls** (`libs/syscalls/cs_syscall.h`, register-based `syscallq`), and
