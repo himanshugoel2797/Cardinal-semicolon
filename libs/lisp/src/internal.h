@@ -105,6 +105,16 @@ lisp_heap_t *lisp_gc_set_alloc_heap(lisp_heap_t *h);
 lisp_heap_t *lisp_gc_system_heap(void);
 int lisp_heap_wants_gc(lisp_heap_t *h);
 
+// Mark a value live during a collection (gc.c, wraps the internal mark queue).
+// Valid only from within the collector's trace phase -- the bytecode backend's
+// closure tracer (lbc_closure_trace) calls it.
+void lisp_gc_mark(lisp_value v);
+
+// Trace a compiled closure (LISP_OBJ_BCCLOSURE, lbc.c): mark its captured cells
+// and every lisp_value constant / inline-cache reachable through its chunk tree.
+// gc.c calls this; lbc.c owns the (opaque) chunk/closure layout.
+void lbc_closure_trace(lisp_value clo);
+
 // The intern table, exposed so the GC can treat interned symbols as roots
 // (intern.c). Returns the slot array; *cap_out is its length. Slots are 0
 // (empty) or an interned symbol/keyword value.

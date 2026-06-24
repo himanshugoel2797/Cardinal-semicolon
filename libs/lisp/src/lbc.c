@@ -61,13 +61,12 @@ static void *lbc_zalloc(size_t n) {
     return p;
 }
 
-// A compiled-closure pointer is carried inside a lisp_value using tag 0b11, which
-// the core value representation reserves and never produces. The VM is the only
-// thing that inspects these; real lisp values never collide.
-#define LBC_TAG_CLO 0x3u
-#define LBC_IS_CLO(v) (((v) & LISP_TAG_MASK) == LBC_TAG_CLO)
-#define LBC_MK_CLO(p) ((lisp_value)((uintptr_t)(p) | LBC_TAG_CLO))
-#define LBC_CLO(v) ((bcclosure *)(uintptr_t)((v) & ~(uintptr_t)LISP_TAG_MASK))
+// A compiled closure is a real GC object (LISP_OBJ_BCCLOSURE) so the collector
+// can trace its captured cells + chunk constants; a closure value is therefore an
+// ordinary tagged heap pointer.
+#define LBC_IS_CLO(v) lisp_is_objtype((v), LISP_OBJ_BCCLOSURE)
+#define LBC_MK_CLO(p) lisp_from_obj(p)
+#define LBC_CLO(v) ((bcclosure *)lisp_obj(v))
 
 #define LBC_MAX_LOCALS 64
 #define LBC_MAX_STACK 256
@@ -190,9 +189,24 @@ struct bcchunk {  // opaque typedef in lbc.h
 };
 
 struct bcclosure {  // opaque typedef in lbc.h
+    lisp_header h;        // LISP_OBJ_BCCLOSURE (a GC object)
     bcchunk *chunk;
     lisp_value upvals[];  // nupdesc entries, captured by reference (shared cells)
 };
+
+// Allocate a compiled closure as a GC object. The chunk tree is immortal C
+// memory; the closure roots its constants (lbc_closure_trace). May trigger a
+// collection, so the caller's live values must already be rooted (the register
+// stack, once wired into a context).
+static bcclosure *lbc_alloc_closure(bcchunk *chunk, int nupvals) {
+    bcclosure *c = (bcclosure *)lisp_gc_alloc(sizeof(bcclosure) +
+                                              sizeof(lisp_value) * (size_t)nupvals);
+    if (c == NULL)
+        return NULL;
+    c->h.header = LISP_MK_HEADER(LISP_OBJ_BCCLOSURE, 0);
+    c->chunk = chunk;
+    return c;
+}
 
 // --- Compiler ---------------------------------------------------------------
 
@@ -1473,13 +1487,11 @@ bool vm_run(bcclosure *top, lisp_value genv, lisp_value *out,
             case OP_POP: f->sp--; break;
             case OP_CLOSURE: {
                 bcchunk *child = f->chunk->children[ins.a];
-                bcclosure *c = (bcclosure *)malloc(
-                    sizeof(bcclosure) + sizeof(lisp_value) * (size_t)child->nupdesc);
+                bcclosure *c = lbc_alloc_closure(child, child->nupdesc);
                 if (c == NULL) {
                     err = "out of memory";
                     goto fail;
                 }
-                c->chunk = child;
                 for (int i = 0; i < child->nupdesc; i++)
                     c->upvals[i] = child->updesc[i].from_local
                                        ? f->locals[child->updesc[i].index]
@@ -2513,10 +2525,8 @@ bool rvm_run(bcclosure *top, lisp_value genv, lisp_value *out,
                 break;
             case ROP_CLOSURE: {
                 bcchunk *child = f->chunk->children[ins.b];
-                bcclosure *c = (bcclosure *)malloc(
-                    sizeof(bcclosure) + sizeof(lisp_value) * (size_t)child->nupdesc);
+                bcclosure *c = lbc_alloc_closure(child, child->nupdesc);
                 if (c == NULL) { err = "out of memory"; goto fail; }
-                c->chunk = child;
                 for (int i = 0; i < child->nupdesc; i++)
                     c->upvals[i] = child->updesc[i].from_local
                                        ? Rf[child->updesc[i].index]
@@ -2697,11 +2707,29 @@ lbc_status rlbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
 
 // --- accessors for the host differential test (lbc.h) -----------------------
 
-bcclosure *lbc_top(bcchunk *k) {
-    bcclosure *top = (bcclosure *)lbc_zalloc(sizeof(bcclosure));
-    if (top != NULL)
-        top->chunk = k;
-    return top;
+bcclosure *lbc_top(bcchunk *k) { return lbc_alloc_closure(k, 0); }
+
+// --- GC tracing (internal.h; called from gc.c's trace phase) ----------------
+
+// Mark every live lisp_value reachable through a chunk tree: its constants, its
+// inline-cache cells/expected primitives, and recursively its child chunks. The
+// chunk structs themselves are immortal C memory and are not GC objects.
+static void lbc_mark_chunk(bcchunk *k) {
+    for (int i = 0; i < k->nconsts; i++)
+        lisp_gc_mark(k->consts[i]);
+    for (int i = 0; i < k->nics; i++) {
+        lisp_gc_mark(k->ics[i].cell);
+        lisp_gc_mark(k->ics[i].expected);
+    }
+    for (int i = 0; i < k->nchildren; i++)
+        lbc_mark_chunk(k->children[i]);
+}
+
+void lbc_closure_trace(lisp_value cv) {
+    bcclosure *c = (bcclosure *)lisp_obj(cv);
+    for (int i = 0; i < c->chunk->nupdesc; i++)
+        lisp_gc_mark(c->upvals[i]);
+    lbc_mark_chunk(c->chunk);
 }
 
 int lbc_count_stack(bcchunk *k) {

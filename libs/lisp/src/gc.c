@@ -309,10 +309,20 @@ static void trace(lisp_value v) {
             mark_push(c->caps);  // the context's capability list (system heap)
             break;
         }
+        case LISP_OBJ_BCCLOSURE:
+            // A compiled closure: its captured cells + chunk constants. The chunk
+            // tree is immortal C memory (not GC-managed); lbc owns its layout, so
+            // it does the walk, calling lisp_gc_mark on each live value.
+            lbc_closure_trace(v);
+            break;
         default:
             break;  // symbol / keyword / string / flonum are leaves
     }
 }
+
+// Mark a value live during a collection (internal.h). Exposed so the bytecode
+// backend can trace its own opaque closure/chunk layout from within trace().
+void lisp_gc_mark(lisp_value v) { mark_push(v); }
 
 // --- conservative roots (system heap only) ----------------------------------
 
