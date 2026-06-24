@@ -117,13 +117,11 @@ void lisp_gc_mark(lisp_value v);
 // gc.c calls this; lbc.c owns the (opaque) chunk/closure layout.
 void lbc_closure_trace(lisp_value clo);
 
-// Bytecode VM <-> live-evaluator bridge (lbc.c). g_lbc_eval routes lisp_eval /
-// lisp_apply / lisp_ctx_resume through the VM when nonzero. lbc_ctx_prepare
-// compiles a context's control expr on first resume and returns its mode (1 = run
-// on the VM, 2 = declined -> tree-walker); lbc_ctx_run drives a VM-mode context;
-// lbc_ctx_mark roots its VM state during a collection; lbc_apply runs a procedure
-// to completion on the VM.
-extern int g_lbc_eval;
+// The bytecode VM is the evaluator (lbc.c). lbc_ctx_prepare compiles a context's
+// control expr on first resume and returns 1 (run on the VM) or 2 (the compiler
+// could not lower the form -> it set the context's error); lbc_ctx_run drives a
+// prepared context; lbc_ctx_mark roots its VM state during a collection; lbc_apply
+// runs a procedure to completion on the VM.
 int lbc_ctx_prepare(lisp_ctx_t *cx);
 lisp_ctx_status lbc_ctx_run(lisp_ctx_t *cx);
 void lbc_ctx_mark(lisp_ctx_t *cx);
