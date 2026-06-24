@@ -79,6 +79,9 @@ struct lisp_heap {
     gc_slab *slabs;     // backing slabs (freed only at heap teardown)
     char *slab_cur;     // bump cursor into the current slab
     size_t slab_left;   // bytes remaining in the current slab
+    int lock;           // per-context-heap spinlock (multi-core only): excludes a
+                        // cross-core `send` depositing a message from the owner's
+                        // own alloc/collect. Unused on the system heap (rt_lock).
 };
 
 #define GC_THRESHOLD (256 * 1024)
@@ -146,6 +149,57 @@ void lisp_set_concurrency(void (*lock)(void), void (*unlock)(void), int (*core_i
 }
 
 void lisp_gc_set_multicore(int grow_only_system_heap) { g_multicore = grow_only_system_heap; }
+
+// Per-context-heap spinlock. A context runs on exactly one core (its scheduler's
+// queue is per-core), so the owner is normally the heap's only user and the lock
+// is uncontended -- the sole other writer is a cross-core `send` depositing a
+// message (see prim_send / lisp_gc_xfer_lock). Single-core (and the host tests)
+// never set g_multicore, so the lock compiles to a no-op there: the lock-free
+// fast path is preserved exactly where there is no second core to race.
+static inline void heap_lock(struct lisp_heap *h) {
+    if (!g_multicore)
+        return;
+    while (__atomic_exchange_n(&h->lock, 1, __ATOMIC_ACQUIRE))
+        while (__atomic_load_n(&h->lock, __ATOMIC_RELAXED))
+            __builtin_ia32_pause();
+}
+static inline void heap_unlock(struct lisp_heap *h) {
+    if (!g_multicore)
+        return;
+    __atomic_store_n(&h->lock, 0, __ATOMIC_RELEASE);
+}
+
+// Set while this core is mid `send` into another context's heap: the deposit's
+// nested allocations target a heap whose lock this core already holds (via
+// lisp_gc_xfer_lock), so lisp_gc_alloc must NOT re-take it (the spinlock is not
+// recursive) and must NOT collect that heap (its precise roots -- the owner's
+// live VM registers -- belong to the owner's core; only the owner may collect).
+static int g_in_xfer[LISP_MAX_CORES] = {0};
+
+// Lock a target heap for a cross-core message transfer (prim_send). The system
+// heap serialises on the existing runtime lock; a per-context heap on its own
+// spinlock. Always paired with lisp_gc_xfer_unlock.
+void lisp_gc_xfer_lock(struct lisp_heap *h) {
+    if (h->owner == LISP_EMPTY)
+        lisp_rt_lock();
+    else
+        heap_lock(h);
+    g_in_xfer[lisp_rt_core()] = 1;
+}
+void lisp_gc_xfer_unlock(struct lisp_heap *h) {
+    g_in_xfer[lisp_rt_core()] = 0;
+    if (h->owner == LISP_EMPTY)
+        lisp_rt_unlock();
+    else
+        heap_unlock(h);
+}
+
+// Lock/unlock a per-context heap for a non-allocating cross-core-visible mutation
+// of the owning context (its mailbox/blocked flag in recv). The owner calls these
+// from its own core; they exclude an in-flight cross-core send. A system-heap
+// context has no own spinlock -- the caller serialises on lisp_rt_lock instead.
+void lisp_heap_lock(struct lisp_heap *h) { heap_lock(h); }
+void lisp_heap_unlock(struct lisp_heap *h) { heap_unlock(h); }
 
 // This core's current allocation-target heap (the system heap if its slot is the
 // default NULL).
@@ -359,11 +413,13 @@ static void capture_registers(uintptr_t regs[6]) {
 // from the owning context's CEK registers. Either way only this heap's objects
 // are marked (mark_push gate) and only this heap's list is swept.
 //
-// PRECONDITION: the caller holds lisp_rt_lock. The shared mark scratch (g_set /
-// g_ms) and -- for the system heap -- the intern table are read/written here, so
-// concurrent collections on two cores would corrupt them. The lock serialises
-// all collection; the public entry points (lisp_gc_collect / lisp_heap_collect)
-// and the allocators take it before calling in.
+// PRECONDITION: the caller holds lisp_rt_lock, and -- for a per-context heap --
+// also that heap's lock (heap_lock), so a cross-core `send` cannot mutate its
+// freelist/slab mid-sweep. The shared mark scratch (g_set / g_ms) and, for the
+// system heap, the intern table are read/written here, so concurrent collections
+// on two cores would corrupt them. lisp_rt_lock serialises all collection; the
+// public entry points (lisp_gc_collect / lisp_heap_collect) and the allocators
+// take both before calling in.
 static void collect_heap_locked(struct lisp_heap *h) {
     if (h->owner == LISP_EMPTY && g_stack_base == NULL)
         return;  // system heap before init: no roots to scan -> keep everything
@@ -527,6 +583,18 @@ static void *sys_alloc_locked(size_t size) {
 
 void *lisp_gc_alloc(size_t size) {
     struct lisp_heap *h = cur_alloc_heap();
+
+    // Mid cross-core send: this core already holds h's lock (lisp_gc_xfer_lock)
+    // and must neither re-take it nor collect h (the owner's core owns h's roots).
+    // Allocate only -- a full receiver heap fails the deposit (the message is
+    // dropped, as on any send OOM); the owner reclaims space on its next collect.
+    if (g_in_xfer[lisp_rt_core()]) {
+        if (h->owner == LISP_EMPTY)
+            return sys_alloc_locked(size);  // rt_lock already held by xfer_lock
+        gc_obj *o = obj_alloc(h, size);
+        return o != NULL ? heap_link(h, o, size) : NULL;
+    }
+
     if (h->owner == LISP_EMPTY) {  // the shared system heap: serialise
         lisp_rt_lock();
         void *p = sys_alloc_locked(size);
@@ -534,22 +602,31 @@ void *lisp_gc_alloc(size_t size) {
         return p;
     }
 
-    // A per-context heap is touched only by this core, so the fast path is
-    // lock-free. Collecting mid-step would miss values held only in C locals
-    // (e.g. a do_call args[] array), so defer to the next safe point; only the
-    // last-ditch OOM collect runs inline, and it takes the lock for the scratch.
+    // A per-context heap is touched by its owner's core and, transiently, by a
+    // cross-core `send` depositing a message -- so the owner locks it (uncontended
+    // unless a send is in flight; a no-op single-core). Collecting mid-step would
+    // miss values held only in C locals, so defer to the next safe point; only the
+    // last-ditch OOM collect runs inline -- it drops the heap lock first, then
+    // re-takes rt_lock+heap_lock (lisp_heap_collect), keeping the lock order
+    // rt_lock -> heap_lock everywhere (a sender never takes rt_lock under the heap
+    // lock, so there is no inversion).
+    heap_lock(h);
     if (h->enabled && h->bytes_since >= h->threshold)
         h->want_gc = 1;
     gc_obj *o = obj_alloc(h, size);
     if (o == NULL) {
-        lisp_rt_lock();
-        collect_heap_locked(h);
-        lisp_rt_unlock();
+        heap_unlock(h);
+        lisp_heap_collect(h);
+        heap_lock(h);
         o = obj_alloc(h, size);
-        if (o == NULL)
+        if (o == NULL) {
+            heap_unlock(h);
             return NULL;
+        }
     }
-    return heap_link(h, o, size);
+    void *r = heap_link(h, o, size);
+    heap_unlock(h);
+    return r;
 }
 
 // Allocate into the shared system heap regardless of the current target. Interned
@@ -593,12 +670,20 @@ struct lisp_heap *lisp_heap_new(lisp_value owner) {
     h->slabs = NULL;
     h->slab_cur = NULL;
     h->slab_left = 0;
+    h->lock = 0;
     return h;
 }
 
 void lisp_heap_collect(struct lisp_heap *h) {
+    // Order: rt_lock (the shared mark scratch) then heap_lock (exclude a cross-core
+    // sender mutating this heap's freelist/slab while we sweep). The system heap
+    // has no per-heap lock -- rt_lock alone serialises it.
     lisp_rt_lock();
+    if (h->owner != LISP_EMPTY)
+        heap_lock(h);
     collect_heap_locked(h);
+    if (h->owner != LISP_EMPTY)
+        heap_unlock(h);
     lisp_rt_unlock();
 }
 

@@ -107,6 +107,18 @@ lisp_heap_t *lisp_gc_set_alloc_heap(lisp_heap_t *h);
 lisp_heap_t *lisp_gc_system_heap(void);
 int lisp_heap_wants_gc(lisp_heap_t *h);
 
+// Cross-core message delivery synchronisation (gc.c). A context runs on one core,
+// but `send` deposits a message into the *receiver's* heap from the sender's core.
+// lisp_gc_xfer_lock locks that heap for the deposit (and flags this core so the
+// deposit's nested allocations neither re-lock nor collect it); the receiver's own
+// core takes lisp_heap_lock for the matching non-allocating mailbox mutations in
+// recv. Both are no-ops single-core. For a receiver on the system heap, pass that
+// heap: the lock is the runtime lock. Always paired with the *_unlock form.
+void lisp_gc_xfer_lock(lisp_heap_t *h);
+void lisp_gc_xfer_unlock(lisp_heap_t *h);
+void lisp_heap_lock(lisp_heap_t *h);
+void lisp_heap_unlock(lisp_heap_t *h);
+
 // Mark a value live during a collection (gc.c, wraps the internal mark queue).
 // Valid only from within the collector's trace phase -- the bytecode backend's
 // closure tracer (lbc_closure_trace) calls it.
