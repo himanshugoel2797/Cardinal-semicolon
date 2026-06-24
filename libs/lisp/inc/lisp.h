@@ -105,10 +105,6 @@ typedef struct {
 typedef struct {
     lisp_header h;
     uint32_t hash;
-    uint8_t form_id;  // interpreter-internal: special-form dispatch id, 0 for an
-                      // ordinary symbol. Set once at startup (see eval.c) so the
-                      // evaluator dispatches forms via a jump table, not a name
-                      // cascade. Fits in struct padding -- no size change.
     char name[];  // NUL-terminated; length in header aux
 } lisp_named;
 
@@ -247,7 +243,6 @@ size_t lisp_string_len(lisp_value v);
 // returns LISP_UNDEF and, if `err` is non-NULL, points it at a static message.
 typedef lisp_value (*lisp_primitive_fn)(lisp_value *args, int argc, const char **err);
 
-lisp_value lisp_make_closure(lisp_value params, lisp_value body, lisp_value env);
 lisp_value lisp_make_primitive(lisp_primitive_fn fn, const char *name);
 
 // Lexical environments. A frame holds an assoc list of (symbol . value) bindings

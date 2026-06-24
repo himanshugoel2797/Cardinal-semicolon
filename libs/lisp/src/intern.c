@@ -41,7 +41,6 @@ static lisp_value alloc_named(lisp_objtype type, const char *name, size_t len, u
         return LISP_UNDEF;
     s->h.header = LISP_MK_HEADER(type, len);
     s->hash = hash;
-    s->form_id = 0;  // ordinary symbol until lisp_init_special_forms tags the forms
     memcpy(s->name, name, len);
     s->name[len] = '\0';
     return lisp_from_obj(s);

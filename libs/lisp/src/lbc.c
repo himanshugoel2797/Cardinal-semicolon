@@ -2912,13 +2912,10 @@ lbc_status rlbc_eval(lisp_value genv, lisp_value expr, lisp_value *out,
 // ===========================================================================
 // Live-evaluator integration (internal.h): run a context on the VM.
 //
-// A context lazily compiles its control expr on first resume. If it compiles, the
-// context runs on the VM (mode 1); if the compiler declines (a form not yet
-// lowered -- e.g. nothing, currently), it falls back to the tree-walker (mode 2),
-// so bring-up stays boot-safe. Gated by g_lbc_eval until validated.
+// A context lazily compiles its control expr on first resume. If it compiles
+// (mode 1) it runs on the VM; if the compiler cannot lower the form (mode 2) the
+// context's error is set -- the VM is the sole evaluator, there is no fallback.
 // ===========================================================================
-
-int g_lbc_eval = 1;  // route eval through the VM (off until P3b is validated)
 
 #define LBC_CTX_REGS 8192     // per-context register stack (bounds recursion depth)
 #define LBC_CTX_FRAMES 1024
