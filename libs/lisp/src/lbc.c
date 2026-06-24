@@ -2195,8 +2195,15 @@ static void rcompile_into(compiler *C, fnstate *fn, lisp_value e, int dst) {
                     had_else = true;
                     break;
                 }
-                if (!lisp_is_pair(cbody))
-                    lbc_decline(C, "cond clause without body unsupported");
+                if (!lisp_is_pair(cbody)) {
+                    // (test) with no body: the clause value IS the test, if truthy.
+                    rcompile_into(C, fn, test, dst);
+                    if (ne >= 64)
+                        lbc_decline(C, "cond too long");
+                    endj[ne++] = remit(C, k, ROP_JMPT, dst, -1, 0, 0);
+                    cl = lisp_cdr(cl);
+                    continue;
+                }
                 int tc = rcompile_rvalue(C, fn, test);
                 int jf = remit(C, k, ROP_JMPF, tc, -1, 0, 0);
                 rcompile_body(C, fn, cbody, dst, false);
@@ -2431,8 +2438,15 @@ static void rcompile_tail(compiler *C, fnstate *fn, lisp_value e) {
                     had_else = true;
                     break;
                 }
-                if (!lisp_is_pair(cbody))
-                    lbc_decline(C, "cond clause without body unsupported");
+                if (!lisp_is_pair(cbody)) {
+                    // (test) with no body: return the test value when truthy.
+                    int tc = rcompile_rvalue(C, fn, test);
+                    int jf = remit(C, k, ROP_JMPF, tc, -1, 0, 0);
+                    remit(C, k, ROP_RET, tc, 0, 0, 0);
+                    k->rcode[jf].b = k->nrcode;
+                    cl = lisp_cdr(cl);
+                    continue;
+                }
                 int tc = rcompile_rvalue(C, fn, test);
                 int jf = remit(C, k, ROP_JMPF, tc, -1, 0, 0);
                 rcompile_body(C, fn, cbody, -1, true);
@@ -2953,9 +2967,12 @@ int lbc_ctx_prepare(lisp_ctx_t *cx) {
         cv->top = LBC_MK_CLO(top);  // root it before lbc_vm_alloc / any later GC
     bool vmok = (top != NULL) && lbc_vm_alloc(&cv->vm);
     lisp_gc_set_alloc_heap(prev);
-    const char *err = NULL;
     if (!vmok || k->nregs > cv->vm.regcap || k->nparams != 0 || k->has_rest) {
-        cv->mode = 2;  // decline / OOM / not a 0-arg thunk -> tree-walker
+        // The VM is the sole evaluator: a form it cannot compile is a compile
+        // error, surfaced as the context's error (callers short-circuit on it).
+        cv->mode = 2;
+        cx->err = why != NULL ? why : (vmok ? "compile: unsupported top form" : "out of memory");
+        cx->status = LISP_CTX_ERROR;
         return 2;
     }
     for (int i = 0; i < k->nregs; i++)
@@ -2963,7 +2980,6 @@ int lbc_ctx_prepare(lisp_ctx_t *cx) {
     cv->vm.frames[0] = (rframe){k, top, 0, 0, -1};
     cv->vm.depth = 1;
     cv->mode = 1;
-    (void)err;
     return 1;
 }
 
