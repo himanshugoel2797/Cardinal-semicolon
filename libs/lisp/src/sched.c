@@ -207,7 +207,7 @@ static lisp_value prim_spawn(lisp_value *a, int n, const char **e) {
     if (n != 1)
         return prim_err(e, "spawn expects one argument (a thunk)");
     lisp_value proc = a[0];
-    if (!lisp_is_objtype(proc, LISP_OBJ_CLOSURE) && !lisp_is_objtype(proc, LISP_OBJ_PRIMITIVE))
+    if (!lisp_is_procedure(proc))
         return prim_err(e, "spawn: argument must be a procedure");
     // Build the new context's initial expression (proc) in the SYSTEM heap: it
     // becomes cx->control of a system-heap context object, so it must not live in
@@ -267,7 +267,7 @@ static lisp_value prim_spawn_restricted(lisp_value *a, int n, const char **e) {
     lisp_value proc = a[1];
     if (caps != LISP_EMPTY && !lisp_is_pair(caps))
         return prim_err(e, "spawn-restricted: caps must be a list of module names");
-    if (!lisp_is_objtype(proc, LISP_OBJ_CLOSURE) && !lisp_is_objtype(proc, LISP_OBJ_PRIMITIVE))
+    if (!lisp_is_procedure(proc))
         return prim_err(e, "spawn-restricted: second argument must be a procedure");
     for (lisp_value l = caps; lisp_is_pair(l); l = lisp_cdr(l))
         if (!lisp_is_symbol(lisp_car(l)))

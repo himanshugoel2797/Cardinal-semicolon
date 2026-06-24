@@ -56,9 +56,7 @@ static lisp_value status_symbol(lisp_ctx_status s) {
 
 // (ctx-make thunk) -> a paused context that will apply the 0-arg procedure.
 static lisp_value prim_ctx_make(lisp_value *a, int n, const char **e) {
-    if (n != 1 ||
-        (!lisp_is_objtype(a[0], LISP_OBJ_CLOSURE) &&
-         !lisp_is_objtype(a[0], LISP_OBJ_PRIMITIVE)))
+    if (n != 1 || !lisp_is_procedure(a[0]))
         return derr(e, "ctx-make expects one argument (a procedure)");
     // Build the application (thunk) in the SYSTEM heap: it becomes the control of
     // a system-heap context object and must not live in the caller's own heap

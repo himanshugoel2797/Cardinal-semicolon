@@ -188,6 +188,13 @@ static inline bool lisp_is_string(lisp_value v) { return lisp_is_objtype(v, LISP
 static inline bool lisp_is_vector(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_VECTOR); }
 static inline bool lisp_is_flonum(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_FLONUM); }
 static inline bool lisp_is_bytes(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_BYTES); }
+// A callable: a C primitive, a tree-walker closure, or a compiled (bytecode)
+// closure. Anything that checks "is this a procedure" must accept all three.
+static inline bool lisp_is_procedure(lisp_value v) {
+    return lisp_is_objtype(v, LISP_OBJ_PRIMITIVE) ||
+           lisp_is_objtype(v, LISP_OBJ_CLOSURE) ||
+           lisp_is_objtype(v, LISP_OBJ_BCCLOSURE);
+}
 
 // A number is an exact fixnum or an inexact flonum.
 static inline bool lisp_is_number(lisp_value v) { return lisp_is_fixnum(v) || lisp_is_flonum(v); }

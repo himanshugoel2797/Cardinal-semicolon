@@ -492,6 +492,19 @@ static void do_call(lisp_ctx_t *cx, lisp_value op, lisp_value *args, int argc) {
         start_body(cx, c->body);  // tail
         return;
     }
+    if (lisp_is_objtype(op, LISP_OBJ_BCCLOSURE)) {
+        // Interop: a tree-walker context invoking a compiled closure runs it to
+        // completion on the VM (lbc_apply).
+        const char *e = NULL;
+        lisp_value r = lbc_apply(op, args, argc, &e);
+        if (e != NULL) {
+            ctx_error(cx, e);
+            return;
+        }
+        cx->accum = r;
+        cx->status = LISP_CTX_APPLY;
+        return;
+    }
     ctx_error(cx, "attempt to call a non-procedure");
 }
 

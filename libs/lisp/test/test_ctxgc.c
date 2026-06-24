@@ -71,10 +71,10 @@ int main(void) {
         char buf[64];
 
         lisp_value a = lisp_eval_string(
-            "(spawn (lambda () (let loop ((i 0) (n 100000)) (if (= n 0) i (loop (+ i 1) (- n 1))))))",
+            "(spawn (lambda () (let loop ((i 0) (n 100000)) (if (= n 0) i (begin (cons i n) (loop (+ i 1) (- n 1)))))))",
             env, &err);
         lisp_value b = lisp_eval_string(
-            "(spawn (lambda () (let loop ((i 0) (n 150000)) (if (= n 0) i (loop (+ i 2) (- n 1))))))",
+            "(spawn (lambda () (let loop ((i 0) (n 150000)) (if (= n 0) i (begin (cons i n) (loop (+ i 2) (- n 1)))))))",
             env, &err);
 
         lisp_sched_run(&s, 0);
@@ -106,7 +106,7 @@ int main(void) {
             "(define consumer"
             "  (spawn (lambda ()"
             "           (let ((msg (recv)))"
-            "             (let loop ((n 120000)) (if (= n 0) msg (loop (- n 1))))))))"
+            "             (let loop ((n 120000)) (if (= n 0) msg (begin (cons n n) (loop (- n 1)))))))))"
             "(define producer"
             "  (spawn (lambda () (send consumer (list 1 2 3 \"hi\" (vector 9 8))))))",
             env, &err);
