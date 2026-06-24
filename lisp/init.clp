@@ -17,8 +17,8 @@
 (define-module init
   (export system-init start-repl)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
-          corenetdebug ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci cardfs
-          hdaudio sys-pci sys-cmdline)
+          corenetdebug coreusb ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci
+          cardfs hdaudio uhci xhci usb-hid usb-hub usb-storage sys-pci sys-cmdline)
 
   ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
   ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
@@ -62,22 +62,36 @@
   ;; them yet -- they idle parked on recv -- but the endpoints are present for the
   ;; drivers that will attach (the same posture the C servers held).
   (define (system-init)
-    (setup-input)
+    ;; `input` is bound here because the USB-HID class driver feeds the same
+    ;; coreinput service the ps2 keyboard does; the whole bring-up runs in its scope.
+    (let ((input (setup-input)))
     ;; Audio: start the service, capture its handle (formerly dropped), and bring
     ;; up the HD Audio controller feeding it. hdaudio-init is gated on pci-find, so
     ;; a default boot with no HDA controller just logs "no device" and returns.
     (let ((audio (start-audio-service)))
       (hdaudio-init audio))
     (start-power-service)
-    ;; Storage: start the registry, capture its handle (formerly dropped), then
-    ;; bring up the AHCI driver feeding it. ahci-init is gated on pci-find, so a
-    ;; default (no-disk) boot just logs "no device" and returns -- unaffected.
-    ;; cardfs registers as an fs provider FIRST, so it is offered each block
-    ;; device the AHCI driver then registers (a probe reads LBA 0 and claims the
-    ;; volume if it is a cardfs superblock).
-    (let ((storage (start-storage-service)))
+    ;; Storage registry (the AHCI block driver AND the USB mass-storage class
+    ;; driver feed it); cardfs registers as an fs provider FIRST so it is offered
+    ;; each block device that registers (a probe reads LBA 0 and claims the volume
+    ;; if it is a cardfs superblock). The USB enumeration/dispatch service (coreusb)
+    ;; comes up alongside. ahci-init/uhci-init/xhci-init are pci-find-gated, so a
+    ;; default boot with no such device just logs "no device" and returns.
+    (let ((storage (start-storage-service))
+          (usb (start-usb-service)))
       (start-cardfs storage)
-      (ahci-init storage))
+      (ahci-init storage)
+      ;; Register the USB class drivers FIRST -- coreusb processes these
+      ;; register-class messages (sent synchronously here) ahead of any later
+      ;; port-connect, so the class table is populated when the first device
+      ;; arrives. HID feeds coreinput; mass storage feeds the storage registry;
+      ;; the hub recurses through coreusb.
+      (usb-hid-init usb input)
+      (usb-hub-init usb)
+      (usb-storage-init usb storage)
+      ;; Then bring up the host controllers.
+      (uhci-init usb)
+      (xhci-init usb))
     ;; Bring up the display registry, then the GPU driver, which brings the
     ;; virtio-gpu device to DRIVER_OK, paints a framebuffer, and registers itself
     ;; with the display service. Guarded: with no GPU present it just logs and
@@ -115,7 +129,7 @@
       ;; Optional network debug endpoint (echo 1337 / digest 1338), gated on the
       ;; kernel command line -- a remote attack surface, so opt-in like the REPL.
       (if (cmdline-has? "cardinal.netdbg") (start-netdebug net)))
-    'system-up)
+    'system-up))   ; close the (let ((input ...)) ...) that wraps the bring-up
 
   ;; The interactive serial REPL (started only under cardinal.repl). A root context
   ;; -- a serial shell for debugging the OS is exactly the case that wants full

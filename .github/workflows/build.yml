@@ -60,9 +60,10 @@ jobs:
           echo "Signed modules:"; echo "$modules"
           count=$(echo "$modules" | grep -c . || true)
           echo "module count: $count"
-          # Most of the OS is now Lisp (.clp in the initrd, not signed .celf): the
-          # tree builds ~25 .celf (Sys* core, CoreUsb + C USB stack, C drivers, mana).
-          test "$count" -ge 20
+          # The C USB stack + CoreDriver + the orphaned rtl8169/intel_*/hdaudio C
+          # drivers were removed (USB is Lisp now; binding is lisp/init.clp), so the
+          # tree builds ~28 .celf. Keep a floor that catches a broken build.
+          test "$count" -ge 14
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
