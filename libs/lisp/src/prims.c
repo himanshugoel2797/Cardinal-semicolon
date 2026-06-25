@@ -1189,7 +1189,12 @@ static lisp_value bytes_set(lisp_value *a, int n, const char **e, int w) {
 // C loop, ~650x vs memcpy). These do the whole region in one primitive call whose
 // inner loop the C compiler vectorizes. They are NON-volatile and so are for bulk
 // DATA -- framebuffers, DMA/packet/IO buffers -- not MMIO registers (use the
-// width-specific volatile bytes-*-set!/ref for a single register access).
+// width-specific volatile bytes-*-set!/ref for a single register access). The
+// non-volatile loop is deliberate: it is what lets the compiler vectorize and
+// coalesce stores (the win), which is correct for a framebuffer -- it is pixel
+// DATA, mmio-mapped or not, and nothing observes individual write granularity or
+// ordering -- but is exactly wrong for a control register. The store pointer comes
+// from an escaped argument, so the writes are emitted, never elided.
 
 // (bytes-fill32! b byte-offset count color) -> fill `count` 32-bit words at
 // `byte-offset` with `color`. The natural framebuffer clear/paint.
@@ -1199,9 +1204,12 @@ static lisp_value prim_bytes_fill32(lisp_value *a, int n, const char **e) {
         return prim_err(e, "bytes-fill32! expects (bytes byte-offset count color)");
     lisp_bytes *b = as_bytes(a[0]);
     int64_t off = lisp_fixnum_val(a[1]), count = lisp_fixnum_val(a[2]);
-    if (off < 0 || count < 0 || (off & 3) != 0 ||
-        (size_t)off + (size_t)count * 4 > b->len)
-        return prim_err(e, "bytes-fill32!: range out of bounds (offset must be 4-aligned)");
+    // The 32-bit store needs a 4-aligned address, so check the actual data pointer,
+    // not just `off` (a foreign bytes object can wrap a non-4-aligned base).
+    if (off < 0 || count < 0 ||
+        (size_t)off + (size_t)count * 4 > b->len ||
+        (((uintptr_t)b->data + (size_t)off) & 3) != 0)
+        return prim_err(e, "bytes-fill32!: range out of bounds or not 4-aligned");
     uint32_t color = (uint32_t)lisp_fixnum_val(a[3]);
     uint32_t *p = (uint32_t *)(void *)(b->data + off);
     for (int64_t i = 0; i < count; i++)
