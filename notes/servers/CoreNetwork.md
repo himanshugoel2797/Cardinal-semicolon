@@ -165,12 +165,16 @@ RELEASE/DECLINE, and ARP-probe duplicate detection.
 These were left as notes rather than code because each constrains the system
 design and should be decided deliberately, in line with the microkernel model:
 
-1. **Userspace socket surface.** In-kernel services can now bind UDP ports
-   (`udp_bind`) and run a reliable transport (`rdt_listen`), which unblocks
-   kernel-side consumers like `CoreNetDebug`. What remains deferred is the
-   *userspace* surface — how a userspace task binds a port and receives datagrams
-   (a `SysUser` syscall family? a `SysObj` object per socket? a shared-memory
-   ring?) — and the "raw queue" TODO for unhandled protocols. TCP also needs this.
+1. **Userspace socket surface — *resolved by the architecture*.** This was
+   originally framed as a ring-3 question (a `SysUser` syscall family? a `SysObj`
+   object per socket?). In Cardinal; that framing is moot: **userspace is a
+   capability-gated Lisp context**, not a ring-3 task, so the message-based socket
+   API *is* the userspace surface. A sandboxed (`spawn-restricted`) context binds a
+   UDP port or opens a TCP connection by messaging the network service and receives
+   `udp-rx` / `tcp-rx` events back — exactly what `CoreNetDebug`'s echo handlers
+   (empty-capability contexts) do. The capability grant + per-context heap are the
+   isolation boundary. What genuinely remains is only the "raw queue" TODO for
+   unhandled protocols.
 2. **TX path architecture.** A proper transmit path wants a per-device tx queue,
    a tx worker task draining it to the driver, and outbound ARP resolution
    (hold the packet, emit an ARP request, retry/timeout on reply). *Outbound ARP
@@ -202,8 +206,10 @@ design and should be decided deliberately, in line with the microkernel model:
    segments (`tcp-test-drop?` in `tcp.clp`, off by default, one comparison per
    segment in production). Under that, an 8 KB multi-segment echo + teardown still
    completes byte-perfect — dropped data opens gaps that drive reassembly, and
-   dropped ACKs make our retransmit timer fire. The *userspace* (ring-3) socket
-   surface (item 1) is still the remaining piece.
+   dropped ACKs make our retransmit timer fire. The socket API is already usable
+   from sandboxed Lisp contexts (the userspace model — see item 1), so what remains
+   is transport-level: routing over the learned gateway (item 3), a DNS resolver,
+   and the async tx/packet-hold path (item 2).
 
    To run it: `cardinal.netdbg cardinal.tcploss` on the cmdline, then
    `NIC=virtio-net HOSTFWD="tcp::5555-:7" ./scripts/run-qemu.sh` (background) and a

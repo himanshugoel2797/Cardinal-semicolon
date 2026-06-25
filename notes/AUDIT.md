@@ -626,8 +626,11 @@ the UDP `udp-bind` pattern. Verified live: a host `nc`/socket drives the guest T
 echo over slirp `hostfwd`, including multi-segment transfer and clean teardown.
 The retransmission + out-of-order reassembly paths are validated under a test-only
 loss injector (`cardinal.tcploss` drops 1 in 4 received segments; an 8 KB echo
-still completes byte-perfect). A *userspace* (ring-3) socket surface remains TODO.
-See `notes/servers/CoreNetwork.md`. Matches the README status notes.
+still completes byte-perfect). The socket API is the message protocol itself, so it
+is already usable from sandboxed (capability-gated) Lisp contexts — the userspace
+model in this OS; no ring-3 surface is required. What remains is transport-level
+(routing over the gateway, DNS, async tx/packet-hold). See
+`notes/servers/CoreNetwork.md`. Matches the README status notes.
 
 ### [FIXED] virtio-net header is 10 bytes but the modern device needs 12
 `drivers/virtio/net/inc/net.h` `virtio_net_cmd_hdr_t` was the 10-byte legacy
