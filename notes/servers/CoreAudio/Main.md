@@ -39,9 +39,20 @@ cyclic ring. Messages: `(capture-start name ep-id)` / `(capture-read name reply)
 (a bytes copy of the ring) / `(capture-pos name reply)` (DMA position) /
 `(capture-stop name)`. `cardinal.mictest` is a boot self-check.
 
+**Hotplug**: each endpoint carries its own codec handle, so a card can span codecs
+(or gain one later). `scan-all-codecs` probes every codec address and rebuilds the
+endpoint set — the single reconciliation point for boot AND hotplug. A watcher
+context parked on the controller MSI notices a STATESTS change (a codec
+hot-added/removed) and sends the driver loop `codec-change`, which re-scans. (QEMU's
+hda bus can't actually hot-add a codec, so `(rescan name)` / `cardinal.hotplug`
+inject the same reconciliation to validate the path; the watcher itself is the
+proven `msi-wait` pattern.)
+
 Done: multi-controller bring-up, the full endpoint model (speakers/headphones/
-line-out + mics/line-in), output playback, per-endpoint volume/mute, and capture
-(mic/line-in). Unit-tested with a mock codec — SysTest `check_hdaudio` /
-`check_hdaudio_volume` / `check_hdaudio_capture`; the capture DMA is validated live
-(`cardinal.mictest`: the input-stream position advances).
-TODO (follow-up PR): codec/jack hotplug.
+line-out + mics/line-in), output playback, per-endpoint volume/mute, capture
+(mic/line-in), and codec hotplug. Unit-tested with a mock codec — SysTest
+`check_hdaudio` / `check_hdaudio_volume` / `check_hdaudio_capture` /
+`check_hdaudio_multicodec`; capture DMA validated live (`cardinal.mictest`) and the
+hotplug reconciliation live (`cardinal.hotplug`).
+TODO: jack-presence (plug-detect) via unsolicited responses — needs the RIRB verb
+path to demux solicited vs unsolicited entries, and isn't reproducible in QEMU.

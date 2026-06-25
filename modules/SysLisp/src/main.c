@@ -1831,7 +1831,7 @@ static void check_hdaudio(lisp_value env) {
         "      ((= sel #xF02) (cond ((and (= node 3) (= lo 0)) 2)"
         "                           ((and (= node 4) (= lo 0)) 5) (else 0)))"
         "      (else 0))))"
-        "(define eps (enumerate-endpoints mock))"
+        "(define eps (enumerate-endpoints mock 0))"
         "(define res (list (endpoint-descs eps) (ep-desc (primary-output eps))))",
         env, &err);
     lisp_value res = lisp_eval_string("res", env, &err);
@@ -1897,15 +1897,15 @@ static void check_hdaudio_volume(lisp_value env) {
         //     unmute at stored vol 0 -> 0xB000 (45056).
         "(define la (make-cell '()))"
         "(define ma (make-mock #f la))"
-        "(define oa (primary-output (enumerate-endpoints ma)))"
-        "(define va (set-endpoint-volume! ma oa 50))"
-        "(set-endpoint-volume! ma oa 0)"
-        "(set-endpoint-mute! ma oa #f)"
+        "(define oa (primary-output (enumerate-endpoints ma 0)))"
+        "(define va (set-endpoint-volume! oa 50))"
+        "(set-endpoint-volume! oa 0)"
+        "(set-endpoint-mute! oa #f)"
         // (B) pin HAS an amp -> volume must target the PIN (node 3) instead.
         "(define lb (make-cell '()))"
         "(define mb (make-mock #t lb))"
-        "(define ob (primary-output (enumerate-endpoints mb)))"
-        "(set-endpoint-volume! mb ob 50)"
+        "(define ob (primary-output (enumerate-endpoints mb 0)))"
+        "(set-endpoint-volume! ob 50)"
         "(define resv (list va (ep-vol oa) (reverse (cell-ref la)) (reverse (cell-ref lb))))",
         env, &err);
     lisp_value res = lisp_eval_string("resv", env, &err);
@@ -1969,9 +1969,9 @@ static void check_hdaudio_capture(lisp_value env) {
         "                    (cell-ref wlog))) 0))))"
         "(define (find-in es) (cond ((null? es) #f)"
         "  ((eq? (cadr (ep-desc (car es))) 'in) (car es)) (else (find-in (cdr es)))))"
-        "(define eprec (find-in (enumerate-endpoints mockc)))"
+        "(define eprec (find-in (enumerate-endpoints mockc 0)))"
         "(cell-set! wlog '())"
-        "(configure-input! mockc eprec 2)"
+        "(configure-input! eprec 2)"
         "(define resc (reverse (cell-ref wlog)))",
         env, &err);
     lisp_value res = lisp_eval_string("resc", env, &err);
@@ -1984,6 +1984,59 @@ static void check_hdaudio_capture(lisp_value env) {
         g_pass++;
     } else {
         print_str("[SysLisp] FAIL hdaudio-capture  res-> ");
+        print_str(rb);
+        if (err) {
+            print_str("  err: ");
+            print_str(err);
+        }
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
+// hdaudio multi-codec / hotplug endpoint numbering. enumerate-endpoints takes a
+// start-id so endpoints from several codecs on one card (a 2-codec controller, or
+// a codec hot-added later by scan-all-codecs) stay GLOBALLY unique: codec A
+// numbers from 0, the next codec continues from A's count. The full hotplug path
+// (state-change IRQ -> rescan -> reconcile) is MMIO-bound and validated live
+// (host QMP device_add/del -> the driver logs "codec-change -> N endpoints");
+// this covers the id-continuity invariant the reconciliation relies on.
+static void check_hdaudio_multicodec(lisp_value env) {
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import hdaudio)"
+        "(define (mock node payload)"
+        "  (let ((sel (arithmetic-shift payload -8)) (lo (bitwise-and payload 255)))"
+        "    (cond"
+        "      ((= sel #xF00)"
+        "       (cond"
+        "         ((= lo #x04) (cond ((= node 0) (bitwise-or (arithmetic-shift 1 16) 1))"
+        "                            ((= node 1) (bitwise-or (arithmetic-shift 2 16) 4)) (else 0)))"
+        "         ((= lo #x05) (if (= node 1) 1 0))"
+        "         ((= lo #x09) (cond ((= node 2) 0) ((= node 3) (arithmetic-shift 4 20))"
+        "                            ((= node 4) (arithmetic-shift 1 20))"
+        "                            ((= node 5) (arithmetic-shift 4 20)) (else 0)))"
+        "         ((= lo #x0C) (cond ((= node 3) #x10) ((= node 5) #x20) (else 0)))"
+        "         ((= lo #x0E) (cond ((= node 3) 1) ((= node 4) 1) (else 0)))"
+        "         ((= lo #x12) #x7F00) (else 0)))"
+        "      ((= sel #xF1C) (cond ((= node 3) (bitwise-or (arithmetic-shift 1 20) (arithmetic-shift 2 30)))"
+        "                           ((= node 5) (arithmetic-shift #xA 20)) (else 0)))"
+        "      ((= sel #xF09) #x80000000)"
+        "      ((= sel #xF02) (cond ((and (= node 3) (= lo 0)) 2)"
+        "                           ((and (= node 4) (= lo 0)) 5) (else 0)))"
+        "      (else 0))))"
+        "(define ea (enumerate-endpoints mock 0))"      // first codec: ids from 0
+        "(define eb (enumerate-endpoints mock 2))"      // second codec: continues from 2
+        "(define resm (list (map car (endpoint-descs ea)) (map car (endpoint-descs eb))))",
+        env, &err);
+    lisp_value res = lisp_eval_string("resm", env, &err);
+    char rb[64];
+    lisp_print(res, rb, sizeof rb);
+    if (err == NULL && strcmp(rb, "((0 1) (2 3))") == 0) {
+        print_str("[SysLisp]  ok  hdaudio multi-codec: endpoint ids stay globally unique\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL hdaudio-multicodec  res-> ");
         print_str(rb);
         if (err) {
             print_str("  err: ");
@@ -2542,6 +2595,7 @@ static void run_self_test(lisp_value env) {
     check_hdaudio(env);
     check_hdaudio_volume(env);
     check_hdaudio_capture(env);
+    check_hdaudio_multicodec(env);
     check_gpu(env);
     check_lfb(env);
     check_rtl8139(env);
