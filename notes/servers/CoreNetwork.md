@@ -188,11 +188,18 @@ design and should be decided deliberately, in line with the microkernel model:
    interface's on-link route plus a default route via its gateway; replies egress on
    the interface that owns the addressed IP, active sends route by destination, and
    the limited broadcast (DHCP) goes out the primary interface. **No forwarding** —
-   this is a multi-homed host, not a router (the firewall, when added, filters
-   inbound on src-IP/port). DHCP runs on the primary interface; per-interface DHCP
-   and multi-NIC *bring-up* (init enumerating more than one NIC) are the remaining
-   pieces. A DNS resolver now exists (item below); a userspace config/query surface
-   is moot (the message API is the userspace surface — see item 1).
+   this is a multi-homed host, not a router (the firewall filters inbound on
+   src-IP/port). **Multi-NIC bring-up + per-interface DHCP now work**: `init`
+   enumerates every supported NIC (`pci-find-all`, so two virtio-nets or a
+   virtio-net + an rtl all come up, each driver-init taking an explicit ECAM) and
+   each registers as its own interface; `dhcp-start-all` then runs a DHCP client
+   per interface. Each DISCOVER egresses on its OWN interface (`udp-send-if`, by
+   MAC — not the routed/primary one), and UDP port 68 fans out to every client so
+   each accepts only its own OFFER/ACK (filtered by xid/MAC). Verified live with
+   two virtio-nets on distinct slirp subnets: `if0`→10.0.2.15, `if1`→10.0.3.15,
+   each with its own gateway + routes. A DNS resolver exists (item below); a
+   userspace config/query surface is moot (the message API is the userspace
+   surface — see item 1).
 4. **IPv4 options / fragmentation / reassembly.** Only `ihl == 5`, unfragmented
    datagrams are meaningfully handled.
 5. **TCP.** *Implemented* (`lisp/servers/corenetwork/tcp.clp`): active + passive

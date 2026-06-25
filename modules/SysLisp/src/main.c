@@ -393,6 +393,37 @@ static lisp_value prim_pci_find_class(lisp_value *a, int n, const char **e) {
     return ecam == 0 ? LISP_FALSE : lisp_fixnum((int64_t)ecam);
 }
 
+// (pci-find-all vendor-id device-id) -> a list of the ECAM addresses of EVERY
+// matching PCI function (in ascending enumeration order), or () if none. This is
+// how init brings up more than one NIC of the same kind: pci-find returns only
+// the first, so a multi-homed boot enumerates every matching device and binds the
+// driver to each. Built by consing in reverse so the list comes out in order.
+static lisp_value prim_pci_find_all(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "pci-find-all: expects (vendor-id device-id)"), LISP_UNDEF;
+    uint32_t vid = (uint32_t)lisp_fixnum_val(a[0]), did = (uint32_t)lisp_fixnum_val(a[1]);
+    uint64_t count = 0;
+    if (registry_readkey_uint("HW/PCI", "COUNT", &count) != CS_OK)
+        return LISP_EMPTY;
+    lisp_value head = LISP_EMPTY;
+    for (int64_t i = (int64_t)count - 1; i >= 0; i--) {
+        char key[64] = "HW/PCI/";
+        char num[16];
+        strncat(key, itoa((int)i, num, 16), sizeof(key) - 8);
+        uint64_t v = 0, d = 0, ecam = 0;
+        if (registry_readkey_uint(key, "VENDOR_ID", &v) != CS_OK) continue;
+        if (registry_readkey_uint(key, "DEVICE_ID", &d) != CS_OK) continue;
+        if (v == vid && d == did &&
+            registry_readkey_uint(key, "ECAM_ADDR", &ecam) == CS_OK) {
+            lisp_value cell = lisp_cons(lisp_fixnum((int64_t)ecam), head);  // head stays rooted
+            if (cell == LISP_UNDEF)
+                return (*e = "pci-find-all: out of memory"), LISP_UNDEF;
+            head = cell;
+        }
+    }
+    return head;
+}
+
 // --- the driver MSI(-X) -> ISR -> wake-context bridge -------------------------
 //
 // Each MSI source gets its own slot in a table PARALLEL to g_irq_lines (the ISA
@@ -763,6 +794,7 @@ static const lisp_builtin_export sys_mmio_exports[] = {
 };
 static const lisp_builtin_export sys_pci_exports[] = {
     {"pci-find", prim_pci_find},   {"pci-find-class", prim_pci_find_class},
+    {"pci-find-all", prim_pci_find_all},
     {"pci-setup-msi", prim_pci_setup_msi},
     {"msi-count", prim_msi_count}, {"msi-wait", prim_msi_wait},
     {"pci-assign-bars", prim_pci_assign_bars},

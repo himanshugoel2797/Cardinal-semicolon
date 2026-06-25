@@ -80,8 +80,10 @@
 ;; transport, so it registers itself with the network stack (handing it the MAC
 ;; and a TX context) and forwards every received frame to it, rather than doing
 ;; any ethernet/ARP decoding itself.
-(define (virtio-net-init net)
-  (let ((ecam (pci-find VIRTIO-NET-VID VIRTIO-NET-DID)))
+;; `dev-ecam` is the device's ECAM, supplied by init (which enumerates NICs via
+;; pci-find-all and binds the driver to each), so one driver can drive several NICs.
+(define (virtio-net-init net dev-ecam)
+  (let ((ecam dev-ecam))
     (if (not ecam)
         (begin (display "[virtio-net] no device present") (newline) #f)
         ;; Common transport bring-up: accept F_MAC (lo) + VERSION_1 (hi).

@@ -82,6 +82,12 @@
                  (udp-send (ig i I-IP) (ig i I-MAC) (ig i I-TX) (cadr m) (caddr m) (cadddr m)
                            (nth m 4) (nth m 5) (bytes-length (nth m 5)))))
            st)
+          ((eq? (car m) 'udp-send-if)          ; (udp-send-if mac dst-ip dst-mac sport dport payload)
+           (let ((i (iface-by-mac ifaces (cadr m))))  ; egress on a SPECIFIC interface (DHCP)
+             (if i
+                 (udp-send (ig i I-IP) (ig i I-MAC) (ig i I-TX) (caddr m) (cadddr m) (nth m 4)
+                           (nth m 5) (nth m 6) (bytes-length (nth m 6)))))
+           st)
           ((eq? (car m) 'ping)                 ; (ping dst-ip dst-mac id seq)
            (let ((i (egress-for ifaces routes (cadr m))))
              (if i
@@ -116,6 +122,12 @@
              (if i
                  (let ((nn (self)) (hw (ig i I-MAC)))
                    (spawn-restricted '() (lambda () (dhcp-client nn hw))))))
+           st)
+          ((eq? (car m) 'dhcp-start-all)       ; (dhcp-start-all) -- DHCP on every interface
+           (for-each (lambda (i)
+                       (let ((nn (self)) (hw (ig i I-MAC)))
+                         (spawn-restricted '() (lambda () (dhcp-client nn hw)))))
+                     ifaces)
            st)
           ;; --- TCP socket API (state mutated in place; the same st rides on) ---
           ((eq? (car m) 'tcp-listen)           ; (tcp-listen port owner)

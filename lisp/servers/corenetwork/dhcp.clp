@@ -189,7 +189,11 @@
     (if (>= t 5)
         #f
         (begin
-          (send net (list 'udp-send dst-ip dst-mac DHCP-CLIENT-PORT DHCP-SERVER-PORT
+          ;; udp-send-if egresses on OUR interface (by mac), not the routed/primary
+          ;; one: a DISCOVER is a broadcast that must leave the very interface this
+          ;; client is configuring, so several per-interface DHCP clients each probe
+          ;; their own link rather than all funnelling out the primary.
+          (send net (list 'udp-send-if mac dst-ip dst-mac DHCP-CLIENT-PORT DHCP-SERVER-PORT
                           (dhcp-build msg-type mac xid ciaddr req-ip server-id broadcast)))
           (let ((g (dhcp-await mac xid want-type (+ (uptime-ns) (dhcp-backoff t)))))
             (if g g (try (+ t 1))))))))
