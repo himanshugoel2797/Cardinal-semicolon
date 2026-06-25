@@ -139,7 +139,18 @@ case "${USB:-none}" in
     usb_args=(-device "$ctl,id=$bus"
               -drive id=usbdisk,file="$usbdisk",format=raw,if=none
               -device "usb-storage,drive=usbdisk,bus=$bus.0") ;;
-  *) echo "error: unknown USB=$USB (none|uhci-kbd|xhci-kbd|uhci-hub|uhci-storage|xhci-storage)" >&2; exit 1 ;;
+  xhci-audio|uhci-audio)
+    # usb-audio (UAC1 speaker, iso OUT) -> a `wav` audiodev recording what the OS
+    # streams, so a non-silent WAV proves the iso playback path end to end. The Lisp
+    # usb-audio class driver plays a bring-up tone on probe (like hdaudio).
+    ctl="qemu-xhci"; bus="xhci"
+    [ "${USB}" = uhci-audio ] && { ctl="piix3-usb-uhci"; bus="uhci"; }
+    USB_AUDIO_WAV="${USB_AUDIO_WAV:-/tmp/cardinal-usb-audio.wav}"
+    usb_args=(-device "$ctl,id=$bus"
+              -audiodev "wav,id=usbsnd,path=$USB_AUDIO_WAV"
+              -device "usb-audio,bus=$bus.0,audiodev=usbsnd")
+    echo "[run-qemu] USB audio capture -> $USB_AUDIO_WAV" ;;
+  *) echo "error: unknown USB=$USB (none|uhci-kbd|xhci-kbd|uhci-hub|uhci-storage|xhci-storage|uhci-audio|xhci-audio)" >&2; exit 1 ;;
 esac
 
 # Optional HD Audio. AUDIO=hda attaches an ich9-intel-hda controller (8086:293e,
