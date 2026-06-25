@@ -67,12 +67,14 @@
          (event-buf (dma-alloc-32 4096)) (event-phys 0)
          (erst (dma-alloc-32 4096))
          (bounce (dma-alloc-32 4096)) (bounce-phys 0)
+         (iso-bounce (dma-alloc-32 4096)) (iso-bounce-phys 0)
          (ev-idx 0) (ev-cyc 1)
          (slots '()) (slot-eps '())
          (addr-to-slot (make-bytes 256))
          (enum-slot 0) (msi #f))
     (set! event-phys (bytes-phys event-buf))
     (set! bounce-phys (bytes-phys bounce))
+    (set! iso-bounce-phys (bytes-phys iso-bounce))
 
     ;; --- slot + endpoint-ring registries (set!-able alists) ---
     (define (get-slot id) (let ((p (assq-num id slots))) (if p (cdr p) #f)))
@@ -223,6 +225,70 @@
                                (got (let ((g (- dlen residual))) (if (< g 0) 0 g))))
                           (if dir-in? (list got (copy-bytes bounce 0 got)) (list got #f))))))))))
 
+    ;; Configure an isochronous endpoint (once per slot+dci). Like
+    ;; configure-endpoint, but CErr=0 (iso never retries), Interval=3 in the ep
+    ;; context (a 1ms ESIT -- the universal audio service interval; the audio class
+    ;; driver selects 1ms iso endpoints), and Max ESIT Payload = mps (FS/HS, no
+    ;; burst/mult). The protocol does not carry bInterval, so 1ms is assumed.
+    (define (configure-iso-endpoint sl dci ep-type mps)
+      (if (get-ep-ring (sl-id sl) dci)
+          0
+          (let ((ring (ring-make)) (input (dma-alloc-32 4096)))
+            (set-ep-ring! (sl-id sl) dci ring)
+            (let ((in-phys (bytes-phys input)) (sc ctx-size) (ec (* ctx-size (+ 1 dci))))
+              (bytes-u32-set! input 4 (bitwise-or 1 (arithmetic-shift 1 dci)))
+              (let ((dc0 (bytes-u32-ref (sl-devctx sl) 0)))
+                (bytes-u32-set! input (+ sc 0)
+                  (bitwise-or (bitwise-and dc0 (bitwise-not (arithmetic-shift #x1F 27)))
+                              (arithmetic-shift dci 27))))
+              (bytes-u32-set! input (+ sc 4) (arithmetic-shift (sl-rootport sl) 16))
+              (bytes-u32-set! input (+ ec 0) (arithmetic-shift 3 16))            ; Interval=3 (1ms)
+              (bytes-u32-set! input (+ ec 4) (bitwise-or (arithmetic-shift ep-type 3)
+                                                         (arithmetic-shift mps 16)))   ; CErr=0
+              (let ((trdp (bitwise-or (ring-phys ring) 1)))
+                (bytes-u32-set! input (+ ec 8) (bitwise-and trdp #xFFFFFFFF))
+                (bytes-u32-set! input (+ ec 12) (arithmetic-shift trdp -32)))
+              (bytes-u32-set! input (+ ec 16) (bitwise-or (bitwise-and mps #xFFFF)
+                                                          (arithmetic-shift (bitwise-and mps #xFFFF) 16)))
+              (if (cmd-ok? (xhci-command in-phys
+                            (bitwise-or (trb-set-type TRB-CONFIGURE-ENDPOINT)
+                                        (arithmetic-shift (sl-id sl) 24))))
+                  0 -1)))))
+
+    ;; Isochronous transfer: split into mps-sized packets, one Isoch TRB each, all
+    ;; SIA (Start Isoch ASAP -> scheduled in successive intervals), IOC on the last
+    ;; so a single transfer event reports the submission's completion. Iso OUT is
+    ;; clocked out whole (no per-packet residual tracking), so on success we report
+    ;; the full byte count. Returns (list n data) like the other engines.
+    (define (do-isoch sl dci ep-type mps0 data len dir-in?)
+      (let ((mps (if (<= mps0 0) 8 mps0)))   ; guard a malformed-descriptor 0 mps (div-by-zero in npkt)
+      (if (not (= (configure-iso-endpoint sl dci ep-type mps) 0))
+          (list -1 #f)
+          (let* ((ring (get-ep-ring (sl-id sl) dci))
+                 (total (if (> len XHCI-BOUNCE-MAX) XHCI-BOUNCE-MAX len))
+                 (npkt (let ((p (quotient (+ total (- mps 1)) mps))) (if (< p 1) 1 p))))
+            (if (and (not dir-in?) data (> total 0)) (bytes-copy-into! iso-bounce 0 data total))
+            (let push ((i 0))
+              (if (< i npkt)
+                  (let* ((off (* i mps))
+                         (chunk (let ((c (- total off))) (cond ((< c 0) 0) ((> c mps) mps) (else c))))
+                         (last (= i (- npkt 1))))
+                    (ring-push ring (+ iso-bounce-phys off) chunk
+                               (bitwise-or (trb-set-type TRB-ISOCH)
+                                           (arithmetic-shift 1 31)            ; SIA
+                                           (if last (arithmetic-shift 1 5) 0)))   ; IOC on last
+                    (push (+ i 1)))))
+            (db-ring! (sl-id sl) dci)
+            (let ((ev (xhci-wait TRB-EVENT-TRANSFER (sl-id sl) 1000000000)))
+              (if (not ev)
+                  (if dir-in? (list 0 (make-bytes 0)) (list -1 #f))
+                  (let ((cc (trb-cc (cadr ev))))
+                    (if (and (not (= cc XHCI-CC-SUCCESS)) (not (= cc XHCI-CC-SHORT-PACKET)))
+                        (if dir-in? (list 0 (make-bytes 0)) (list -1 #f))
+                        (if dir-in?
+                            (list total (copy-bytes iso-bounce 0 total))
+                            (list total #f))))))))))
+
     ;; Hub: enable + address a downstream device, building the route string from
     ;; the parent hub's slot. Returns 0/-1.
     (define (prepare-downstream parent-addr parent-port speed)
@@ -344,6 +410,14 @@
                                    (if dir EP-TYPE-BULK-IN EP-TYPE-BULK-OUT)
                                    (cadddr m) (nth m 4) (nth m 5) dir 300000000)))
                    (send (nth m 7) (list 'complete (car r) (cadr r)))))))
+          ((eq? tag 'isoch)          ; (isoch addr speed ep maxp data len dir-in? reply)
+           (let ((slot-id (bytes-u8-ref addr-to-slot (bitwise-and (nth m 1) #xFF))) (dir (nth m 7)))
+             (if (<= slot-id 0) (send (nth m 8) (list 'complete -1 #f))
+                 (let ((r (do-isoch (get-slot slot-id)
+                                    (+ (* (bitwise-and (nth m 3) #xF) 2) (if dir 1 0))
+                                    (if dir EP-TYPE-ISOCH-IN EP-TYPE-ISOCH-OUT)
+                                    (nth m 4) (nth m 5) (nth m 6) dir)))
+                   (send (nth m 8) (list 'complete (car r) (cadr r)))))))
           ((eq? tag 'prepare-downstream)   ; (... parent-addr port speed reply)
            (send (nth m 4) (list 'complete (prepare-downstream (cadr m) (caddr m) (cadddr m)) #f)))
           ((eq? tag 'mark-hub)             ; (... addr nports reply)

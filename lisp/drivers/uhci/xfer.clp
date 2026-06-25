@@ -70,6 +70,49 @@
                       (list c (copy-bytes dma UHCI-DATA-OFF c)))
                     (list total #f)))))))))
 
+;; Isochronous transfer (audio streaming). Splits `len` bytes into ceil(len/mps)
+;; packets, one per frame, placed DIRECTLY in consecutive frame-list slots (each
+;; iso TD links onward to the control QH) starting a couple frames ahead of the
+;; HC's current frame. Iso has no handshake/retry: every TD is clocked out in its
+;; frame and goes inactive, so we just wait for the last frame to pass, restore the
+;; frame slots, and sum the actual lengths. `fl` is the frame list, `qh-phys` the
+;; control QH phys, `itd`/`idata` the iso TD + data DMA buffers. Returns (list n
+;; data) like the other engines (data is fresh bytes for IN, else #f).
+(define (uhci-isoch iobar fl qh-phys itd itd-phys idata idata-phys addr ep dir-in? mps data len)
+  (let* ((mps (if (<= mps 0) 8 mps))
+         (len (cond ((< len 0) 0) ((> len ISO-DATA-MAX) ISO-DATA-MAX) (else len)))
+         (ep (bitwise-and ep #xF))
+         (pid (if dir-in? UHCI-PID-IN UHCI-PID-OUT))
+         (n (let ((p (quotient (+ len (- mps 1)) mps))) (cond ((< p 1) 1) ((> p ISO-TD-COUNT) ISO-TD-COUNT) (else p))))
+         (start (bitwise-and (+ (uhci-frnum iobar) 2) #x3FF)))
+    (if (and (not dir-in?) data (> len 0))
+        (bytes-copy-into! idata 0 data len))
+    ;; build + schedule one iso TD per packet
+    (let build ((i 0))
+      (if (< i n)
+          (let ((chunk (let ((c (- len (* i mps)))) (cond ((< c 0) 0) ((> c mps) mps) (else c)))))
+            (iso-td! itd i qh-phys
+                     (td-token-dw pid addr ep 0 (if (> chunk 0) (- chunk 1) #x7FF))
+                     (+ idata-phys (* i mps)))
+            (frame-set-iso! fl (bitwise-and (+ start i) #x3FF) (+ itd-phys (* i 16)))
+            (build (+ i 1)))))
+    ;; wait for every scheduled iso TD to retire (its frame to pass), bounded
+    (let ((deadline (+ (uptime-ns) (* (+ n 8) 1000000))))
+      (let wait ()
+        (if (and (let any ((i 0)) (cond ((= i n) #f) ((iso-td-active? itd i) #t) (else (any (+ i 1)))))
+                 (< (uptime-ns) deadline))
+            (begin (sleep 100000) (wait)))))
+    ;; restore the frame slots to the persistent control QH
+    (let restore ((i 0))
+      (if (< i n) (begin (frame-set-qh! fl (bitwise-and (+ start i) #x3FF) qh-phys) (restore (+ i 1)))))
+    (let ((total (let sl ((i 0) (acc 0))
+                   (if (>= i n) acc
+                       (let ((al (iso-td-actlen itd i)))
+                         (sl (+ i 1) (+ acc (if (= al #x7FF) 0 (+ al 1)))))))))
+      (if (and dir-in? (> total 0))
+          (list total (copy-bytes idata 0 (if (> total len) len total)))
+          (list total #f)))))
+
 ;; Single-endpoint data transfer (interrupt or bulk) using the driver-tracked
 ;; per-(address,endpoint) data toggle in `ep-toggle` (a 128*16 byte buffer).
 ;; Returns (list n data) like uhci-control.

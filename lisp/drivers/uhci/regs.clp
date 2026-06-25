@@ -53,6 +53,11 @@
 ;; err_count=3 at bits[28:27], ls (low-speed) at bit26.
 (define (td-status-dw ls)
   (bitwise-or #x00800000 (arithmetic-shift 3 27) (arithmetic-shift ls 26)))
+;; Isochronous TD status dword: IOS (bit25) marks the TD isochronous (the HC clocks
+;; it in its frame and never retries), Active(0x80) set. err_count stays 0 -- iso
+;; has no error retries; ls stays 0 -- UHCI iso is full-speed only.
+(define (td-iso-status-dw)
+  (bitwise-or #x00800000 (arithmetic-shift 1 25)))
 ;; token dword: pid[7:0], device[14:8], endpoint[18:15], toggle[19], maxlen[31:21]
 ;; (maxlen encodes a length of N as N-1; 0x7FF = zero length).
 (define (td-token-dw pid device endpoint toggle maxlen)
@@ -95,3 +100,29 @@
   (bytes-u32-set! dma (+ UHCI-QH-OFF 4) td-phys-base)) ; elp -> first TD
 (define (qh-idle! dma)
   (bytes-u32-set! dma (+ UHCI-QH-OFF 4) 1))          ; detach the chain
+
+;; ---- isochronous scheduling --------------------------------------------------
+;; Iso TDs live in their own DMA buffer (one per scheduled packet), referenced
+;; DIRECTLY from frame-list slots rather than from behind the control QH, because
+;; the HC must service each in its own frame. ISO-TD-COUNT caps a single
+;; submission; ISO-DATA-MAX caps its total payload (kept under one page each).
+(define ISO-TD-COUNT 64)
+(define ISO-DATA-MAX 4096)
+
+;; Write iso TD `i` into `itd` (its own 16-byte slot): link -> the control QH (so
+;; control/bulk still run after the iso TD in that frame), iso status, token, buf.
+(define (iso-td! itd i qh-phys token-dw bufptr)
+  (let ((o (* i 16)))
+    (bytes-u32-set! itd o (bitwise-or qh-phys 2))    ; link -> QH (Q=1)
+    (bytes-u32-set! itd (+ o 4) (td-iso-status-dw))
+    (bytes-u32-set! itd (+ o 8) token-dw)
+    (bytes-u32-set! itd (+ o 12) bufptr)))
+(define (iso-td-active? itd i) (not (= 0 (bitwise-and (bit-extract (bytes-u32-ref itd (+ (* i 16) 4)) 16 8) #x80))))
+(define (iso-td-actlen itd i)  (bit-extract (bytes-u32-ref itd (+ (* i 16) 4)) 0 11))
+
+;; The current frame index (FRNUM[10:0] indexes the 1024-entry frame list).
+(define (uhci-frnum iobar) (bitwise-and (u-r16 iobar FRNUM-REG) #x3FF))
+;; Point frame slot `f` at iso TD phys `p` (Q=0,T=0 -> the HC walks to the TD),
+;; or restore it to the persistent control QH.
+(define (frame-set-iso! fl f p) (bytes-u32-set! fl (* f 4) p))
+(define (frame-set-qh!  fl f qh-phys) (bytes-u32-set! fl (* f 4) (bitwise-or qh-phys 2)))

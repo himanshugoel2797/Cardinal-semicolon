@@ -150,6 +150,11 @@ int main(int argc, char **argv) {
     chk("(usb-find-ep-in (usb-iface-endpoints dev 1 1) 1 #t)", "#f"); // no iso IN
     chk("(usb-iface-endpoints dev 9 0)", "()");                 // no such interface
 
+    // --- isochronous transfer API is present (the controllers implement it) ---
+    chk("(procedure? usb-isoch-out)", "#t");
+    chk("(procedure? usb-isoch-in)", "#t");
+    chk("USB-XFER-ISOCH", "1");
+
     // --- UTF-16LE string descriptor decode (pure) ---
     chk("(usb-string-decode (mkb (list 6 3 72 0 105 0)))", "\"Hi\"");
     chk("(usb-string-decode (mkb (list 8 3 72 0 233 0 105 0)))", "\"H?i\"");  // non-ASCII -> ?
