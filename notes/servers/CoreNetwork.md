@@ -227,6 +227,21 @@ design and should be decided deliberately, in line with the microkernel model:
 6. **ARP aging.** *Timed expiry now exists in the Lisp stack (120s TTL, lazy drop
    on lookup).* A state machine for in-flight resolutions (coalescing concurrent
    waiters for the same IP, negative caching) remains deferred.
+7. **Inbound firewall — *done*** (`lisp/servers/corenetwork/firewall.clp`). A small
+   host packet filter: an ordered allow/deny rule list matched on (protocol,
+   source IP/prefix, destination port) plus a default policy, evaluated in
+   `handle-ip` before a received packet is dispatched to ICMP/UDP/TCP. First match
+   wins; no match → default policy. Default is ALLOW with no rules, so it is inert
+   until configured. It is a *host inbound* filter (no forwarding), so rules match
+   the SOURCE address — which, since interfaces sit on distinct subnets, also
+   stands in for the ingress interface without ingress tagging. Config messages:
+   `(fw-policy allow|deny)`, `(fw-add action proto src-net src-len dport)` (any
+   field may be `'any`), `(fw-clear)`, `(fw-query proto src-ip dport reply)`. The
+   firewall lives in the service closure (mutated in place), not the threaded
+   state. Validated: an in-OS self-test (`check_firewall`) over the rule/policy
+   matrix, and live — booting `cardinal.fwtest` installs a `deny TCP dport 7` rule
+   and the port-7 TCP echo becomes unreachable (SYN dropped) while DHCP/DNS/the
+   listener still work.
 
 ## Testability
 

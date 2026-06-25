@@ -27,7 +27,7 @@
 ;; is the interface that owns the packet's dst-IP (the address the peer targeted);
 ;; a limited-broadcast packet (DHCP OFFER/ACK while still 0.0.0.0) has no owning
 ;; interface and is only meaningful for UDP delivery.
-(define (handle-ip ifaces routes cache binds tcp frame len)
+(define (handle-ip ifaces routes fw cache binds tcp frame len)
   (let ((o 14))                       ; IP header start
     (if (or (< len 34) (not (= (bit-extract (u8 frame o) 4 4) 4)))
         'ignore
@@ -51,6 +51,15 @@
                     (ip (if dst-if (ig dst-if I-IP) IP-ANY))
                     (mac (if dst-if (ig dst-if I-MAC) #f))
                     (nic-tx (if dst-if (ig dst-if I-TX) #f)))
+                ;; Inbound firewall: drop unless the packet is allowed. dport is
+                ;; the L4 destination port (UDP/TCP have it at l4+2; ICMP has none
+                ;; -> 0, matched by dport 'any). Guard the read against a truncated
+                ;; transport header.
+                (if (not (fw-allow? fw proto src-ip
+                                    (if (and (or (= proto IP-UDP) (= proto IP-TCP))
+                                             (<= (+ l4 4) len))
+                                        (get-be16 frame (+ l4 2)) 0)))
+                    'firewall-drop
                 (cond
                   ((and (= proto IP-ICMP) dst-if)
                    (handle-icmp ip mac nic-tx cache src-ip frame l4 len))
@@ -68,4 +77,4 @@
                      ;; opened here egresses on the link it arrived on.
                      (handle-tcp ip mac nic-tx tcp frame l4
                                  (if (> iend len) len iend) src-ip)))
-                  (else 'ignore))))))))
+                  (else 'ignore)))))))))
