@@ -24,7 +24,7 @@
           usb-find-endpoint usb-iface-class usb-iface-subclass usb-iface-protocol
           usb-iface-number
           usb-mark-hub usb-enumerate-downstream usb-disconnect-downstream
-          usb-dev-hci usb-dev-address usb-dev-speed usb-dev-config usb-dev-config-len
+          usb-dev-hci usb-dev-address usb-dev-speed usb-dev-mps0 usb-dev-config usb-dev-config-len
           complete-n complete-data
           ;; full descriptor model (multi-interface / alt-setting aware)
           usb-interfaces iface-number iface-alt iface-class iface-subclass
