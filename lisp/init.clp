@@ -161,7 +161,15 @@
       (if (cmdline-has? "cardinal.netdbg") (start-netdebug net))
       ;; Test-only TCP fault injection: cardinal.tcploss makes the stack drop 1 in
       ;; 4 received segments, exercising retransmission + out-of-order reassembly.
-      (if (cmdline-has? "cardinal.tcploss") (send net (list 'tcp-test-loss 4))))
+      (if (cmdline-has? "cardinal.tcploss") (send net (list 'tcp-test-loss 4)))
+      ;; Test-only DNS probe: resolve a hostname via the DHCP-learned server and
+      ;; print the result (after DHCP has had time to bind the interface).
+      (if (cmdline-has? "cardinal.dnstest")
+          (spawn-restricted '()
+            (lambda ()
+              (sleep 3000000000)
+              (display "[dnstest] example.com -> ")
+              (display (dns-resolve net "example.com")) (newline)))))
     'system-up))   ; close the (let ((input ...)) ...) that wraps the bring-up
 
   ;; The interactive serial REPL (started only under cardinal.repl). A root context

@@ -45,13 +45,15 @@
 ;;   (tcp-rx <conn> <payload-bytes>)            ; in-order received data
 ;;   (tcp-closed <conn>)                        ; peer closed (or the conn aborted)
 ;;
-;; Also exported: arp-resolve (synchronous outbound next-hop resolution) and
+;; Also exported: arp-resolve (synchronous outbound next-hop resolution),
 ;; tcp-connect-blocking (a synchronous active-open helper, like arp-resolve, that
-;; returns a connection handle once the handshake completes).
+;; returns a connection handle once the handshake completes), and dns-resolve
+;; (synchronous A-record lookup against the DHCP-learned DNS server). All three
+;; block and must run in their own context.
 
 (define-module corenetwork
-  (export start-network-service arp-resolve tcp-connect-blocking)
+  (export start-network-service arp-resolve tcp-connect-blocking dns-resolve)
   (import driver-util)
   ;; layer by layer: shared helpers, the checksum, then eth/arp/ip/icmp/udp, the
   ;; DHCP client, then the service loop that ties them together.
-  (include common checksum eth arp ip icmp udp tcp dhcp service))
+  (include common checksum eth arp ip icmp udp tcp dhcp dns service))
