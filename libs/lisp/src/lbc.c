@@ -766,6 +766,21 @@ static void collect_captures(compiler *C, lisp_value e, const symset *frame,
                     collect_captures(C, lisp_car(lisp_cdr(lisp_car(b))), frame, out);
             return;
         }
+        // (define (f . params) body...) -- the function shorthand is an implicit
+        // lambda whose body can capture `frame` vars. Without this, a binding
+        // referenced ONLY inside an internal-define body is never boxed, yet the
+        // closure reads it as a cell -> CELLGET faults. (The (define name expr)
+        // long form falls through to the generic walk, which descends its expr.)
+        if (sym_is(h, "define") && lisp_is_pair(rest) && lisp_is_pair(lisp_car(rest))) {
+            lisp_value target = lisp_car(rest);  // (name . params)
+            symset params = {.n = 0}, lf = {.n = 0};
+            ss_add_params(C, &params, lisp_cdr(target));
+            fv_seq(C, lisp_cdr(rest), &params, &lf);  // free vars of the body
+            for (int i = 0; i < lf.n; i++)
+                if (ss_has(frame, lf.items[i]))
+                    ss_add(C, out, lf.items[i]);
+            return;
+        }
     }
     for (lisp_value p = e; lisp_is_pair(p); p = lisp_cdr(p))
         collect_captures(C, lisp_car(p), frame, out);

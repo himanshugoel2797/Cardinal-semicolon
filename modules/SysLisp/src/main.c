@@ -2527,6 +2527,15 @@ static void run_self_test(lisp_value env) {
     check(env, "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 6)", "720");
     check(env, "(map (lambda (x) (* x x)) '(1 2 3 4))", "(1 4 9 16)");
     check(env, "(let loop ((i 0) (n 1000)) (if (= n 0) i (loop (+ i 1) (- n 1))))", "1000");
+    // Regression: a `let` binding captured ONLY inside an internal-define body must
+    // be boxed (the register-form capture analysis used to miss the (define (f) ..)
+    // shorthand, so the closure read an unboxed cell -> #PF). Crashed usb-storage's
+    // block server on its first SCSI command; cardfs survived only because its one
+    // mutable binding was also referenced in a body-level named-let.
+    check(env, "(let ((tag 0)) (define (bump) (set! tag (+ tag 1)) tag) (bump) (bump))", "2");
+    check(env, "(let ((a 1) (b 2) (c 3)) (define (rd) (+ a b c)) (rd))", "6");
+    check(env, "(let ((s 0)) (define (add n) (set! s (+ s n))) (define (get) s)"
+               " (add 5) (add 7) (get))", "12");
     check(env, "(+ 1.5 2.25)", "3.75");
     check(env, "(/ 7 2)", "3.5");
     check(env, "(begin (display \"hello from lisp\") (newline) 'displayed)", "displayed");
