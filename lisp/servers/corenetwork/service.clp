@@ -99,6 +99,11 @@
           ((eq? (car m) 'tcp-tick)             ; (tcp-tick) -- from the ticker context
            (if (and mac tx) (tcp-do-tick ip mac tx tcp))
            st)
+          ((eq? (car m) 'tcp-test-loss)        ; (tcp-test-loss N) -- test fault injection
+           (tcp-do-test-loss tcp (cadr m))
+           (display "[corenetwork] tcp test-loss: drop 1 in ")
+           (display (cadr m)) (newline)
+           st)
           (else st)))))))
     (start-tcp-ticker net)
     net))
