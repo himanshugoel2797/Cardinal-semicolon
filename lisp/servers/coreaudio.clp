@@ -16,6 +16,9 @@
 ;;   (cards <reply>)                reply with the list of registered card names
 ;;   (endpoints <name> <reply>)     reply with a card's endpoint descriptors
 ;;                                  ((id dir dev present) ...), or () if no card
+;;   (set-volume <name> <ep-id> <vol>)     set an endpoint's volume (0..100)
+;;   (get-volume <name> <ep-id> <reply>)   reply an endpoint's volume, or #f
+;;   (mute <name> <ep-id> <on?>)           mute/unmute an endpoint
 ;; Unknown messages are ignored (a wedged client can't crash the service).
 ;;
 ;; An endpoint descriptor names one jack/converter on a card -- a speaker, a
@@ -62,4 +65,13 @@
              (if rec
                  (send (card-ctx rec) (list 'endpoints (nth m 2)))
                  (send (nth m 2) '()))) cards)
+          ((eq? (car m) 'set-volume)           ; (set-volume name ep-id vol)
+           (to-card (nth m 1) cards (list 'set-volume (nth m 2) (nth m 3))) cards)
+          ((eq? (car m) 'get-volume)           ; (get-volume name ep-id reply)
+           (let ((rec (card-find (nth m 1) cards)))
+             (if rec
+                 (send (card-ctx rec) (list 'get-volume (nth m 2) (nth m 3)))
+                 (send (nth m 3) #f))) cards)
+          ((eq? (car m) 'mute)                 ; (mute name ep-id on?)
+           (to-card (nth m 1) cards (list 'mute (nth m 2) (nth m 3))) cards)
           (else cards))))))
