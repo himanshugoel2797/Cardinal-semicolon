@@ -203,8 +203,9 @@
   (display " mask ") (display (dhcp-netmask ack))
   (display " lease ") (display (dhcp-lease ack)) (display "s") (newline))
 
-(define (dhcp-set net r)
-  (send net (list 'set-address (dhcp-yiaddr r) (dhcp-netmask r)
+;; Tell the service to configure OUR interface (identified by mac) from the lease.
+(define (dhcp-set net mac r)
+  (send net (list 'set-address mac (dhcp-yiaddr r) (dhcp-netmask r)
                   (dhcp-gateway r) (dhcp-dns r))))
 
 ;; Idle until `deadline` (uptime-ns), discarding any frames that land on our
@@ -224,7 +225,7 @@
 ;; the server we learned the MAC of. A renewal NAK or timeout falls back to the
 ;; full DISCOVER cycle via (restart).
 (define (dhcp-bound net mac ack server-mac restart)
-  (dhcp-set net ack)
+  (dhcp-set net mac ack)
   (dhcp-log ack)
   (let renew ((lease (dhcp-lease-or ack 3600))
               (sid (dhcp-server ack)))
@@ -233,7 +234,7 @@
                               (dhcp-yiaddr ack) #f #f #f sid server-mac #f)))
       (if (or (not rep) (= (dhcp-type (car rep)) DHCP-NAK))
           (restart)                              ; lease lost -> re-DISCOVER
-          (begin (dhcp-set net (car rep))
+          (begin (dhcp-set net mac (car rep))
                  (renew (dhcp-lease-or (car rep) lease) sid))))))
 
 ;; The client context: bind port 68, then loop the state machine forever.

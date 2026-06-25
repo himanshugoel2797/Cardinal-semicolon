@@ -1,14 +1,28 @@
 ;; corenetwork/service: the long-lived network service loop -- the one exported
-;; entry point. State is (ip mac nic-tx arp-cache udp-binds netmask gateway dns
-;; tcp); `serve` threads it. ip/netmask/gateway/dns are the interface's address
-;; config (set statically at start, or learned by the DHCP client and written
-;; back via the set-address message). `tcp` is the mutable TCP state (connection
-;; tables + listeners); its contents are mutated in place, so the same object
-;; rides through every state transition.
+;; entry point. State is (ifaces routes arp-cache udp-binds tcp); `serve` threads
+;; it. `ifaces` is the list of network interfaces (each a mutable record with its
+;; own mac/tx and address config -- see route.clp); `routes` is the IPv4 routing
+;; table. The ARP cache, UDP port binds, and the TCP connection table are global
+;; (a socket/connection is not tied to one NIC; routing picks the egress per
+;; packet). `tcp` is mutated in place, so the same object rides through.
+;;
+;; Multi-homed HOST (no forwarding): the egress for a reply is the interface that
+;; owns the IP the peer addressed; the egress for an active send is chosen by the
+;; routing table (route-egress). Interfaces are created by register-nic and
+;; addressed by set-address (which also installs the interface's routes).
 
-;; State constructor, so the 9-tuple is built in one place.
-(define (mk-state ip mac tx cache binds nm gw dns tcp)
-  (list ip mac tx cache binds nm gw dns tcp))
+;; State constructor, so the 5-tuple is built in one place.
+(define (mk-state ifaces routes cache binds tcp)
+  (list ifaces routes cache binds tcp))
+
+;; The egress interface for a destination, or #f if unreachable. The limited
+;; broadcast (255.255.255.255) goes out the primary interface regardless of
+;; routes -- this is the path DHCP uses to send DISCOVER/REQUEST before the
+;; interface has any address or route yet.
+(define (egress-for ifaces routes dst)
+  (if (equal? dst IP-BROADCAST)
+      (primary-iface-any ifaces)
+      (let ((e (route-egress routes dst))) (and e (car e)))))
 
 ;; A tiny ticker context: every TICK-MS it nudges the service to run TCP timers
 ;; (the service itself can never block/sleep). It receives nothing, so a stray
@@ -18,19 +32,19 @@
     (lambda ()
       (let loop () (sleep (* TICK-MS 1000000)) (send net (list 'tcp-tick)) (loop)))))
 
-(define (start-network-service our-ip)
+(define (start-network-service)
   (let* ((tcp0 (mk-tcp-state))
          (net
-    (serve (mk-state our-ip #f #f '() '() IP-ANY IP-ANY IP-ANY tcp0)
+    (serve (mk-state '() '() '() '() tcp0)
     (lambda (st m)
-      (let ((ip (nth st 0)) (mac (nth st 1)) (tx (nth st 2))
-            (cache (nth st 3)) (binds (nth st 4))
-            (nm (nth st 5)) (gw (nth st 6)) (dns (nth st 7)) (tcp (nth st 8)))
+      (let ((ifaces (nth st 0)) (routes (nth st 1)) (cache (nth st 2))
+            (binds (nth st 3)) (tcp (nth st 4)))
         (cond
           ((eq? (car m) 'register-nic)         ; (register-nic mac tx-ctx)
-           (display "[corenetwork] nic registered, mac=")
-           (display (cadr m)) (newline)
-           (mk-state ip (cadr m) (caddr m) cache binds nm gw dns tcp))
+           (display "[corenetwork] nic registered as if") (display (length ifaces))
+           (display ", mac=") (display (cadr m)) (newline)
+           (mk-state (append ifaces (list (mk-iface (length ifaces) (cadr m) (caddr m))))
+                     routes cache binds tcp))
           ((eq? (car m) 'rx)                   ; (rx frame len)
            (let ((frame (cadr m)) (len (caddr m)))
              (if (< len 14)
@@ -38,17 +52,18 @@
                  (let ((etype (get-be16 frame 12)))
                    (cond
                      ((= etype ETH-ARP)
-                      (mk-state ip mac tx
-                                (handle-arp ip mac tx cache (uptime-ns) frame len)
-                                binds nm gw dns tcp))
+                      (mk-state ifaces routes
+                                (handle-arp ifaces cache (uptime-ns) frame len)
+                                binds tcp))
                      ((= etype ETH-IPV4)
-                      (handle-ip ip mac tx cache binds tcp frame len)
+                      (handle-ip ifaces routes cache binds tcp frame len)
                       st)
                      (else st))))))
-          ((eq? (car m) 'arp-request)          ; (arp-request ip)
-           (if (and mac tx)
-               (eth-tx tx mac BROADCAST ETH-ARP
-                       (build-arp 1 mac ip (list 0 0 0 0 0 0) (cadr m)) 28))
+          ((eq? (car m) 'arp-request)          ; (arp-request ip) -- who-has on the route's link
+           (let ((i (egress-for ifaces routes (cadr m))))
+             (if i
+                 (eth-tx (ig i I-TX) (ig i I-MAC) BROADCAST ETH-ARP
+                         (build-arp 1 (ig i I-MAC) (ig i I-IP) (list 0 0 0 0 0 0) (cadr m)) 28)))
            st)
           ((eq? (car m) 'arp-lookup)           ; (arp-lookup ip reply)
            (send (caddr m) (cache-get cache (cadr m) (uptime-ns)))
@@ -56,34 +71,50 @@
           ((eq? (car m) 'udp-bind)             ; (udp-bind port handler)
            (display "[corenetwork] udp port bound: ")
            (display (cadr m)) (newline)
-           (mk-state ip mac tx cache (cons (cons (cadr m) (caddr m)) binds)
-                     nm gw dns tcp))
+           (mk-state ifaces routes cache (cons (cons (cadr m) (caddr m)) binds) tcp))
           ((eq? (car m) 'udp-unbind)           ; (udp-unbind port) -- drop the binding
-           (mk-state ip mac tx cache
-                     (filter (lambda (b) (not (= (car b) (cadr m)))) binds)
-                     nm gw dns tcp))
+           (mk-state ifaces routes cache
+                     (filter (lambda (b) (not (= (car b) (cadr m)))) binds) tcp))
           ((eq? (car m) 'udp-send)             ; (udp-send dst-ip dst-mac sport dport payload)
-           (if (and mac tx)
-               (udp-send ip mac tx (cadr m) (caddr m) (cadddr m)
-                         (nth m 4) (nth m 5) (bytes-length (nth m 5))))
+           (let ((i (egress-for ifaces routes (cadr m))))
+             (if i
+                 (udp-send (ig i I-IP) (ig i I-MAC) (ig i I-TX) (cadr m) (caddr m) (cadddr m)
+                           (nth m 4) (nth m 5) (bytes-length (nth m 5)))))
            st)
           ((eq? (car m) 'ping)                 ; (ping dst-ip dst-mac id seq)
-           (if (and mac tx)
-               (eth-tx tx mac (caddr m) ETH-IPV4
-                       (build-ipv4 ip (cadr m) IP-ICMP
-                                   (build-icmp-echo 8 (cadddr m) (nth m 4)) 8)
-                       28))
+           (let ((i (egress-for ifaces routes (cadr m))))
+             (if i
+                 (eth-tx (ig i I-TX) (ig i I-MAC) (caddr m) ETH-IPV4
+                         (build-ipv4 (ig i I-IP) (cadr m) IP-ICMP
+                                     (build-icmp-echo 8 (cadddr m) (nth m 4)) 8)
+                         28)))
            st)
-          ((eq? (car m) 'set-address)          ; (set-address ip nm gw dns)
-           (display "[corenetwork] address set ") (display (cadr m)) (newline)
-           (mk-state (cadr m) mac tx cache binds (caddr m) (cadddr m) (nth m 4) tcp))
-          ((eq? (car m) 'get-address)          ; (get-address reply) -> (ip nm gw dns)
-           (send (cadr m) (list ip nm gw dns))
+          ((eq? (car m) 'set-address)          ; (set-address mac ip nm gw dns) -- mac #f = first iface
+           (let ((i (if (cadr m) (iface-by-mac ifaces (cadr m)) (primary-iface-any ifaces))))
+             (if (not i)
+                 st
+                 (begin
+                   (is! i I-IP (caddr m)) (is! i I-MASK (cadddr m))
+                   (is! i I-GW (nth m 4)) (is! i I-DNS (nth m 5))
+                   (display "[corenetwork] if") (display (ig i I-ID))
+                   (display " address set ") (display (caddr m)) (newline)
+                   (mk-state ifaces (routes-install routes i) cache binds tcp)))))
+          ((eq? (car m) 'get-address)          ; (get-address reply) -> (ip nm gw dns) of primary
+           (let ((i (primary-iface ifaces)))
+             (send (cadr m) (if i (list (ig i I-IP) (ig i I-MASK) (ig i I-GW) (ig i I-DNS))
+                                (list IP-ANY IP-ANY IP-ANY IP-ANY))))
            st)
-          ((eq? (car m) 'dhcp-start)           ; (dhcp-start) -- begin DHCP on this iface
-           (if (and mac tx)
-               (let ((net (self)) (hw mac))
-                 (spawn-restricted '() (lambda () (dhcp-client net hw)))))
+          ((eq? (car m) 'route-query)          ; (route-query dst reply) -> (src-ip mac tx next-hop)|#f
+           (let ((e (route-egress routes (cadr m))))
+             (send (caddr m)
+                   (if e (list (ig (car e) I-IP) (ig (car e) I-MAC) (ig (car e) I-TX) (cdr e))
+                       #f)))
+           st)
+          ((eq? (car m) 'dhcp-start)           ; (dhcp-start) -- DHCP on the primary interface
+           (let ((i (primary-iface-any ifaces)))
+             (if i
+                 (let ((nn (self)) (hw (ig i I-MAC)))
+                   (spawn-restricted '() (lambda () (dhcp-client nn hw))))))
            st)
           ;; --- TCP socket API (state mutated in place; the same st rides on) ---
           ((eq? (car m) 'tcp-listen)           ; (tcp-listen port owner)
@@ -91,17 +122,19 @@
            (display "[corenetwork] tcp listening on ") (display (cadr m)) (newline)
            st)
           ((eq? (car m) 'tcp-connect)          ; (tcp-connect dst-ip dst-mac dport owner)
-           (if (and mac tx)
-               (tcp-do-connect ip mac tx tcp (cadr m) (caddr m) (cadddr m) (nth m 4)))
+           (let ((i (egress-for ifaces routes (cadr m))))
+             (if i
+                 (tcp-do-connect (ig i I-IP) (ig i I-MAC) (ig i I-TX) tcp
+                                 (cadr m) (caddr m) (cadddr m) (nth m 4))))
            st)
           ((eq? (car m) 'tcp-send)             ; (tcp-send conn bytes)
-           (if (and mac tx) (tcp-do-send ip mac tx tcp (cadr m) (caddr m)))
+           (tcp-do-send tcp (cadr m) (caddr m))
            st)
           ((eq? (car m) 'tcp-close)            ; (tcp-close conn)
-           (if (and mac tx) (tcp-do-close ip mac tx tcp (cadr m)))
+           (tcp-do-close tcp (cadr m))
            st)
           ((eq? (car m) 'tcp-tick)             ; (tcp-tick) -- from the ticker context
-           (if (and mac tx) (tcp-do-tick ip mac tx tcp))
+           (tcp-do-tick tcp)
            st)
           ((eq? (car m) 'tcp-test-loss)        ; (tcp-test-loss N) -- test fault injection
            (tcp-do-test-loss tcp (cadr m))

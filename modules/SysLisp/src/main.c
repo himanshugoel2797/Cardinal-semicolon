@@ -1270,12 +1270,18 @@ static void check_network(lisp_value env) {
     const char *err = NULL;
     lisp_eval_string(
         "(import corenetwork driver-util)"
+        // A service is now multi-interface: an interface exists only after
+        // register-nic, and is addressed (with its on-link route installed) by
+        // set-address (mac #f targets the first interface). cfg! captures that.
+        "(define (cfg! net mac txc ip)"
+        "  (send net (list 'register-nic mac txc))"
+        "  (send net (list 'set-address #f ip (list 255 255 255 0) (list 0 0 0 0) (list 0 0 0 0))))"
         // (1) ARP request -> reply, captured by a fake NIC.
         "(define arp-info (spawn (lambda () (let ((m (recv))) (let ((f (cadr m)))"
         "  (list (get-be16 f 20) (bytes-u8-ref f 28) (bytes-u8-ref f 29)"
         "        (bytes-u8-ref f 30) (bytes-u8-ref f 31)))))))"
-        "(define netA (start-network-service (list 10 0 2 15)))"
-        "(send netA (list 'register-nic (list 2 0 0 0 0 1) arp-info))"
+        "(define netA (start-network-service))"
+        "(cfg! netA (list 2 0 0 0 0 1) arp-info (list 10 0 2 15))"
         "(define areq (make-bytes 42))"
         "(put-list! areq 0 (list 255 255 255 255 255 255))"
         "(put-list! areq 6 (list 2 0 0 0 0 2))"
@@ -1285,13 +1291,15 @@ static void check_network(lisp_value env) {
         "(put-list! areq 38 (list 10 0 2 15))"
         "(send netA (list 'rx areq 42))"
         // (2) UDP round-trip netC -> wire -> netB:9999.
-        "(define netB (start-network-service (list 10 0 2 20)))"
+        "(define netB (start-network-service))"
         "(define udp-got (spawn (lambda () (let ((m (recv))) (bytes-u8-ref (nth m 4) 0)))))"
+        "(define bsink (spawn (lambda () (let loop () (recv) (loop)))))"  // netB never transmits
+        "(cfg! netB (list 2 0 0 0 0 2) bsink (list 10 0 2 20))"
         "(send netB (list 'udp-bind 9999 udp-got))"
         "(define wire (spawn (lambda () (let loop () (let ((m (recv)))"
         "  (if (eq? (car m) 'tx) (send netB (list 'rx (cadr m) (caddr m)))) (loop))))))"
-        "(define netC (start-network-service (list 10 0 2 15)))"
-        "(send netC (list 'register-nic (list 2 0 0 0 0 1) wire))"
+        "(define netC (start-network-service))"
+        "(cfg! netC (list 2 0 0 0 0 1) wire (list 10 0 2 15))"
         "(define pl (make-bytes 1)) (bytes-u8-set! pl 0 222)"
         "(send netC (list 'udp-send (list 10 0 2 20) (list 2 0 0 0 0 2) 1111 9999 pl))"
         // (3) Robustness: a crafted IPv4 frame with a lying ihl (=15 -> 60-byte
@@ -1300,8 +1308,8 @@ static void check_network(lisp_value env) {
         // unbounded. Feed netD the bad frame, then a valid ARP who-has; netD must
         // survive and still emit the ARP reply.
         "(define dinfo (spawn (lambda () (let ((m (recv))) (get-be16 (cadr m) 20)))))"
-        "(define netD (start-network-service (list 10 0 2 15)))"
-        "(send netD (list 'register-nic (list 2 0 0 0 0 1) dinfo))"
+        "(define netD (start-network-service))"
+        "(cfg! netD (list 2 0 0 0 0 1) dinfo (list 10 0 2 15))"
         "(define bad (make-bytes 40))"                 // shorter than ihl=15 claims
         "(put-be16! bad 12 2048) (bytes-u8-set! bad 14 79)"  // IPv4 ethertype; byte14=0x4F (v4,ihl15)
         "(send netD (list 'rx bad 40))"                // must be ignored, not fatal
@@ -1323,9 +1331,9 @@ static void check_network(lisp_value env) {
         // wire relays in; net-icmp must reply, and the captured reply's ICMP type
         // (byte 34 = eth14 + ip20) must be 0 (echo reply). This exercises the
         // handle-icmp -> cache-get(now) path the cache-aging change touched.
-        "(define net-icmp (start-network-service (list 10 0 2 15)))"
+        "(define net-icmp (start-network-service))"
         "(define icmp-cap (spawn (lambda () (let ((m (recv))) (bytes-u8-ref (cadr m) 34)))))"
-        "(send net-icmp (list 'register-nic (list 2 0 0 0 0 1) icmp-cap))"
+        "(cfg! net-icmp (list 2 0 0 0 0 1) icmp-cap (list 10 0 2 15))"
         "(define arep2 (make-bytes 42))"
         "(put-list! arep2 0 (list 2 0 0 0 0 1)) (put-list! arep2 6 (list 8 0 0 0 0 8))"
         "(put-be16! arep2 12 2054) (put-be16! arep2 14 1) (put-be16! arep2 16 2048)"
@@ -1335,8 +1343,8 @@ static void check_network(lisp_value env) {
         "(send net-icmp (list 'rx arep2 42))"
         "(define icmp-wire (spawn (lambda () (let loop () (let ((m (recv)))"
         "  (if (eq? (car m) 'tx) (send net-icmp (list 'rx (cadr m) (caddr m)))) (loop))))))"
-        "(define net-ping (start-network-service (list 10 0 2 8)))"
-        "(send net-ping (list 'register-nic (list 8 0 0 0 0 8) icmp-wire))"
+        "(define net-ping (start-network-service))"
+        "(cfg! net-ping (list 8 0 0 0 0 8) icmp-wire (list 10 0 2 8))"
         "(send net-ping (list 'ping (list 10 0 2 15) (list 2 0 0 0 0 1) 1234 1))",
         env, &err);
     lisp_value arp = lisp_eval_string("arp-info", env, &err);
@@ -1367,6 +1375,60 @@ static void check_network(lisp_value env) {
         print_str(reb);
         print_str("  icmp-> ");
         print_str(icb);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
+// Multi-interface routing: one service with two interfaces on different subnets
+// (if0 10.0.2.15/24 with a default gateway, if1 192.168.1.5/24 with none). A
+// route-query must pick the right egress + next hop: on-link destinations resolve
+// directly out their own interface (longest-prefix match over the per-interface
+// /24 routes), and an off-subnet destination falls back to if0's default route.
+static void check_routing(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 2000000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import corenetwork driver-util)"
+        "(define netR (start-network-service))"
+        "(define sink0 (spawn (lambda () (let loop () (recv) (loop)))))"
+        "(define sink1 (spawn (lambda () (let loop () (recv) (loop)))))"
+        "(send netR (list 'register-nic (list 2 0 0 0 0 1) sink0))"
+        "(send netR (list 'register-nic (list 2 0 0 0 0 2) sink1))"
+        "(send netR (list 'set-address (list 2 0 0 0 0 1) (list 10 0 2 15)"
+        "                 (list 255 255 255 0) (list 10 0 2 2) (list 0 0 0 0)))"
+        "(send netR (list 'set-address (list 2 0 0 0 0 2) (list 192 168 1 5)"
+        "                 (list 255 255 255 0) (list 0 0 0 0) (list 0 0 0 0)))"
+        // capture (src-ip next-hop) of a route-query for each destination
+        "(define (rq dst) (spawn (lambda () (send netR (list 'route-query dst (self)))"
+        "  (let ((r (recv))) (if r (list (car r) (cadddr r)) #f)))))"
+        "(define q-on0 (rq (list 10 0 2 99)))"
+        "(define q-on1 (rq (list 192 168 1 99)))"
+        "(define q-def (rq (list 8 8 8 8)))",
+        env, &err);
+    lisp_value a = lisp_eval_string("q-on0", env, &err);
+    lisp_value b = lisp_eval_string("q-on1", env, &err);
+    lisp_value c = lisp_eval_string("q-def", env, &err);
+    lisp_sched_run(&s, 0);
+    char ab[64], bb[64], cb[64];
+    lisp_print(lisp_ctx_value(a), ab, sizeof ab);
+    lisp_print(lisp_ctx_value(b), bb, sizeof bb);
+    lisp_print(lisp_ctx_value(c), cb, sizeof cb);
+    if (err == NULL &&
+        strcmp(ab, "((10 0 2 15) (10 0 2 99))") == 0 &&
+        strcmp(bb, "((192 168 1 5) (192 168 1 99))") == 0 &&
+        strcmp(cb, "((10 0 2 15) (10 0 2 2))") == 0) {
+        print_str("[SysLisp]  ok  routing multi-interface egress + longest-prefix + default\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL routing  on0-> ");
+        print_str(ab);
+        print_str("  on1-> ");
+        print_str(bb);
+        print_str("  def-> ");
+        print_str(cb);
         print_str("\r\n");
         g_fail++;
     }
@@ -2009,6 +2071,7 @@ static void run_self_test(lisp_value env) {
     check_cardfs(env);
     check_ahci(env);
     check_network(env);
+    check_routing(env);
     check_netdebug(env);
     check_rtl8169(env);
     check_gpu(env);

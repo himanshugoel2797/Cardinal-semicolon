@@ -23,9 +23,10 @@
 (define ARP-CACHE-TTL-NS 120000000000)        ; 120 * 1e9
 
 ;; A received ARP (frame; ethernet body at offset 14). Learn the sender, and if
-;; it is a who-has for our IP, reply. Returns the new arp-cache. `now` stamps the
-;; learned entry's expiry.
-(define (handle-arp ip mac nic-tx cache now frame len)
+;; it is a who-has for one of OUR interface IPs, reply from that interface (its
+;; mac/tx), so a multi-homed host answers each address on its own link. Returns
+;; the new arp-cache. `now` stamps the learned entry's expiry.
+(define (handle-arp ifaces cache now frame len)
   ;; Only ethernet/IPv4 ARP with 6-byte MACs and 4-byte IPs (as the C arp_rx
   ;; required): a non-matching htype/ptype/hlen/plen would otherwise be read
   ;; with the wrong fixed offsets and poison the cache.
@@ -39,16 +40,15 @@
             (sha    (read-mac frame 22))
             (spa    (read-ip  frame 28))
             (tpa    (read-ip  frame 38)))
-        (let ((cache2 (cache-put cache spa sha now)))   ; learn sender regardless
+        (let ((cache2 (cache-put cache spa sha now))   ; learn sender regardless
+              (tgt (iface-for-ip ifaces tpa)))         ; the interface this asks for, if any
           (if (= oper 2)                            ; a reply we solicited / observed
               (begin (display "[corenetwork] arp learned ") (display spa)
                      (display " -> ") (display sha) (newline)))
-          (if (and (= oper 1) (equal? tpa ip) mac nic-tx)
-              (begin
-                (eth-tx nic-tx mac sha ETH-ARP
-                        (build-arp 2 mac ip sha spa) 28)
-                cache2)
-              cache2)))))
+          (if (and (= oper 1) tgt)
+              (eth-tx (ig tgt I-TX) (ig tgt I-MAC) sha ETH-ARP
+                      (build-arp 2 (ig tgt I-MAC) tpa sha spa) 28))
+          cache2))))
 
 ;; A cache entry is (key mac . expiry). expiry 0 = never expire (no clock).
 (define (entry-mac e) (cadr e))
