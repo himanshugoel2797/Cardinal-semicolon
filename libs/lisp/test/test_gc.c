@@ -104,6 +104,29 @@ int main(void) {
         expect("captured closure survives GC", buf, "42");
     }
 
+    // 5. A hash table's keys and values are reachable only through the table
+    //    (its buckets vector); they must survive collection, including after a
+    //    grow rehashes them into a fresh buckets vector. Heavy interleaved
+    //    allocation between inserts forces collections mid-build.
+    {
+        lisp_value env = lisp_default_env();
+        lisp_eval_string(
+            "(define h (make-hash-table))"
+            " (define (load i) (if (= i 0) 'done"
+            "    (begin (hash-set! h (list 'k i) (* i 10))"
+            "           (cons i i)"             // churn: short-lived garbage per step
+            "           (load (- i 1)))))"
+            " (load 200)",
+            env, &err);
+        lisp_gc_collect();
+        lisp_gc_collect();
+        lisp_value r = lisp_eval_string(
+            "(list (hash-count h) (hash-ref h (list 'k 7)) (hash-ref h (list 'k 200)))",
+            env, &err);
+        lisp_print(r, buf, sizeof(buf));
+        expect("hash-table contents survive GC", buf, "(200 70 2000)");
+    }
+
     printf("\n[lisp GC] %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

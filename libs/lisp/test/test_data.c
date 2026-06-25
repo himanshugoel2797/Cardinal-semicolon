@@ -108,6 +108,51 @@ int main(void) {
     evals("(list->vector '(a b c))", "#(a b c)");
     evals("#(1 (2 3) #(4 5))", "#(1 (2 3) #(4 5))");
 
+    // Mutable vectors (vector-set!/fill!/copy!)
+    evals("(define v (make-vector 3 0)) (vector-set! v 1 9) v", "#(0 9 0)");
+    evals("(define v (vector 1 2 3)) (vector-fill! v 7) v", "#(7 7 7)");
+    evals("(define d (make-vector 4 0)) (vector-copy! d 1 #(8 9) 0 2) d", "#(0 8 9 0)");
+    // overlapping forward self-copy must not clobber unread source slots
+    evals("(define v (vector 1 2 3 4 5)) (vector-copy! v 2 v 1 3) v", "#(1 2 2 3 4)");
+    evalerr("(vector-set! #(1 2) 5 0)");
+    evalerr("(vector-set! '(1 2) 0 0)");
+
+    // Hash tables (equal?-keyed, mutable)
+    evals("(hash-table? (make-hash-table))", "#t");
+    evals("(hash-table? 5)", "#f");
+    evals("(define h (make-hash-table)) (hash-set! h 'a 1) (hash-ref h 'a)", "1");
+    evals("(define h (make-hash-table)) (hash-ref h 'x 'default)", "default");
+    evalerr("(define h (make-hash-table)) (hash-ref h 'missing)");
+    // overwrite in place keeps the count at 1
+    evals("(define h (make-hash-table)) (hash-set! h 'k 1) (hash-set! h 'k 2)"
+          " (list (hash-ref h 'k) (hash-count h))", "(2 1)");
+    // list/string keys match by content (equal?), not identity
+    evals("(define h (make-hash-table)) (hash-set! h (list 1 2) 'pair)"
+          " (hash-ref h (list 1 2))", "pair");
+    evals("(define h (make-hash-table)) (hash-set! h \"key\" 42)"
+          " (hash-ref h (string-append \"k\" \"ey\"))", "42");
+    evals("(define h (make-hash-table)) (hash-set! h 'a 1)"
+          " (list (hash-has-key? h 'a) (hash-has-key? h 'b))", "(#t #f)");
+    evals("(define h (make-hash-table)) (hash-set! h 'a 1) (hash-remove! h 'a)"
+          " (list (hash-has-key? h 'a) (hash-count h))", "(#f 0)");
+    evals("(hash-remove! (make-hash-table) 'nope)", "#f");
+    // grow past the initial 8 buckets: 50 distinct keys all retrievable
+    evals("(define h (make-hash-table))"
+          " (define (fill i) (if (< i 50) (begin (hash-set! h i (* i i)) (fill (+ i 1))) #t))"
+          " (fill 0) (list (hash-count h) (hash-ref h 7) (hash-ref h 49))",
+          "(50 49 2401)");
+    // keys/values enumerations (sum is order-independent)
+    evals("(define h (make-hash-table)) (hash-set! h 'a 10) (hash-set! h 'b 20)"
+          " (apply + (hash-values h))", "30");
+    evals("(define h (make-hash-table)) (hash-set! h 'a 1) (hash-set! h 'b 2)"
+          " (length (hash-keys h))", "2");
+    // hash-for-each applies (proc key value); sum the values via a side total
+    evals("(define h (make-hash-table)) (hash-set! h 'a 3) (hash-set! h 'b 4)"
+          " (define total 0) (hash-for-each h (lambda (k v) (set! total (+ total v)))) total",
+          "7");
+    evalerr("(hash-ref 5 'k)");
+    evalerr("(hash-set! 5 'k 1)");
+
     // cond / and / or
     evals("(cond (#f 1) (#t 2) (else 3))", "2");
     evals("(cond (#f 1) (else 'fallback))", "fallback");

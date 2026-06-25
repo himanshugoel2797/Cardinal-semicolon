@@ -322,6 +322,10 @@ static void trace(lisp_value v) {
                 mark_push(lisp_vector_ref(v, i));
             break;
         }
+        case LISP_OBJ_HASHTABLE:
+            // All keys/values are reachable through the single buckets vector.
+            mark_push(lisp_hashtable_buckets(v));
+            break;
         case LISP_OBJ_ENV: {
             lisp_env_t *e = (lisp_env_t *)lisp_obj(v);
             mark_push(e->parent);

@@ -328,6 +328,11 @@ static bool deep_equal(lisp_value a, lisp_value b) {
             return n == lisp_string_len(b) &&
                    memcmp(lisp_string_data(a), lisp_string_data(b), n) == 0;
         }
+        if (lisp_is_bytes(a) && lisp_is_bytes(b)) {
+            size_t n = lisp_bytes_len(a);
+            return n == lisp_bytes_len(b) &&
+                   memcmp(lisp_bytes_data(a), lisp_bytes_data(b), n) == 0;
+        }
         if (lisp_is_vector(a) && lisp_is_vector(b)) {
             size_t n = lisp_vector_length(a);
             if (n != lisp_vector_length(b))
@@ -573,6 +578,319 @@ static lisp_value prim_list_to_vector(lisp_value *args, int argc, const char **e
     for (lisp_value p = args[0]; lisp_is_pair(p); p = lisp_cdr(p))
         lisp_vector_set_init(v, i++, lisp_car(p));
     return v;
+}
+
+static lisp_value prim_vector_set(lisp_value *args, int argc, const char **err) {
+    if (argc != 3 || !lisp_is_vector(args[0]) || !lisp_is_fixnum(args[1]))
+        return prim_err(err, "vector-set! expects (vector index value)");
+    int64_t i = lisp_fixnum_val(args[1]);
+    if (i < 0 || (size_t)i >= lisp_vector_length(args[0]))
+        return prim_err(err, "vector-set!: index out of range");
+    lisp_vector_set(args[0], (size_t)i, args[2]);
+    return LISP_UNDEF;
+}
+
+static lisp_value prim_vector_fill(lisp_value *args, int argc, const char **err) {
+    if (argc != 2 || !lisp_is_vector(args[0]))
+        return prim_err(err, "vector-fill! expects (vector value)");
+    size_t n = lisp_vector_length(args[0]);
+    for (size_t i = 0; i < n; i++)
+        lisp_vector_set(args[0], i, args[1]);
+    return LISP_UNDEF;
+}
+
+// (vector-copy! dst doff src soff len) -- copy len elements; ranges checked. Like
+// bytes-copy! this is the bulk mover; overlap within one vector is handled by
+// choosing copy direction so a self-shift does not clobber unread source slots.
+static lisp_value prim_vector_copy(lisp_value *args, int argc, const char **err) {
+    if (argc != 5 || !lisp_is_vector(args[0]) || !lisp_is_fixnum(args[1]) ||
+        !lisp_is_vector(args[2]) || !lisp_is_fixnum(args[3]) || !lisp_is_fixnum(args[4]))
+        return prim_err(err, "vector-copy! expects (dst doff src soff len)");
+    int64_t doff = lisp_fixnum_val(args[1]), soff = lisp_fixnum_val(args[3]);
+    int64_t len = lisp_fixnum_val(args[4]);
+    if (doff < 0 || soff < 0 || len < 0 ||
+        (size_t)(doff + len) > lisp_vector_length(args[0]) ||
+        (size_t)(soff + len) > lisp_vector_length(args[2]))
+        return prim_err(err, "vector-copy!: range out of bounds");
+    if (doff > soff)  // overlapping forward shift: copy back-to-front
+        for (int64_t k = len - 1; k >= 0; k--)
+            lisp_vector_set(args[0], (size_t)(doff + k), lisp_vector_ref(args[2], (size_t)(soff + k)));
+    else
+        for (int64_t k = 0; k < len; k++)
+            lisp_vector_set(args[0], (size_t)(doff + k), lisp_vector_ref(args[2], (size_t)(soff + k)));
+    return LISP_UNDEF;
+}
+
+// --- Hash tables (equal?-keyed, chained buckets) ----------------------------
+//
+// Keys are compared with deep_equal (the equal? predicate) and hashed by content
+// with a matching structural hash, so lists/strings/bytes/numbers all work as
+// keys. The table grows (doubles its bucket count) when the load factor reaches
+// 1.0, keeping average chains short. All mutation is in place; the table is
+// deep-copied on send (sched.c) so nothing mutable crosses a context boundary.
+
+#define FNV64_OFFSET 1469598103934665603ull
+#define FNV64_PRIME 1099511628211ull
+#define EHASH_MAX_DEPTH 6   // recursion cap: equal values still hash equally
+#define EHASH_MAX_SPAN 64   // per-list/-vector element cap (same justification)
+
+static uint64_t hash_mem(const uint8_t *p, size_t n, uint64_t h) {
+    for (size_t i = 0; i < n; i++)
+        h = (h ^ p[i]) * FNV64_PRIME;
+    return h;
+}
+
+// A content hash consistent with deep_equal: equal values hash identically. The
+// depth/span caps bound the work on deep or long structures; because they apply
+// identically to structurally-equal values, equal keys still collide into the
+// same bucket (the only correctness requirement -- extra collisions just lengthen
+// a chain).
+static uint64_t equal_hash(lisp_value v, int depth) {
+    if (lisp_is_fixnum(v)) {
+        int64_t x = lisp_fixnum_val(v);
+        return hash_mem((const uint8_t *)&x, sizeof x, FNV64_OFFSET);
+    }
+    if (!lisp_is_ptr(v)) {  // char / bool / () / eof / undef: hash the tagged word
+        uint64_t x = (uint64_t)v;
+        return hash_mem((const uint8_t *)&x, sizeof x, FNV64_OFFSET);
+    }
+    switch (LISP_HDR_TYPE(lisp_obj(v))) {
+        case LISP_OBJ_SYMBOL:
+        case LISP_OBJ_KEYWORD: {
+            // Interned: equal? is identity, and the stored 32-bit hash is the name
+            // hash -- a stable content key either way.
+            uint32_t nh = ((lisp_named *)lisp_obj(v))->hash;
+            uint64_t x = nh;
+            return hash_mem((const uint8_t *)&x, sizeof x, FNV64_OFFSET ^ 0x53u);
+        }
+        case LISP_OBJ_STRING:
+            return hash_mem((const uint8_t *)lisp_string_data(v), lisp_string_len(v),
+                            FNV64_OFFSET ^ 0x05u);
+        case LISP_OBJ_BYTES:
+            return hash_mem((const uint8_t *)lisp_bytes_data(v), lisp_bytes_len(v),
+                            FNV64_OFFSET ^ 0x07u);
+        case LISP_OBJ_FLONUM: {
+            double d = lisp_flonum_val(v);
+            return hash_mem((const uint8_t *)&d, sizeof d, FNV64_OFFSET ^ 0x09u);
+        }
+        case LISP_OBJ_PAIR: {
+            uint64_t h = FNV64_OFFSET ^ 0x11u;
+            int n = 0;
+            while (lisp_is_pair(v) && n < EHASH_MAX_SPAN) {
+                uint64_t ch = depth >= EHASH_MAX_DEPTH ? 0xA5u : equal_hash(lisp_car(v), depth + 1);
+                h = (h ^ ch) * FNV64_PRIME;
+                v = lisp_cdr(v);
+                n++;
+            }
+            if (lisp_is_ptr(v)) {  // dotted tail or an over-long spine remnant
+                uint64_t ch = depth >= EHASH_MAX_DEPTH ? 0x5Au : equal_hash(v, depth + 1);
+                h = (h ^ ch) * FNV64_PRIME;
+            }
+            return h;
+        }
+        case LISP_OBJ_VECTOR: {
+            uint64_t h = FNV64_OFFSET ^ 0x13u;
+            size_t n = lisp_vector_length(v);
+            if (n > EHASH_MAX_SPAN)
+                n = EHASH_MAX_SPAN;
+            for (size_t i = 0; i < n; i++) {
+                uint64_t ch = depth >= EHASH_MAX_DEPTH ? 0x3Cu : equal_hash(lisp_vector_ref(v, i), depth + 1);
+                h = (h ^ ch) * FNV64_PRIME;
+            }
+            return h;
+        }
+        default: {  // procedures/contexts: by identity (rarely used as keys)
+            uint64_t x = (uint64_t)v;
+            return hash_mem((const uint8_t *)&x, sizeof x, FNV64_OFFSET);
+        }
+    }
+}
+
+// Address of the bucket-list slot for `key` inside the table's buckets vector.
+static lisp_value *ht_slot(lisp_value ht, lisp_value key) {
+    lisp_value bk = lisp_hashtable_buckets(ht);
+    size_t nb = lisp_vector_length(bk);
+    size_t i = (size_t)(equal_hash(key, 0) % (uint64_t)nb);
+    return &((lisp_vector *)lisp_obj(bk))->items[i];
+}
+
+// The (key . value) pair for `key`, or LISP_FALSE if absent. A real entry is a
+// pair (a heap pointer), never == LISP_FALSE, so the sentinel is unambiguous.
+static lisp_value ht_find(lisp_value ht, lisp_value key) {
+    for (lisp_value b = *ht_slot(ht, key); lisp_is_pair(b); b = lisp_cdr(b)) {
+        lisp_value pr = lisp_car(b);
+        if (deep_equal(lisp_car(pr), key))
+            return pr;
+    }
+    return LISP_FALSE;
+}
+
+// Double the bucket count and rehash. Best-effort: on OOM it leaves the table
+// untouched (the old buckets stay installed) and returns false; the caller then
+// just inserts into the existing, denser table. No entry is ever lost.
+static bool ht_grow(lisp_value ht) {
+    lisp_value oldbk = lisp_hashtable_buckets(ht);
+    size_t oldn = lisp_vector_length(oldbk);
+    size_t newn = oldn * 2;
+    lisp_value newbk = lisp_make_vector(newn, LISP_EMPTY);
+    if (newbk == LISP_UNDEF)
+        return false;
+    for (size_t i = 0; i < oldn; i++) {
+        for (lisp_value b = lisp_vector_ref(oldbk, i); lisp_is_pair(b); b = lisp_cdr(b)) {
+            lisp_value pr = lisp_car(b);  // reuse the existing entry pair
+            size_t j = (size_t)(equal_hash(lisp_car(pr), 0) % (uint64_t)newn);
+            lisp_value cell = lisp_cons(pr, lisp_vector_ref(newbk, j));
+            if (cell == LISP_UNDEF)
+                return false;  // oldbk still installed and whole; abandon newbk
+            lisp_vector_set(newbk, j, cell);
+        }
+    }
+    lisp_hashtable_set_buckets(ht, newbk);
+    return true;
+}
+
+static lisp_value prim_make_hashtable(lisp_value *args, int argc, const char **err) {
+    (void)args;
+    if (argc != 0)
+        return prim_err(err, "make-hash-table takes no arguments");
+    lisp_value ht = lisp_make_hashtable(8);
+    if (ht == LISP_UNDEF)
+        return prim_err(err, "out of memory");
+    return ht;
+}
+
+static lisp_value prim_hashtablep(lisp_value *args, int argc, const char **err) {
+    if (argc != 1)
+        return prim_err(err, "hash-table? expects one argument");
+    return bool_val(lisp_is_hashtable(args[0]));
+}
+
+static lisp_value prim_hash_set(lisp_value *args, int argc, const char **err) {
+    if (argc != 3 || !lisp_is_hashtable(args[0]))
+        return prim_err(err, "hash-set! expects (hash-table key value)");
+    lisp_value ht = args[0], key = args[1], val = args[2];
+    lisp_value pr = ht_find(ht, key);
+    if (pr != LISP_FALSE) {  // present: overwrite in place
+        set_cdr(pr, val);
+        return LISP_UNDEF;
+    }
+    if (lisp_hashtable_count(ht) >= lisp_vector_length(lisp_hashtable_buckets(ht)))
+        ht_grow(ht);  // best-effort; ht_slot below reads whatever buckets remain
+    lisp_value entry = lisp_cons(key, val);
+    if (entry == LISP_UNDEF)
+        return prim_err(err, "out of memory");
+    lisp_value *slot = ht_slot(ht, key);
+    lisp_value cell = lisp_cons(entry, *slot);
+    if (cell == LISP_UNDEF)
+        return prim_err(err, "out of memory");
+    *slot = cell;
+    lisp_hashtable_set_count(ht, lisp_hashtable_count(ht) + 1);
+    return LISP_UNDEF;
+}
+
+static lisp_value prim_hash_ref(lisp_value *args, int argc, const char **err) {
+    if (argc < 2 || argc > 3 || !lisp_is_hashtable(args[0]))
+        return prim_err(err, "hash-ref expects (hash-table key [default])");
+    lisp_value pr = ht_find(args[0], args[1]);
+    if (pr != LISP_FALSE)
+        return lisp_cdr(pr);
+    if (argc == 3)
+        return args[2];
+    return prim_err(err, "hash-ref: key not found");
+}
+
+static lisp_value prim_hash_has_key(lisp_value *args, int argc, const char **err) {
+    if (argc != 2 || !lisp_is_hashtable(args[0]))
+        return prim_err(err, "hash-has-key? expects (hash-table key)");
+    return bool_val(ht_find(args[0], args[1]) != LISP_FALSE);
+}
+
+static lisp_value prim_hash_remove(lisp_value *args, int argc, const char **err) {
+    if (argc != 2 || !lisp_is_hashtable(args[0]))
+        return prim_err(err, "hash-remove! expects (hash-table key)");
+    lisp_value ht = args[0], key = args[1];
+    lisp_value *slot = ht_slot(ht, key);
+    lisp_value prev = LISP_FALSE;
+    for (lisp_value b = *slot; lisp_is_pair(b); prev = b, b = lisp_cdr(b)) {
+        if (deep_equal(lisp_car(lisp_car(b)), key)) {
+            if (prev == LISP_FALSE)
+                *slot = lisp_cdr(b);  // unlink head
+            else
+                set_cdr(prev, lisp_cdr(b));
+            lisp_hashtable_set_count(ht, lisp_hashtable_count(ht) - 1);
+            return LISP_TRUE;
+        }
+    }
+    return LISP_FALSE;
+}
+
+static lisp_value prim_hash_count(lisp_value *args, int argc, const char **err) {
+    if (argc != 1 || !lisp_is_hashtable(args[0]))
+        return prim_err(err, "hash-count expects a hash-table");
+    return lisp_fixnum((int64_t)lisp_hashtable_count(args[0]));
+}
+
+// Build a list by walking every bucket; `pick` selects key, value, or the (key .
+// value) entry pair itself. Order is unspecified (bucket/chain order).
+static lisp_value ht_collect(lisp_value ht, int pick, const char **err) {
+    lisp_value bk = lisp_hashtable_buckets(ht);
+    size_t nb = lisp_vector_length(bk);
+    lisp_value head = LISP_EMPTY, last = LISP_EMPTY;
+    for (size_t i = 0; i < nb; i++) {
+        for (lisp_value b = lisp_vector_ref(bk, i); lisp_is_pair(b); b = lisp_cdr(b)) {
+            lisp_value pr = lisp_car(b);
+            lisp_value item = pick == 0 ? lisp_car(pr) : pick == 1 ? lisp_cdr(pr) : pr;
+            lisp_value cell = lisp_cons(item, LISP_EMPTY);
+            if (cell == LISP_UNDEF)
+                return prim_err(err, "out of memory");
+            if (head == LISP_EMPTY)
+                head = cell;
+            else
+                set_cdr(last, cell);
+            last = cell;
+        }
+    }
+    return head;
+}
+
+static lisp_value prim_hash_keys(lisp_value *args, int argc, const char **err) {
+    if (argc != 1 || !lisp_is_hashtable(args[0]))
+        return prim_err(err, "hash-keys expects a hash-table");
+    return ht_collect(args[0], 0, err);
+}
+
+static lisp_value prim_hash_values(lisp_value *args, int argc, const char **err) {
+    if (argc != 1 || !lisp_is_hashtable(args[0]))
+        return prim_err(err, "hash-values expects a hash-table");
+    return ht_collect(args[0], 1, err);
+}
+
+static lisp_value prim_hash_to_list(lisp_value *args, int argc, const char **err) {
+    if (argc != 1 || !lisp_is_hashtable(args[0]))
+        return prim_err(err, "hash->list expects a hash-table");
+    return ht_collect(args[0], 2, err);
+}
+
+// (hash-for-each ht proc) -- apply (proc key value) to every entry. Iterate over
+// a SNAPSHOT list of the entry pairs (ht_collect) so a proc that mutates the
+// table mid-walk cannot corrupt the chain being traversed.
+static lisp_value prim_hash_for_each(lisp_value *args, int argc, const char **err) {
+    if (argc != 2 || !lisp_is_hashtable(args[0]))
+        return prim_err(err, "hash-for-each expects (hash-table procedure)");
+    lisp_value entries = ht_collect(args[0], 2, err);
+    if (entries == LISP_UNDEF && err != NULL && *err != NULL)
+        return LISP_UNDEF;
+    lisp_value ctxv = lisp_ctx_make(LISP_UNDEF, LISP_EMPTY);
+    if (ctxv == LISP_UNDEF)
+        return prim_err(err, "out of memory");
+    for (lisp_value e = entries; lisp_is_pair(e); e = lisp_cdr(e)) {
+        lisp_value pr = lisp_car(e);
+        lisp_value kv[2] = {lisp_car(pr), lisp_cdr(pr)};
+        lisp_value r = lisp_apply_reuse(ctxv, args[1], kv, 2, err);
+        if (r == LISP_UNDEF && err != NULL && *err != NULL)
+            return LISP_UNDEF;
+    }
+    return LISP_UNDEF;
 }
 
 // --- Strings ----------------------------------------------------------------
@@ -1320,9 +1638,24 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "vector", prim_vector);
     def(env, "make-vector", prim_make_vector);
     def(env, "vector-ref", prim_vector_ref);
+    def(env, "vector-set!", prim_vector_set);
+    def(env, "vector-fill!", prim_vector_fill);
+    def(env, "vector-copy!", prim_vector_copy);
     def(env, "vector-length", prim_vector_length);
     def(env, "vector->list", prim_vector_to_list);
     def(env, "list->vector", prim_list_to_vector);
+    // Hash tables (equal?-keyed)
+    def(env, "make-hash-table", prim_make_hashtable);
+    def(env, "hash-table?", prim_hashtablep);
+    def(env, "hash-set!", prim_hash_set);
+    def(env, "hash-ref", prim_hash_ref);
+    def(env, "hash-has-key?", prim_hash_has_key);
+    def(env, "hash-remove!", prim_hash_remove);
+    def(env, "hash-count", prim_hash_count);
+    def(env, "hash-keys", prim_hash_keys);
+    def(env, "hash-values", prim_hash_values);
+    def(env, "hash->list", prim_hash_to_list);
+    def(env, "hash-for-each", prim_hash_for_each);
     // Strings
     def(env, "string-length", prim_string_length);
     def(env, "string-ref", prim_string_ref);
