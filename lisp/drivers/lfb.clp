@@ -97,14 +97,16 @@
             (yloop (+ y 1)))
           fb)))
 
-  ;; Fill the whole framebuffer with one colour (the (fill color) message).
+  ;; Fill the whole framebuffer with one colour (the (fill color) message). Each
+  ;; row is a bulk bytes-fill32! (one vectorized C fill of `width` pixels) rather
+  ;; than a per-pixel interpreted loop -- ~hundreds of x faster. Filling per row
+  ;; (not the whole extent at once) stays correct when pitch > width*4 (padded
+  ;; rows): the padding bytes between rows are left untouched.
   (define (fb-fill! fb width height pitch color)
     (let yloop ((y 0))
       (if (< y height)
           (begin
-            (let xloop ((x 0))
-              (if (< x width)
-                  (begin (fb-put-pixel! fb pitch x y color) (xloop (+ x 1)))))
+            (bytes-fill32! fb (* y pitch) width color)
             (yloop (+ y 1)))
           fb)))
 

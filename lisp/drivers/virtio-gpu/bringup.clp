@@ -35,12 +35,18 @@
     r))
 
 ;; Paint a freshly-allocated framebuffer to a solid value (0xFF -> white in
-;; X8R8G8B8: the X byte is ignored, R=G=B=0xFF).
+;; X8R8G8B8: the X byte is ignored, R=G=B=0xFF). The fill is byte-uniform, so
+;; replicate `val` into a 32-bit word and clear the whole buffer in one bulk
+;; bytes-fill32! (vectorized C) instead of nbytes interpreted bytes-u8-set! calls
+;; -- a 1080p framebuffer goes from ~8M VM iterations to a single primitive.
+;; nbytes is always w*h*4 (a multiple of 4).
 (define (fill-fb! fb nbytes val)
-  (let loop ((i 0))
-    (if (< i nbytes)
-        (begin (bytes-u8-set! fb i val) (loop (+ i 1)))
-        fb)))
+  (let ((color (bitwise-or val
+                           (arithmetic-shift val 8)
+                           (arithmetic-shift val 16)
+                           (arithmetic-shift val 24))))
+    (bytes-fill32! fb 0 (quotient nbytes 4) color)
+    fb))
 
 ;; Bring one scanout up: create a 2D resource, allocate + paint its framebuffer,
 ;; attach it as backing, point the scanout at it, and push the first frame
