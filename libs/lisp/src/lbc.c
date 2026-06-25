@@ -191,6 +191,12 @@ struct bcchunk {  // opaque typedef in lbc.h
         int index;
     } updesc[LBC_MAX_LOCALS];
     int nupdesc;
+#ifdef LBC_THREADED
+    void **thread;     // direct-threaded dispatch: thread[i] = handler label for
+                       // rcode[i].op, resolved once (lazily) per chunk. NULL until
+                       // first execution. Arena-allocated chunks are never freed,
+                       // so this leaks with them (prototype: -DLBC_THREADED only).
+#endif
 };
 
 struct bcclosure {  // opaque typedef in lbc.h
@@ -2731,12 +2737,71 @@ static bool lbc_vm_grow_frames(lbc_vm *vm, int need) {
 // %block / sleep) zeroes cx->budget, so the next safe-point check suspends. cx
 // may be NULL (the host driver): then the run is unbounded and never suspends and
 // there is no per-context heap to collect.
+// The per-instruction safe point: publish depth (so a GC triggered mid-
+// instruction sees the correct frame/root stack), honour a pending collection,
+// and suspend if the reduction budget is spent. Both dispatch modes run this
+// before every instruction -- identical work -- so a switch-vs-threaded
+// comparison isolates the dispatch mechanism alone.
+#ifdef LBC_THREADED
+// Resolve every instruction's handler-label address once per chunk. The &&label
+// values are only in scope inside lbc_vm_exec, so the table is passed in.
+static void lbc_build_thread(bcchunk *k, void *const *lbl) {
+    void **t = (void **)malloc((size_t)k->nrcode * sizeof(void *));
+    for (int i = 0; i < k->nrcode; i++)
+        t[i] = lbl[k->rcode[i].op];
+    k->thread = t;
+}
+#endif
+
 static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
                                    lisp_value *out, const char **errout) {
     lisp_value *R = vm->R;
     rframe *frames = vm->frames;
     int depth = vm->depth;
     const char *err = NULL;
+#ifdef LBC_THREADED
+    // Direct-threaded dispatch: a per-chunk table of handler-label pointers,
+    // jumped to with computed goto. The opcode->handler mapping is done once per
+    // chunk (lbc_build_thread), so the hot path is a single indirect jump with no
+    // switch range-check and a distinct branch site per opcode (better prediction).
+    static void *const lbl_tab[] = {
+        [ROP_LOADK] = &&L_ROP_LOADK,       [ROP_MOVE] = &&L_ROP_MOVE,
+        [ROP_LOADUP] = &&L_ROP_LOADUP,     [ROP_LOADG] = &&L_ROP_LOADG,
+        [ROP_LOADGS] = &&L_ROP_LOADGS,     [ROP_LOADSELF] = &&L_ROP_LOADSELF,
+        [ROP_SETG] = &&L_ROP_SETG,         [ROP_CLOSURE] = &&L_ROP_CLOSURE,
+        [ROP_JMP] = &&L_ROP_JMP,           [ROP_JMPF] = &&L_ROP_JMPF,
+        [ROP_JMPT] = &&L_ROP_JMPT,         [ROP_CALL] = &&L_ROP_CALL,
+        [ROP_TAILCALL] = &&L_ROP_TAILCALL, [ROP_RET] = &&L_ROP_RET,
+        [ROP_OPCALL] = &&L_ROP_OPCALL,     [ROP_MKCELL] = &&L_ROP_MKCELL,
+        [ROP_CELLGET] = &&L_ROP_CELLGET,   [ROP_CELLSET] = &&L_ROP_CELLSET,
+        [ROP_JEQK] = &&L_ROP_JEQK,         [ROP_MODOP] = &&L_ROP_MODOP,
+        [ROP_DEFG] = &&L_ROP_DEFG,
+    };
+    rframe *f;
+    lisp_value *Rf;
+    rinstr ins;
+    // The shared safe-point prologue + the computed-goto. Ends in `goto`, so it is
+    // a brace block (not do/while) to avoid an unreachable loop-condition warning.
+#define CASE(n) L_##n:
+#define NEXT                                                              \
+    {                                                                     \
+        vm->depth = depth;                                                \
+        if (cx != NULL) {                                                 \
+            if (cx->heap != NULL && lisp_heap_wants_gc(cx->heap))         \
+                lisp_heap_collect(cx->heap);                              \
+            if (cx->budget <= 0) return LISP_CTX_SUSPENDED;               \
+        }                                                                 \
+        f = &frames[depth - 1];                                          \
+        Rf = R + f->base;                                                 \
+        if (__builtin_expect(f->chunk->thread == NULL, 0))               \
+            lbc_build_thread(f->chunk, lbl_tab);                          \
+        ins = f->chunk->rcode[f->pc++];                                   \
+        goto *f->chunk->thread[f->pc - 1];                               \
+    }
+    NEXT;
+#else
+#define CASE(n) case n:
+#define NEXT break
     for (;;) {
         // Publish depth EVERY iteration so the precise GC root scan (lbc_ctx_mark)
         // sees the correct frame stack even for a collection triggered mid-
@@ -2756,25 +2821,26 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
         lisp_value *Rf = R + f->base;  // frame-relative register window
         rinstr ins = f->chunk->rcode[f->pc++];
         switch (ins.op) {
-            case ROP_LOADK: Rf[ins.a] = f->chunk->consts[ins.b]; break;
-            case ROP_MOVE: Rf[ins.a] = Rf[ins.b]; break;
-            case ROP_LOADUP: Rf[ins.a] = f->clo->upvals[ins.b]; break;
-            case ROP_LOADG: {
+#endif
+            CASE(ROP_LOADK) Rf[ins.a] = f->chunk->consts[ins.b]; NEXT;
+            CASE(ROP_MOVE) Rf[ins.a] = Rf[ins.b]; NEXT;
+            CASE(ROP_LOADUP) Rf[ins.a] = f->clo->upvals[ins.b]; NEXT;
+            CASE(ROP_LOADG) {
                 lisp_value v;
                 if (!lisp_env_lookup(f->chunk->genv, f->chunk->consts[ins.b], &v)) {
                     err = "unbound variable"; goto fail;
                 }
                 Rf[ins.a] = v;
-                break;
+                NEXT;
             }
-            case ROP_LOADGS: Rf[ins.a] = lisp_cdr(f->chunk->consts[ins.b]); break;
-            case ROP_LOADSELF: Rf[ins.a] = LBC_MK_CLO(f->clo); break;
-            case ROP_SETG:
+            CASE(ROP_LOADGS) Rf[ins.a] = lisp_cdr(f->chunk->consts[ins.b]); NEXT;
+            CASE(ROP_LOADSELF) Rf[ins.a] = LBC_MK_CLO(f->clo); NEXT;
+            CASE(ROP_SETG)
                 if (!lisp_env_set(f->chunk->genv, f->chunk->consts[ins.b], Rf[ins.a])) {
                     err = "set! on unbound variable"; goto fail;
                 }
-                break;
-            case ROP_CLOSURE: {
+                NEXT;
+            CASE(ROP_CLOSURE) {
                 bcchunk *child = f->chunk->children[ins.b];
                 bcclosure *c = lbc_alloc_closure(child, child->nupdesc);
                 if (c == NULL) { err = "out of memory"; goto fail; }
@@ -2783,18 +2849,18 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
                                        ? Rf[child->updesc[i].index]
                                        : f->clo->upvals[child->updesc[i].index];
                 Rf[ins.a] = LBC_MK_CLO(c);
-                break;
+                NEXT;
             }
-            case ROP_JMP: {
+            CASE(ROP_JMP) {
                 int from = f->pc;
                 f->pc = ins.a;
                 if (cx != NULL && ins.a < from)
                     cx->budget--;  // a loop back-edge is a reduction (safe point)
-                break;
+                NEXT;
             }
-            case ROP_JMPF: if (!lisp_truthy(Rf[ins.a])) f->pc = ins.b; break;
-            case ROP_JMPT: if (lisp_truthy(Rf[ins.a])) f->pc = ins.b; break;
-            case ROP_OPCALL: {
+            CASE(ROP_JMPF) if (!lisp_truthy(Rf[ins.a])) f->pc = ins.b; NEXT;
+            CASE(ROP_JMPT) if (lisp_truthy(Rf[ins.a])) f->pc = ins.b; NEXT;
+            CASE(ROP_OPCALL) {
                 // No frozen ops: the operator is still an ordinary global. The IC
                 // pins the builtin that was canonical when this site compiled;
                 // the inlined path runs ONLY while cur == expected and the
@@ -2872,31 +2938,31 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
                     if (r == LISP_UNDEF && err != NULL) goto fail;
                     Rf[ins.a] = r;
                 }
-                break;
+                NEXT;
             }
-            case ROP_MKCELL: {
+            CASE(ROP_MKCELL) {
                 lisp_value c = lisp_cons(Rf[ins.a], LISP_EMPTY);
                 if (c == LISP_UNDEF) { err = "out of memory"; goto fail; }
                 Rf[ins.a] = c;
-                break;
+                NEXT;
             }
-            case ROP_CELLGET: Rf[ins.a] = lisp_car(Rf[ins.b]); break;
-            case ROP_CELLSET: set_car_lbc(Rf[ins.a], Rf[ins.b]); break;
-            case ROP_JEQK:
+            CASE(ROP_CELLGET) Rf[ins.a] = lisp_car(Rf[ins.b]); NEXT;
+            CASE(ROP_CELLSET) set_car_lbc(Rf[ins.a], Rf[ins.b]); NEXT;
+            CASE(ROP_JEQK)
                 if (Rf[ins.a] == f->chunk->consts[ins.b])
                     f->pc = ins.c;
-                break;
-            case ROP_MODOP: {
+                NEXT;
+            CASE(ROP_MODOP) {
                 lisp_value r = lbc_module_op(f->chunk->consts[ins.b], f->chunk->genv,
                                              &err);
                 if (r == LISP_UNDEF && err != NULL) goto fail;
                 Rf[ins.a] = r;
-                break;
+                NEXT;
             }
-            case ROP_DEFG:
+            CASE(ROP_DEFG)
                 lisp_env_define(f->chunk->genv, f->chunk->consts[ins.b], Rf[ins.a]);
-                break;
-            case ROP_CALL: {
+                NEXT;
+            CASE(ROP_CALL) {
                 if (cx != NULL) cx->budget--;  // a call is a reduction
                 int callbase = ins.a, n = ins.b;
                 lisp_value callee = Rf[callbase];
@@ -2920,9 +2986,9 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
                     if (r == LISP_UNDEF && err != NULL) goto fail;
                     Rf[callbase] = r;
                 }
-                break;
+                NEXT;
             }
-            case ROP_TAILCALL: {
+            CASE(ROP_TAILCALL) {
                 if (cx != NULL) cx->budget--;
                 int callbase = ins.a, n = ins.b;
                 lisp_value callee = Rf[callbase];
@@ -2946,19 +3012,23 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
                     if (depth == 0) { *out = r; vm->depth = 0; return LISP_CTX_DONE; }
                     R[ra] = r;
                 }
-                break;
+                NEXT;
             }
-            case ROP_RET: {
+            CASE(ROP_RET) {
                 lisp_value r = Rf[ins.a];
                 int ra = f->result_abs;
                 depth--;
                 if (depth == 0) { *out = r; vm->depth = 0; return LISP_CTX_DONE; }
                 R[ra] = r;
-                break;
+                NEXT;
             }
+#ifndef LBC_THREADED
             default: err = "bad register opcode"; goto fail;
         }
     }
+#endif
+#undef CASE
+#undef NEXT
 fail:
     vm->depth = depth;
     *errout = err != NULL ? err : "error";
