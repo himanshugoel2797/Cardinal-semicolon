@@ -153,7 +153,14 @@
          (pci-find-class-all #x04 #x03)))
       ;; Optional capture self-check: start capturing on hda0's first input
       ;; endpoint and confirm the DMA engine runs (see start-mictest).
-      (if (cmdline-has? "cardinal.mictest") (start-mictest)))
+      (if (cmdline-has? "cardinal.mictest") (start-mictest))
+      ;; Optional hotplug exercise: force a codec re-scan, driving the SAME
+      ;; reconciliation the state-change interrupt would (scan-all-codecs ->
+      ;; re-enumerate -> update the endpoint set). QEMU's hda bus can't actually
+      ;; hot-add a codec, so this injects the rescan to validate the path end to end.
+      (if (cmdline-has? "cardinal.hotplug")
+          (spawn-restricted '()
+            (lambda () (sleep 2500000000) (send audio-service (list 'rescan 'hda0))))))
     (start-power-service)
     ;; Storage registry (the AHCI block driver AND the USB mass-storage class
     ;; driver feed it); cardfs registers as an fs provider FIRST so it is offered

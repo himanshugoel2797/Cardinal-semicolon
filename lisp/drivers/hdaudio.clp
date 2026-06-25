@@ -219,11 +219,6 @@
             (bytes-u32-ref ring (+ rirb-off (* rslot 8))))  ; response u32
           #f))))                                            ; timeout -> #f
 
-;; GET_PARAMETER verb (payload 0xF00xx, where xx is the parameter id).
-(define (get-param regs ring rirb-off entcnt st addr node param)
-  (hda-verb! regs ring rirb-off entcnt st addr node
-             (bitwise-or #xF0000 param)))
-
 ;; HDA GET_PARAMETER parameter ids (subset, from inc/cmds.h)
 (define PARAM-VENDOR-DEVICE-ID #x00)
 (define PARAM-NODE-CNT         #x04)   ; subordinate node count: (start<<16)|count
@@ -272,53 +267,15 @@
 (define VERB-GET-CONFIG-DEFAULT   #xF1C)    ; 12-bit; -> the pin's 32-bit config default
 (define VERB-GET-PIN-SENSE        #xF09)    ; 12-bit; bit31 = presence detected
 
-;; --- codec enumeration -------------------------------------------------------
-;; For each codec bit set in STATESTS, read the root node (node 0) vendor/device id
-;; and its subordinate-node range. Logging the codec's vendor:device and child-node
-;; count is the useful, verifiable result of bring-up (mirrors the DEBUG_PRINTs in
-;; hdaudio_scanhandler for the root params). A full per-widget scan (the big
-;; sendverb loop in hdaudio_initialize) is a follow-up; see CAVEATS.
-(define (enumerate-codec regs ring rirb-off entcnt st addr)
-  (let ((vid (get-param regs ring rirb-off entcnt st addr 0 PARAM-VENDOR-DEVICE-ID))
-        (nc  (get-param regs ring rirb-off entcnt st addr 0 PARAM-NODE-CNT)))
-    (if (or (not vid) (not nc))
-        (begin (display "[hdaudio] codec ") (display addr)
-               (display ": verb timeout") (newline) #f)
-        (begin
-          (display "[hdaudio] codec ") (display addr)
-          (display ": vendor=") (display (arithmetic-shift vid -16))
-          (display " device=") (display (bitwise-and vid #xFFFF))
-          (display " child-nodes=") (display (bitwise-and nc #xFF))
-          (display " (start ") (display (bitwise-and (arithmetic-shift nc -16) #xFF))
-          (display ")") (newline)
-          vid))))
-
-;; Walk STATESTS bits 0..14, enumerating each present codec. Returns the count.
-(define (enumerate-codecs regs ring rirb-off entcnt st statests)
-  (let loop ((i 0) (found 0))
-    (if (= i 15)
-        found
-        (if (not (= 0 (bitwise-and statests (arithmetic-shift 1 i))))
-            (begin (enumerate-codec regs ring rirb-off entcnt st i)
-                   (loop (+ i 1) (+ found 1)))
-            (loop (+ i 1) found)))))
-
 ;; --- codec graph walk --------------------------------------------------------
 ;; The C driver enumerated every widget but never used the graph (the path loops
-;; are commented out). To drive speakers, headphones AND mics we now walk the whole
+;; are commented out). To drive speakers, headphones AND mics we walk the whole
 ;; audio function group: classify every pin complex by its CONFIGURATION DEFAULT
 ;; (which the BIOS/codec fills in with the jack's real device type) plus its in/out
 ;; caps, and resolve each usable pin to a converter (DAC for output, ADC for input)
 ;; by following connection lists through any mixers/selectors. The result is a list
 ;; of ENDPOINTS -- the speaker, the headphone jack, the mic, the line-in -- each of
-;; which the service can configure, route a stream to, and (PR2) set a volume on.
-
-;; The lowest set STATESTS bit identifies the codec address to drive.
-(define (first-codec-addr statests)
-  (let loop ((i 0))
-    (cond ((= i 15) 0)
-          ((not (= 0 (bitwise-and statests (arithmetic-shift 1 i)))) i)
-          (else (loop (+ i 1))))))
+;; which the service can configure, route a stream to, and set a volume on.
 
 ;; (start . count) of a node's subordinate widgets, or #f.
 (define (node-children cdc nid)
@@ -449,12 +406,18 @@
 ;; An endpoint is a mutable vector so later passes (PR2 volume, PR4 hotplug) can
 ;; update its volume/present fields in place. Built once per codec by
 ;; enumerate-endpoints. `conv` is the DAC (output) or ADC (input) the pin routes to.
-(define EP-LEN 8)
-(define (mk-endpoint id dir dev pin conv afg present)
+;; Field 8 is the endpoint's codec handle (the verb closure) -- each endpoint
+;; carries how to talk to ITS codec, so per-endpoint ops (volume, capture) need no
+;; ambient cdc, and a card spanning several codecs (or one hot-added later) just
+;; works. The cdc is a closure, so it is NOT part of ep-desc (which crosses context
+;; boundaries); only fixnums/symbols cross.
+(define EP-LEN 9)
+(define (mk-endpoint id dir dev pin conv afg present cdc)
   (let ((e (make-vector EP-LEN 0)))
     (vector-set! e 0 id)   (vector-set! e 1 dir)  (vector-set! e 2 dev)
     (vector-set! e 3 pin)  (vector-set! e 4 conv) (vector-set! e 5 afg)
     (vector-set! e 6 present) (vector-set! e 7 100)   ; default volume 100%
+    (vector-set! e 8 cdc)
     e))
 (define (ep-id e)      (vector-ref e 0))
 (define (ep-dir e)     (vector-ref e 1))   ; 'out | 'in
@@ -466,12 +429,15 @@
 (define (ep-present! e v) (vector-set! e 6 v))
 (define (ep-vol e)     (vector-ref e 7))
 (define (ep-vol! e v)  (vector-set! e 7 v))
+(define (ep-cdc e)     (vector-ref e 8))
 
 ;; Walk an AFG's pin complexes, classify each by config-default + caps, resolve its
 ;; converter, and build the endpoint list. A pin with no physical connection, or
 ;; that resolves to no converter, is skipped (unusable). A combo jack that is both
 ;; in- and out-capable yields one endpoint per direction.
-(define (enumerate-endpoints cdc)
+;; `start-id` is the first endpoint id to assign, so endpoints from several codecs
+;; on one card stay globally unique (each codec's scan continues the numbering).
+(define (enumerate-endpoints cdc start-id)
   (let ((afg (find-afg cdc)))
     (if (not afg)
         '()
@@ -479,7 +445,7 @@
           (if (not ch)
               '()
               (let ((w0 (car ch)) (cnt (cdr ch)))
-                (let loop ((w w0) (left cnt) (id 0) (acc '()))
+                (let loop ((w w0) (left cnt) (id start-id) (acc '()))
                   (if (= left 0)
                       (reverse acc)
                       (if (not (= (widget-type cdc w) WIDGET-PIN-COMPLEX))
@@ -498,11 +464,11 @@
                                        (oc (if out? (resolve-output-conv cdc w) #f))
                                        (ic (if in?  (resolve-input-conv cdc w0 cnt w) #f))
                                        (acc (if (and out? oc)
-                                                (cons (mk-endpoint id 'out dev w oc afg present) acc)
+                                                (cons (mk-endpoint id 'out dev w oc afg present cdc) acc)
                                                 acc))
                                        (id  (if (and out? oc) (+ id 1) id))
                                        (acc (if (and in? ic)
-                                                (cons (mk-endpoint id 'in dev w ic afg present) acc)
+                                                (cons (mk-endpoint id 'in dev w ic afg present cdc) acc)
                                                 acc))
                                        (id  (if (and in? ic) (+ id 1) id)))
                                   (loop (+ w 1) (- left 1) id acc)))))))))))))
@@ -545,8 +511,8 @@
 
 ;; The node whose amp carries this endpoint's volume: the pin if it has the right
 ;; amp, else the converter.
-(define (ep-amp-target cdc ep)
-  (if (widget-has-amp? cdc (ep-pin ep) (ep-dir ep)) (ep-pin ep) (ep-conv ep)))
+(define (ep-amp-target ep)
+  (if (widget-has-amp? (ep-cdc ep) (ep-pin ep) (ep-dir ep)) (ep-pin ep) (ep-conv ep)))
 
 ;; Issue SET_AMP_GAIN_MUTE for a direction.
 (define (apply-amp! cdc nid dir gain mute)
@@ -559,10 +525,11 @@
 
 ;; Set an endpoint's volume (0..100): map onto the target amp's step range and
 ;; program it (mute at 0), then remember it on the endpoint. Returns the clamped
-;; volume actually applied.
-(define (set-endpoint-volume! cdc ep vol)
-  (let* ((dir   (ep-dir ep))
-         (nid   (ep-amp-target cdc ep))
+;; volume actually applied. Uses the endpoint's own codec handle.
+(define (set-endpoint-volume! ep vol)
+  (let* ((cdc   (ep-cdc ep))
+         (dir   (ep-dir ep))
+         (nid   (ep-amp-target ep))
          (steps (amp-max-gain cdc nid (amp-cap-param dir)))
          (v     (clamp-vol vol))
          (gain  (quotient (* v steps) 100)))
@@ -572,9 +539,10 @@
 
 ;; Mute/unmute without losing the stored volume: re-issue the amp at the endpoint's
 ;; current volume gain, with the mute bit set/cleared.
-(define (set-endpoint-mute! cdc ep on?)
-  (let* ((dir   (ep-dir ep))
-         (nid   (ep-amp-target cdc ep))
+(define (set-endpoint-mute! ep on?)
+  (let* ((cdc   (ep-cdc ep))
+         (dir   (ep-dir ep))
+         (nid   (ep-amp-target ep))
          (steps (amp-max-gain cdc nid (amp-cap-param dir)))
          (gain  (quotient (* (ep-vol ep) steps) 100)))
     (apply-amp! cdc nid dir gain on?)))
@@ -589,8 +557,8 @@
 ;; to the DAC and enable its output (pin control + amp + EAPD). The output amps are
 ;; opened to the converter's advertised max so the stream is audible without
 ;; clipping; PR2 layers per-endpoint volume on top by re-issuing SET_AMP_GAIN_MUTE.
-(define (configure-output! cdc ep)
-  (let* ((afg (ep-afg ep)) (dac (ep-conv ep)) (pin (ep-pin ep))
+(define (configure-output! ep)
+  (let* ((cdc (ep-cdc ep)) (afg (ep-afg ep)) (dac (ep-conv ep)) (pin (ep-pin ep))
          (gain (amp-max-gain cdc dac PARAM-OUTPUT-AMP-CAPS)))
     ;; power up the whole path
     (cdc-verb cdc afg (v12 VERB-SET-POWER-STATE 0))
@@ -719,8 +687,8 @@
 ;; Configure an input endpoint's path: power ADC + pin, enable the pin's input
 ;; (PIN_CONTROL IN_EN bit5), route the ADC to the pin, set the ADC's capture
 ;; format + stream tag, and open the input amps to the converter's max.
-(define (configure-input! cdc ep stream-num)
-  (let* ((afg (ep-afg ep)) (adc (ep-conv ep)) (pin (ep-pin ep))
+(define (configure-input! ep stream-num)
+  (let* ((cdc (ep-cdc ep)) (afg (ep-afg ep)) (adc (ep-conv ep)) (pin (ep-pin ep))
          (gain (amp-max-gain cdc adc PARAM-INPUT-AMP-CAPS)))
     (cdc-verb cdc afg (v12 VERB-SET-POWER-STATE 0))
     (cdc-verb cdc adc (v12 VERB-SET-POWER-STATE 0))
@@ -739,8 +707,8 @@
 ;; Start capturing on an input endpoint: configure the path, allocate the cyclic
 ;; ring, run input stream 0. Returns (buf bdl nbytes) -- the caller MUST retain it
 ;; (the controller DMAs into buf forever).
-(define (capture-start! regs cdc ep)
-  (configure-input! cdc ep CAPTURE-STREAM)
+(define (capture-start! regs ep)
+  (configure-input! ep CAPTURE-STREAM)
   (let* ((nbytes (* CAP-FRAMES 4))
          (buf (dma-alloc-32 nbytes))
          (bdl (dma-alloc-32 256)))
@@ -775,60 +743,126 @@
       (find-ep-dev eps 'out 'headphone)
       (first-of-dir eps 'out)))
 
+(define (log-endpoints eps)
+  (for-each
+   (lambda (e)
+     (display "[hdaudio]   endpoint ") (display (ep-id e))
+     (display " ") (display (ep-dir e)) (display " ") (display (ep-dev e))
+     (display " pin=") (display (ep-pin e)) (display " conv=") (display (ep-conv e))
+     (display (if (ep-present e) " present" " absent")) (newline))
+   eps))
+
+;; --- codec scan / hotplug reconciliation -------------------------------------
+;; Probe EVERY codec address (0..14) for a present codec and build the card's full
+;; endpoint list: a codec answers a vendor-id verb iff present, so for each present
+;; codec we enumerate its endpoints (ids continue across codecs, so they stay
+;; globally unique) and configure its output endpoints. This is the single
+;; reconciliation point -- run once at bring-up and again on every controller
+;; state-change interrupt (codec hot-add/remove). It is idempotent: re-running it
+;; after a codec appears/leaves yields the new endpoint set, and re-configuring an
+;; already-configured output just re-sends the same verbs.
+(define (scan-all-codecs regs ring rirb-off slot-cnt st)
+  (let loop ((addr 0) (id 0) (acc '()))
+    (if (= addr 15)
+        acc
+        (let* ((cdc (make-cdc regs ring rirb-off slot-cnt st addr))
+               (vid (cdc-param cdc 0 PARAM-VENDOR-DEVICE-ID)))
+          (if (or (not vid) (= vid 0))
+              (loop (+ addr 1) id acc)                ; no codec at this address
+              (let ((ceps (enumerate-endpoints cdc id)))
+                (for-each (lambda (e) (if (eq? (ep-dir e) 'out) (configure-output! e))) ceps)
+                (loop (+ addr 1) (+ id (length ceps)) (append acc ceps))))))))
+
+;; The controller's state-change watcher: parks on the controller MSI and, whenever
+;; STATESTS shows a codec SDIN changed (a codec was hot-added or removed), clears
+;; the change (W1C) and tells the driver loop to re-enumerate. It only touches
+;; STATESTS, never the RIRB/verb registers the driver loop polls, so the two
+;; contexts don't race. Most MSIs are ordinary RIRB-response interrupts; for those
+;; STATESTS reads 0 and the watcher does nothing.
+;;
+;; It checks STATESTS at the TOP of each iteration -- including once before the
+;; first park -- so a codec that hot-added during bring-up (after the boot W1C but
+;; before the watcher started) is caught immediately rather than waiting for an
+;; unrelated MSI. STATESTS is sticky, so the pending bit is still there to find.
+;;
+;; This is the SOLE msi-wait caller on the HDA MSI handle: the wake bridge has one
+;; parked-waiter slot per MSI, so a second msi-wait caller would silently steal it.
+;; hda-verb! deliberately POLLS the RIRB (via wait-until) instead of waiting on the
+;; MSI, specifically to keep this watcher the only waiter.
+(define (start-codec-watcher regs msi drvloop)
+  (spawn-restricted '()
+    (lambda ()
+      (let loop ((seen (msi-count msi)))
+        (let ((sts (r16 regs STATESTS)))
+          (if (not (= sts 0))
+              (begin (w16! regs STATESTS sts)              ; W1C the state-change bits
+                     (send drvloop (list 'codec-change)))))
+        (msi-wait msi seen)
+        (loop (msi-count msi))))))
+
 ;; --- the long-lived driver context -------------------------------------------
 ;; After bring-up the spawned context becomes the audio card's service loop. It
-;; closes over the codec handle + the endpoint list and threads two pieces of
-;; retained state: `cur` = the playing output buffers (so the output stream's DMA
-;; source stays live) and `cap` = the capture state (buf bdl nbytes) or #f (so the
-;; input stream's DMA target stays live). It answers coreaudio: (tone)/(play ...)
-;; output; (set-volume)/(get-volume)/(mute) per endpoint; (capture-start ep-id)/
+;; threads three pieces of state: `eps` = the live endpoint list (each endpoint
+;; carries its own codec handle, so this can span codecs and change on hotplug),
+;; `cur` = the playing output buffers (so the output stream's DMA source stays
+;; live), and `cap` = the capture state (buf bdl nbytes) or #f. `rescan` is a thunk
+;; that re-probes every codec and returns a fresh endpoint list -- the codec-hotplug
+;; reconciliation. It answers coreaudio: (tone)/(play ...) output;
+;; (set-volume)/(get-volume)/(mute) per endpoint; (capture-start ep-id)/
 ;; (capture-read reply)/(capture-pos reply)/(capture-stop) input; (endpoints reply)
-;; and (get-status reply) introspection.
-(define (hda-driver-loop regs cdc eps refs)
-  (let loop ((cur refs) (cap #f))
+;; and (get-status reply) introspection; (codec-change) re-enumerates after a
+;; controller state-change interrupt.
+(define (hda-driver-loop regs rescan eps0 refs)
+  (let loop ((eps eps0) (cur refs) (cap #f))
     (let ((m (recv)))
       (cond
         ((eq? (car m) 'tone)
-         (loop (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES) cap))
+         (loop eps (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES) cap))
         ((eq? (car m) 'play)            ; (play freq amp frames)
          ;; Validate before synthesis: freq 0 divides by zero in fill-tone!, amp
          ;; outside [1,32767] overflows the signed-16 sample, frames 0 writes
          ;; CBL=0 (an undefined running stream). A bad request is dropped, not fatal.
          (let ((freq (nth m 1)) (amp (nth m 2)) (frames (nth m 3)))
            (if (and (> freq 0) (> amp 0) (< amp 32768) (> frames 0))
-               (loop (play-tone! regs freq amp frames) cap)
+               (loop eps (play-tone! regs freq amp frames) cap)
                (begin (display "[hdaudio] play: bad params, ignored") (newline)
-                      (loop cur cap)))))
+                      (loop eps cur cap)))))
         ((eq? (car m) 'endpoints)       ; (endpoints reply)
-         (send (nth m 1) (endpoint-descs eps)) (loop cur cap))
+         (send (nth m 1) (endpoint-descs eps)) (loop eps cur cap))
         ((eq? (car m) 'set-volume)      ; (set-volume ep-id vol)
          (let ((ep (ep-by-id eps (nth m 1))))
-           (if ep (set-endpoint-volume! cdc ep (nth m 2))
+           (if ep (set-endpoint-volume! ep (nth m 2))
                (begin (display "[hdaudio] set-volume: no endpoint ") (display (nth m 1)) (newline))))
-         (loop cur cap))
+         (loop eps cur cap))
         ((eq? (car m) 'get-volume)      ; (get-volume ep-id reply)
          (let ((ep (ep-by-id eps (nth m 1))))
-           (send (nth m 2) (if ep (ep-vol ep) #f))) (loop cur cap))
+           (send (nth m 2) (if ep (ep-vol ep) #f))) (loop eps cur cap))
         ((eq? (car m) 'mute)            ; (mute ep-id on?)
          (let ((ep (ep-by-id eps (nth m 1))))
-           (if ep (set-endpoint-mute! cdc ep (nth m 2)))) (loop cur cap))
+           (if ep (set-endpoint-mute! ep (nth m 2)))) (loop eps cur cap))
         ((eq? (car m) 'capture-start)   ; (capture-start ep-id)
          (let ((ep (ep-by-id eps (nth m 1))))
            (if (and ep (eq? (ep-dir ep) 'in))
-               (loop cur (capture-start! regs cdc ep))
+               (loop eps cur (capture-start! regs ep))
                (begin (display "[hdaudio] capture-start: no input endpoint ")
-                      (display (nth m 1)) (newline) (loop cur cap)))))
+                      (display (nth m 1)) (newline) (loop eps cur cap)))))
         ((eq? (car m) 'capture-read)    ; (capture-read reply) -> a copy of the ring, or #f
          (send (nth m 1) (if cap (copy-bytes (car cap) 0 (caddr cap)) #f))
-         (loop cur cap))
+         (loop eps cur cap))
         ((eq? (car m) 'capture-pos)     ; (capture-pos reply) -> DMA position, or #f
-         (send (nth m 1) (if cap (capture-pos regs) #f)) (loop cur cap))
+         (send (nth m 1) (if cap (capture-pos regs) #f)) (loop eps cur cap))
         ((eq? (car m) 'capture-stop)    ; (capture-stop)
          (if cap (stream-stop! regs (in-sd-base regs)))
-         (loop cur #f))
+         (loop eps cur #f))
+        ((eq? (car m) 'codec-change)    ; controller state-change: re-enumerate codecs
+         ;; A rescan invalidates the old endpoint set, so stop any active capture
+         ;; (its input endpoint may be gone) -- the client must capture-start afresh
+         ;; against the new endpoints.
+         (if cap (stream-stop! regs (in-sd-base regs)))
+         (loop (rescan) cur #f))
         ((eq? (car m) 'get-status)
-         (send (nth m 1) 'playing) (loop cur cap))
-        (else (loop cur cap))))))
+         (send (nth m 1) 'playing) (loop eps cur cap))
+        (else (loop eps cur cap))))))
 
 ;; --- bring-up body (runs in the spawned, yielding context) -------------------
 ;; Mirrors module_init + hdaudio_initialize, scoped to controller + codec
@@ -841,7 +875,7 @@
       (begin (display "[hdaudio] controller reset timeout") (newline) 'fail)
       (begin
         ;; codecs report presence on STATESTS shortly after CRST deassert; give
-        ;; them a beat to settle, then snapshot. (~1ms covers the 521us spec wait.)
+        ;; them a beat to settle. (~1ms covers the 521us spec wait.)
         (sleep 1000000)
         (let* ((statests (r16 regs STATESTS))
                (corb-ent (ring-entcnt (szcap-of regs CORBSIZE)))
@@ -849,77 +883,55 @@
           (display "[hdaudio] reset OK statests=") (display statests)
           (display " corb-ent=") (display corb-ent)
           (display " rirb-ent=") (display rirb-ent) (newline)
-          ;; enable codec wake/state-change reporting (mirrors wakeen=0xFFFF)
+          ;; enable codec wake/state-change reporting (wakeen=0xFFFF) so a codec
+          ;; hot-add/remove raises the controller state-change interrupt.
           (w16! regs WAKEEN #xFFFF)
-          (if (= statests 0)
-              (begin (display "[hdaudio] no codecs present on STATESTS") (newline)
-                     ;; still register the (empty) card so the endpoint exists, and
-                     ;; park on recv (the card ctx with no playable path).
-                     (send audio (list 'register name (self) '()))
-                     (let loop () (recv) (loop)))
-              ;; Allocate CORB+RIRB in ONE 32-bit DMA buffer: CORB (corb-ent u32s)
-              ;; at offset 0, RIRB (rirb-ent 8-byte entries) at offset corb-bytes.
-              ;; We index both regions of the single buffer with explicit offsets, so
-              ;; NO sub-buffer/offset-view primitive is needed. dma-alloc-32 keeps the
-              ;; phys addr < 4GB so the 32-bit lower-base alone suffices (upper = 0).
-              (let* ((corb-bytes (* corb-ent 4))
-                     (rirb-bytes (* rirb-ent 8))
-                     (rirb-off   corb-bytes)
-                     (ring (dma-alloc-32 (+ corb-bytes rirb-bytes)))
-                     (ring-phys (bytes-phys ring))
-                     ;; hda-verb! uses one slot index into both rings (CORB slot*4,
-                     ;; RIRB slot*8), so it must wrap at the SMALLER ring's count.
-                     ;; (On QEMU both are 256, so this is just defensive.)
-                     (slot-cnt (if (< corb-ent rirb-ent) corb-ent rirb-ent))
-                     (st (make-cell 0)))   ; next CORB slot index (cell, mutable)
-                (corb-setup! regs ring-phys corb-ent)               ; CORB at ring base
-                (rirb-setup! regs (+ ring-phys rirb-off) rirb-ent)  ; RIRB after it
-                (let ((n (enumerate-codecs regs ring rirb-off slot-cnt st statests)))
-                  (display "[hdaudio] enumerated ") (display n)
-                  (display " codec(s)") (newline)
-                  ;; MSI last (after the rings exist). We poll RIRB for responses
-                  ;; rather than handle the IRQ, but still set up MSI so the
-                  ;; controller's interrupt is owned and a future stream/handler
-                  ;; context can wake on it.
-                  (let ((msi (pci-setup-msi ecam)))
-                    (display "[hdaudio] msi=") (display msi) (newline)
-                    ;; Enumerate ALL endpoints on the first present codec -- every
-                    ;; speaker / headphone / line-out and every mic / line-in -- not
-                    ;; just one output path. Configure each output endpoint (power +
-                    ;; route + unmute), report the set to coreaudio, and play the
-                    ;; bring-up tone on the primary output: the live proof a guest
-                    ;; stream reaches the codec (the C driver stopped at enumeration).
-                    (let* ((addr (first-codec-addr statests))
-                           (cdc  (make-cdc regs ring rirb-off slot-cnt st addr))
-                           (eps  (enumerate-endpoints cdc))
-                           (prim (primary-output eps)))
-                      (for-each
-                       (lambda (e)
-                         (display "[hdaudio]   endpoint ") (display (ep-id e))
-                         (display " ") (display (ep-dir e)) (display " ") (display (ep-dev e))
-                         (display " pin=") (display (ep-pin e))
-                         (display " conv=") (display (ep-conv e))
-                         (display (if (ep-present e) " present" " absent")) (newline))
-                       eps)
-                      ;; Configure every output endpoint so a later (play) can drive
-                      ;; any of them; input endpoints are configured on demand by
-                      ;; configure-input! when a (capture-start) arrives.
-                      (for-each (lambda (e) (if (eq? (ep-dir e) 'out) (configure-output! cdc e)))
-                                eps)
-                      (send audio (list 'register name (self) (endpoint-descs eps)))
-                      (display "[hdaudio] registered ") (display name)
-                      (display " with coreaudio (") (display (length eps))
-                      (display " endpoints)") (newline)
-                      (if (not prim)
-                          (begin
-                            (display "[hdaudio] no output endpoint on codec ") (display addr)
-                            (display "; card idle") (newline)
-                            (hda-driver-loop regs cdc eps '()))
-                          ;; play the startup tone on the primary output, then serve
-                          ;; the card forever (retaining the playing DMA buffers).
-                          (hda-driver-loop
-                           regs cdc eps
-                           (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES))))))))))))
+          ;; Always stand up the CORB/RIRB rings + MSI, EVEN with no codec present
+          ;; at boot, so a codec hot-added later can be enumerated. CORB+RIRB live in
+          ;; ONE 32-bit DMA buffer: CORB (corb-ent u32s) at offset 0, RIRB (rirb-ent
+          ;; 8-byte entries) after it; dma-alloc-32 keeps the phys addr < 4GB so the
+          ;; 32-bit lower-base alone suffices (upper = 0).
+          (let* ((corb-bytes (* corb-ent 4))
+                 (rirb-bytes (* rirb-ent 8))
+                 (rirb-off   corb-bytes)
+                 (ring (dma-alloc-32 (+ corb-bytes rirb-bytes)))
+                 (ring-phys (bytes-phys ring))
+                 ;; hda-verb! uses one slot index into both rings (CORB slot*4, RIRB
+                 ;; slot*8), so it must wrap at the SMALLER ring's count. (QEMU: both 256.)
+                 (slot-cnt (if (< corb-ent rirb-ent) corb-ent rirb-ent))
+                 (st (make-cell 0)))   ; next CORB slot index (cell, mutable)
+            (corb-setup! regs ring-phys corb-ent)               ; CORB at ring base
+            (rirb-setup! regs (+ ring-phys rirb-off) rirb-ent)  ; RIRB after it
+            ;; Clear the boot state-change bits NOW, BEFORE the scan: scan-all-codecs
+            ;; finds present codecs by probing (a vendor-id verb), not via STATESTS,
+            ;; so clearing here loses nothing -- and any codec that hot-adds DURING
+            ;; the scan sets a fresh STATESTS bit that survives (it is sticky) until
+            ;; the watcher reconciles it, so the boot window is not a blind spot.
+            (w16! regs STATESTS (r16 regs STATESTS))
+            (let ((msi (pci-setup-msi ecam)))
+              (display "[hdaudio] msi=") (display msi) (newline)
+              ;; Scan every codec, enumerate + configure all endpoints, register the
+              ;; set with coreaudio. (rescan re-runs this on a codec-change.) Arm the
+              ;; state-change watcher and play the bring-up tone if there is an
+              ;; output -- then serve the card forever.
+              (let* ((rescan (lambda ()
+                               (let ((neps (scan-all-codecs regs ring rirb-off slot-cnt st)))
+                                 (display "[hdaudio] codec-change -> ") (display (length neps))
+                                 (display " endpoint(s)") (newline)
+                                 (log-endpoints neps)
+                                 neps)))
+                     (eps (scan-all-codecs regs ring rirb-off slot-cnt st)))
+                (log-endpoints eps)
+                (send audio (list 'register name (self) (endpoint-descs eps)))
+                (display "[hdaudio] registered ") (display name)
+                (display " with coreaudio (") (display (length eps))
+                (display " endpoints)") (newline)
+                (start-codec-watcher regs msi (self))
+                (hda-driver-loop
+                 regs rescan eps
+                 (if (primary-output eps)
+                     (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES)
+                     '())))))))))
 
 ;; --- entry point -------------------------------------------------------------
 ;; hdaudio-init brings up ONE HD Audio controller: `audio` is the coreaudio service
