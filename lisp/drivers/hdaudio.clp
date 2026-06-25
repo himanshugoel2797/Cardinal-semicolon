@@ -35,7 +35,8 @@
   ;; endpoint set without real hardware -- the same testable-internals posture as
   ;; the rtl8169 driver's exported descriptor helpers.
   (export hdaudio-init enumerate-endpoints endpoint-descs primary-output ep-desc
-          set-endpoint-volume! set-endpoint-mute! ep-vol configure-input!)
+          set-endpoint-volume! set-endpoint-mute! ep-vol configure-input!
+          poll-jacks! read-present)
   (import sys-mmio sys-pci driver-util)
 
 ;; --- the controllers we bind (matched by PCI class, not VID/DID) -------------
@@ -394,6 +395,17 @@
 (define (cfg-connectivity cfg) (bitwise-and (arithmetic-shift cfg -30) #x3))
 (define CONN-NONE 1)   ; port connectivity 1 = no physical connection (dead pin)
 
+;; Is something plugged into this pin? GET_PIN_SENSE bit31 = presence detected. A
+;; verb timeout (or a pin without sense) is treated as present (#t) so a flaky read
+;; never spuriously marks a working jack absent. Read at enumeration AND by the
+;; jack-detect poller to notice plug/unplug. NOTE: a jack that uses impedance/
+;; resistance sensing needs an EXECUTE_PIN_SENSE (0xF08) trigger before the value is
+;; fresh; we issue only GET_PIN_SENSE (correct for QEMU + voltage-presence jacks,
+;; which is the common case). Add the trigger if a resistance-sense codec turns up.
+(define (read-present cdc pin)
+  (let ((s (cdc-verb cdc pin (v12 VERB-GET-PIN-SENSE 0))))
+    (if s (not (= 0 (bitwise-and s #x80000000))) #t)))
+
 ;; Default-device code -> a friendly endpoint symbol.
 (define (dev-name code)
   (cond ((= code #x0) 'line-out)  ((= code #x1) 'speaker)   ((= code #x2) 'headphone)
@@ -457,8 +469,7 @@
                             (if (or (not pc) dead)
                                 (loop (+ w 1) (- left 1) id acc)
                                 ;; only a usable pin gets the extra pin-sense verb
-                                (let* ((sense (cdc-verb cdc w (v12 VERB-GET-PIN-SENSE 0)))
-                                       (present (if sense (not (= 0 (bitwise-and sense #x80000000))) #t))
+                                (let* ((present (read-present cdc w))
                                        (out? (not (= 0 (bitwise-and pc PIN-CAP-OUTPUT))))
                                        (in?  (not (= 0 (bitwise-and pc PIN-CAP-INPUT))))
                                        (oc (if out? (resolve-output-conv cdc w) #f))
@@ -752,6 +763,43 @@
      (display (if (ep-present e) " present" " absent")) (newline))
    eps))
 
+;; --- jack-presence detection (plug / unplug) ---------------------------------
+;; Re-read every endpoint's pin sense and, for any whose presence changed since it
+;; was last seen, update it in place and report (id dev present). A periodic poller
+;; calls this so inserting/removing a plug is noticed (~1 s latency). We POLL rather
+;; than enable codec UNSOLICITED responses: an unsolicited response would interleave
+;; in the RIRB and break hda-verb!'s solicited-response poller, and QEMU's codec
+;; emits no jack event for either mechanism -- so polling is the lower-risk path that
+;; exercises its read side live. Returns the list of changes (for tests / callers).
+(define (poll-jacks! eps)
+  (let loop ((es eps) (changes '()))
+    (if (null? es)
+        (reverse changes)
+        (let* ((e (car es))
+               (np (read-present (ep-cdc e) (ep-pin e))))
+          (if (eq? np (ep-present e))
+              (loop (cdr es) changes)
+              (begin
+                (ep-present! e np)
+                (display "[hdaudio] jack ") (display (ep-dev e))
+                (display (if np " inserted" " removed"))
+                (display " (ep ") (display (ep-id e)) (display ")") (newline)
+                (loop (cdr es) (cons (list (ep-id e) (ep-dev e) np) changes))))))))
+
+(define JACK-POLL-NS 1000000000)   ; poll pin sense once a second
+
+;; Spawn the jack-detect poller: every JACK-POLL-NS it pokes the driver loop with
+;; (jack-poll), which re-reads pin sense (the verbs must run in the loop's context,
+;; which owns the codec). It only sends a message -- no MMIO -- so it never races
+;; the driver loop.
+(define (start-jack-poller drvloop)
+  (spawn-restricted '()
+    (lambda ()
+      (let loop ()
+        (sleep JACK-POLL-NS)
+        (send drvloop (list 'jack-poll))
+        (loop)))))
+
 ;; --- codec scan / hotplug reconciliation -------------------------------------
 ;; Probe EVERY codec address (0..14) for a present codec and build the card's full
 ;; endpoint list: a codec answers a vendor-id verb iff present, so for each present
@@ -860,6 +908,8 @@
          ;; against the new endpoints.
          (if cap (stream-stop! regs (in-sd-base regs)))
          (loop (rescan) cur #f))
+        ((eq? (car m) 'jack-poll)       ; periodic: notice plug/unplug on jacks
+         (poll-jacks! eps) (loop eps cur cap))
         ((eq? (car m) 'get-status)
          (send (nth m 1) 'playing) (loop eps cur cap))
         (else (loop eps cur cap))))))
@@ -927,6 +977,7 @@
                 (display " with coreaudio (") (display (length eps))
                 (display " endpoints)") (newline)
                 (start-codec-watcher regs msi (self))
+                (start-jack-poller (self))          ; jack plug/unplug detection
                 (hda-driver-loop
                  regs rescan eps
                  (if (primary-output eps)

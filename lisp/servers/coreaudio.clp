@@ -24,6 +24,7 @@
 ;;   (capture-read <name> <reply>)         reply a bytes copy of the capture ring, or #f
 ;;   (capture-pos <name> <reply>)          reply the capture DMA position, or #f
 ;;   (rescan <name>)                       force a codec re-scan (hotplug reconcile)
+;;   (poll-jacks <name>)                   force a jack-presence re-poll
 ;; Unknown messages are ignored (a wedged client can't crash the service).
 ;;
 ;; An endpoint descriptor names one jack/converter on a card -- a speaker, a
@@ -95,4 +96,6 @@
                  (send (nth m 2) #f))) cards)
           ((eq? (car m) 'rescan)               ; (rescan name) -- force a codec re-scan
            (to-card (nth m 1) cards (list 'codec-change)) cards)
+          ((eq? (car m) 'poll-jacks)           ; (poll-jacks name) -- force a jack re-poll
+           (to-card (nth m 1) cards (list 'jack-poll)) cards)
           (else cards))))))

@@ -48,11 +48,19 @@ hda bus can't actually hot-add a codec, so `(rescan name)` / `cardinal.hotplug`
 inject the same reconciliation to validate the path; the watcher itself is the
 proven `msi-wait` pattern.)
 
+**Jack-presence (plug-detect)**: a 1 s poller re-reads each pin's GET_PIN_SENSE
+(`poll-jacks!`); when a jack's presence changes it updates the endpoint and logs
+`jack <dev> inserted/removed`. This POLLS rather than enabling codec unsolicited
+responses — those would interleave in the RIRB and break the solicited-response
+verb poller, and QEMU emits no jack event for either mechanism, so polling is the
+lower-risk path that exercises its read side live. `(poll-jacks name)` /
+`cardinal.jacktest` force a poll.
+
 Done: multi-controller bring-up, the full endpoint model (speakers/headphones/
 line-out + mics/line-in), output playback, per-endpoint volume/mute, capture
-(mic/line-in), and codec hotplug. Unit-tested with a mock codec — SysTest
-`check_hdaudio` / `check_hdaudio_volume` / `check_hdaudio_capture` /
-`check_hdaudio_multicodec`; capture DMA validated live (`cardinal.mictest`) and the
-hotplug reconciliation live (`cardinal.hotplug`).
-TODO: jack-presence (plug-detect) via unsolicited responses — needs the RIRB verb
-path to demux solicited vs unsolicited entries, and isn't reproducible in QEMU.
+(mic/line-in), codec hotplug, and jack-presence detection — the HD Audio stack is
+complete. Unit-tested with a mock codec — SysTest `check_hdaudio` /
+`check_hdaudio_volume` / `check_hdaudio_capture` / `check_hdaudio_multicodec` /
+`check_hdaudio_jack` (41/0); capture DMA validated live (`cardinal.mictest`), the
+hotplug reconciliation live (`cardinal.hotplug`), and the jack-poll read-path live
+(`cardinal.jacktest`).
