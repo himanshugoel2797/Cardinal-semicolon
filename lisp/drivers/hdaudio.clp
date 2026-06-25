@@ -29,7 +29,12 @@
 ;; driver-util
 ;; helpers. It exports just the entry point hdaudio-init.
 (define-module hdaudio
-  (export hdaudio-init)
+  ;; hdaudio-init is the entry point; the rest are pure graph/classification
+  ;; helpers exported so the in-OS SysTest can drive enumerate-endpoints with a
+  ;; MOCK codec (a (node payload)->response lambda) and check the classified
+  ;; endpoint set without real hardware -- the same testable-internals posture as
+  ;; the rtl8169 driver's exported descriptor helpers.
+  (export hdaudio-init enumerate-endpoints endpoint-descs primary-output ep-desc)
   (import sys-mmio sys-pci driver-util)
 
 ;; --- the controllers we bind (matched by PCI class, not VID/DID) -------------
@@ -226,21 +231,27 @@
 (define PARAM-PIN-CAPS         #x0C)   ; bit4 = output-capable, bit5 = input-capable
 (define PARAM-CONN-LIST-LEN    #x0E)   ; bits0-6 = length, bit7 = long-form
 (define PARAM-OUTPUT-AMP-CAPS  #x12)   ; bits8-14 = num-steps (max gain)
+(define PARAM-INPUT-AMP-CAPS   #x0D)   ; like output-amp-caps, for input amps
 
 ;; widget types (audio-widget-caps bits20-23)
 (define WIDGET-AUDIO-OUTPUT 0)   ; a DAC (converter: stream -> analog)
+(define WIDGET-AUDIO-INPUT  1)   ; an ADC (converter: analog -> stream)
+(define WIDGET-MIXER        2)   ; an amplifier/mixer (sums its connection list)
+(define WIDGET-SELECTOR     3)   ; a selector/mux (picks one connection-list entry)
 (define WIDGET-PIN-COMPLEX  4)   ; a jack/pin
-(define PIN-CAP-OUTPUT      #x10) ; pin-caps bit4
+(define PIN-CAP-OUTPUT      #x10) ; pin-caps bit4: pin can drive an output
+(define PIN-CAP-INPUT       #x20) ; pin-caps bit5: pin can sense an input
 
 ;; --- codec handle + verb builders -------------------------------------------
-;; A "codec handle" bundles everything hda-verb! needs except the target node and
-;; the verb payload, so the path-discovery / configuration code can talk to a
-;; codec without threading six arguments through every call.
+;; A "codec handle" is just a FUNCTION (node payload) -> response: it closes over
+;; everything hda-verb! needs except the target node and the verb payload, so the
+;; graph-discovery / configuration code can talk to a codec without threading six
+;; arguments through every call. Making it a closure (rather than a list of the six
+;; values) also decouples the graph walk from the MMIO transport: a test can drive
+;; enumerate-endpoints with a mock responder lambda instead of real hardware.
 (define (make-cdc regs ring rirb-off slot-cnt st addr)
-  (list regs ring rirb-off slot-cnt st addr))
-(define (cdc-verb cdc node payload)
-  (hda-verb! (nth cdc 0) (nth cdc 1) (nth cdc 2) (nth cdc 3) (nth cdc 4) (nth cdc 5)
-             node payload))
+  (lambda (node payload) (hda-verb! regs ring rirb-off slot-cnt st addr node payload)))
+(define (cdc-verb cdc node payload) (cdc node payload))
 (define (cdc-param cdc node param) (cdc-verb cdc node (bitwise-or #xF0000 param)))
 
 ;; The two verb encodings (HDA spec 7.3.1): a 12-bit verb id + 8-bit data, or a
@@ -257,6 +268,8 @@
 (define VERB-SET-PIN-CONTROL      #x707)    ; 12-bit + pin-control bits
 (define VERB-SET-EAPD-BTL         #x70C)    ; 12-bit + EAPD/BTL bits
 (define VERB-GET-CONN-LIST-ENTRY  #xF02)    ; 12-bit + entry offset
+(define VERB-GET-CONFIG-DEFAULT   #xF1C)    ; 12-bit; -> the pin's 32-bit config default
+(define VERB-GET-PIN-SENSE        #xF09)    ; 12-bit; bit31 = presence detected
 
 ;; --- codec enumeration -------------------------------------------------------
 ;; For each codec bit set in STATESTS, read the root node (node 0) vendor/device id
@@ -289,12 +302,15 @@
                    (loop (+ i 1) (+ found 1)))
             (loop (+ i 1) found)))))
 
-;; --- output-path discovery ---------------------------------------------------
+;; --- codec graph walk --------------------------------------------------------
 ;; The C driver enumerated every widget but never used the graph (the path loops
-;; are commented out). To actually play, we walk the codec graph far enough to
-;; find ONE output path: an audio-output converter (DAC) plus an output-capable
-;; pin in the same audio function group. That is all a single playback stream
-;; needs; richer routing (mixers/selectors, multiple jacks) is a follow-up.
+;; are commented out). To drive speakers, headphones AND mics we now walk the whole
+;; audio function group: classify every pin complex by its CONFIGURATION DEFAULT
+;; (which the BIOS/codec fills in with the jack's real device type) plus its in/out
+;; caps, and resolve each usable pin to a converter (DAC for output, ADC for input)
+;; by following connection lists through any mixers/selectors. The result is a list
+;; of ENDPOINTS -- the speaker, the headphone jack, the mic, the line-in -- each of
+;; which the service can configure, route a stream to, and (PR2) set a volume on.
 
 ;; The lowest set STATESTS bit identifies the codec address to drive.
 (define (first-codec-addr statests)
@@ -303,71 +319,192 @@
           ((not (= 0 (bitwise-and statests (arithmetic-shift 1 i)))) i)
           (else (loop (+ i 1))))))
 
-;; Within an audio function group, find the first DAC and the first output-capable
-;; pin. Returns (list dac pin) or #f if either is absent.
-(define (find-dac-pin cdc afg)
-  (let ((nc (cdc-param cdc afg PARAM-NODE-CNT)))
-    (if (not nc)
-        #f
-        (let ((w0 (bitwise-and (arithmetic-shift nc -16) #xFF))
-              (cnt (bitwise-and nc #xFF)))
-          (let loop ((w w0) (left cnt) (dac #f) (pin #f))
-            (if (or (= left 0) (and dac pin))
-                (if (and dac pin) (list dac pin) #f)
-                (let* ((caps (cdc-param cdc w PARAM-AUDIO-WIDGET-CAPS))
-                       (type (if caps (bitwise-and (arithmetic-shift caps -20) #xF) -1)))
-                  (cond
-                    ((and (not dac) (= type WIDGET-AUDIO-OUTPUT))
-                     (loop (+ w 1) (- left 1) w pin))
-                    ((and (not pin) (= type WIDGET-PIN-COMPLEX)
-                          (let ((pc (cdc-param cdc w PARAM-PIN-CAPS)))
-                            (and pc (not (= 0 (bitwise-and pc PIN-CAP-OUTPUT))))))
-                     (loop (+ w 1) (- left 1) dac w))
-                    (else (loop (+ w 1) (- left 1) dac pin))))))))))
+;; (start . count) of a node's subordinate widgets, or #f.
+(define (node-children cdc nid)
+  (let ((nc (cdc-param cdc nid PARAM-NODE-CNT)))
+    (if nc (cons (bitwise-and (arithmetic-shift nc -16) #xFF) (bitwise-and nc #xFF)) #f)))
 
-;; Find an output path under the codec root: scan its function groups for an audio
-;; FG, then find a DAC + output pin inside it. Returns (list afg dac pin) or #f.
-(define (find-output-path cdc)
-  (let ((nc (cdc-param cdc 0 PARAM-NODE-CNT)))
-    (if (not nc)
-        #f
-        (let ((fg0 (bitwise-and (arithmetic-shift nc -16) #xFF))
-              (cnt (bitwise-and nc #xFF)))
-          (let loop ((fg fg0) (left cnt))
-            (if (= left 0)
-                #f
-                (let ((gt (cdc-param cdc fg PARAM-FUNC-GRP-TYPE)))
-                  (if (and gt (= (bitwise-and gt #x7F) 1))   ; audio function group
-                      (let ((dp (find-dac-pin cdc fg)))
-                        (if dp (list fg (car dp) (cadr dp))
-                            (loop (+ fg 1) (- left 1))))
-                      (loop (+ fg 1) (- left 1))))))))))
+;; A widget's type (audio-widget-caps bits20-23), or -1 if the verb times out.
+(define (widget-type cdc nid)
+  (let ((caps (cdc-param cdc nid PARAM-AUDIO-WIDGET-CAPS)))
+    (if caps (bitwise-and (arithmetic-shift caps -20) #xF) -1)))
 
-;; Return the index of `target` in `node`'s (short-form) connection list, or #f if
-;; not found (distinct from a valid index 0 -- the caller skips SET_CONN_SELECT
-;; when the DAC is not directly listed rather than mis-routing to entry 0). Each
+;; A widget's (short-form) connection list as a list of node ids. Each
 ;; GET_CONNECTION_LIST response packs four 8-bit entries; a verb timeout (#f resp)
-;; skips that batch instead of crashing on a non-numeric shift. Long-form lists
-;; (conn-list-len bit7, 16-bit entries) appear only on codecs with >127 widgets,
-;; which neither QEMU nor common hardware has; flag rather than mis-parse them.
-(define (conn-index cdc node target)
+;; skips that batch. Long-form lists (conn-list-len bit7, 16-bit entries) appear
+;; only on codecs with >127 widgets, which neither QEMU nor common hardware has;
+;; flag rather than mis-parse them.
+(define (conn-entries cdc node)
   (let* ((cl  (cdc-param cdc node PARAM-CONN-LIST-LEN))
          (len (if cl (bitwise-and cl #x7F) 0)))
     (if (and cl (not (= 0 (bitwise-and cl #x80))))
+        ;; long-form (16-bit entries): bail rather than misparse them as 8-bit --
+        ;; falling through would yield garbage NIDs and silently break the walk.
         (begin (display "[hdaudio] warning: long-form connection list unsupported")
-               (newline)))
-    (let loop ((i 0))
-      (if (>= i len)
-          #f
-          (let ((resp (cdc-verb cdc node (v12 VERB-GET-CONN-LIST-ENTRY i))))
-            (if (not resp)
-                (loop (+ i 4))                ; verb timeout: skip this batch
-                (let scan ((k 0))
-                  (if (or (= k 4) (>= (+ i k) len))
-                      (loop (+ i 4))
-                      (if (= target (bitwise-and (arithmetic-shift resp (* k -8)) #xFF))
-                          (+ i k)
-                          (scan (+ k 1)))))))))))
+               (newline)
+               '())
+        (let loop ((i 0) (acc '()))
+          (if (>= i len)
+              (reverse acc)
+              (let ((resp (cdc-verb cdc node (v12 VERB-GET-CONN-LIST-ENTRY i))))
+                (if (not resp)
+                    (loop (+ i 4) acc)            ; verb timeout: skip this batch
+                    (let scan ((k 0) (acc acc))
+                      (if (or (= k 4) (>= (+ i k) len))
+                          (loop (+ i 4) acc)
+                          (scan (+ k 1)
+                                (cons (bitwise-and (arithmetic-shift resp (* k -8)) #xFF)
+                                      acc)))))))))))
+
+;; Index of `target` in `node`'s connection list (for SET_CONN_SELECT), or #f.
+(define (conn-index cdc node target)
+  (let loop ((es (conn-entries cdc node)) (i 0))
+    (cond ((null? es) #f)
+          ((= (car es) target) i)
+          (else (loop (cdr es) (+ i 1))))))
+
+;; Follow `node`'s connection list (through mixers/selectors, bounded depth) to the
+;; first converter of `want-type` (DAC for output, ADC for input). Returns the
+;; converter nid or #f. Bounded depth guards against a cyclic/odd graph. The
+;; per-entry scan is a SEPARATE top-level function (find-conv is called from it as
+;; a sibling global): the bytecode VM cannot capture a top-level define's own name
+;; from inside its own nested loop, so recursion must go sibling<->sibling, not
+;; self-from-a-named-let.
+(define (find-conv cdc node want-type depth)
+  (if (<= depth 0) #f (find-conv-list cdc (conn-entries cdc node) want-type depth)))
+(define (find-conv-list cdc es want-type depth)
+  (if (null? es)
+      #f
+      (let ((ty (widget-type cdc (car es))))
+        (cond
+          ((= ty want-type) (car es))
+          ((or (= ty WIDGET-MIXER) (= ty WIDGET-SELECTOR))
+           (let ((r (find-conv cdc (car es) want-type (- depth 1))))
+             (if r r (find-conv-list cdc (cdr es) want-type depth))))
+          (else (find-conv-list cdc (cdr es) want-type depth))))))
+
+;; Does `node` reach `target` through its connection graph (bounded)? Used to find
+;; the ADC that an input pin feeds: ADCs list their input pins, so we look for an
+;; ADC whose graph reaches the pin. Same sibling-recursion split as find-conv.
+(define (reaches? cdc node target depth)
+  (if (<= depth 0) #f (reaches-list? cdc (conn-entries cdc node) target depth)))
+(define (reaches-list? cdc es target depth)
+  (if (null? es)
+      #f
+      (let ((ty (widget-type cdc (car es))))
+        (cond
+          ((= (car es) target) #t)
+          ((or (= ty WIDGET-MIXER) (= ty WIDGET-SELECTOR))
+           (if (reaches? cdc (car es) target (- depth 1)) #t
+               (reaches-list? cdc (cdr es) target depth)))
+          (else (reaches-list? cdc (cdr es) target depth))))))
+
+;; Max links to follow between a pin and its converter: a pin -> (up to 3
+;; mixers/selectors) -> converter covers every QEMU and consumer codec graph.
+(define GRAPH-DEPTH 4)
+
+;; Resolve an output pin to a DAC by following its connection list.
+(define (resolve-output-conv cdc pin) (find-conv cdc pin WIDGET-AUDIO-OUTPUT GRAPH-DEPTH))
+
+;; Resolve an input pin to an ADC: scan the AFG's widgets for an ADC that reaches
+;; the pin. (afg-start . afg-cnt) bounds the scan.
+(define (resolve-input-conv cdc afg-start afg-cnt pin)
+  (let loop ((w afg-start) (left afg-cnt))
+    (cond ((= left 0) #f)
+          ((and (= (widget-type cdc w) WIDGET-AUDIO-INPUT)
+                (reaches? cdc w pin GRAPH-DEPTH)) w)
+          (else (loop (+ w 1) (- left 1))))))
+
+;; Find the first audio function group under the codec root, or #f.
+(define (find-afg cdc)
+  (let ((ch (node-children cdc 0)))
+    (if (not ch)
+        #f
+        (let loop ((fg (car ch)) (left (cdr ch)))
+          (if (= left 0)
+              #f
+              (let ((gt (cdc-param cdc fg PARAM-FUNC-GRP-TYPE)))
+                (if (and gt (= (bitwise-and gt #x7F) 1))   ; audio function group
+                    fg
+                    (loop (+ fg 1) (- left 1)))))))))
+
+;; --- pin configuration default decode ----------------------------------------
+;; GET_CONFIG_DEFAULT returns a 32-bit word the platform fills in describing what
+;; is wired to the pin. We use two fields: the default DEVICE (what kind of jack)
+;; and PORT CONNECTIVITY (whether anything is physically attached at all).
+(define (cfg-device cfg)       (bitwise-and (arithmetic-shift cfg -20) #xF))
+(define (cfg-connectivity cfg) (bitwise-and (arithmetic-shift cfg -30) #x3))
+(define CONN-NONE 1)   ; port connectivity 1 = no physical connection (dead pin)
+
+;; Default-device code -> a friendly endpoint symbol.
+(define (dev-name code)
+  (cond ((= code #x0) 'line-out)  ((= code #x1) 'speaker)   ((= code #x2) 'headphone)
+        ((= code #x4) 'spdif-out) ((= code #x5) 'digital-out)
+        ((= code #x8) 'line-in)   ((= code #x9) 'aux)       ((= code #xA) 'mic)
+        ((= code #xC) 'spdif-in)  ((= code #xD) 'digital-in)
+        (else 'other)))
+
+;; --- endpoint records --------------------------------------------------------
+;; An endpoint is a mutable vector so later passes (PR2 volume, PR4 hotplug) can
+;; update its volume/present fields in place. Built once per codec by
+;; enumerate-endpoints. `conv` is the DAC (output) or ADC (input) the pin routes to.
+(define EP-LEN 8)
+(define (mk-endpoint id dir dev pin conv afg present)
+  (let ((e (make-vector EP-LEN 0)))
+    (vector-set! e 0 id)   (vector-set! e 1 dir)  (vector-set! e 2 dev)
+    (vector-set! e 3 pin)  (vector-set! e 4 conv) (vector-set! e 5 afg)
+    (vector-set! e 6 present) (vector-set! e 7 100)   ; default volume 100%
+    e))
+(define (ep-id e)      (vector-ref e 0))
+(define (ep-dir e)     (vector-ref e 1))   ; 'out | 'in
+(define (ep-dev e)     (vector-ref e 2))   ; 'speaker 'headphone 'line-out 'mic ...
+(define (ep-pin e)     (vector-ref e 3))
+(define (ep-conv e)    (vector-ref e 4))
+(define (ep-afg e)     (vector-ref e 5))
+(define (ep-present e) (vector-ref e 6))
+(define (ep-present! e v) (vector-set! e 6 v))
+(define (ep-vol e)     (vector-ref e 7))
+(define (ep-vol! e v)  (vector-set! e 7 v))
+
+;; Walk an AFG's pin complexes, classify each by config-default + caps, resolve its
+;; converter, and build the endpoint list. A pin with no physical connection, or
+;; that resolves to no converter, is skipped (unusable). A combo jack that is both
+;; in- and out-capable yields one endpoint per direction.
+(define (enumerate-endpoints cdc)
+  (let ((afg (find-afg cdc)))
+    (if (not afg)
+        '()
+        (let ((ch (node-children cdc afg)))
+          (if (not ch)
+              '()
+              (let ((w0 (car ch)) (cnt (cdr ch)))
+                (let loop ((w w0) (left cnt) (id 0) (acc '()))
+                  (if (= left 0)
+                      (reverse acc)
+                      (if (not (= (widget-type cdc w) WIDGET-PIN-COMPLEX))
+                          (loop (+ w 1) (- left 1) id acc)
+                          (let* ((pc  (cdc-param cdc w PARAM-PIN-CAPS))
+                                 (cfg (cdc-verb cdc w (v12 VERB-GET-CONFIG-DEFAULT 0)))
+                                 (dev (dev-name (if cfg (cfg-device cfg) #xF)))
+                                 (dead (and cfg (= (cfg-connectivity cfg) CONN-NONE))))
+                            (if (or (not pc) dead)
+                                (loop (+ w 1) (- left 1) id acc)
+                                ;; only a usable pin gets the extra pin-sense verb
+                                (let* ((sense (cdc-verb cdc w (v12 VERB-GET-PIN-SENSE 0)))
+                                       (present (if sense (not (= 0 (bitwise-and sense #x80000000))) #t))
+                                       (out? (not (= 0 (bitwise-and pc PIN-CAP-OUTPUT))))
+                                       (in?  (not (= 0 (bitwise-and pc PIN-CAP-INPUT))))
+                                       (oc (if out? (resolve-output-conv cdc w) #f))
+                                       (ic (if in?  (resolve-input-conv cdc w0 cnt w) #f))
+                                       (acc (if (and out? oc)
+                                                (cons (mk-endpoint id 'out dev w oc afg present) acc)
+                                                acc))
+                                       (id  (if (and out? oc) (+ id 1) id))
+                                       (acc (if (and in? ic)
+                                                (cons (mk-endpoint id 'in dev w ic afg present) acc)
+                                                acc))
+                                       (id  (if (and in? ic) (+ id 1) id)))
+                                  (loop (+ w 1) (- left 1) id acc)))))))))))))
 
 ;; --- output-path configuration ----------------------------------------------
 ;; The stream/format we drive: 48 kHz, 16-bit, stereo. SDFMT and the converter
@@ -376,13 +513,26 @@
 (define STREAM-NUM        1)
 (define FMT-48K-16-STEREO #x0011)
 
-;; Power the DAC + pin to D0, program the DAC's format/stream/amp, route the pin to
-;; the DAC and enable its output (pin control + amp + EAPD). Gains are set to the
-;; DAC's advertised max so the stream is audible without clipping the device range.
-(define (configure-output! cdc afg dac pin)
-  (let* ((oac  (cdc-param cdc dac PARAM-OUTPUT-AMP-CAPS))
-         (gain (let ((g (if oac (bitwise-and (arithmetic-shift oac -8) #x7F) 0)))
-                 (if (> g 0) g #x4B))))           ; fall back to a sane mid gain
+;; A converter/pin's max amp gain (num-steps, amp-caps bits8-14), or a sane mid
+;; fallback if the widget advertises none. The gain field of SET_AMP_GAIN_MUTE is
+;; 7 bits; this is the value that maps to 100% volume.
+(define (amp-max-gain cdc nid param)
+  (let* ((ac (cdc-param cdc nid param))
+         (g (if ac (bitwise-and (arithmetic-shift ac -8) #x7F) 0)))
+    (if (> g 0) g #x4B)))
+
+;; SET_AMP_GAIN_MUTE payload: set output(bit15)/input(bit14) amp, both channels
+;; (left bit13 + right bit12), mute bit7, gain bits0-6. Built so PR2's volume
+;; control reuses it.
+(define (amp-out-payload gain mute) (bitwise-or #xB000 (if mute #x80 0) (bitwise-and gain #x7F)))
+
+;; Power the converter + pin to D0, program the DAC's format/stream, route the pin
+;; to the DAC and enable its output (pin control + amp + EAPD). The output amps are
+;; opened to the converter's advertised max so the stream is audible without
+;; clipping; PR2 layers per-endpoint volume on top by re-issuing SET_AMP_GAIN_MUTE.
+(define (configure-output! cdc ep)
+  (let* ((afg (ep-afg ep)) (dac (ep-conv ep)) (pin (ep-pin ep))
+         (gain (amp-max-gain cdc dac PARAM-OUTPUT-AMP-CAPS)))
     ;; power up the whole path
     (cdc-verb cdc afg (v12 VERB-SET-POWER-STATE 0))
     (cdc-verb cdc dac (v12 VERB-SET-POWER-STATE 0))
@@ -390,15 +540,15 @@
     ;; DAC: format, stream #STREAM-NUM channel 0, unmute output amp (L+R)
     (cdc-verb cdc dac (v4  VERB-SET-CONVERTER-FORMAT FMT-48K-16-STEREO))
     (cdc-verb cdc dac (v12 VERB-SET-STREAM-CHANNEL (arithmetic-shift STREAM-NUM 4)))
-    (cdc-verb cdc dac (v4  VERB-SET-AMP-GAIN-MUTE (bitwise-or #xB000 gain)))
-    ;; Pin: route it to the DAC (only if the DAC is directly in its connection
-    ;; list -- otherwise leave the selector alone rather than mis-route to entry 0),
-    ;; enable output drive (bit6) + headphone amp (bit7), unmute the pin's own
-    ;; output amp, enable EAPD (external amp / not-muted line).
+    (cdc-verb cdc dac (v4  VERB-SET-AMP-GAIN-MUTE (amp-out-payload gain #f)))
+    ;; Pin: route it to the DAC (only if the DAC is in its connection list --
+    ;; otherwise leave the selector alone rather than mis-route to entry 0), enable
+    ;; output drive (bit6) + headphone amp (bit7), unmute the pin's own output amp,
+    ;; enable EAPD (external amp / not-muted line).
     (let ((ci (conn-index cdc pin dac)))
       (if ci (cdc-verb cdc pin (v12 VERB-SET-CONN-SELECT ci))))
     (cdc-verb cdc pin (v12 VERB-SET-PIN-CONTROL #xC0))
-    (cdc-verb cdc pin (v4  VERB-SET-AMP-GAIN-MUTE (bitwise-or #xB000 gain)))
+    (cdc-verb cdc pin (v4  VERB-SET-AMP-GAIN-MUTE (amp-out-payload gain #f)))
     (cdc-verb cdc pin (v12 VERB-SET-EAPD-BTL #x02))))
 
 ;; --- output stream descriptor + BDL ------------------------------------------
@@ -484,14 +634,38 @@
     (display STREAM-NUM) (newline)
     (list buf bdl)))
 
+;; --- endpoint selection + reporting ------------------------------------------
+;; An endpoint descriptor is the plain-data view of an endpoint that crosses the
+;; context boundary to coreaudio and clients: (id dir dev present). Only fixnums
+;; and symbols, so the copy-on-send is cheap and shares no mutable state.
+(define (ep-desc e) (list (ep-id e) (ep-dir e) (ep-dev e) (ep-present e)))
+(define (endpoint-descs eps) (map ep-desc eps))
+
+(define (find-ep-dev eps dir dev)
+  (cond ((null? eps) #f)
+        ((and (eq? (ep-dir (car eps)) dir) (eq? (ep-dev (car eps)) dev)) (car eps))
+        (else (find-ep-dev (cdr eps) dir dev))))
+(define (first-of-dir eps dir)
+  (cond ((null? eps) #f)
+        ((eq? (ep-dir (car eps)) dir) (car eps))
+        (else (first-of-dir (cdr eps) dir))))
+;; The output endpoint a bare (play)/(tone) drives: prefer an internal speaker,
+;; then a line-out, then a headphone jack, else the first output found.
+(define (primary-output eps)
+  (or (find-ep-dev eps 'out 'speaker)
+      (find-ep-dev eps 'out 'line-out)
+      (find-ep-dev eps 'out 'headphone)
+      (first-of-dir eps 'out)))
+
 ;; --- the long-lived driver context -------------------------------------------
 ;; After bring-up the spawned context becomes the audio card's service loop. It
-;; retains the currently-playing buffers (so the stream's DMA source stays live)
-;; and answers coreaudio: (tone) replays the default tone, (play freq amp frames)
-;; plays an arbitrary square-wave tone, (get-status reply) reports state. All tone
-;; parameters are plain fixnums, so nothing crosses the context boundary except
-;; small values -- no shared DMA buffer between contexts is needed.
-(define (hda-driver-loop regs refs)
+;; closes over the codec handle + the endpoint list, retains the currently-playing
+;; buffers (so the stream's DMA source stays live), and answers coreaudio: (tone)
+;; replays the default tone, (play freq amp frames) plays a square-wave tone on the
+;; primary output, (endpoints reply) reports the card's endpoint descriptors,
+;; (get-status reply) reports state. Tone parameters are plain fixnums, so nothing
+;; crosses the context boundary except small values.
+(define (hda-driver-loop regs cdc eps refs)
   (let loop ((cur refs))
     (let ((m (recv)))
       (cond
@@ -506,6 +680,8 @@
                (loop (play-tone! regs freq amp frames))
                (begin (display "[hdaudio] play: bad params, ignored") (newline)
                       (loop cur)))))
+        ((eq? (car m) 'endpoints)       ; (endpoints reply)
+         (send (nth m 1) (endpoint-descs eps)) (loop cur))
         ((eq? (car m) 'get-status)
          (send (nth m 1) 'playing) (loop cur))
         (else (loop cur))))))
@@ -515,7 +691,7 @@
 ;; enumeration. On success it logs, sets up MSI, and registers with coreaudio.
 ;; FIRE-AND-FORGET: like ahci-bringup, this runs in a spawned context so its
 ;; reset/settle waits yield; init does not await it. Any failure logs + returns.
-(define (hdaudio-bringup regs ecam audio)
+(define (hdaudio-bringup regs ecam audio name)
   ;; reset the controller
   (if (not (hda-reset! regs))
       (begin (display "[hdaudio] controller reset timeout") (newline) 'fail)
@@ -535,7 +711,7 @@
               (begin (display "[hdaudio] no codecs present on STATESTS") (newline)
                      ;; still register the (empty) card so the endpoint exists, and
                      ;; park on recv (the card ctx with no playable path).
-                     (send audio (list 'register 'hda0 (self)))
+                     (send audio (list 'register name (self) '()))
                      (let loop () (recv) (loop)))
               ;; Allocate CORB+RIRB in ONE 32-bit DMA buffer: CORB (corb-ent u32s)
               ;; at offset 0, RIRB (rirb-ent 8-byte entries) at offset corb-bytes.
@@ -563,58 +739,75 @@
                   ;; context can wake on it.
                   (let ((msi (pci-setup-msi ecam)))
                     (display "[hdaudio] msi=") (display msi) (newline)
-                    ;; Find an output path on the first present codec, configure it,
-                    ;; and play the bring-up tone -- the live proof that a guest
+                    ;; Enumerate ALL endpoints on the first present codec -- every
+                    ;; speaker / headphone / line-out and every mic / line-in -- not
+                    ;; just one output path. Configure each output endpoint (power +
+                    ;; route + unmute), report the set to coreaudio, and play the
+                    ;; bring-up tone on the primary output: the live proof a guest
                     ;; stream reaches the codec (the C driver stopped at enumeration).
                     (let* ((addr (first-codec-addr statests))
                            (cdc  (make-cdc regs ring rirb-off slot-cnt st addr))
-                           (path (find-output-path cdc)))
-                      (send audio (list 'register 'hda0 (self)))
-                      (display "[hdaudio] registered hda0 with coreaudio") (newline)
-                      (if (not path)
+                           (eps  (enumerate-endpoints cdc))
+                           (prim (primary-output eps)))
+                      (for-each
+                       (lambda (e)
+                         (display "[hdaudio]   endpoint ") (display (ep-id e))
+                         (display " ") (display (ep-dir e)) (display " ") (display (ep-dev e))
+                         (display " pin=") (display (ep-pin e))
+                         (display " conv=") (display (ep-conv e))
+                         (display (if (ep-present e) " present" " absent")) (newline))
+                       eps)
+                      ;; Configure every output endpoint so a later (play) can drive
+                      ;; any of them; inputs are enumerated now and wired for capture
+                      ;; in a follow-up (PR3).
+                      (for-each (lambda (e) (if (eq? (ep-dir e) 'out) (configure-output! cdc e)))
+                                eps)
+                      (send audio (list 'register name (self) (endpoint-descs eps)))
+                      (display "[hdaudio] registered ") (display name)
+                      (display " with coreaudio (") (display (length eps))
+                      (display " endpoints)") (newline)
+                      (if (not prim)
                           (begin
-                            (display "[hdaudio] no output path on codec ") (display addr)
+                            (display "[hdaudio] no output endpoint on codec ") (display addr)
                             (display "; card idle") (newline)
-                            (let loop () (recv) (loop)))
-                          (let ((afg (nth path 0)) (dac (nth path 1)) (pin (nth path 2)))
-                            (display "[hdaudio] output path codec=") (display addr)
-                            (display " afg=") (display afg) (display " dac=") (display dac)
-                            (display " pin=") (display pin) (newline)
-                            (configure-output! cdc afg dac pin)
-                            ;; play the startup tone, then serve the card forever
-                            ;; (retaining the playing buffers so DMA stays valid).
-                            (hda-driver-loop
-                             regs (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES)))))))))))))
+                            (hda-driver-loop regs cdc eps '()))
+                          ;; play the startup tone on the primary output, then serve
+                          ;; the card forever (retaining the playing DMA buffers).
+                          (hda-driver-loop
+                           regs cdc eps
+                           (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES))))))))))))
 
 ;; --- entry point -------------------------------------------------------------
-;; hdaudio-init takes the coreaudio service handle. Gated on pci-find-class so a
-;; no-audio boot just logs + returns.
+;; hdaudio-init brings up ONE HD Audio controller: `audio` is the coreaudio service
+;; handle, `name` the card name to register (e.g. 'hda0), `ecam` the controller's
+;; ECAM. init enumerates controllers (pci-find-class-all) and calls this per card,
+;; so a machine with two sound cards brings both up as hda0/hda1. pci-find-class is
+;; still exported as find-hda for the single-card / REPL convenience path.
 (define (find-hda)
   (pci-find-class HDA-CLASS HDA-SUBCLASS))
 
-(define (hdaudio-init audio)
-  (let ((ecam (find-hda)))
-    (if (not ecam)
-        (begin (display "[hdaudio] no device present") (newline) #f)
-        (let ((cfg (mmio-map ecam 4096)))
-          (pci-enable-mem-bus-master! cfg)
-          ;; HDA register block = BAR0. If firmware never configured it (base 0),
-          ;; self-assign and re-read.
-          (let ((bar-phys (let ((b (bar-base cfg HDA-BAR)))
-                            (if (= b 0)
-                                (begin (pci-assign-bars ecam) (bar-base cfg HDA-BAR))
-                                b))))
-            (if (or (not bar-phys) (= bar-phys 0))
-                (begin (display "[hdaudio] no MMIO BAR") (newline) #f)
-                ;; Map a full page: the global regs end at 0x180 only for ISS=OSS=4
-                ;; (ICH9/ICH6); a controller with more streams puts output stream
-                ;; descriptors past 0x180 (out-sd-base = 0x80 + iss*0x20), so size the
-                ;; window to the page the BAR already occupies rather than 0x180.
-                (let ((regs (mmio-map bar-phys #x1000)))
-                  ;; Run reset + ring setup + enumeration in a spawned context so the
-                  ;; reset/settle waits yield (same pattern as ahci-init). Fire and
-                  ;; forget: the context logs + registers and reports to the log;
-                  ;; init does not await it.
-                  (spawn-restricted '()
-                    (lambda () (hdaudio-bringup regs ecam audio)))
-                  'hdaudio-spawned))))))) ) ; last ) closes (define-module hdaudio ...)
+(define (hdaudio-init audio name ecam)
+  (if (not ecam)
+      (begin (display "[hdaudio] no device present") (newline) #f)
+      (let ((cfg (mmio-map ecam 4096)))
+        (pci-enable-mem-bus-master! cfg)
+        ;; HDA register block = BAR0. If firmware never configured it (base 0),
+        ;; self-assign and re-read.
+        (let ((bar-phys (let ((b (bar-base cfg HDA-BAR)))
+                          (if (= b 0)
+                              (begin (pci-assign-bars ecam) (bar-base cfg HDA-BAR))
+                              b))))
+          (if (or (not bar-phys) (= bar-phys 0))
+              (begin (display "[hdaudio] no MMIO BAR") (newline) #f)
+              ;; Map a full page: the global regs end at 0x180 only for ISS=OSS=4
+              ;; (ICH9/ICH6); a controller with more streams puts output stream
+              ;; descriptors past 0x180 (out-sd-base = 0x80 + iss*0x20), so size the
+              ;; window to the page the BAR already occupies rather than 0x180.
+              (let ((regs (mmio-map bar-phys #x1000)))
+                ;; Run reset + ring setup + enumeration in a spawned context so the
+                ;; reset/settle waits yield (same pattern as ahci-init). Fire and
+                ;; forget: the context logs + registers and reports to the log;
+                ;; init does not await it.
+                (spawn-restricted '()
+                  (lambda () (hdaudio-bringup regs ecam audio name)))
+                'hdaudio-spawned)))))) ) ; last ) closes (define-module hdaudio ...)

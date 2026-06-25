@@ -99,7 +99,16 @@
     ;; a default boot with no HDA controller just logs "no device" and returns.
     (let ((audio (start-audio-service)))
       (set! audio-service audio)      ; publish for the REPL `play-tone` command
-      (hdaudio-init audio))
+      ;; Bring up EVERY HD Audio controller, not just the first: pci-find-class-all
+      ;; enumerates all class-0x04/0x03 functions, so a machine with two sound cards
+      ;; registers both (hda0, hda1, ...). Each gets its own driver context + codec
+      ;; enumeration. A default boot with no HDA controller just brings up none.
+      (let ((idx 0))
+        (for-each
+         (lambda (ecam)
+           (hdaudio-init audio (string->symbol (string-append "hda" (number->string idx))) ecam)
+           (set! idx (+ idx 1)))
+         (pci-find-class-all #x04 #x03))))
     (start-power-service)
     ;; Storage registry (the AHCI block driver AND the USB mass-storage class
     ;; driver feed it); cardfs registers as an fs provider FIRST so it is offered

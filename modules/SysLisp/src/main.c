@@ -424,6 +424,38 @@ static lisp_value prim_pci_find_all(lisp_value *a, int n, const char **e) {
     return head;
 }
 
+// (pci-find-class-all class subclass) -> a list of the ECAM addresses of EVERY
+// PCI function whose CLASS/SUBCLASS match, or () if none. The class analogue of
+// pci-find-all: lets init bind a driver to every controller of a class (e.g.
+// every HD Audio controller) so a machine with two sound cards brings both up,
+// rather than only the first that pci-find-class returns. Same reverse-cons build
+// so the list comes out in ascending enumeration order.
+static lisp_value prim_pci_find_class_all(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "pci-find-class-all: expects (class subclass)"), LISP_UNDEF;
+    uint32_t cls = (uint32_t)lisp_fixnum_val(a[0]), subcls = (uint32_t)lisp_fixnum_val(a[1]);
+    uint64_t count = 0;
+    if (registry_readkey_uint("HW/PCI", "COUNT", &count) != CS_OK)
+        return LISP_EMPTY;
+    lisp_value head = LISP_EMPTY;
+    for (int64_t i = (int64_t)count - 1; i >= 0; i--) {
+        char key[64] = "HW/PCI/";
+        char num[16];
+        strncat(key, itoa((int)i, num, 16), sizeof(key) - 8);
+        uint64_t c = 0, s = 0, ecam = 0;
+        if (registry_readkey_uint(key, "CLASS", &c) != CS_OK) continue;
+        if (registry_readkey_uint(key, "SUBCLASS", &s) != CS_OK) continue;
+        if (c == cls && s == subcls &&
+            registry_readkey_uint(key, "ECAM_ADDR", &ecam) == CS_OK) {
+            lisp_value cell = lisp_cons(lisp_fixnum((int64_t)ecam), head);  // head stays rooted
+            if (cell == LISP_UNDEF)
+                return (*e = "pci-find-class-all: out of memory"), LISP_UNDEF;
+            head = cell;
+        }
+    }
+    return head;
+}
+
 // --- the driver MSI(-X) -> ISR -> wake-context bridge -------------------------
 //
 // Each MSI source gets its own slot in a table PARALLEL to g_irq_lines (the ISA
@@ -795,6 +827,7 @@ static const lisp_builtin_export sys_mmio_exports[] = {
 static const lisp_builtin_export sys_pci_exports[] = {
     {"pci-find", prim_pci_find},   {"pci-find-class", prim_pci_find_class},
     {"pci-find-all", prim_pci_find_all},
+    {"pci-find-class-all", prim_pci_find_class_all},
     {"pci-setup-msi", prim_pci_setup_msi},
     {"msi-count", prim_msi_count}, {"msi-wait", prim_msi_wait},
     {"pci-assign-bars", prim_pci_assign_bars},
@@ -1765,6 +1798,61 @@ static void check_rtl8169(lisp_value env) {
     }
 }
 
+// hdaudio-in-Lisp codec graph walk, hardware-free. The MMIO bring-up cannot run
+// here, but the codec handle is just a (node payload)->response function, so we
+// drive enumerate-endpoints with a MOCK codec describing a small graph: an AFG
+// (node 1) over a DAC (2), an output pin wired to it (3, config-default = a fixed
+// Speaker), an ADC (4), and an input pin it reads (5, config-default = a Mic
+// jack). The walk must classify both directions, decode the config-default device
+// type, resolve each pin to its converter (output pin->DAC by its connection list,
+// input pin->ADC by the ADC that reaches it), and pick the speaker as primary.
+static void check_hdaudio(lisp_value env) {
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import hdaudio)"
+        "(define (mock node payload)"
+        "  (let ((sel (arithmetic-shift payload -8)) (lo (bitwise-and payload 255)))"
+        "    (cond"
+        "      ((= sel #xF00)"
+        "       (cond"
+        "         ((= lo #x04) (cond ((= node 0) (bitwise-or (arithmetic-shift 1 16) 1))"
+        "                            ((= node 1) (bitwise-or (arithmetic-shift 2 16) 4)) (else 0)))"
+        "         ((= lo #x05) (if (= node 1) 1 0))"
+        "         ((= lo #x09) (cond ((= node 2) 0) ((= node 3) (arithmetic-shift 4 20))"
+        "                            ((= node 4) (arithmetic-shift 1 20))"
+        "                            ((= node 5) (arithmetic-shift 4 20)) (else 0)))"
+        "         ((= lo #x0C) (cond ((= node 3) #x10) ((= node 5) #x20) (else 0)))"
+        "         ((= lo #x0E) (cond ((= node 3) 1) ((= node 4) 1) (else 0)))"
+        "         ((= lo #x12) #x7F00)"
+        "         (else 0)))"
+        "      ((= sel #xF1C) (cond ((= node 3) (bitwise-or (arithmetic-shift 1 20) (arithmetic-shift 2 30)))"
+        "                           ((= node 5) (arithmetic-shift #xA 20)) (else 0)))"
+        "      ((= sel #xF09) #x80000000)"
+        "      ((= sel #xF02) (cond ((and (= node 3) (= lo 0)) 2)"
+        "                           ((and (= node 4) (= lo 0)) 5) (else 0)))"
+        "      (else 0))))"
+        "(define eps (enumerate-endpoints mock))"
+        "(define res (list (endpoint-descs eps) (ep-desc (primary-output eps))))",
+        env, &err);
+    lisp_value res = lisp_eval_string("res", env, &err);
+    char rb[128];
+    lisp_print(res, rb, sizeof rb);
+    if (err == NULL &&
+        strcmp(rb, "(((0 out speaker #t) (1 in mic #t)) (0 out speaker #t))") == 0) {
+        print_str("[SysLisp]  ok  hdaudio codec graph: out/in classify + converter resolve + primary\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL hdaudio  res-> ");
+        print_str(rb);
+        if (err) {
+            print_str("  err: ");
+            print_str(err);
+        }
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // VirtioGpu-in-Lisp, hardware-free. Three layers, all under the real scheduler:
 //   (1) command-struct LAYOUT: build each control-queue command and assert the
 //       exact little-endian bytes + total length. This is the offset regression
@@ -2310,6 +2398,7 @@ static void run_self_test(lisp_value env) {
     check_txworker(env);
     check_netdebug(env);
     check_rtl8169(env);
+    check_hdaudio(env);
     check_gpu(env);
     check_lfb(env);
     check_rtl8139(env);
