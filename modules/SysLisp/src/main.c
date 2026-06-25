@@ -2047,6 +2047,64 @@ static void check_hdaudio_multicodec(lisp_value env) {
     }
 }
 
+// hdaudio jack-presence detection. The mock's pin-sense reads a MUTABLE cell:
+// present at enumeration, then the test flips it to 0 (unplug) and runs poll-jacks!,
+// which re-reads sense and must notice both endpoints went absent -- reporting the
+// changes AND updating ep-present in place (visible via endpoint-descs). This is the
+// detection mechanism a 1 s poller drives in the driver; QEMU's codec can't emit a
+// jack event, so this mock flip is the authoritative test of the change path.
+static void check_hdaudio_jack(lisp_value env) {
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import hdaudio driver-util)"
+        "(define sense (make-cell #x80000000))"          // present
+        "(define (mockj node payload)"
+        "  (let ((sel (arithmetic-shift payload -8)) (lo (bitwise-and payload 255)))"
+        "    (cond"
+        "      ((= sel #xF00)"
+        "       (cond"
+        "         ((= lo #x04) (cond ((= node 0) (bitwise-or (arithmetic-shift 1 16) 1))"
+        "                            ((= node 1) (bitwise-or (arithmetic-shift 2 16) 4)) (else 0)))"
+        "         ((= lo #x05) (if (= node 1) 1 0))"
+        "         ((= lo #x09) (cond ((= node 2) 0) ((= node 3) (arithmetic-shift 4 20))"
+        "                            ((= node 4) (arithmetic-shift 1 20))"
+        "                            ((= node 5) (arithmetic-shift 4 20)) (else 0)))"
+        "         ((= lo #x0C) (cond ((= node 3) #x10) ((= node 5) #x20) (else 0)))"
+        "         ((= lo #x0E) (cond ((= node 3) 1) ((= node 4) 1) (else 0)))"
+        "         ((= lo #x12) #x7F00) (else 0)))"
+        "      ((= sel #xF1C) (cond ((= node 3) (bitwise-or (arithmetic-shift 1 20) (arithmetic-shift 2 30)))"
+        "                           ((= node 5) (arithmetic-shift #xA 20)) (else 0)))"
+        "      ((= sel #xF09) (cell-ref sense))"          // pin-sense reads the mutable cell
+        "      ((= sel #xF02) (cond ((and (= node 3) (= lo 0)) 2)"
+        "                           ((and (= node 4) (= lo 0)) 5) (else 0)))"
+        "      (else 0))))"
+        "(define epsj (enumerate-endpoints mockj 0))"
+        "(define before (endpoint-descs epsj))"
+        "(cell-set! sense 0)"                              // unplug all jacks
+        "(define changed (poll-jacks! epsj))"             // first poll: both flip -> reported
+        "(define again (poll-jacks! epsj))"               // second poll: no change -> () (no flapping)
+        "(define resj (list before changed again (endpoint-descs epsj)))",
+        env, &err);
+    lisp_value res = lisp_eval_string("resj", env, &err);
+    char rb[160];
+    lisp_print(res, rb, sizeof rb);
+    if (err == NULL &&
+        strcmp(rb, "(((0 out speaker #t) (1 in mic #t)) ((0 speaker #f) (1 mic #f)) () "
+                   "((0 out speaker #f) (1 in mic #f)))") == 0) {
+        print_str("[SysLisp]  ok  hdaudio jack-detect: poll notices unplug + updates presence\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL hdaudio-jack  res-> ");
+        print_str(rb);
+        if (err) {
+            print_str("  err: ");
+            print_str(err);
+        }
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // VirtioGpu-in-Lisp, hardware-free. Three layers, all under the real scheduler:
 //   (1) command-struct LAYOUT: build each control-queue command and assert the
 //       exact little-endian bytes + total length. This is the offset regression
@@ -2596,6 +2654,7 @@ static void run_self_test(lisp_value env) {
     check_hdaudio_volume(env);
     check_hdaudio_capture(env);
     check_hdaudio_multicodec(env);
+    check_hdaudio_jack(env);
     check_gpu(env);
     check_lfb(env);
     check_rtl8139(env);

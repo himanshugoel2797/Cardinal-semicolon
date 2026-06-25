@@ -160,7 +160,24 @@
       ;; hot-add a codec, so this injects the rescan to validate the path end to end.
       (if (cmdline-has? "cardinal.hotplug")
           (spawn-restricted '()
-            (lambda () (sleep 2500000000) (send audio-service (list 'rescan 'hda0))))))
+            (lambda () (sleep 2500000000) (send audio-service (list 'rescan 'hda0)))))
+      ;; Optional jack-detect exercise: force a pin-sense re-poll, then report each
+      ;; endpoint's presence -- proves the poll read-path runs on real hardware
+      ;; (QEMU's sense is static, so nothing changes, but the read must succeed).
+      (if (cmdline-has? "cardinal.jacktest")
+          (spawn-restricted '()
+            (lambda ()
+              (sleep 2500000000)
+              ;; both messages hit the driver's mailbox in order (single-context
+              ;; FIFO at each hop), so the poll is processed before the endpoints
+              ;; query -- no sleep needed between them.
+              (send audio-service (list 'poll-jacks 'hda0))
+              (send audio-service (list 'endpoints 'hda0 (self)))
+              (for-each (lambda (d)
+                          (display "[jacktest] ep ") (display (car d))
+                          (display " ") (display (nth d 2))
+                          (display (if (nth d 3) " present" " absent")) (newline))
+                        (recv))))))
     (start-power-service)
     ;; Storage registry (the AHCI block driver AND the USB mass-storage class
     ;; driver feed it); cardfs registers as an fs provider FIRST so it is offered
