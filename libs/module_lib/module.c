@@ -97,7 +97,10 @@ int BuildModuleHeader(ModuleHeader *hdr, const char *module_name,
                       uint8_t *elf, size_t elf_len, size_t uncompressed_len) {
 
     memset(hdr, 0, sizeof(ModuleHeader));
-    strncpy(hdr->magic, MODULE_HEADER_MAGIC, sizeof(MODULE_HEADER_MAGIC));
+    // magic is a 4-byte tag (not NUL-terminated); copy exactly its width.
+    // sizeof(MODULE_HEADER_MAGIC) is 5 (it counts the literal's NUL) and overran
+    // magic[4] by one byte -- harmless at -O0 but _FORTIFY_SOURCE aborts on it.
+    strncpy(hdr->magic, MODULE_HEADER_MAGIC, sizeof(hdr->magic));
     strncpy(hdr->module_name, module_name, 256);
     strncpy(hdr->dev_name, dev_name, 256);
     strncpy(hdr->dev_name2, dev_name2, 256);
