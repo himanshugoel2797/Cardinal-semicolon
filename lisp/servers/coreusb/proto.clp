@@ -38,6 +38,9 @@
 (define USB-REQ-SET-CONFIGURATION 9)
 (define USB-REQ-SET-INTERFACE     11)
 
+;; CLEAR_FEATURE / SET_FEATURE selectors.
+(define USB-FEATURE-ENDPOINT-HALT 0)
+
 (define USB-DESC-DEVICE     1)
 (define USB-DESC-CONFIG     2)
 (define USB-DESC-STRING     3)
@@ -300,6 +303,33 @@
 ;; that exposes the isochronous endpoint. Returns the control byte count (>=0) or -1.
 (define (usb-set-interface dev iface alt)
   (usb-control-out dev USB-REQ-RECIP-INTERFACE USB-REQ-SET-INTERFACE alt iface #f 0))
+
+;; ---- robustness: retry + endpoint-halt recovery -----------------------------
+;; Run `thunk` up to `tries` times, returning the first result that satisfies
+;; `ok?`; on a failing result, nap `gap-ns` and retry, returning the last result
+;; once tries are exhausted. The control transfers the enumerator issues are
+;; one-shot and failure-prone on real hardware (a NAK storm, a slow device), and
+;; the USB spec already expects a host to make several attempts -- so the
+;; enumerator wraps each in this. `ok?` is a predicate over the thunk's result.
+(define (with-retries tries gap-ns ok? thunk)
+  (let loop ((n tries))
+    (let ((r (thunk)))
+      (if (or (ok? r) (<= n 1)) r (begin (sleep gap-ns) (loop (- n 1)))))))
+
+;; CLEAR_FEATURE(ENDPOINT_HALT): clear a stalled bulk/interrupt endpoint so the
+;; device can resume on it (also resets the endpoint's data toggle on the device;
+;; the controller tracks its own toggle, so a class driver that clears a halt
+;; mid-stream may also need to reset its side -- both UHCI and xHCI reset the
+;; toggle on the next configure/transfer here). `ep-addr` is the full endpoint
+;; address (direction bit included). Returns the control byte count (>=0) or -1.
+;; CAVEAT: rides usb-control-out -> await-complete, which DROPS non-completion
+;; messages. A context multiplexing other messages on its mailbox (a poll loop
+;; watching for 'stop, a server draining requests) must issue the CLEAR_FEATURE
+;; through its OWN message wait instead, or that message is lost (see usb-hid's
+;; clear-halt). Safe from a context that only awaits this reply.
+(define (usb-clear-halt dev ep-addr)
+  (usb-control-out dev USB-REQ-RECIP-ENDPOINT USB-REQ-CLEAR-FEATURE
+                   USB-FEATURE-ENDPOINT-HALT ep-addr #f 0))
 
 ;; ---- string descriptors -----------------------------------------------------
 ;; Raw GET_DESCRIPTOR(STRING,index) bytes (<=255), or #f. langid 0/index 0 yields

@@ -155,6 +155,11 @@ int main(int argc, char **argv) {
     chk("(usb-string-decode (mkb (list 8 3 72 0 233 0 105 0)))", "\"H?i\"");  // non-ASCII -> ?
     chk("(usb-string-decode (mkb (list 2 3)))", "\"\"");        // empty body
 
+    // --- with-retries: success path (no sleep -- the retry path needs a context) ---
+    chk("(with-retries 3 0 (lambda (r) (= r 7)) (lambda () 7))", "7");     // ok? true first try
+    chk("(with-retries 1 0 (lambda (r) #f) (lambda () 9))", "9");          // tries exhausted -> last
+    chk("(with-retries 3 0 (lambda (r) (>= r 0)) (lambda () 5))", "5");    // ok? short-circuits
+
     printf("\n[lisp usb] %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }
