@@ -210,7 +210,9 @@
                                           (let loop ()
                                             (let ((m (recv)))
                                               (if (eq? (car m) 'tx)
-                                                  (tx-fill! regs txbufs free-cell (cadr m) (caddr m)))
+                                                  (begin
+                                                    (tx-fill! regs txbufs free-cell (cadr m) (caddr m))
+                                                    (if (> (length m) 3) (send (nth m 3) (list 'tx-done)))))
                                               (loop)))))))
                                   ;; RX context: drain the ring, forward each frame
                                   ;; (snapshotted out of the recycled ring) to the

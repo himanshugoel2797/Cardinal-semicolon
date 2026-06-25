@@ -46,7 +46,11 @@
           ((eq? (car m) 'register-nic)         ; (register-nic mac tx-ctx)
            (display "[corenetwork] nic registered as if") (display (length ifaces))
            (display ", mac=") (display (cadr m)) (newline)
-           (mk-state (append ifaces (list (mk-iface (length ifaces) (cadr m) (caddr m))))
+           ;; Wrap the raw NIC tx in a per-interface tx engine (bounded queue +
+           ;; one-in-flight backpressure); the engine becomes the interface's tx.
+           (mk-state (append ifaces
+                             (list (mk-iface (length ifaces) (cadr m)
+                                             (start-tx-engine (caddr m) (* TICK-MS 1000000)))))
                      routes cache binds tcp))
           ((eq? (car m) 'rx)                   ; (rx frame len)
            (let ((frame (cadr m)) (len (caddr m)))
@@ -164,6 +168,11 @@
            (tcp-do-tick tcp)
            (txq-tick! txq (uptime-ns))         ; re-ARP / time-out held packets too
            (reasm-tick! reasm (uptime-ns))     ; time-out incomplete reassemblies
+           (for-each (lambda (i) (send (ig i I-TX) (list 'tx-tick))) ifaces)  ; pace non-acking tx
+           st)
+          ((eq? (car m) 'tx-stats)             ; (tx-stats reply) -> (queued dropped) of primary if
+           (let ((i (primary-iface-any ifaces)))
+             (if i (send (ig i I-TX) (list 'tx-stats (cadr m)))))
            st)
           ((eq? (car m) 'tcp-test-loss)        ; (tcp-test-loss N) -- test fault injection
            (tcp-do-test-loss tcp (cadr m))

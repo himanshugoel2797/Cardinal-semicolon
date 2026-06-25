@@ -56,4 +56,4 @@
   (import driver-util)
   ;; layer by layer: shared helpers, the checksum, then eth/arp/ip/icmp/udp, the
   ;; DHCP client, then the service loop that ties them together.
-  (include common route firewall checksum eth arp frag ip icmp udp txq tcp dhcp dns service))
+  (include common route firewall checksum eth arp frag ip icmp udp txq txworker tcp dhcp dns service))
