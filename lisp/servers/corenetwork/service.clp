@@ -35,6 +35,7 @@
 (define (start-network-service)
   (let* ((tcp0 (mk-tcp-state))
          (fw (mk-fw))               ; inbound packet filter (closure state, mutated by fw-* msgs)
+         (txq (mk-txq))             ; async TX hold-queue (pending ARP resolutions)
          (net
     (serve (mk-state '() '() '() '() tcp0)
     (lambda (st m)
@@ -53,9 +54,11 @@
                  (let ((etype (get-be16 frame 12)))
                    (cond
                      ((= etype ETH-ARP)
-                      (mk-state ifaces routes
-                                (handle-arp ifaces cache (uptime-ns) frame len)
-                                binds tcp))
+                      ;; Learn from the ARP, then flush any held packets whose
+                      ;; next hop just resolved (the async TX path).
+                      (let ((cache2 (handle-arp ifaces cache (uptime-ns) frame len)))
+                        (txq-flush! txq cache2 (uptime-ns))
+                        (mk-state ifaces routes cache2 binds tcp)))
                      ((= etype ETH-IPV4)
                       (handle-ip ifaces routes fw cache binds tcp frame len)
                       st)
@@ -87,6 +90,16 @@
              (if i
                  (udp-send (ig i I-IP) (ig i I-MAC) (ig i I-TX) (caddr m) (cadddr m) (nth m 4)
                            (nth m 5) (nth m 6) (bytes-length (nth m 6)))))
+           st)
+          ((eq? (car m) 'udp-send-async)       ; (udp-send-async dst-ip sport dport payload)
+           ;; Fire-and-forget: route + resolve the next-hop MAC ourselves, holding
+           ;; the datagram (and ARPing) on a cache miss -- no caller-side arp-resolve.
+           (let ((e (route-egress routes (cadr m))))
+             (if e
+                 (let* ((iface (car e)) (nh (cdr e)) (pl (nth m 4)) (plen (bytes-length pl)))
+                   (txq-send! txq cache (uptime-ns) iface nh ETH-IPV4
+                              (udp-build-ip (ig iface I-IP) (cadr m) (caddr m) (cadddr m) pl plen)
+                              (+ 28 plen)))))
            st)
           ((eq? (car m) 'ping)                 ; (ping dst-ip dst-mac id seq)
            (let ((i (egress-for ifaces routes (cadr m))))
@@ -146,8 +159,9 @@
           ((eq? (car m) 'tcp-close)            ; (tcp-close conn)
            (tcp-do-close tcp (cadr m))
            st)
-          ((eq? (car m) 'tcp-tick)             ; (tcp-tick) -- from the ticker context
+          ((eq? (car m) 'tcp-tick)             ; (tcp-tick) -- periodic timer from the ticker
            (tcp-do-tick tcp)
+           (txq-tick! txq (uptime-ns))         ; re-ARP / time-out held packets too
            st)
           ((eq? (car m) 'tcp-test-loss)        ; (tcp-test-loss N) -- test fault injection
            (tcp-do-test-loss tcp (cadr m))
