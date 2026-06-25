@@ -76,8 +76,9 @@
       (if (< i 16) (begin (bytes-u8-set! ep-toggle (+ base i) 0) (loop (+ i 1))) 'done))))
 
 ;; Service one transfer-request message. interrupt-in/bulk track the data toggle
-;; in ep-toggle; prepare-downstream/mark-hub are UHCI no-ops (reply success).
-(define (uhci-handle iobar dma dma-phys ep-toggle m)
+;; in ep-toggle; isoch schedules into the frame list (fl) via the iso TD/data
+;; buffers; prepare-downstream/mark-hub are UHCI no-ops (reply success).
+(define (uhci-handle iobar dma dma-phys fl itd itd-phys idata idata-phys ep-toggle m)
   (let ((tag (car m)))
     (cond
       ((eq? tag 'control)              ; (control addr speed mps setup data len reply)
@@ -93,6 +94,10 @@
        (let ((r (uhci-data iobar dma dma-phys ep-toggle (cadr m) 0
                            (caddr m) (nth m 6) (cadddr m) (nth m 4) (nth m 5) MS-200)))
          (send (nth m 7) (list 'complete (car r) (cadr r)))))
+      ((eq? tag 'isoch)                ; (isoch addr speed ep maxp data len dir-in? reply)
+       (let ((r (uhci-isoch iobar fl dma-phys itd itd-phys idata idata-phys
+                            (nth m 1) (nth m 3) (nth m 7) (nth m 4) (nth m 5) (nth m 6))))
+         (send (nth m 8) (list 'complete (car r) (cadr r)))))
       ((eq? tag 'prepare-downstream)   ; (... parent port speed reply) -- no-op
        (send (nth m 4) (list 'complete 0 #f)))
       ((eq? tag 'mark-hub)             ; (... addr nports reply) -- no-op
@@ -103,22 +108,27 @@
 
 ;; The host-controller context loop: drain pending transfer messages fast, then
 ;; poll the ports at POLL-INTERVAL, napping IDLE-NS when there is nothing to do.
-(define (uhci-loop iobar dma dma-phys ep-toggle usb port-enum last-poll)
+;; `b` bundles the per-controller DMA buffers (dma/iso TD/iso data + frame list)
+;; so the loop's signature stays readable: (fl dma dma-phys itd itd-phys idata
+;; idata-phys ep-toggle).
+(define (uhci-loop iobar b usb port-enum last-poll)
   (cond
     ((not (%mailbox-empty?))
-     (uhci-handle iobar dma dma-phys ep-toggle (%mailbox-pop))
-     (uhci-loop iobar dma dma-phys ep-toggle usb port-enum last-poll))
+     (uhci-handle iobar (nth b 1) (nth b 2) (nth b 0) (nth b 3) (nth b 4) (nth b 5) (nth b 6) (nth b 7) (%mailbox-pop))
+     (uhci-loop iobar b usb port-enum last-poll))
     ((> (- (uptime-ns) last-poll) POLL-INTERVAL)
      (let ((pe (poll-ports! iobar usb port-enum)))
-       (uhci-loop iobar dma dma-phys ep-toggle usb pe (uptime-ns))))
+       (uhci-loop iobar b usb pe (uptime-ns))))
     (else (sleep IDLE-NS)
-          (uhci-loop iobar dma dma-phys ep-toggle usb port-enum last-poll))))
+          (uhci-loop iobar b usb port-enum last-poll))))
 
 ;; Bring-up body (runs in the spawned HC context): allocate the frame list + DMA
 ;; scratch, point every frame at the idle control QH, reset, then serve.
 (define (uhci-bringup iobar usb)
   (let* ((fl (dma-alloc-32 4096)) (fl-phys (bytes-phys fl))
          (dma (dma-alloc-32 4096)) (dma-phys (bytes-phys dma))
+         (itd (dma-alloc-32 4096)) (itd-phys (bytes-phys itd))
+         (idata (dma-alloc-32 ISO-DATA-MAX)) (idata-phys (bytes-phys idata))
          (ep-toggle (make-bytes (* 128 16))))
     (bytes-u32-set! dma UHCI-QH-OFF 1)             ; QH hlp = Terminate
     (bytes-u32-set! dma (+ UHCI-QH-OFF 4) 1)       ; QH elp = Terminate (idle)
@@ -128,7 +138,8 @@
           'done))
     (uhci-reset iobar fl-phys)
     (display "[uhci] reset complete; serving") (newline)
-    (uhci-loop iobar dma dma-phys ep-toggle usb (list #f #f) 0)))
+    (uhci-loop iobar (list fl dma dma-phys itd itd-phys idata idata-phys ep-toggle)
+               usb (list #f #f) 0)))
 
 ;; Entry point (init.clp calls this with the coreusb handle). Discovers the
 ;; controller, enables it, and spawns the HC context. Gated on pci-find, so a

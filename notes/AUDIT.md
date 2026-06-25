@@ -695,6 +695,25 @@ port-poll path captured a binding only inside internal defines, corrupted by the
 same VM bug, so connect detection silently failed. With the fix, `USB=xhci-kbd`
 enumerates the keyboard and `xhci-storage` the disk.
 
+### Isochronous transfers (added)
+Both controllers now serve an `(isoch addr speed ep maxp data len dir-in? reply)`
+transfer message (proto.clp), the streaming primitive USB audio needs. UHCI
+schedules one iso TD per packet directly into consecutive frame-list slots (each
+TD links onward to the control QH), waits for the frames to pass, then restores
+the slots. xHCI configures an isochronous endpoint (CErr=0, Interval=3) and pushes
+one Isoch TRB per packet, all SIA (Start Isoch ASAP), IOC on the last.
+
+Known simplifications (sufficient for tone playback; revisit for gapless/UAC2):
+- **Synchronous chunked feed.** A submission is one bounded buffer (UHCI ≤4 KiB /
+  64 packets; xHCI ≤2 KiB), clocked out whole before the completion replies. The
+  class driver streams chunk-by-chunk, so there is a small inter-chunk gap (a
+  benign under-run — invisible on QEMU's sink device).
+- **xHCI interval hardcoded to 1 ms** (Interval=3): the transfer protocol does not
+  carry bInterval, and 1 ms is the universal audio service interval. A non-1 ms iso
+  endpoint would be mis-scheduled.
+- **OUT-focused.** `usb-isoch-in` exists and the controllers handle dir-in?, but
+  per-packet IN residuals are not tracked (the audio scope is playback-only).
+
 ---
 
 ## Toolchain / build notes (addressed in the revival PRs)

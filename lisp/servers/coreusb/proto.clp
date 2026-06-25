@@ -13,9 +13,18 @@
 ;;   (control       addr speed mps setup data len reply) -> (complete n data|#f)
 ;;   (interrupt-in  addr speed ep maxp len reply)         -> (complete n data)
 ;;   (bulk          addr ep maxp data len dir-in? reply)  -> (complete n data|#f)
+;;   (isoch         addr speed ep maxp data len dir-in? reply) -> (complete n data|#f)
 ;;   (prepare-downstream parent-addr port speed reply)    -> (complete status #f)
 ;;   (mark-hub      addr nports reply)                    -> (complete status #f)
 ;;   (disconnect-dev addr)                                -- fire-and-forget
+;;
+;; isoch is the streaming transfer (audio/video): `data` (OUT) / `len` bytes are
+;; split into ceil(len/maxp) packets, one per (micro)frame, scheduled back-to-back
+;; with no handshake or retry (the iso contract -- a dropped packet is simply
+;; lost). The controller answers once the whole submission has been clocked out,
+;; with n = bytes actually transferred. A class driver streams by submitting these
+;; chunk-by-chunk; the small gap between a completion and the next submission is a
+;; benign under-run for tone playback (and invisible on QEMU's sink device).
 ;;
 ;; control direction lives in setup[0] bit7 (USB-REQ-DIR-IN); `data` is the OUT
 ;; payload (or #f) and `len` is wLength. prepare-downstream/mark-hub are optional
@@ -99,6 +108,10 @@
   (send hci (list 'bulk addr ep maxp data len dir-in? (self)))
   (await-complete))
 
+(define (hci-isoch hci addr speed ep maxp data len dir-in?)
+  (send hci (list 'isoch addr speed ep maxp data len dir-in? (self)))
+  (await-complete))
+
 (define (hci-prepare-downstream hci parent-addr port speed)
   (send hci (list 'prepare-downstream parent-addr port speed (self)))
   (await-complete))
@@ -154,6 +167,18 @@
 (define (usb-bulk-out dev endpoint max-packet data len)
   (complete-n (hci-bulk (usb-dev-hci dev) (usb-dev-address dev) endpoint max-packet
                         data len #f)))
+
+;; Isochronous OUT: clock `len` bytes of `data` out `endpoint` in max-packet-sized
+;; packets. Returns the byte count transferred (>=0) or -1. The audio class driver
+;; streams a PCM buffer one chunk per call. (usb-isoch-in mirrors it for capture.)
+(define (usb-isoch-out dev endpoint max-packet data len)
+  (complete-n (hci-isoch (usb-dev-hci dev) (usb-dev-address dev) (usb-dev-speed dev)
+                         endpoint max-packet data len #f)))
+
+(define (usb-isoch-in dev endpoint max-packet len)
+  (let ((c (hci-isoch (usb-dev-hci dev) (usb-dev-address dev) (usb-dev-speed dev)
+                      endpoint max-packet #f len #t)))
+    (if (< (complete-n c) 0) #f (complete-data c))))
 
 ;; Find the first endpoint of a given transfer type (2=bulk,3=interrupt) and
 ;; direction (dir-in? = IN) in the configuration descriptor. Returns

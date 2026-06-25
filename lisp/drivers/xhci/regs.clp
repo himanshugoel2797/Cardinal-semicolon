@@ -50,7 +50,7 @@
 
 ;; ---- TRB types ----
 (define TRB-NORMAL 1)  (define TRB-SETUP 2)   (define TRB-DATA 3)
-(define TRB-STATUS 4)  (define TRB-LINK 6)
+(define TRB-STATUS 4)  (define TRB-ISOCH 5)   (define TRB-LINK 6)
 (define TRB-ENABLE-SLOT 9)        (define TRB-DISABLE-SLOT 10)
 (define TRB-ADDRESS-DEVICE 11)    (define TRB-CONFIGURE-ENDPOINT 12)
 (define TRB-EVENT-TRANSFER 32)    (define TRB-EVENT-CMD-COMPLETE 33)
@@ -61,6 +61,7 @@
 ;; endpoint context EP types
 (define EP-TYPE-CONTROL 4) (define EP-TYPE-BULK-OUT 2) (define EP-TYPE-BULK-IN 6)
 (define EP-TYPE-INTR-OUT 3) (define EP-TYPE-INTR-IN 7)
+(define EP-TYPE-ISOCH-OUT 1) (define EP-TYPE-ISOCH-IN 5)
 
 (define XHCI-RING-SIZE 64)
 (define XHCI-BOUNCE-MAX 2048)

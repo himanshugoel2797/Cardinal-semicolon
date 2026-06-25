@@ -20,6 +20,7 @@
   (export start-usb-service
           ;; class-driver transfer API + descriptor accessors
           usb-control-in usb-control-out usb-interrupt-in usb-bulk-in usb-bulk-out
+          usb-isoch-out usb-isoch-in
           usb-find-endpoint usb-iface-class usb-iface-subclass usb-iface-protocol
           usb-iface-number
           usb-mark-hub usb-enumerate-downstream usb-disconnect-downstream
