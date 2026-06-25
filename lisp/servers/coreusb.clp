@@ -20,19 +20,32 @@
   (export start-usb-service
           ;; class-driver transfer API + descriptor accessors
           usb-control-in usb-control-out usb-interrupt-in usb-bulk-in usb-bulk-out
-          usb-find-endpoint usb-iface-class usb-iface-protocol usb-iface-number
+          usb-find-endpoint usb-iface-class usb-iface-subclass usb-iface-protocol
+          usb-iface-number
           usb-mark-hub usb-enumerate-downstream usb-disconnect-downstream
           usb-dev-hci usb-dev-address usb-dev-speed usb-dev-config usb-dev-config-len
           complete-n complete-data
+          ;; full descriptor model (multi-interface / alt-setting aware)
+          usb-interfaces iface-number iface-alt iface-class iface-subclass
+          iface-protocol iface-num-eps iface-offset
+          usb-iface-endpoints usb-find-ep-in
+          ep-address ep-attributes ep-type ep-sync-type ep-dir-in? ep-number
+          ep-max-packet ep-interval
+          ;; standard requests + strings
+          usb-get-descriptor usb-set-interface
+          usb-string usb-string-raw usb-string-decode usb-langid
           ;; request/descriptor/class/speed constants used by class drivers
           USB-REQ-DIR-IN USB-REQ-DIR-OUT USB-REQ-TYPE-CLASS
-          USB-REQ-RECIP-INTERFACE USB-REQ-RECIP-OTHER
+          USB-REQ-RECIP-DEVICE USB-REQ-RECIP-INTERFACE USB-REQ-RECIP-ENDPOINT
+          USB-REQ-RECIP-OTHER
           USB-REQ-GET-STATUS USB-REQ-CLEAR-FEATURE USB-REQ-SET-FEATURE
           USB-REQ-GET-DESCRIPTOR USB-REQ-SET-INTERFACE
           USB-REQ-SET-ADDRESS USB-REQ-SET-CONFIGURATION
-          USB-DESC-DEVICE USB-DESC-CONFIG USB-DESC-INTERFACE USB-DESC-ENDPOINT
-          USB-CLASS-HID USB-CLASS-MASS-STORAGE USB-CLASS-HUB
-          USB-XFER-BULK USB-XFER-INTERRUPT
+          USB-DESC-DEVICE USB-DESC-CONFIG USB-DESC-STRING USB-DESC-INTERFACE
+          USB-DESC-ENDPOINT USB-DESC-IFACE-ASSOC
+          USB-CLASS-AUDIO USB-CLASS-CDC USB-CLASS-HID USB-CLASS-MASS-STORAGE
+          USB-CLASS-HUB
+          USB-XFER-CONTROL USB-XFER-ISOCH USB-XFER-BULK USB-XFER-INTERRUPT
           USB-SPEED-LOW USB-SPEED-FULL USB-SPEED-HIGH USB-SPEED-SUPER)
   (import driver-util)
   (include proto enum))

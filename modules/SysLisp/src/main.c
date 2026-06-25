@@ -2522,6 +2522,45 @@ static void check_sleep(lisp_value env) {
     }
 }
 
+// coreusb descriptor parsers (pure byte math, no controller): build a synthetic
+// composite USB Audio configuration -- an Interface Association Descriptor, an
+// AudioControl interface with a class-specific header, an AudioStreaming
+// interface with a zero-bandwidth alt 0 and an active alt 1 carrying one
+// isochronous OUT endpoint -- and assert the multi-interface / alt-setting
+// walkers recover it (interface count with the IAD and class descriptors
+// skipped, the streaming interface's subclass, alt 0 having no endpoints, and
+// the iso endpoint's type/max-packet/direction), plus the UTF-16LE string
+// decoder. QEMU can't inject arbitrary descriptors, so this is the authoritative
+// test of the parse path the audio class driver rides.
+static void check_coreusb(lisp_value env) {
+    check(env, "(begin"
+               "  (define-module usb-probe (export run)"
+               "    (import coreusb)"
+               "    (define (len* l) (if (null? l) 0 (+ 1 (len* (cdr l)))))"
+               "    (define (mkb lst)"
+               "      (let loop ((b (make-bytes (len* lst))) (i 0) (l lst))"
+               "        (if (null? l) b (begin (bytes-u8-set! b i (car l)) (loop b (+ i 1) (cdr l))))))"
+               "    (define (run)"
+               "      (let* ((cfg (mkb (list 9 2 69 0 2 1 0 128 50"      // configuration
+               "                             8 11 0 2 1 1 0 0"            // IAD (audio fn)
+               "                             9 4 0 0 0 1 1 0 0"           // iface0: AC
+               "                             9 36 1 0 9 0 1 1 0"          // AC class header
+               "                             9 4 1 0 0 1 2 0 0"           // iface1 alt0: AS
+               "                             9 4 1 1 1 1 2 0 0"           // iface1 alt1: AS
+               "                             7 36 1 1 0 2 0"              // AS class general
+               "                             9 5 1 9 192 0 1 0 0)))"      // iso OUT ep
+               "             (dev (list 0 1 1 8 cfg 69))"
+               "             (ep (usb-find-ep-in (usb-iface-endpoints dev 1 1) 1 #f)))"
+               "        (list (len* (usb-interfaces dev))"
+               "              (iface-subclass (caddr (usb-interfaces dev)))"
+               "              (len* (usb-iface-endpoints dev 1 0))"
+               "              (ep-type ep) (ep-max-packet ep) (ep-dir-in? ep)"
+               "              (string=? (usb-string-decode (mkb (list 6 3 72 0 105 0))) \"Hi\")))))"
+               "  (import (usb-probe (prefix u:)))"
+               "  (u:run))",
+          "(3 2 0 1 192 #f #t)");
+}
+
 static void run_self_test(lisp_value env) {
     check(env, "(+ 1 2 3)", "6");
     check(env, "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 6)", "720");
@@ -2666,6 +2705,7 @@ static void run_self_test(lisp_value env) {
     check_hdaudio_jack(env);
     check_gpu(env);
     check_lfb(env);
+    check_coreusb(env);
     check_rtl8139(env);
     check_sleep(env);
     // sys-debug through the capability path: a module imports the reflective

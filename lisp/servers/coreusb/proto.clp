@@ -25,7 +25,9 @@
 (define USB-REQ-DIR-IN  #x80)
 (define USB-REQ-DIR-OUT #x00)
 (define USB-REQ-TYPE-CLASS #x20)
+(define USB-REQ-RECIP-DEVICE    #x00)
 (define USB-REQ-RECIP-INTERFACE #x01)
+(define USB-REQ-RECIP-ENDPOINT  #x02)
 (define USB-REQ-RECIP-OTHER     #x03)
 
 (define USB-REQ-GET-STATUS        0)
@@ -36,17 +38,22 @@
 (define USB-REQ-SET-CONFIGURATION 9)
 (define USB-REQ-SET-INTERFACE     11)
 
-(define USB-DESC-DEVICE    1)
-(define USB-DESC-CONFIG    2)
-(define USB-DESC-STRING    3)
-(define USB-DESC-INTERFACE 4)
-(define USB-DESC-ENDPOINT  5)
+(define USB-DESC-DEVICE     1)
+(define USB-DESC-CONFIG     2)
+(define USB-DESC-STRING     3)
+(define USB-DESC-INTERFACE  4)
+(define USB-DESC-ENDPOINT   5)
+(define USB-DESC-IFACE-ASSOC 11)   ; Interface Association Descriptor (multi-fn)
 
+(define USB-CLASS-AUDIO        #x01)
+(define USB-CLASS-CDC          #x02)
 (define USB-CLASS-HID          #x03)
 (define USB-CLASS-MASS-STORAGE #x08)
 (define USB-CLASS-HUB          #x09)
 
 ;; transfer types in bmAttributes bits1:0
+(define USB-XFER-CONTROL   0)
+(define USB-XFER-ISOCH     1)
 (define USB-XFER-BULK      2)
 (define USB-XFER-INTERRUPT 3)
 
@@ -191,5 +198,139 @@
                (bytes-u8-ref cfg (+ off which)))
               (else (loop (+ off len)))))))))
 (define (usb-iface-class dev)    (usb-iface-field dev 5))
+(define (usb-iface-subclass dev) (usb-iface-field dev 6))
 (define (usb-iface-protocol dev) (usb-iface-field dev 7))
 (define (usb-iface-number dev)   (usb-iface-field dev 2))
+
+;; ---- full descriptor model (multi-interface / alt-setting aware) ------------
+;; The accessors above answer the FIRST interface only -- enough for HID/storage,
+;; which are single-interface. Audio (and other multi-function classes) need to
+;; see every interface, its alternate settings, and the endpoints scoped to a
+;; given (interface,alt). These walkers parse the whole configuration blob.
+
+;; Interface (alt-setting) descriptor record + accessors.
+;;   (number alt class subclass protocol num-endpoints byte-offset)
+(define (mk-iface n alt cls sub proto neps off) (list n alt cls sub proto neps off))
+(define (iface-number i)   (car i))
+(define (iface-alt i)      (cadr i))
+(define (iface-class i)    (caddr i))
+(define (iface-subclass i) (cadddr i))
+(define (iface-protocol i) (nth i 4))
+(define (iface-num-eps i)  (nth i 5))
+(define (iface-offset i)   (nth i 6))
+
+;; Every interface descriptor (one record per alternate setting) in order.
+(define (usb-interfaces dev)
+  (let ((cfg (usb-dev-config dev)) (clen (usb-dev-config-len dev)))
+    (let loop ((off 0) (acc '()))
+      (if (> (+ off 2) clen)
+          (reverse acc)
+          (let ((len (bytes-u8-ref cfg off)) (dtype (bytes-u8-ref cfg (+ off 1))))
+            (cond
+              ((= len 0) (reverse acc))
+              ((and (= dtype USB-DESC-INTERFACE) (>= len 9) (<= (+ off 9) clen))
+               (loop (+ off len)
+                     (cons (mk-iface (bytes-u8-ref cfg (+ off 2)) (bytes-u8-ref cfg (+ off 3))
+                                     (bytes-u8-ref cfg (+ off 5)) (bytes-u8-ref cfg (+ off 6))
+                                     (bytes-u8-ref cfg (+ off 7)) (bytes-u8-ref cfg (+ off 4))
+                                     off)
+                           acc)))
+              (else (loop (+ off len) acc))))))))
+
+;; Endpoint descriptor record + accessors.
+;;   (address bmAttributes max-packet bInterval)
+(define (mk-ep addr attr mps ival) (list addr attr mps ival))
+(define (ep-address e)    (car e))
+(define (ep-attributes e) (cadr e))
+(define (ep-type e)       (bitwise-and (cadr e) 3))      ; 0=ctl 1=iso 2=bulk 3=int
+(define (ep-sync-type e)  (bitwise-and (arithmetic-shift (cadr e) -2) 3)) ; iso sync
+(define (ep-dir-in? e)    (not (= 0 (bitwise-and (car e) #x80))))
+(define (ep-number e)     (bitwise-and (car e) #xF))
+(define (ep-max-packet e) (caddr e))
+(define (ep-interval e)   (cadddr e))
+
+;; The endpoint descriptors belonging to interface `num` alternate setting `alt`:
+;; those between that interface descriptor and the next interface descriptor.
+;; Returns a list of endpoint records (possibly empty -- alt 0 of an audio
+;; streaming interface has zero endpoints).
+(define (usb-iface-endpoints dev num alt)
+  (let ((cfg (usb-dev-config dev)) (clen (usb-dev-config-len dev)))
+    (let scan ((off 0))
+      (if (> (+ off 2) clen)
+          '()
+          (let ((len (bytes-u8-ref cfg off)) (dtype (bytes-u8-ref cfg (+ off 1))))
+            (cond
+              ((= len 0) '())
+              ((and (= dtype USB-DESC-INTERFACE) (>= len 9)
+                    (= (bytes-u8-ref cfg (+ off 2)) num)
+                    (= (bytes-u8-ref cfg (+ off 3)) alt))
+               (let collect ((o (+ off len)) (acc '()))
+                 (if (> (+ o 2) clen)
+                     (reverse acc)
+                     (let ((l (bytes-u8-ref cfg o)) (dt (bytes-u8-ref cfg (+ o 1))))
+                       (cond
+                         ((= l 0) (reverse acc))
+                         ((= dt USB-DESC-INTERFACE) (reverse acc))   ; next iface: stop
+                         ((and (= dt USB-DESC-ENDPOINT) (>= l 7) (<= (+ o 7) clen))
+                          (collect (+ o l)
+                                   (cons (mk-ep (bytes-u8-ref cfg (+ o 2)) (bytes-u8-ref cfg (+ o 3))
+                                                (bytes-u16-ref cfg (+ o 4)) (bytes-u8-ref cfg (+ o 6)))
+                                         acc)))
+                         (else (collect (+ o l) acc)))))))   ; skip class-specific descriptors
+              (else (scan (+ off len)))))))))
+
+;; First endpoint of transfer `type` / direction `dir-in?` in an endpoint list.
+(define (usb-find-ep-in eps type dir-in?)
+  (cond ((null? eps) #f)
+        ((and (= (ep-type (car eps)) type) (eq? (ep-dir-in? (car eps)) dir-in?)) (car eps))
+        (else (usb-find-ep-in (cdr eps) type dir-in?))))
+
+;; ---- standard requests (class-driver-facing) --------------------------------
+;; Generic GET_DESCRIPTOR with explicit recipient + wIndex; returns the data
+;; bytevector or #f. For a device-level descriptor (BOS, ...) pass
+;; USB-REQ-RECIP-DEVICE and wIndex 0; for a HID report descriptor pass
+;; USB-REQ-RECIP-INTERFACE and the interface number as wIndex (the interface
+;; recipient is required there -- a device-recipient request would STALL).
+(define (usb-get-descriptor dev recip dtype index windex len)
+  (usb-control-in dev recip USB-REQ-GET-DESCRIPTOR
+                  (bitwise-or (arithmetic-shift dtype 8) index) windex len))
+
+;; SET_INTERFACE: select alternate setting `alt` of interface `iface`. Audio uses
+;; this to switch a streaming interface from its zero-bandwidth alt 0 to an alt
+;; that exposes the isochronous endpoint. Returns the control byte count (>=0) or -1.
+(define (usb-set-interface dev iface alt)
+  (usb-control-out dev USB-REQ-RECIP-INTERFACE USB-REQ-SET-INTERFACE alt iface #f 0))
+
+;; ---- string descriptors -----------------------------------------------------
+;; Raw GET_DESCRIPTOR(STRING,index) bytes (<=255), or #f. langid 0/index 0 yields
+;; the supported-LANGID array. We over-read (255) and trust bLength via the data.
+(define (usb-string-raw dev index langid)
+  (let ((c (hci-control (usb-dev-hci dev) (usb-dev-address dev) (usb-dev-speed dev)
+                        (usb-dev-mps0 dev)
+                        (make-setup (bitwise-or USB-REQ-RECIP-DEVICE USB-REQ-DIR-IN)
+                                    USB-REQ-GET-DESCRIPTOR
+                                    (bitwise-or (arithmetic-shift USB-DESC-STRING 8) index)
+                                    langid 255)
+                        #f 255)))
+    (if (< (complete-n c) 2) #f (complete-data c))))
+
+;; The device's first supported LANGID (e.g. 0x0409 en-US), or 0 if none.
+(define (usb-langid dev)
+  (let ((s (usb-string-raw dev 0 0)))
+    (if (and s (>= (bytes-length s) 4)) (bytes-u16-ref s 2) 0)))
+
+;; Decode a UTF-16LE string descriptor's bytes (after the 2-byte header) into an
+;; ASCII Lisp string; non-ASCII code units fold to '?'. Pure (host-testable).
+(define (usb-string-decode s)
+  (let ((n (bytes-length s)))
+    (let loop ((i 2) (acc '()))
+      (if (> (+ i 2) n)
+          (list->string (reverse acc))
+          (let ((u (bytes-u16-ref s i)))
+            (loop (+ i 2) (cons (integer->char (if (< u 128) u 63)) acc)))))))
+
+;; Fetch + decode string `index` (in `langid`); "" for index 0 or on failure.
+(define (usb-string dev index langid)
+  (if (= index 0) ""
+      (let ((s (usb-string-raw dev index langid)))
+        (if s (usb-string-decode s) ""))))
