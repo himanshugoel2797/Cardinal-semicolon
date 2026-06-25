@@ -613,9 +613,19 @@ PRs #63/#64 prototyped, ported into Lisp (see `notes/servers/CoreNetwork.md`,
 "Lisp port status"). Verified live: a no-`cardinal.ip` virtio-net/slirp boot
 auto-acquires `10.0.2.15` from DHCP. The new
 `CoreNetDebug` server (cmdline-gated by `cardinal.netdbg`) consumes these to offer
-a UDP echo + reliable named-blob upload for fast, swap-free network debug. See
-`notes/servers/CoreNetwork.md`; TCP and the userspace socket API remain TODO and
-are documented there as deferred design decisions. Matches the README status notes.
+a UDP echo + reliable named-blob upload for fast, swap-free network debug, plus a
+**TCP echo on port 7**. **TCP is now implemented** (`lisp/servers/corenetwork/tcp.clp`):
+active + passive open, in-order data with cumulative ACKs, out-of-order reassembly,
+timeout retransmission (Go-Back-N) driven by a ticker context, FIN teardown with
+TIME-WAIT, the pseudo-header checksum, and peer-window flow control; congestion
+control / SACK / window-scaling are intentionally omitted (LAN/loopback target).
+The socket surface is the in-OS message API (`tcp-listen`/`tcp-connect`/`tcp-send`/
+`tcp-close` + `tcp-accept`/`tcp-connected`/`tcp-rx`/`tcp-closed` events, plus a
+synchronous `tcp-connect-blocking` helper) — the connection-oriented analogue of
+the UDP `udp-bind` pattern. Verified live: a host `nc`/socket drives the guest TCP
+echo over slirp `hostfwd`, including multi-segment transfer and clean teardown. A
+*userspace* (ring-3) socket surface remains TODO. See `notes/servers/CoreNetwork.md`.
+Matches the README status notes.
 
 ### [FIXED] virtio-net header is 10 bytes but the modern device needs 12
 `drivers/virtio/net/inc/net.h` `virtio_net_cmd_hdr_t` was the 10-byte legacy

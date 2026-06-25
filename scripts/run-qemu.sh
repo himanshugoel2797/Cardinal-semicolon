@@ -62,21 +62,29 @@ esac
 
 # Optional NIC. NIC=virtio-net attaches a virtio-net-pci (1af4:1041) on a user-mode
 # (slirp) netdev; NET_PCAP=path also captures the link to a pcap for inspection.
+# HOSTFWD="tcp::5555-:7" forwards a host port to a guest port over slirp (repeatable
+# with commas), so a host tool (e.g. `nc localhost 5555`) can reach a guest TCP
+# service -- the way to drive the TCP echo (port 7) from outside.
 nic_args=()
+netdev_user="user,id=n0"
+if [ -n "${HOSTFWD:-}" ]; then
+  IFS=',' read -ra _fwds <<< "$HOSTFWD"
+  for f in "${_fwds[@]}"; do netdev_user+=",hostfwd=$f"; done
+fi
 case "${NIC:-none}" in
   none) ;;
   virtio-net)
     # disable-legacy=on forces a MODERN virtio device (device id 1af4:1041, the
     # PCI-capability layout); the transitional default would enumerate as the
     # legacy 1af4:1000 with an I/O-port BAR.
-    nic_args=(-netdev "user,id=n0" -device "virtio-net-pci,disable-legacy=on,netdev=n0")
+    nic_args=(-netdev "$netdev_user" -device "virtio-net-pci,disable-legacy=on,netdev=n0")
     [ -n "${NET_PCAP:-}" ] && nic_args+=(-object "filter-dump,id=d0,netdev=n0,file=$NET_PCAP")
     ;;
   rtl8139)
     # The Realtek RTL8139 (10ec:8139) -- a legacy INTx, 32-bit-DMA NIC -- on the
     # same slirp netdev. Drives the Lisp rtl8139 driver (no virtio-net present, so
     # init's NIC gating falls through to it).
-    nic_args=(-netdev "user,id=n0" -device "rtl8139,netdev=n0")
+    nic_args=(-netdev "$netdev_user" -device "rtl8139,netdev=n0")
     [ -n "${NET_PCAP:-}" ] && nic_args+=(-object "filter-dump,id=d0,netdev=n0,file=$NET_PCAP")
     ;;
   *) echo "error: unknown NIC=$NIC (none|virtio-net|rtl8139)" >&2; exit 1 ;;

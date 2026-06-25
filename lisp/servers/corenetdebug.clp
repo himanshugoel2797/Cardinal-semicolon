@@ -18,8 +18,9 @@
 (define-module corenetdebug
   (export start-netdebug)
 
-  (define ECHO-PORT   1337)
-  (define UPLOAD-PORT 1338)
+  (define ECHO-PORT     1337)
+  (define UPLOAD-PORT   1338)
+  (define TCP-ECHO-PORT 7)      ; classic TCP "echo" service port
 
   ;; FNV-1a over a bytes buffer, 32-bit (xor then multiply, masked to 32 bits) --
   ;; an order-sensitive digest, matching the C, so the host confirms integrity not
@@ -60,5 +61,28 @@
                     (loop)))))))
       (send net (list 'udp-bind ECHO-PORT echo))
       (send net (list 'udp-bind UPLOAD-PORT upload))
-      (display "[corenetdebug] enabled (echo 1337, digest 1338)") (newline)
-      'netdbg-up)))
+      (start-tcp-echo net)
+      (display "[corenetdebug] enabled (udp echo 1337, digest 1338, tcp echo 7)") (newline)
+      'netdbg-up))
+
+  ;; A TCP echo server on port 7: a stream consumer of the CoreNetwork socket API.
+  ;; It listens, and per connection bounces every received chunk straight back
+  ;; (tcp-send) and, when the peer half-closes, closes its own side. This is the
+  ;; reliable, connection-oriented analogue of the UDP echo above -- exercising the
+  ;; handshake, in-order data, retransmission, and FIN teardown end to end.
+  (define (start-tcp-echo net)
+    (let ((srv
+            (spawn-restricted '()
+              (lambda ()
+                (let loop ()
+                  (let ((m (recv)))
+                    (cond
+                      ((eq? (car m) 'tcp-accept)        ; (tcp-accept lport conn rip rport)
+                       (display "[corenetdebug] tcp connection accepted (conn ")
+                       (display (caddr m)) (display ")") (newline))
+                      ((eq? (car m) 'tcp-rx)            ; (tcp-rx conn bytes) -> echo it back
+                       (send net (list 'tcp-send (cadr m) (caddr m))))
+                      ((eq? (car m) 'tcp-closed)        ; (tcp-closed conn) -> close our side
+                       (send net (list 'tcp-close (cadr m)))))
+                    (loop)))))))
+      (send net (list 'tcp-listen TCP-ECHO-PORT srv)))))
