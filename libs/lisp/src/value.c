@@ -72,9 +72,10 @@ size_t lisp_named_len(lisp_value v) { return (size_t)LISP_HDR_AUX(lisp_obj(v)); 
 const char *lisp_string_data(lisp_value v) { return ((lisp_string *)lisp_obj(v))->data; }
 size_t lisp_string_len(lisp_value v) { return (size_t)LISP_HDR_AUX(lisp_obj(v)); }
 
-// Vectors are immutable: there is no vector-set!. An "update" allocates a fresh
-// vector (copy-on-write of the flat array). Structural-sharing variants (RRB)
-// are a later optimization; flat COW is the small/elegant starting point.
+// Vectors are mutable (vector-set!), per-context, deep-copied on send -- the same
+// shared-nothing contract as bytes (see header). The storage is a flat inline
+// array trailing the header; the GC traces every element and frees the whole
+// object in one piece.
 lisp_value lisp_make_vector(size_t len, lisp_value fill) {
     lisp_vector *v = (lisp_vector *)lisp_gc_alloc(sizeof(lisp_vector) + len * sizeof(lisp_value));
     if (v == NULL)
@@ -89,8 +90,43 @@ size_t lisp_vector_length(lisp_value v) { return (size_t)LISP_HDR_AUX(lisp_obj(v
 lisp_value lisp_vector_ref(lisp_value v, size_t i) {
     return ((lisp_vector *)lisp_obj(v))->items[i];
 }
+void lisp_vector_set(lisp_value v, size_t i, lisp_value x) {
+    ((lisp_vector *)lisp_obj(v))->items[i] = x;
+}
 void lisp_vector_set_init(lisp_value v, size_t i, lisp_value x) {
-    ((lisp_vector *)lisp_obj(v))->items[i] = x;  // for constructors only (see header)
+    ((lisp_vector *)lisp_obj(v))->items[i] = x;  // identical store; constructor intent
+}
+
+// A hash table is a struct + a Lisp VECTOR of bucket lists, so the GC reaches all
+// keys/values through the single `buckets` child and frees the table with the
+// sweep (no finalizer). The caller seeds it with `nbuckets` empty buckets.
+lisp_value lisp_make_hashtable(size_t nbuckets) {
+    if (nbuckets < 1)
+        nbuckets = 1;
+    // Allocate the buckets vector first; if it fails, no half-built table escapes.
+    lisp_value buckets = lisp_make_vector(nbuckets, LISP_EMPTY);
+    if (buckets == LISP_UNDEF)
+        return LISP_UNDEF;
+    lisp_hashtable *ht = (lisp_hashtable *)lisp_gc_alloc(sizeof(lisp_hashtable));
+    if (ht == NULL)
+        return LISP_UNDEF;
+    ht->h.header = LISP_MK_HEADER(LISP_OBJ_HASHTABLE, 0);
+    ht->buckets = buckets;
+    ht->count = 0;
+    return lisp_from_obj(ht);
+}
+
+lisp_value lisp_hashtable_buckets(lisp_value ht) {
+    return ((lisp_hashtable *)lisp_obj(ht))->buckets;
+}
+size_t lisp_hashtable_count(lisp_value ht) {
+    return ((lisp_hashtable *)lisp_obj(ht))->count;
+}
+void lisp_hashtable_set_buckets(lisp_value ht, lisp_value buckets) {
+    ((lisp_hashtable *)lisp_obj(ht))->buckets = buckets;
+}
+void lisp_hashtable_set_count(lisp_value ht, size_t count) {
+    ((lisp_hashtable *)lisp_obj(ht))->count = count;
 }
 
 lisp_value lisp_make_flonum(double x) {

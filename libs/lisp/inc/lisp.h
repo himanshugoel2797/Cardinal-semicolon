@@ -17,6 +17,11 @@
 // false). It deliberately deviates from classic Scheme in being immutable by
 // default with persistent data structures -- that is load-bearing for the OS
 // (persistence, checkpoints, lock-free concurrency), not a stylistic choice.
+// The exceptions are a small set of explicitly MUTABLE container types -- bytes,
+// vectors, and hash tables -- meant for in-place algorithmic state (driver
+// buffers, the network stack's connection tables, etc.). They stay compatible
+// with the shared-nothing model by being per-context and DEEP-COPIED on send, so
+// no mutable object is ever shared across contexts.
 //
 // This is Phase 0: the tagged value representation plus reader/printer. The
 // representation is the one decision that is painful to retrofit, so it is
@@ -78,7 +83,8 @@ typedef enum {
     LISP_OBJ_CTX = 11,       // an execution context (the CEK machine state)
     LISP_OBJ_BYTES = 12,     // a mutable byte buffer (driver MMIO/DMA + bulk IPC)
     LISP_OBJ_BCCLOSURE = 13, // a compiled closure: a bytecode chunk + captured cells (lbc.c)
-    // reserved for later phases: MAP, BYTEVECTOR, BOX, ...
+    LISP_OBJ_HASHTABLE = 14, // a mutable equal?-keyed hash table (chained buckets)
+    // reserved for later phases: BYTEVECTOR, BOX, ...
 } lisp_objtype;
 
 // Header bit layout: [7:0] type, [15:8] gc flags, [63:16] aux (type-specific,
@@ -132,6 +138,18 @@ typedef struct {
     lisp_value items[];  // length in header aux
 } lisp_vector;
 
+// A mutable equal?-keyed hash table. `buckets` is a Lisp VECTOR of bucket lists;
+// each bucket is a list of (key . value) pairs. Storing the buckets as a Lisp
+// object (not a raw malloc) makes the whole table GC-traceable through a single
+// child and frees with the mark-sweep -- no finalizer. Like bytes it is mutable
+// per-context and DEEP-COPIED on send, so no mutable state is shared across
+// contexts (shared-nothing IPC is preserved). `count` is the live entry count.
+typedef struct {
+    lisp_header h;
+    lisp_value buckets;
+    size_t count;
+} lisp_hashtable;
+
 typedef struct {
     lisp_header h;
     double val;
@@ -182,6 +200,7 @@ static inline bool lisp_is_symbol(lisp_value v) { return lisp_is_objtype(v, LISP
 static inline bool lisp_is_keyword(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_KEYWORD); }
 static inline bool lisp_is_string(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_STRING); }
 static inline bool lisp_is_vector(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_VECTOR); }
+static inline bool lisp_is_hashtable(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_HASHTABLE); }
 static inline bool lisp_is_flonum(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_FLONUM); }
 static inline bool lisp_is_bytes(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_BYTES); }
 // A callable: a C primitive, a tree-walker closure, or a compiled (bytecode)
@@ -213,12 +232,26 @@ lisp_value lisp_make_string(const char *data, size_t len);
 lisp_value lisp_make_symbol(const char *name, size_t len);
 lisp_value lisp_make_keyword(const char *name, size_t len);
 
-// Immutable vectors. lisp_vector_set_init is for constructors building a fresh
-// vector only -- there is no vector-set! in the language (immutable values).
+// Mutable vectors. Like bytes, a vector is a per-context mutable object that is
+// deep-copied on send, so shared-nothing IPC is preserved. lisp_vector_set is the
+// in-place mutator backing vector-set!; lisp_vector_set_init is the identical
+// store used by constructors building a fresh vector (clearer intent at the call
+// site). The reader's #(...) literals and make-vector both yield mutable vectors.
 lisp_value lisp_make_vector(size_t len, lisp_value fill);
 size_t lisp_vector_length(lisp_value v);
 lisp_value lisp_vector_ref(lisp_value v, size_t i);
+void lisp_vector_set(lisp_value v, size_t i, lisp_value x);
 void lisp_vector_set_init(lisp_value v, size_t i, lisp_value x);
+
+// Mutable equal?-keyed hash tables. lisp_make_hashtable allocates a table with
+// `nbuckets` empty buckets (rounded up to a power of two by the caller; the
+// primitive layer picks a default). The buckets/count accessors are runtime
+// plumbing for the primitive layer (prims.c) and the deep-copy path (sched.c).
+lisp_value lisp_make_hashtable(size_t nbuckets);
+lisp_value lisp_hashtable_buckets(lisp_value ht);
+size_t lisp_hashtable_count(lisp_value ht);
+void lisp_hashtable_set_buckets(lisp_value ht, lisp_value buckets);
+void lisp_hashtable_set_count(lisp_value ht, size_t count);
 
 lisp_value lisp_make_flonum(double x);
 

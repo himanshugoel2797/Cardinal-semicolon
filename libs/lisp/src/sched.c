@@ -173,6 +173,22 @@ static lisp_value deep_copy(lisp_value v, int depth, const char **err) {
             }
             return out;
         }
+        case LISP_OBJ_HASHTABLE: {
+            // The buckets vector (a vector of lists of (key . val) pairs) is itself
+            // data, so deep-copying it reproduces every entry; we then wrap it in a
+            // fresh table with the same count. `bk` stays rooted as a C local across
+            // the table allocation. This preserves the equal? layout: equal keys
+            // still land in the same bucket because the hash is content-based.
+            lisp_value bk = deep_copy(lisp_hashtable_buckets(v), depth + 1, err);
+            if (bk == LISP_UNDEF && *err != NULL)
+                return LISP_UNDEF;
+            lisp_value out = lisp_make_hashtable(1);
+            if (out == LISP_UNDEF)
+                return prim_err(err, "send: out of memory");
+            lisp_hashtable_set_buckets(out, bk);
+            lisp_hashtable_set_count(out, lisp_hashtable_count(v));
+            return out;
+        }
         default:
             return prim_err(err, "send: message must be data (not a procedure/handle)");
     }
