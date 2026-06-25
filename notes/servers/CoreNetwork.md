@@ -208,8 +208,18 @@ design and should be decided deliberately, in line with the microkernel model:
    each with its own gateway + routes. A DNS resolver exists (item below); a
    userspace config/query surface is moot (the message API is the userspace
    surface — see item 1).
-4. **IPv4 options / fragmentation / reassembly.** Only `ihl == 5`, unfragmented
-   datagrams are meaningfully handled.
+4. **IPv4 fragmentation / reassembly — *done*** (`lisp/servers/corenetwork/frag.clp`).
+   *Outbound:* `eth-tx-ip` (used by the UDP/ICMP/async-TX send paths; TCP is MSS-
+   bounded so never fragments) splits an IP packet that exceeds the MTU into
+   fragments sharing one IP id, with MF + /8 offsets. *Inbound:* `handle-ip` detects
+   a fragment (MF set or non-zero offset) and hands it to `reasm-offer`, which
+   buffers it keyed by (src, dst, proto, id); once the fragments cover `[0,total)`
+   contiguously it synthesizes a single unfragmented frame and re-dispatches it
+   through `handle-ip` (so it reaches the firewall + L4 demux as a normal packet).
+   Bounded (≤8 concurrent reassemblies, ≤64 KB each, 5s drop timeout) against a
+   fragment flood. Validated by an in-OS round-trip self-test (a 3 KB UDP datagram
+   fragmented out → relayed → reassembled → delivered byte-perfect). IP *options*
+   (`ihl > 5`) are still uncommon and only minimally handled.
 5. **TCP.** *Implemented* (`lisp/servers/corenetwork/tcp.clp`): active + passive
    open, in-order data with cumulative ACKs, out-of-order reassembly (bounded
    reorder queue, trim-on-delivery so retransmits/overlaps neither double-deliver
