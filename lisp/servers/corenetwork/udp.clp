@@ -27,20 +27,20 @@
                 ;; port 68) coexist: each OFFER/ACK reaches all of them and each
                 ;; accepts only its own (filtered by xid/MAC). For the common single-
                 ;; binder port this is identical to a first-match delivery.
-                (let ((plen (- seg 8)) (n 0))
-                  (let ((payload (copy-bytes frame (+ l4 8) plen)))
-                    (for-each (lambda (b)
-                                (if (= (car b) dport)
-                                    (begin (send (cdr b)
-                                                 (list 'udp-rx src-ip src-mac sport payload))
-                                           (set! n (+ n 1)))))
-                              binds))
-                  (if (> n 0) 'delivered 'ignore))))))))
+                (let ((payload (copy-bytes frame (+ l4 8) (- seg 8))))
+                  (let loop ((bs binds) (n 0))
+                    (cond ((null? bs) (if (> n 0) 'delivered 'ignore))
+                          ((= (car (car bs)) dport)
+                           (send (cdr (car bs)) (list 'udp-rx src-ip src-mac sport payload))
+                           (loop (cdr bs) (+ n 1)))
+                          (else (loop (cdr bs) n)))))))))))
 
-;; Build + send a UDP datagram. A computed checksum of 0 is sent as 0xFFFF
-;; (0 on the wire means "no checksum"); the pseudo-header + segment must sum to
-;; zero at the receiver, so we seed the segment sum with the pseudo-header.
-(define (udp-send ip mac nic-tx dst-ip dst-mac sport dport payload plen)
+;; Build the IP packet (header + UDP segment) for a datagram, returning the
+;; bytes (length 20 + 8 + plen). A computed checksum of 0 is sent as 0xFFFF (0 on
+;; the wire means "no checksum"); the pseudo-header + segment must sum to zero at
+;; the receiver, so we seed the segment sum with the pseudo-header. Split out from
+;; udp-send so the async TX path can build the frame and defer the ethernet send.
+(define (udp-build-ip ip dst-ip sport dport payload plen)
   (let ((seg (+ 8 plen)))
     (let ((u (make-bytes seg)))
       (put-be16! u 0 sport)
@@ -49,6 +49,8 @@
       (bytes-copy-into! u 8 payload plen)
       (let ((c (csum-seeded u 0 seg (udp-pseudo-sum ip dst-ip seg))))
         (put-be16! u 6 (if (= c 0) #xFFFF c)))
-      ;; the ethernet payload is the whole IP packet (header + UDP segment)
-      (eth-tx nic-tx mac dst-mac ETH-IPV4
-              (build-ipv4 ip dst-ip IP-UDP u seg) (+ 20 seg)))))
+      (build-ipv4 ip dst-ip IP-UDP u seg))))   ; the whole IP packet (header + UDP)
+
+(define (udp-send ip mac nic-tx dst-ip dst-mac sport dport payload plen)
+  (eth-tx nic-tx mac dst-mac ETH-IPV4
+          (udp-build-ip ip dst-ip sport dport payload plen) (+ 28 plen)))

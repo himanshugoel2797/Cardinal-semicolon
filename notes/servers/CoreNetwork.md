@@ -175,11 +175,19 @@ design and should be decided deliberately, in line with the microkernel model:
    (empty-capability contexts) do. The capability grant + per-context heap are the
    isolation boundary. What genuinely remains is only the "raw queue" TODO for
    unhandled protocols.
-2. **TX path architecture.** A proper transmit path wants a per-device tx queue,
-   a tx worker task draining it to the driver, and outbound ARP resolution
-   (hold the packet, emit an ARP request, retry/timeout on reply). *Outbound ARP
-   resolution now exists in the Lisp stack (`arp-resolve`); the async tx-queue /
-   packet-hold-during-resolution and waiter-coalescing remain.*
+2. **TX path architecture.** *The async TX path with packet-hold-during-ARP now
+   exists* (`lisp/servers/corenetwork/txq.clp`): `(udp-send-async dst-ip sport
+   dport payload)` routes the datagram, and on an ARP-cache miss HOLDS it, emits a
+   who-has, and flushes it when the reply lands — no caller-side `arp-resolve`.
+   Packets to the same unresolved next hop coalesce behind one ARP request, and a
+   hold that stays unresolved is retried (every 500ms) and dropped after 3s. The
+   hold-queue is a vector-box in the service closure (GC-traced — NOT `make-cell`,
+   which stores a raw word in bytes and only round-trips fixnums); flush is driven
+   by the ARP rx path and retry/timeout by the 100ms tick. The blocking
+   `arp-resolve` + caller-supplies-MAC path remains for synchronous callers (DNS,
+   `tcp-connect-blocking`). A per-device tx *worker/queue* draining to the driver
+   is still notional (sends go straight to the NIC tx context, which suffices at
+   current rates).
 3. **Interface addressing / routing — *done (multi-homed host)*.** The stack is now
    multi-interface: each NIC `register-nic`s as a distinct interface with its own
    mac/tx and address config (`lisp/servers/corenetwork/route.clp`), and a

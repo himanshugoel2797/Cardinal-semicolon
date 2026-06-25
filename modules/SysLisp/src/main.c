@@ -1466,6 +1466,58 @@ static void check_routing(lisp_value env) {
     }
 }
 
+// Async TX path: send to an IP without pre-resolving its MAC. On a cache miss the
+// datagram is HELD and a who-has is emitted; a later ARP reply flushes it. A second
+// datagram to the same next hop must coalesce behind the one ARP (no second
+// who-has). The fake NIC captures three frames in order -- the who-has, then the
+// two flushed datagrams -- and reports their ethertypes + the who-has target + the
+// resolved dst-MAC.
+static void check_txq(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 2000000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import corenetwork driver-util)"
+        // capture exactly 3 transmitted frames and summarise them
+        "(define cap (spawn (lambda ()"
+        "  (let* ((f1 (cadr (recv))) (f2 (cadr (recv))) (f3 (cadr (recv))))"
+        "    (list (get-be16 f1 12) (bytes-u8-ref f1 38) (bytes-u8-ref f1 41)"  // ARP + target IP
+        "          (get-be16 f2 12) (get-be16 f3 12) (bytes-u8-ref f2 0))))))"   // 2 IPv4 + dst-mac
+        "(define netT (start-network-service))"
+        "(send netT (list 'register-nic (list 2 0 0 0 0 1) cap))"
+        "(send netT (list 'set-address #f (list 10 0 2 15) (list 255 255 255 0)"
+        "                 (list 0 0 0 0) (list 0 0 0 0)))"
+        "(define p1 (make-bytes 1)) (bytes-u8-set! p1 0 11)"
+        "(define p2 (make-bytes 1)) (bytes-u8-set! p2 0 22)"
+        // two datagrams to an unresolved on-link host -> held behind ONE who-has
+        "(send netT (list 'udp-send-async (list 10 0 2 50) 1111 9999 p1))"
+        "(send netT (list 'udp-send-async (list 10 0 2 50) 2222 9999 p2))"
+        // ARP reply for 10.0.2.50 (sha 7:7:7:7:7:7) -> cache learns -> flush both
+        "(define arep (make-bytes 42))"
+        "(put-list! arep 0 (list 2 0 0 0 0 1)) (put-list! arep 6 (list 7 7 7 7 7 7))"
+        "(put-be16! arep 12 2054) (put-be16! arep 14 1) (put-be16! arep 16 2048)"
+        "(bytes-u8-set! arep 18 6) (bytes-u8-set! arep 19 4) (put-be16! arep 20 2)"
+        "(put-list! arep 22 (list 7 7 7 7 7 7)) (put-list! arep 28 (list 10 0 2 50))"
+        "(put-list! arep 38 (list 10 0 2 15))"
+        "(send netT (list 'rx arep 42))",
+        env, &err);
+    lisp_value cap = lisp_eval_string("cap", env, &err);
+    lisp_sched_run(&s, 0);
+    char b[64];
+    lisp_print(lisp_ctx_value(cap), b, sizeof b);
+    // who-has (2054) targeting 10.0.2.50, then two IPv4 (2048) to the resolved mac (7)
+    if (err == NULL && strcmp(b, "(2054 10 50 2048 2048 7)") == 0) {
+        print_str("[SysLisp]  ok  async TX: ARP hold + flush-on-reply + coalesced who-has\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL txq -> ");
+        print_str(b);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // Inbound firewall: ordered allow/deny rules + default policy, matched on
 // (proto, src-IP/prefix, dport). Drives the real fw-allow? decision (the same
 // function handle-ip gates every received packet through) via fw-query.
@@ -2164,6 +2216,7 @@ static void run_self_test(lisp_value env) {
     check_network(env);
     check_routing(env);
     check_firewall(env);
+    check_txq(env);
     check_netdebug(env);
     check_rtl8169(env);
     check_gpu(env);
