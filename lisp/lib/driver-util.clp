@@ -69,9 +69,15 @@
     (let loop ((i off) (l lst))
       (if (null? l) b (begin (bytes-u8-set! b i (car l)) (loop (+ i 1) (cdr l))))))
 
-  (define (make-cell v) (let ((b (make-bytes 8))) (bytes-u64-set! b 0 v) b))
-  (define (cell-ref c)  (bytes-u64-ref c 0))
-  (define (cell-set! c v) (bytes-u64-set! c 0 v))
+  ;; A mutable single-value box. Backed by a 1-element VECTOR, not a bytes buffer:
+  ;; the old bytes-u64 version could hold ONLY fixnums (bytes-set! rejects non-
+  ;; fixnums) and was a GC leaf (a stored heap pointer was neither a real value nor
+  ;; traced, so the GC freed it under the cell). Mutable vectors (the VM's general
+  ;; mutable slot) hold any value and are GC-traced, so a cell can now safely hold a
+  ;; list/string/bytes as well as a fixnum.
+  (define (make-cell v) (make-vector 1 v))
+  (define (cell-ref c)  (vector-ref c 0))
+  (define (cell-set! c v) (vector-set! c 0 v))
 
   ;; Network byte order (big-endian) read/write into a byte buffer. The volatile
   ;; byte accessors are little-endian-native, so protocol headers (which are
