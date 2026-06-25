@@ -27,7 +27,6 @@
                 (bytes-u8-set! reply 1 0)            ; code
                 (put-be16! reply 2 0)               ; clear checksum
                 (put-be16! reply 2 (csum reply 0 ilen))
-                (eth-tx nic-tx mac dst-mac ETH-IPV4
-                        (build-ipv4 ip src-ip IP-ICMP reply ilen)
-                        (+ 20 ilen))
+                (eth-tx-ip nic-tx mac dst-mac          ; fragments an over-MTU echo reply
+                           (build-ipv4 ip src-ip IP-ICMP reply ilen) (+ 20 ilen))
                 'replied))))))

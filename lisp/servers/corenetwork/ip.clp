@@ -27,7 +27,7 @@
 ;; is the interface that owns the packet's dst-IP (the address the peer targeted);
 ;; a limited-broadcast packet (DHCP OFFER/ACK while still 0.0.0.0) has no owning
 ;; interface and is only meaningful for UDP delivery.
-(define (handle-ip ifaces routes fw cache binds tcp frame len)
+(define (handle-ip ifaces routes fw reasm cache binds tcp frame len)
   (let ((o 14))                       ; IP header start
     (if (or (< len 34) (not (= (bit-extract (u8 frame o) 4 4) 4)))
         'ignore
@@ -47,6 +47,16 @@
                   (not (or dst-if (equal? dst-ip IP-BROADCAST)))
                   (not (= 0 (csum frame o ihl))))
               'ignore
+            ;; A fragment (MF set or non-zero offset) is buffered for reassembly;
+            ;; once the datagram is whole, reasm-offer returns a synthesized
+            ;; unfragmented frame that we re-dispatch here (now it passes this
+            ;; check and reaches the firewall + L4 demux as a normal packet).
+            (let ((ff (get-be16 frame (+ o 6))))
+             (if (or (> (bitwise-and ff #x2000) 0) (> (bitwise-and ff #x1FFF) 0))
+                 (let ((full (reasm-offer reasm frame o ihl (uptime-ns))))
+                   (if full
+                       (handle-ip ifaces routes fw reasm cache binds tcp full (bytes-length full))
+                       'fragment))
               (let ((l4 (+ o ihl))        ; transport header offset
                     (ip (if dst-if (ig dst-if I-IP) IP-ANY))
                     (mac (if dst-if (ig dst-if I-MAC) #f))
@@ -77,4 +87,4 @@
                      ;; opened here egresses on the link it arrived on.
                      (handle-tcp ip mac nic-tx tcp frame l4
                                  (if (> iend len) len iend) src-ip)))
-                  (else 'ignore)))))))))
+                  (else 'ignore)))))))))))

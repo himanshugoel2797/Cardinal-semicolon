@@ -52,5 +52,5 @@
       (build-ipv4 ip dst-ip IP-UDP u seg))))   ; the whole IP packet (header + UDP)
 
 (define (udp-send ip mac nic-tx dst-ip dst-mac sport dport payload plen)
-  (eth-tx nic-tx mac dst-mac ETH-IPV4
-          (udp-build-ip ip dst-ip sport dport payload plen) (+ 28 plen)))
+  (eth-tx-ip nic-tx mac dst-mac           ; fragments if the datagram exceeds the MTU
+             (udp-build-ip ip dst-ip sport dport payload plen) (+ 28 plen)))

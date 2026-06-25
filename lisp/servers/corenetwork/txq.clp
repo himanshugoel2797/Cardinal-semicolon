@@ -44,9 +44,12 @@
   (eth-tx (ig iface I-TX) (ig iface I-MAC) BROADCAST ETH-ARP
           (build-arp 1 (ig iface I-MAC) (ig iface I-IP) (list 0 0 0 0 0 0) nh) 28))
 
-;; Transmit one held frame (etype frame flen) to `mac` out `iface`.
+;; Transmit one held frame (etype frame flen) to `mac` out `iface`. An IPv4 frame
+;; goes via eth-tx-ip so an over-MTU held datagram still fragments on flush.
 (define (txq-emit iface mac fr)
-  (eth-tx (ig iface I-TX) (ig iface I-MAC) mac (nth fr 0) (nth fr 1) (nth fr 2)))
+  (if (= (nth fr 0) ETH-IPV4)
+      (eth-tx-ip (ig iface I-TX) (ig iface I-MAC) mac (nth fr 1) (nth fr 2))
+      (eth-tx (ig iface I-TX) (ig iface I-MAC) mac (nth fr 0) (nth fr 1) (nth fr 2))))
 
 ;; Send `(etype frame flen)` to `next-hop` via `iface`: if the MAC is cached, go
 ;; now; otherwise hold the frame and (if this is the first one for that next hop)

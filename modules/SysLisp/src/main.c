@@ -1518,6 +1518,53 @@ static void check_txq(lisp_value env) {
     }
 }
 
+// IPv4 fragmentation + reassembly, round-trip: netS sends a 3000-byte UDP datagram
+// to netD; that exceeds the MTU so udp-send fragments it (eth-tx-ip), a wire relays
+// the fragments to netD, which reassembles them and delivers the whole payload to
+// the bound handler. Proves both directions and byte-perfect recovery.
+static void check_frag(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 2000000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import corenetwork driver-util)"
+        // receiver: interface 10.0.2.20, a handler on UDP 4000 reporting the
+        // reassembled payload's length + its first/last byte
+        "(define netD (start-network-service))"
+        "(define bsink (spawn (lambda () (let loop () (recv) (loop)))))"
+        "(send netD (list 'register-nic (list 2 0 0 0 0 20) bsink))"
+        "(send netD (list 'set-address #f (list 10 0 2 20) (list 255 255 255 0)"
+        "                 (list 0 0 0 0) (list 0 0 0 0)))"
+        "(define got (spawn (lambda () (let ((p (nth (recv) 4)))"
+        "  (list (bytes-length p) (bytes-u8-ref p 0) (bytes-u8-ref p 2999))))))"
+        "(send netD (list 'udp-bind 4000 got))"
+        // sender: interface 10.0.2.15, its NIC tx is a wire that relays to netD's rx
+        "(define netS (start-network-service))"
+        "(define wire (spawn (lambda () (let loop () (let ((m (recv)))"
+        "  (if (eq? (car m) 'tx) (send netD (list 'rx (cadr m) (caddr m)))) (loop))))))"
+        "(send netS (list 'register-nic (list 2 0 0 0 0 15) wire))"
+        "(send netS (list 'set-address #f (list 10 0 2 15) (list 255 255 255 0)"
+        "                 (list 0 0 0 0) (list 0 0 0 0)))"
+        // a 3000-byte payload (marked at both ends) -> IP packet ~3028 B -> 3 fragments
+        "(define big (make-bytes 3000)) (bytes-u8-set! big 0 99) (bytes-u8-set! big 2999 77)"
+        "(send netS (list 'udp-send (list 10 0 2 20) (list 9 9 9 9 9 9) 1111 4000 big))",
+        env, &err);
+    lisp_value got = lisp_eval_string("got", env, &err);
+    lisp_sched_run(&s, 0);
+    char b[64];
+    lisp_print(lisp_ctx_value(got), b, sizeof b);
+    if (err == NULL && strcmp(b, "(3000 99 77)") == 0) {
+        print_str("[SysLisp]  ok  IPv4 fragmentation + reassembly (3 KB UDP round-trip)\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL frag -> ");
+        print_str(b);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // Inbound firewall: ordered allow/deny rules + default policy, matched on
 // (proto, src-IP/prefix, dport). Drives the real fw-allow? decision (the same
 // function handle-ip gates every received packet through) via fw-query.
@@ -2217,6 +2264,7 @@ static void run_self_test(lisp_value env) {
     check_routing(env);
     check_firewall(env);
     check_txq(env);
+    check_frag(env);
     check_netdebug(env);
     check_rtl8169(env);
     check_gpu(env);

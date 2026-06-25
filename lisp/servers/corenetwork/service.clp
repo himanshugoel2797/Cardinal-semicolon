@@ -36,6 +36,7 @@
   (let* ((tcp0 (mk-tcp-state))
          (fw (mk-fw))               ; inbound packet filter (closure state, mutated by fw-* msgs)
          (txq (mk-txq))             ; async TX hold-queue (pending ARP resolutions)
+         (reasm (mk-reasm))         ; inbound IPv4 fragment reassembly buffer
          (net
     (serve (mk-state '() '() '() '() tcp0)
     (lambda (st m)
@@ -60,7 +61,7 @@
                         (txq-flush! txq cache2 (uptime-ns))
                         (mk-state ifaces routes cache2 binds tcp)))
                      ((= etype ETH-IPV4)
-                      (handle-ip ifaces routes fw cache binds tcp frame len)
+                      (handle-ip ifaces routes fw reasm cache binds tcp frame len)
                       st)
                      (else st))))))
           ((eq? (car m) 'arp-request)          ; (arp-request ip) -- who-has on the route's link
@@ -104,10 +105,10 @@
           ((eq? (car m) 'ping)                 ; (ping dst-ip dst-mac id seq)
            (let ((i (egress-for ifaces routes (cadr m))))
              (if i
-                 (eth-tx (ig i I-TX) (ig i I-MAC) (caddr m) ETH-IPV4
-                         (build-ipv4 (ig i I-IP) (cadr m) IP-ICMP
-                                     (build-icmp-echo 8 (cadddr m) (nth m 4)) 8)
-                         28)))
+                 (eth-tx-ip (ig i I-TX) (ig i I-MAC) (caddr m)
+                            (build-ipv4 (ig i I-IP) (cadr m) IP-ICMP
+                                        (build-icmp-echo 8 (cadddr m) (nth m 4)) 8)
+                            28)))
            st)
           ((eq? (car m) 'set-address)          ; (set-address mac ip nm gw dns) -- mac #f = first iface
            (let ((i (if (cadr m) (iface-by-mac ifaces (cadr m)) (primary-iface-any ifaces))))
@@ -162,6 +163,7 @@
           ((eq? (car m) 'tcp-tick)             ; (tcp-tick) -- periodic timer from the ticker
            (tcp-do-tick tcp)
            (txq-tick! txq (uptime-ns))         ; re-ARP / time-out held packets too
+           (reasm-tick! reasm (uptime-ns))     ; time-out incomplete reassemblies
            st)
           ((eq? (car m) 'tcp-test-loss)        ; (tcp-test-loss N) -- test fault injection
            (tcp-do-test-loss tcp (cadr m))
