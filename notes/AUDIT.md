@@ -714,6 +714,22 @@ Known simplifications (sufficient for tone playback; revisit for gapless/UAC2):
 - **OUT-focused.** `usb-isoch-in` exists and the controllers handle dir-in?, but
   per-packet IN residuals are not tracked (the audio scope is playback-only).
 
+### USB Audio class driver (added)
+`lisp/drivers/usb-audio.clp` is the class handler for bInterfaceClass==1 (Audio).
+On `(probe dev)` it finds an AudioStreaming interface alt with an iso OUT endpoint,
+activates it (`SET_INTERFACE`), best-effort sets the rate (UAC1 SET_CUR
+SAMPLING_FREQ), registers a card (`usbaudioN`) with coreaudio, and answers the same
+`tone`/`play`/`endpoints`/`get-volume`/`set-volume`/`mute` protocol hdaudio does —
+synthesizing 48 kHz stereo-16 square-wave PCM (mirroring hdaudio's `fill-tone!`) and
+streaming it over the iso OUT endpoint chunk-by-chunk. Validated end-to-end on both
+UHCI and xHCI against QEMU's `usb-audio` device (`USB=uhci-audio|xhci-audio`): the
+captured WAV is 100% non-zero (real audio through the iso path). Like usb-hid, its
+completion wait is **stop-aware** — a `(stop)` on hot-remove aborts an in-flight tone
+and exits the context instead of leaking it.
+
+Not yet wired: volume/mute (a UAC Feature Unit — accepted + ignored), capture (mic),
+non-48 kHz formats, and UAC2 clock-source rate setting.
+
 ---
 
 ## Toolchain / build notes (addressed in the revival PRs)

@@ -18,7 +18,7 @@
   (export system-init start-repl play-tone set-vol)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
           corenetdebug coreusb ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci
-          cardfs hdaudio uhci xhci usb-hid usb-hub usb-storage sys-pci sys-cmdline)
+          cardfs hdaudio uhci xhci usb-hid usb-hub usb-storage usb-audio sys-pci sys-cmdline)
 
   ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
   ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
@@ -197,6 +197,10 @@
       (usb-hid-init usb input)
       (usb-hub-init usb)
       (usb-storage-init usb storage)
+      ;; USB audio feeds the same coreaudio service hdaudio does (audio-service was
+      ;; published by the audio bring-up above); a usb-audio device registers as the
+      ;; card 'usbaudio0 and streams tones over its iso OUT endpoint.
+      (usb-audio-init usb audio-service)
       ;; Then bring up the host controllers.
       (uhci-init usb)
       (xhci-init usb))
