@@ -56,15 +56,13 @@
   ;; frame handed to the network stack must be snapshotted first.
   (define (copy-bytes src off len)
     (let ((out (make-bytes len)))
-      (let loop ((i 0))
-        (if (= i len) out
-            (begin (bytes-u8-set! out i (bytes-u8-ref src (+ off i))) (loop (+ i 1)))))))
+      (bytes-copy! out 0 src off len)
+      out))
 
   ;; Copy `len` bytes from src[0..) into dst at `off` (in place).
   (define (bytes-copy-into! dst off src len)
-    (let loop ((i 0))
-      (if (= i len) dst
-          (begin (bytes-u8-set! dst (+ off i) (bytes-u8-ref src i)) (loop (+ i 1))))))
+    (bytes-copy! dst off src 0 len)
+    dst)
 
   ;; Write a list of byte values into `b` starting at `off`.
   (define (put-list! b off lst)
