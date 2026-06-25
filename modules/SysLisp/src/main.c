@@ -1283,29 +1283,36 @@ static void check_cardfs(lisp_value env) {
         "(define stor (start-storage-service))"
         "(define cfs (start-cardfs stor))"
         "(send stor (list (quote register-blockdev) (quote ram0) 512 64 disk))"
-        // tester: format, put two keys, get them back + a miss
-        "(define t (spawn (lambda ()"
-        "  (send cfs (list (quote format) stor (quote ram0) (self))) (recv)"
+        // tester: format, put/get two keys + a miss, delete one, then REMOUNT a
+        // fresh provider (modelling a reboot) and confirm the surviving key is
+        // recovered by replaying the log -- exercising the new log-structured API
+        // (format takes a block count; get replies (got status payload)).
+        "(define t (spawn (lambda () (let ((fails (quote ())))"
+        "  (define (ck tag got want) (if (not (equal? got want)) (set! fails (cons tag fails))))"
+        "  (define (gv k) (send cfs (list (quote get) stor (quote ram0) k (self)))"
+        "    (let ((r (recv))) (if (eq? (cadr r) (quote ok)) (b->s (caddr r)) (cadr r))))"
+        "  (send cfs (list (quote format) stor (quote ram0) 64 (self))) (recv)"
         "  (send cfs (list (quote put) stor (quote ram0) \"greeting\" (s->b \"hello cardinal\") (self))) (recv)"
         "  (send cfs (list (quote put) stor (quote ram0) \"answer\" (s->b \"forty-two\") (self))) (recv)"
-        "  (send cfs (list (quote get) stor (quote ram0) \"greeting\" (self)))"
-        "  (let ((g1 (cadr (recv))))"
-        "    (send cfs (list (quote get) stor (quote ram0) \"answer\" (self)))"
-        "    (let ((g2 (cadr (recv))))"
-        "      (send cfs (list (quote get) stor (quote ram0) \"absent\" (self)))"
-        "      (let ((g3 (cadr (recv))))"
-        "        (list (if g1 (b->s g1) \"#f\") (if g2 (b->s g2) \"#f\")"
-        "              (if g3 (b->s g3) \"miss\"))))))))",
+        "  (ck (quote g1) (gv \"greeting\") \"hello cardinal\")"
+        "  (ck (quote g2) (gv \"answer\") \"forty-two\")"
+        "  (ck (quote g3) (gv \"absent\") (quote miss))"
+        "  (send cfs (list (quote delete) stor (quote ram0) \"greeting\" (self)))"
+        "  (ck (quote del) (cadr (recv)) (quote ok))"
+        "  (ck (quote g4) (gv \"greeting\") (quote miss))"
+        "  (set! cfs (start-cardfs stor))"
+        "  (send cfs (list (quote probe) (quote ram0) 512 64 disk stor))"
+        "  (ck (quote persist) (gv \"answer\") \"forty-two\")"
+        "  (ck (quote gone) (gv \"greeting\") (quote miss))"
+        "  (if (null? fails) (quote ALLOK) (cons (quote FAILED) fails))))))",
         env, &err);
     lisp_value t = lisp_eval_string("t", env, &err);
     lisp_sched_run(&s, 0);
     char rb[96];
     lisp_print(lisp_ctx_value(t), rb, sizeof rb);
-    // expected ("hello cardinal" "forty-two" "miss")
     if (err == NULL && lisp_ctx_state(t) == LISP_CTX_DONE &&
-        strstr(rb, "hello cardinal") != NULL && strstr(rb, "forty-two") != NULL &&
-        strstr(rb, "miss") != NULL) {
-        print_str("[SysLisp]  ok  cardfs format + put/get round-trip (2 keys + a miss)\r\n");
+        strstr(rb, "ALLOK") != NULL) {
+        print_str("[SysLisp]  ok  cardfs put/get/delete + reboot log replay\r\n");
         g_pass++;
     } else {
         print_str("[SysLisp] FAIL cardfs -> ");
