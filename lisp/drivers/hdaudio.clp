@@ -220,8 +220,42 @@
 ;; HDA GET_PARAMETER parameter ids (subset, from inc/cmds.h)
 (define PARAM-VENDOR-DEVICE-ID #x00)
 (define PARAM-NODE-CNT         #x04)   ; subordinate node count: (start<<16)|count
-(define PARAM-FUNC-GRP-TYPE    #x05)
-(define PARAM-AUDIO-WIDGET-CAPS #x09)
+(define PARAM-FUNC-GRP-TYPE    #x05)   ; low 7 bits: 1 = audio function group
+(define PARAM-AUDIO-WIDGET-CAPS #x09)  ; bits20-23 = widget type
+(define PARAM-PIN-CAPS         #x0C)   ; bit4 = output-capable, bit5 = input-capable
+(define PARAM-CONN-LIST-LEN    #x0E)   ; bits0-6 = length, bit7 = long-form
+(define PARAM-OUTPUT-AMP-CAPS  #x12)   ; bits8-14 = num-steps (max gain)
+
+;; widget types (audio-widget-caps bits20-23)
+(define WIDGET-AUDIO-OUTPUT 0)   ; a DAC (converter: stream -> analog)
+(define WIDGET-PIN-COMPLEX  4)   ; a jack/pin
+(define PIN-CAP-OUTPUT      #x10) ; pin-caps bit4
+
+;; --- codec handle + verb builders -------------------------------------------
+;; A "codec handle" bundles everything hda-verb! needs except the target node and
+;; the verb payload, so the path-discovery / configuration code can talk to a
+;; codec without threading six arguments through every call.
+(define (make-cdc regs ring rirb-off slot-cnt st addr)
+  (list regs ring rirb-off slot-cnt st addr))
+(define (cdc-verb cdc node payload)
+  (hda-verb! (nth cdc 0) (nth cdc 1) (nth cdc 2) (nth cdc 3) (nth cdc 4) (nth cdc 5)
+             node payload))
+(define (cdc-param cdc node param) (cdc-verb cdc node (bitwise-or #xF0000 param)))
+
+;; The two verb encodings (HDA spec 7.3.1): a 12-bit verb id + 8-bit data, or a
+;; 4-bit verb id + 16-bit data, packed into the 20-bit verb payload.
+(define (v12 verb data) (bitwise-or (arithmetic-shift verb 8)  (bitwise-and data #xFF)))
+(define (v4  verb data) (bitwise-or (arithmetic-shift verb 16) (bitwise-and data #xFFFF)))
+
+;; verb ids we issue (HDA spec 7.3.3)
+(define VERB-SET-CONVERTER-FORMAT   #x2)    ; 4-bit  + 16-bit format
+(define VERB-SET-AMP-GAIN-MUTE      #x3)    ; 4-bit  + 16-bit gain/mute
+(define VERB-SET-CONN-SELECT      #x701)    ; 12-bit + conn-list index
+(define VERB-SET-POWER-STATE      #x705)    ; 12-bit + power state (0 = D0)
+(define VERB-SET-STREAM-CHANNEL   #x706)    ; 12-bit + (stream<<4)|channel
+(define VERB-SET-PIN-CONTROL      #x707)    ; 12-bit + pin-control bits
+(define VERB-SET-EAPD-BTL         #x70C)    ; 12-bit + EAPD/BTL bits
+(define VERB-GET-CONN-LIST-ENTRY  #xF02)    ; 12-bit + entry offset
 
 ;; --- codec enumeration -------------------------------------------------------
 ;; For each codec bit set in STATESTS, read the root node (node 0) vendor/device id
@@ -254,6 +288,227 @@
                    (loop (+ i 1) (+ found 1)))
             (loop (+ i 1) found)))))
 
+;; --- output-path discovery ---------------------------------------------------
+;; The C driver enumerated every widget but never used the graph (the path loops
+;; are commented out). To actually play, we walk the codec graph far enough to
+;; find ONE output path: an audio-output converter (DAC) plus an output-capable
+;; pin in the same audio function group. That is all a single playback stream
+;; needs; richer routing (mixers/selectors, multiple jacks) is a follow-up.
+
+;; The lowest set STATESTS bit identifies the codec address to drive.
+(define (first-codec-addr statests)
+  (let loop ((i 0))
+    (cond ((= i 15) 0)
+          ((not (= 0 (bitwise-and statests (arithmetic-shift 1 i)))) i)
+          (else (loop (+ i 1))))))
+
+;; Within an audio function group, find the first DAC and the first output-capable
+;; pin. Returns (list dac pin) or #f if either is absent.
+(define (find-dac-pin cdc afg)
+  (let ((nc (cdc-param cdc afg PARAM-NODE-CNT)))
+    (if (not nc)
+        #f
+        (let ((w0 (bitwise-and (arithmetic-shift nc -16) #xFF))
+              (cnt (bitwise-and nc #xFF)))
+          (let loop ((w w0) (left cnt) (dac #f) (pin #f))
+            (if (or (= left 0) (and dac pin))
+                (if (and dac pin) (list dac pin) #f)
+                (let* ((caps (cdc-param cdc w PARAM-AUDIO-WIDGET-CAPS))
+                       (type (if caps (bitwise-and (arithmetic-shift caps -20) #xF) -1)))
+                  (cond
+                    ((and (not dac) (= type WIDGET-AUDIO-OUTPUT))
+                     (loop (+ w 1) (- left 1) w pin))
+                    ((and (not pin) (= type WIDGET-PIN-COMPLEX)
+                          (let ((pc (cdc-param cdc w PARAM-PIN-CAPS)))
+                            (and pc (not (= 0 (bitwise-and pc PIN-CAP-OUTPUT))))))
+                     (loop (+ w 1) (- left 1) dac w))
+                    (else (loop (+ w 1) (- left 1) dac pin))))))))))
+
+;; Find an output path under the codec root: scan its function groups for an audio
+;; FG, then find a DAC + output pin inside it. Returns (list afg dac pin) or #f.
+(define (find-output-path cdc)
+  (let ((nc (cdc-param cdc 0 PARAM-NODE-CNT)))
+    (if (not nc)
+        #f
+        (let ((fg0 (bitwise-and (arithmetic-shift nc -16) #xFF))
+              (cnt (bitwise-and nc #xFF)))
+          (let loop ((fg fg0) (left cnt))
+            (if (= left 0)
+                #f
+                (let ((gt (cdc-param cdc fg PARAM-FUNC-GRP-TYPE)))
+                  (if (and gt (= (bitwise-and gt #x7F) 1))   ; audio function group
+                      (let ((dp (find-dac-pin cdc fg)))
+                        (if dp (list fg (car dp) (cadr dp))
+                            (loop (+ fg 1) (- left 1))))
+                      (loop (+ fg 1) (- left 1))))))))))
+
+;; Return the index of `target` in `node`'s (short-form) connection list, or #f if
+;; not found (distinct from a valid index 0 -- the caller skips SET_CONN_SELECT
+;; when the DAC is not directly listed rather than mis-routing to entry 0). Each
+;; GET_CONNECTION_LIST response packs four 8-bit entries; a verb timeout (#f resp)
+;; skips that batch instead of crashing on a non-numeric shift. Long-form lists
+;; (conn-list-len bit7, 16-bit entries) appear only on codecs with >127 widgets,
+;; which neither QEMU nor common hardware has; flag rather than mis-parse them.
+(define (conn-index cdc node target)
+  (let* ((cl  (cdc-param cdc node PARAM-CONN-LIST-LEN))
+         (len (if cl (bitwise-and cl #x7F) 0)))
+    (if (and cl (not (= 0 (bitwise-and cl #x80))))
+        (begin (display "[hdaudio] warning: long-form connection list unsupported")
+               (newline)))
+    (let loop ((i 0))
+      (if (>= i len)
+          #f
+          (let ((resp (cdc-verb cdc node (v12 VERB-GET-CONN-LIST-ENTRY i))))
+            (if (not resp)
+                (loop (+ i 4))                ; verb timeout: skip this batch
+                (let scan ((k 0))
+                  (if (or (= k 4) (>= (+ i k) len))
+                      (loop (+ i 4))
+                      (if (= target (bitwise-and (arithmetic-shift resp (* k -8)) #xFF))
+                          (+ i k)
+                          (scan (+ k 1)))))))))))
+
+;; --- output-path configuration ----------------------------------------------
+;; The stream/format we drive: 48 kHz, 16-bit, stereo. SDFMT and the converter
+;; format must agree (HDA spec 7.3.3.8 format word: base=0(48k) mult=0 div=0
+;; bits=001(16) chan=0001(2ch) -> 0x0011).
+(define STREAM-NUM        1)
+(define FMT-48K-16-STEREO #x0011)
+
+;; Power the DAC + pin to D0, program the DAC's format/stream/amp, route the pin to
+;; the DAC and enable its output (pin control + amp + EAPD). Gains are set to the
+;; DAC's advertised max so the stream is audible without clipping the device range.
+(define (configure-output! cdc afg dac pin)
+  (let* ((oac  (cdc-param cdc dac PARAM-OUTPUT-AMP-CAPS))
+         (gain (let ((g (if oac (bitwise-and (arithmetic-shift oac -8) #x7F) 0)))
+                 (if (> g 0) g #x4B))))           ; fall back to a sane mid gain
+    ;; power up the whole path
+    (cdc-verb cdc afg (v12 VERB-SET-POWER-STATE 0))
+    (cdc-verb cdc dac (v12 VERB-SET-POWER-STATE 0))
+    (cdc-verb cdc pin (v12 VERB-SET-POWER-STATE 0))
+    ;; DAC: format, stream #STREAM-NUM channel 0, unmute output amp (L+R)
+    (cdc-verb cdc dac (v4  VERB-SET-CONVERTER-FORMAT FMT-48K-16-STEREO))
+    (cdc-verb cdc dac (v12 VERB-SET-STREAM-CHANNEL (arithmetic-shift STREAM-NUM 4)))
+    (cdc-verb cdc dac (v4  VERB-SET-AMP-GAIN-MUTE (bitwise-or #xB000 gain)))
+    ;; Pin: route it to the DAC (only if the DAC is directly in its connection
+    ;; list -- otherwise leave the selector alone rather than mis-route to entry 0),
+    ;; enable output drive (bit6) + headphone amp (bit7), unmute the pin's own
+    ;; output amp, enable EAPD (external amp / not-muted line).
+    (let ((ci (conn-index cdc pin dac)))
+      (if ci (cdc-verb cdc pin (v12 VERB-SET-CONN-SELECT ci))))
+    (cdc-verb cdc pin (v12 VERB-SET-PIN-CONTROL #xC0))
+    (cdc-verb cdc pin (v4  VERB-SET-AMP-GAIN-MUTE (bitwise-or #xB000 gain)))
+    (cdc-verb cdc pin (v12 VERB-SET-EAPD-BTL #x02))))
+
+;; --- output stream descriptor + BDL ------------------------------------------
+;; The HDA output stream descriptors live in MMIO after the input ones: SD base =
+;; 0x80 + iss*0x20, where iss (GCAP bits8-11) is the input-stream count. We always
+;; drive the FIRST output stream descriptor.
+(define SD-CTL  #x00)   ; byte0: 0 SRST, 1 RUN, 2 IOCE; byte2 bits4-7 = stream #
+(define SD-STS  #x03)   ; W1C: bit2 BCIS, bit3 FIFOE, bit4 DESE
+(define SD-CBL  #x08)   ; u32: cyclic buffer length (bytes)
+(define SD-LVI  #x0C)   ; u16: last valid BDL index
+(define SD-FMT  #x12)   ; u16: stream format (== the converter format)
+(define SD-BDPL #x18)   ; u32: BDL base lower
+(define SD-BDPU #x1C)   ; u32: BDL base upper
+
+(define (out-sd-base regs)
+  (let ((iss (bitwise-and (arithmetic-shift (r16 regs GCAP) -8) #xF)))
+    (+ #x80 (* iss #x20))))
+
+;; Write one 16-byte BDL entry {u64 addr; u32 len; u32 ioc} at byte offset `eoff`.
+(define (bdl-entry! bdl eoff phys len)
+  (bytes-u32-set! bdl eoff        (bitwise-and phys #xFFFFFFFF))
+  (bytes-u32-set! bdl (+ eoff 4)  (arithmetic-shift phys -32))
+  (bytes-u32-set! bdl (+ eoff 8)  len)
+  (bytes-u32-set! bdl (+ eoff 12) 1))           ; IOC
+
+;; Point output stream 0 at `buf` (total-bytes of PCM) via a two-entry BDL (the
+;; spec wants >= 2 entries) and run it. The stream engine cycles the BDL forever
+;; (wrapping at SDCBL), so a short buffer plays as a continuous loop -- exactly
+;; what a steady tone wants. Mirrors the SRST handshake every HDA stream needs.
+(define (stream-run! regs sd bdl buf total-bytes)
+  (let* ((bphys (bytes-phys buf))
+         (half  (quotient total-bytes 2)))
+    (bdl-entry! bdl #x00 bphys half)
+    (bdl-entry! bdl #x10 (+ bphys half) (- total-bytes half))
+    ;; reset the stream descriptor (SRST 1 -> wait -> 0 -> wait)
+    (w8! regs (+ sd SD-CTL) #x01)
+    (wait-until (lambda () (not (= 0 (bitwise-and (r8 regs (+ sd SD-CTL)) #x01)))) 1000000)
+    (w8! regs (+ sd SD-CTL) #x00)
+    (wait-until (lambda () (= 0 (bitwise-and (r8 regs (+ sd SD-CTL)) #x01))) 1000000)
+    ;; clear sticky status, program BDL base / length / last-index / format
+    (w8! regs (+ sd SD-STS) #x1C)
+    (let ((bp (bytes-phys bdl)))
+      (w32! regs (+ sd SD-BDPL) (bitwise-and bp #xFFFFFFFF))
+      (w32! regs (+ sd SD-BDPU) (arithmetic-shift bp -32)))
+    (w32! regs (+ sd SD-CBL) total-bytes)
+    (w16! regs (+ sd SD-LVI) 1)             ; two BDL entries -> last index 1
+    (w16! regs (+ sd SD-FMT) FMT-48K-16-STEREO)
+    (w8!  regs (+ sd (+ SD-CTL 2)) (arithmetic-shift STREAM-NUM 4))   ; stream #
+    (w8!  regs (+ sd SD-CTL) (bitwise-or (r8 regs (+ sd SD-CTL)) #x02))))  ; RUN
+
+;; --- tone synthesis ----------------------------------------------------------
+;; No FP trig primitive exists, so synthesize a square wave with integer math:
+;; the sign flips every half period. Stereo 16-bit; each frame is L,R (identical).
+;; A negative sample is written as its u16 two's-complement. At 48 kHz the default
+;; tone loops cleanly (period divides the frame count).
+(define SAMPLE-RATE 48000)
+(define TONE-HZ     500)
+(define TONE-FRAMES 4800)     ; 0.1 s; 96-frame period * 50 = clean loop
+(define TONE-AMP    8000)     ; ~1/4 full scale -- clearly audible, not harsh
+
+(define (fill-tone! buf frames freq amp)
+  (let ((half (quotient SAMPLE-RATE (* 2 freq)))   ; frames per half period
+        (neg  (- 65536 amp)))                      ; -amp as u16
+    (let loop ((i 0))
+      (if (< i frames)
+          (let ((v   (if (= 0 (modulo (quotient i half) 2)) amp neg))
+                (off (* i 4)))
+            (bytes-u16-set! buf off v)              ; left
+            (bytes-u16-set! buf (+ off 2) v)        ; right
+            (loop (+ i 1)))
+          buf))))
+
+;; Synthesize and start a tone on output stream 0. Returns (list buf bdl) -- the
+;; caller MUST retain these: the stream DMAs `buf` forever, so if it were GC'd and
+;; its pages reused the audio would corrupt. nframes frames -> nframes*4 bytes.
+(define (play-tone! regs freq amp nframes)
+  (let* ((nbytes (* nframes 4))
+         (buf (dma-alloc-32 nbytes))
+         (bdl (dma-alloc-32 256)))            ; 16 BDL entries' worth (we use 2)
+    (fill-tone! buf nframes freq amp)
+    (stream-run! regs (out-sd-base regs) bdl buf nbytes)
+    (display "[hdaudio] playing ") (display freq) (display "Hz tone on stream ")
+    (display STREAM-NUM) (newline)
+    (list buf bdl)))
+
+;; --- the long-lived driver context -------------------------------------------
+;; After bring-up the spawned context becomes the audio card's service loop. It
+;; retains the currently-playing buffers (so the stream's DMA source stays live)
+;; and answers coreaudio: (tone) replays the default tone, (play freq amp frames)
+;; plays an arbitrary square-wave tone, (get-status reply) reports state. All tone
+;; parameters are plain fixnums, so nothing crosses the context boundary except
+;; small values -- no shared DMA buffer between contexts is needed.
+(define (hda-driver-loop regs refs)
+  (let loop ((cur refs))
+    (let ((m (recv)))
+      (cond
+        ((eq? (car m) 'tone)
+         (loop (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES)))
+        ((eq? (car m) 'play)            ; (play freq amp frames)
+         ;; Validate before synthesis: freq 0 divides by zero in fill-tone!, amp
+         ;; outside [1,32767] overflows the signed-16 sample, frames 0 writes
+         ;; CBL=0 (an undefined running stream). A bad request is dropped, not fatal.
+         (let ((freq (nth m 1)) (amp (nth m 2)) (frames (nth m 3)))
+           (if (and (> freq 0) (> amp 0) (< amp 32768) (> frames 0))
+               (loop (play-tone! regs freq amp frames))
+               (begin (display "[hdaudio] play: bad params, ignored") (newline)
+                      (loop cur)))))
+        ((eq? (car m) 'get-status)
+         (send (nth m 1) 'playing) (loop cur))
+        (else (loop cur))))))
+
 ;; --- bring-up body (runs in the spawned, yielding context) -------------------
 ;; Mirrors module_init + hdaudio_initialize, scoped to controller + codec
 ;; enumeration. On success it logs, sets up MSI, and registers with coreaudio.
@@ -277,9 +532,10 @@
           (w16! regs WAKEEN #xFFFF)
           (if (= statests 0)
               (begin (display "[hdaudio] no codecs present on STATESTS") (newline)
-                     ;; still register the (empty) card so the endpoint exists
-                     (send audio (list 'register 'hda0))
-                     'up-no-codec)
+                     ;; still register the (empty) card so the endpoint exists, and
+                     ;; park on recv (the card ctx with no playable path).
+                     (send audio (list 'register 'hda0 (self)))
+                     (let loop () (recv) (loop)))
               ;; Allocate CORB+RIRB in ONE 32-bit DMA buffer: CORB (corb-ent u32s)
               ;; at offset 0, RIRB (rirb-ent 8-byte entries) at offset corb-bytes.
               ;; We index both regions of the single buffer with explicit offsets, so
@@ -306,9 +562,28 @@
                   ;; context can wake on it.
                   (let ((msi (pci-setup-msi ecam)))
                     (display "[hdaudio] msi=") (display msi) (newline)
-                    (send audio (list 'register 'hda0))
-                    (display "[hdaudio] registered hda0 with coreaudio") (newline)
-                    'up))))))))
+                    ;; Find an output path on the first present codec, configure it,
+                    ;; and play the bring-up tone -- the live proof that a guest
+                    ;; stream reaches the codec (the C driver stopped at enumeration).
+                    (let* ((addr (first-codec-addr statests))
+                           (cdc  (make-cdc regs ring rirb-off slot-cnt st addr))
+                           (path (find-output-path cdc)))
+                      (send audio (list 'register 'hda0 (self)))
+                      (display "[hdaudio] registered hda0 with coreaudio") (newline)
+                      (if (not path)
+                          (begin
+                            (display "[hdaudio] no output path on codec ") (display addr)
+                            (display "; card idle") (newline)
+                            (let loop () (recv) (loop)))
+                          (let ((afg (nth path 0)) (dac (nth path 1)) (pin (nth path 2)))
+                            (display "[hdaudio] output path codec=") (display addr)
+                            (display " afg=") (display afg) (display " dac=") (display dac)
+                            (display " pin=") (display pin) (newline)
+                            (configure-output! cdc afg dac pin)
+                            ;; play the startup tone, then serve the card forever
+                            ;; (retaining the playing buffers so DMA stays valid).
+                            (hda-driver-loop
+                             regs (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES)))))))))))))
 
 ;; --- entry point -------------------------------------------------------------
 ;; hdaudio-init takes the coreaudio service handle. Gated on pci-find so a no-audio
@@ -331,7 +606,11 @@
                                 b))))
             (if (or (not bar-phys) (= bar-phys 0))
                 (begin (display "[hdaudio] no MMIO BAR") (newline) #f)
-                (let ((regs (mmio-map bar-phys #x180)))   ; controller reg block
+                ;; Map a full page: the global regs end at 0x180 only for ISS=OSS=4
+                ;; (ICH9/ICH6); a controller with more streams puts output stream
+                ;; descriptors past 0x180 (out-sd-base = 0x80 + iss*0x20), so size the
+                ;; window to the page the BAR already occupies rather than 0x180.
+                (let ((regs (mmio-map bar-phys #x1000)))
                   ;; Run reset + ring setup + enumeration in a spawned context so the
                   ;; reset/settle waits yield (same pattern as ahci-init). Fire and
                   ;; forget: the context logs + registers and reports to the log;
