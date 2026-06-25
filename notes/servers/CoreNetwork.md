@@ -182,7 +182,22 @@ design and should be decided deliberately, in line with the microkernel model:
    over the learned gateway, a DNS resolver, and a userspace config/query surface.
 4. **IPv4 options / fragmentation / reassembly.** Only `ihl == 5`, unfragmented
    datagrams are meaningfully handled.
-5. **TCP.** Not started; needs the socket API (1) and the tx path (2) first.
+5. **TCP.** *Implemented* (`lisp/servers/corenetwork/tcp.clp`): active + passive
+   open, in-order data with cumulative ACKs, out-of-order reassembly (bounded
+   reorder queue, trim-on-delivery so retransmits/overlaps neither double-deliver
+   nor orphan), timeout retransmission (Go-Back-N, driven by a 100ms ticker
+   context since the service cannot block), FIN teardown with TIME-WAIT, the
+   pseudo-header checksum, and peer-window flow control. **Intentionally omitted**
+   (LAN/loopback target): congestion control (slow-start/AIMD), SACK, window
+   scaling, timestamps, delayed-ACK. Connection state lives in the single network
+   service context (no locks) as mutable per-connection vectors keyed in hash
+   tables. The socket surface is the in-OS *message* API (item 1), mirroring
+   `udp-bind`: `tcp-listen`/`tcp-connect`/`tcp-send`/`tcp-close` to the service and
+   `tcp-accept`/`tcp-connected`/`tcp-rx`/`tcp-closed` events to the owner, plus the
+   synchronous `tcp-connect-blocking` open helper. Verified live (host `nc`/socket
+   over slirp `hostfwd` against the `cardinal.netdbg` TCP echo on port 7):
+   multi-segment transfer and clean four-way teardown. The *userspace* (ring-3)
+   socket surface (item 1) is still the remaining piece.
 6. **ARP aging.** *Timed expiry now exists in the Lisp stack (120s TTL, lazy drop
    on lookup).* A state machine for in-flight resolutions (coalescing concurrent
    waiters for the same IP, negative caching) remains deferred.

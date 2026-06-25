@@ -34,12 +34,24 @@
 ;;   (dhcp-start)                              ; begin DHCP on this interface
 ;; A bound UDP handler receives (udp-rx <src-ip> <src-mac> <src-port> <payload>).
 ;;
-;; Also exported: arp-resolve (synchronous outbound next-hop resolution, for a
-;; future routing / TCP active-open layer).
+;; TCP socket protocol (messages to the same service handle):
+;;   (tcp-listen <port> <owner>)                ; passive open on <port>
+;;   (tcp-connect <dst-ip> <dst-mac> <dport> <owner>) ; active open
+;;   (tcp-send <conn> <payload-bytes>)          ; queue data on a connection
+;;   (tcp-close <conn>)                         ; begin the active close (send FIN)
+;; The <owner> context receives, per connection:
+;;   (tcp-accept <lport> <conn> <rip> <rport>)  ; an inbound connection established
+;;   (tcp-connected <conn>)                     ; our active open completed
+;;   (tcp-rx <conn> <payload-bytes>)            ; in-order received data
+;;   (tcp-closed <conn>)                        ; peer closed (or the conn aborted)
+;;
+;; Also exported: arp-resolve (synchronous outbound next-hop resolution) and
+;; tcp-connect-blocking (a synchronous active-open helper, like arp-resolve, that
+;; returns a connection handle once the handshake completes).
 
 (define-module corenetwork
-  (export start-network-service arp-resolve)
+  (export start-network-service arp-resolve tcp-connect-blocking)
   (import driver-util)
   ;; layer by layer: shared helpers, the checksum, then eth/arp/ip/icmp/udp, the
   ;; DHCP client, then the service loop that ties them together.
-  (include common checksum eth arp ip icmp udp dhcp service))
+  (include common checksum eth arp ip icmp udp tcp dhcp service))

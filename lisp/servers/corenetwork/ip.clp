@@ -24,7 +24,7 @@
 
 ;; Received IPv4 (frame; IP header at offset 14). Validate, then dispatch ICMP
 ;; echo-request -> echo-reply and UDP -> bound handler. Pure wrt the cache.
-(define (handle-ip ip mac nic-tx cache binds frame len)
+(define (handle-ip ip mac nic-tx cache binds tcp frame len)
   (let ((o 14))                       ; IP header start
     (if (or (< len 34) (not (= (bit-extract (u8 frame o) 4 4) 4)))
         'ignore
@@ -49,4 +49,14 @@
                    (handle-icmp ip mac nic-tx cache src-ip frame l4 len))
                   ((= proto IP-UDP)
                    (handle-udp binds src-ip dst-ip (read-mac frame 6) frame l4 len))
+                  ;; TCP mutates the connection tables in place (no state to
+                  ;; thread back); it replies on the captured src-mac. TCP carries
+                  ;; no length field, so the segment end must come from the IP
+                  ;; total-length field, NOT the frame len -- a min-size segment is
+                  ;; padded to the 60-byte ethernet minimum, and summing that
+                  ;; padding into the checksum would wrongly reject it.
+                  ((= proto IP-TCP)
+                   (let ((iend (+ o (get-be16 frame (+ o 2)))))
+                     (handle-tcp ip mac nic-tx tcp frame l4
+                                 (if (> iend len) len iend) src-ip)))
                   (else 'ignore))))))))
