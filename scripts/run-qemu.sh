@@ -24,11 +24,15 @@
 #   NET_PCAP=path                with NIC set, dump the link to a pcap file
 #   DISK=path        attach an ICH9 AHCI controller (8086:2922) + a raw-image SATA
 #                    drive on port 0 (drives the Lisp ahci block-device driver)
-#   AUDIO=none|hda   attach an Intel HD Audio controller (ich9-intel-hda, 8086:293e)
-#                    + an hda-output line-out codec, with a `wav` audiodev that
-#                    captures everything the codec plays to AUDIO_WAV. Drives the
-#                    Lisp hdaudio driver; a non-silent WAV is the playback proof.
-#   AUDIO_WAV=path   where AUDIO=hda writes the captured audio (default
+#   AUDIO=none|hda|duplex|dual   attach Intel HD Audio (ich9-intel-hda, 8086:293e):
+#                    hda    = one controller + an hda-output line-out codec;
+#                    duplex = one controller + an hda-duplex codec (line-out + mic),
+#                             so the driver enumerates an output AND an input endpoint;
+#                    dual   = two controllers (output codec + duplex codec), so the
+#                             driver registers both as hda0 + hda1.
+#                    A `wav` audiodev captures hda0's output to AUDIO_WAV; a non-silent
+#                    WAV is the playback proof.
+#   AUDIO_WAV=path   where the captured audio is written (default
 #                    /tmp/cardinal-audio.wav)
 #   DISPLAY_MODE=none|gtk|sdl    qemu display backend (default none = headless)
 #   SCREENSHOT=path  after booting, dump the guest screen to a PPM and exit
@@ -143,6 +147,11 @@ esac
 # routed to a `wav` audiodev that records the played audio to AUDIO_WAV. With the
 # driver's bring-up tone, the captured WAV is non-silent -- the end-to-end proof
 # that a guest stream reaches a host sink.
+# AUDIO=duplex swaps the line-out-only codec for an hda-duplex codec (a line-out
+# AND a line-in/mic), so the driver enumerates BOTH an output and an input
+# endpoint -- the multi-endpoint classification proof. AUDIO=dual attaches TWO
+# controllers (an output codec on hda0, a duplex codec on hda1), so the driver
+# registers both as hda0 + hda1 -- the multi-device proof.
 audio_args=()
 case "${AUDIO:-none}" in
   none) ;;
@@ -153,7 +162,23 @@ case "${AUDIO:-none}" in
                 -device hda-output,bus=hda0.0,audiodev=snd0)
     echo "[run-qemu] HD Audio capture -> $AUDIO_WAV"
     ;;
-  *) echo "error: unknown AUDIO=$AUDIO (none|hda)" >&2; exit 1 ;;
+  duplex)
+    AUDIO_WAV="${AUDIO_WAV:-/tmp/cardinal-audio.wav}"
+    audio_args=(-audiodev "wav,id=snd0,path=$AUDIO_WAV"
+                -device ich9-intel-hda,id=hda0
+                -device hda-duplex,bus=hda0.0,audiodev=snd0)
+    echo "[run-qemu] HD Audio (duplex: line-out + mic) capture -> $AUDIO_WAV"
+    ;;
+  dual)
+    AUDIO_WAV="${AUDIO_WAV:-/tmp/cardinal-audio.wav}"
+    audio_args=(-audiodev "wav,id=snd0,path=$AUDIO_WAV" -audiodev "none,id=snd1"
+                -device ich9-intel-hda,id=hda0
+                -device hda-output,bus=hda0.0,audiodev=snd0
+                -device ich9-intel-hda,id=hda1
+                -device hda-duplex,bus=hda1.0,audiodev=snd1)
+    echo "[run-qemu] HD Audio (two controllers: hda0 + hda1)"
+    ;;
+  *) echo "error: unknown AUDIO=$AUDIO (none|hda|duplex|dual)" >&2; exit 1 ;;
 esac
 
 [ -f "$ISO" ] || { echo "error: ISO not found: $ISO (run the 'image' target first)" >&2; exit 1; }
