@@ -286,8 +286,9 @@
 ;; synchronous; the reset settle / PHY polls use wait-until (which yields). On any
 ;; failure it logs and returns #f. On success it spawns a TX context + an MSI RX
 ;; pump, registers with the network stack, and returns 'ok.
-(define (rtl8169-init net)
-  (let ((ecam (pci-find RTL-VID RTL-DID)))
+;; `dev-ecam` is supplied by init (one per enumerated NIC); see virtio-net-init.
+(define (rtl8169-init net dev-ecam)
+  (let ((ecam dev-ecam))
     (if (not ecam)
         (begin (display "[rtl8169] no device present") (newline) #f)
         (let ((cfg (mmio-map ecam #x1000)))

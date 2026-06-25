@@ -22,14 +22,20 @@
                          (not (= 0 (csum-seeded frame l4 seg
                                                 (udp-pseudo-sum src-ip dst-ip seglen))))))
                 'ignore
-                (let ((h (assq dport binds)))
-                  (if (not h)
-                      'ignore
-                      (let ((plen (- seg 8)))
-                        (send (cdr h)
-                              (list 'udp-rx src-ip src-mac sport
-                                    (copy-bytes frame (+ l4 8) plen)))
-                        'delivered)))))))))
+                ;; Deliver to EVERY handler bound to dport, not just the first.
+                ;; This is what lets several DHCP clients (one per interface, all on
+                ;; port 68) coexist: each OFFER/ACK reaches all of them and each
+                ;; accepts only its own (filtered by xid/MAC). For the common single-
+                ;; binder port this is identical to a first-match delivery.
+                (let ((plen (- seg 8)) (n 0))
+                  (let ((payload (copy-bytes frame (+ l4 8) plen)))
+                    (for-each (lambda (b)
+                                (if (= (car b) dport)
+                                    (begin (send (cdr b)
+                                                 (list 'udp-rx src-ip src-mac sport payload))
+                                           (set! n (+ n 1)))))
+                              binds))
+                  (if (> n 0) 'delivered 'ignore))))))))
 
 ;; Build + send a UDP datagram. A computed checksum of 0 is sent as 0xFFFF
 ;; (0 on the wire means "no checksum"); the pseudo-header + segment must sum to

@@ -90,6 +90,19 @@ case "${NIC:-none}" in
   *) echo "error: unknown NIC=$NIC (none|virtio-net|rtl8139)" >&2; exit 1 ;;
 esac
 
+# Optional SECOND NIC on a distinct slirp subnet (10.0.3.0/24), to exercise the
+# multi-homed/routing path: NIC2=virtio-net|rtl8139 attaches another NIC of that
+# type so init enumerates and brings up both, and each interface DHCPs on its own
+# subnet. Requires NIC set (the first NIC stays on the default 10.0.2.0/24).
+case "${NIC2:-none}" in
+  none) ;;
+  virtio-net) nic_args+=(-netdev "user,id=n1,net=10.0.3.0/24,dhcpstart=10.0.3.15"
+                         -device "virtio-net-pci,disable-legacy=on,netdev=n1") ;;
+  rtl8139)    nic_args+=(-netdev "user,id=n1,net=10.0.3.0/24,dhcpstart=10.0.3.15"
+                         -device "rtl8139,netdev=n1") ;;
+  *) echo "error: unknown NIC2=$NIC2 (none|virtio-net|rtl8139)" >&2; exit 1 ;;
+esac
+
 # Optional AHCI disk. DISK=path attaches an ICH9 AHCI controller (8086:2922, which
 # the Lisp ahci driver matches) with a raw-image SATA drive on port 0, exercising
 # the block-device read/write path. Mirrors the NIC case structure.

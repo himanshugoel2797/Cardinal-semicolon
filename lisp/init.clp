@@ -149,20 +149,28 @@
     ;; learns the gateway MAC itself, so no manual prime is wanted there.
     (let* ((static (static-ip))
            (net (start-network-service)))
-      (cond ((pci-find #x1af4 #x1041) (virtio-net-init net))
-            ((pci-find #x10ec #x8168) (rtl8169-init net))
-            ((pci-find #x10ec #x8139) (rtl8139-init net))
-            (else (display "[init] no supported NIC") (newline)))
-      ;; The register-nic the NIC sends sits ahead of these in the service mailbox,
-      ;; so the interface exists before we address it. Static: assign the pinned IP
-      ;; on a /24 to the primary interface (mac #f) and prime the gw who-has; the
-      ;; set-address installs the interface's on-link route. Default: DHCP, whose
-      ;; client sends set-address itself once it has a lease.
+      ;; Bring up EVERY supported NIC, not just the first: pci-find-all enumerates
+      ;; all matching devices (so two virtio-nets, or a virtio-net + an rtl, both
+      ;; come up), and each driver-init registers its device as its own interface.
+      ;; `bring-up` runs a driver over each ecam of a (vid did) and counts NICs.
+      (let ((nics 0))
+        (define (bring-up vid did drv)
+          (for-each (lambda (ecam) (drv net ecam) (set! nics (+ nics 1)))
+                    (pci-find-all vid did)))
+        (bring-up #x1af4 #x1041 virtio-net-init)
+        (bring-up #x10ec #x8168 rtl8169-init)
+        (bring-up #x10ec #x8139 rtl8139-init)
+        (if (= nics 0) (begin (display "[init] no supported NIC") (newline))))
+      ;; The register-nic each NIC sends sits ahead of these in the service mailbox,
+      ;; so every interface exists before we address it. Static: assign the pinned
+      ;; IP on a /24 to the primary interface (mac #f) and prime the gw who-has.
+      ;; Default: DHCP on EVERY interface (dhcp-start-all); each client configures
+      ;; its own interface (the OFFER/ACK fan out on port 68, filtered by xid/MAC).
       (if static
           (begin
             (send net (list 'set-address #f static (list 255 255 255 0) (list 0 0 0 0) (list 0 0 0 0)))
             (send net (list 'arp-request (list 10 0 2 2))))
-          (send net (list 'dhcp-start)))                    ; default: configure via DHCP
+          (send net (list 'dhcp-start-all)))                ; default: configure via DHCP
       ;; Optional network debug endpoint (echo 1337 / digest 1338), gated on the
       ;; kernel command line -- a remote attack surface, so opt-in like the REPL.
       (if (cmdline-has? "cardinal.netdbg") (start-netdebug net))
