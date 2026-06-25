@@ -89,10 +89,27 @@
 
 ;; --- TCP state for the service (one per interface) --------------------------
 ;; A vector: by-tuple hash (key (lport rip rport) -> conn), by-id hash (id ->
-;; conn), listeners hash (lport -> owner), and a next-id counter.
+;; conn), listeners hash (lport -> owner), a next-id counter, and a test-only
+;; inbound-loss config (drop denominator + a segment counter; 0 = no loss).
 (define T-TUPLE 0) (define T-ID 1) (define T-LISTEN 2) (define T-NEXT 3)
+(define T-LOSS 4) (define T-CTR 5)
 (define (mk-tcp-state)
-  (vector (make-hash-table) (make-hash-table) (make-hash-table) 1))
+  (vector (make-hash-table) (make-hash-table) (make-hash-table) 1 0 0))
+
+;; Test-only fault injection (enabled by cardinal.tcploss via tcp-do-test-loss):
+;; drop 1 in N received segments, EXCEPT SYNs (so the handshake still completes),
+;; to exercise the paths a lossless link never reaches -- dropping a data segment
+;; opens a gap that drives out-of-order reassembly, and dropping an ACK leaves our
+;; sent data unacknowledged so our retransmit timer fires. Off (N=0) by default,
+;; one comparison per segment, so it is inert in production.
+(define (tcp-test-drop? tcp synf)
+  (let ((n (cg tcp T-LOSS)))
+    (and (> n 0) (not synf)
+         (begin (cs! tcp T-CTR (+ (cg tcp T-CTR) 1))
+                (if (= 0 (modulo (cg tcp T-CTR) n))
+                    (begin (display "[tcp-test] dropped inbound segment") (newline) #t)
+                    #f)))))
+(define (tcp-do-test-loss tcp n) (cs! tcp T-LOSS n))
 (define (tcp-tuple lport rip rport) (list lport rip rport))
 (define (tcp-conn-add tcp c)
   (hash-set! (cg tcp T-TUPLE) (tcp-tuple (cg c C-LPORT) (cg c C-RIP) (cg c C-RPORT)) c)
@@ -309,6 +326,8 @@
                                   (make-bytes 0)))
                      (c (tcp-conn-by-tuple tcp dport src-ip sport)))
                 (cond
+                  ;; test-only injected loss: behave as if the segment never arrived
+                  ((tcp-test-drop? tcp synf) 'test-dropped)
                   (c (tcp-rx-conn ip mac tx tcp c synf ackf finf rstf seq ack
                                   window payload))
                   ;; No connection: a SYN to a listening port opens one.

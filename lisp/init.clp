@@ -158,7 +158,10 @@
           (send net (list 'dhcp-start)))                    ; default: configure via DHCP
       ;; Optional network debug endpoint (echo 1337 / digest 1338), gated on the
       ;; kernel command line -- a remote attack surface, so opt-in like the REPL.
-      (if (cmdline-has? "cardinal.netdbg") (start-netdebug net)))
+      (if (cmdline-has? "cardinal.netdbg") (start-netdebug net))
+      ;; Test-only TCP fault injection: cardinal.tcploss makes the stack drop 1 in
+      ;; 4 received segments, exercising retransmission + out-of-order reassembly.
+      (if (cmdline-has? "cardinal.tcploss") (send net (list 'tcp-test-loss 4))))
     'system-up))   ; close the (let ((input ...)) ...) that wraps the bring-up
 
   ;; The interactive serial REPL (started only under cardinal.repl). A root context

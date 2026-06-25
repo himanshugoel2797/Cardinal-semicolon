@@ -196,8 +196,19 @@ design and should be decided deliberately, in line with the microkernel model:
    `tcp-accept`/`tcp-connected`/`tcp-rx`/`tcp-closed` events to the owner, plus the
    synchronous `tcp-connect-blocking` open helper. Verified live (host `nc`/socket
    over slirp `hostfwd` against the `cardinal.netdbg` TCP echo on port 7):
-   multi-segment transfer and clean four-way teardown. The *userspace* (ring-3)
-   socket surface (item 1) is still the remaining piece.
+   multi-segment transfer and clean four-way teardown. The **loss/reorder paths
+   (retransmission + out-of-order reassembly) are validated** by a test-only fault
+   injector: booting with `cardinal.tcploss` makes the stack drop 1 in 4 received
+   segments (`tcp-test-drop?` in `tcp.clp`, off by default, one comparison per
+   segment in production). Under that, an 8 KB multi-segment echo + teardown still
+   completes byte-perfect — dropped data opens gaps that drive reassembly, and
+   dropped ACKs make our retransmit timer fire. The *userspace* (ring-3) socket
+   surface (item 1) is still the remaining piece.
+
+   To run it: `cardinal.netdbg cardinal.tcploss` on the cmdline, then
+   `NIC=virtio-net HOSTFWD="tcp::5555-:7" ./scripts/run-qemu.sh` (background) and a
+   host socket to `localhost:5555` echoing a multi-KB payload; the boot log shows
+   `[tcp-test] dropped inbound segment` lines and the echo returns intact.
 6. **ARP aging.** *Timed expiry now exists in the Lisp stack (120s TTL, lazy drop
    on lookup).* A state machine for in-flight resolutions (coalescing concurrent
    waiters for the same IP, negative caching) remains deferred.
