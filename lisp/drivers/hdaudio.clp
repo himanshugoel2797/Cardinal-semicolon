@@ -34,7 +34,8 @@
   ;; MOCK codec (a (node payload)->response lambda) and check the classified
   ;; endpoint set without real hardware -- the same testable-internals posture as
   ;; the rtl8169 driver's exported descriptor helpers.
-  (export hdaudio-init enumerate-endpoints endpoint-descs primary-output ep-desc)
+  (export hdaudio-init enumerate-endpoints endpoint-descs primary-output ep-desc
+          set-endpoint-volume! set-endpoint-mute! ep-vol)
   (import sys-mmio sys-pci driver-util)
 
 ;; --- the controllers we bind (matched by PCI class, not VID/DID) -------------
@@ -522,9 +523,67 @@
     (if (> g 0) g #x4B)))
 
 ;; SET_AMP_GAIN_MUTE payload: set output(bit15)/input(bit14) amp, both channels
-;; (left bit13 + right bit12), mute bit7, gain bits0-6. Built so PR2's volume
-;; control reuses it.
+;; (left bit13 + right bit12), mute bit7, gain bits0-6. The output form sets only
+;; bit15; the input form (for capture gain) sets only bit14.
 (define (amp-out-payload gain mute) (bitwise-or #xB000 (if mute #x80 0) (bitwise-and gain #x7F)))
+(define (amp-in-payload  gain mute) (bitwise-or #x7000 (if mute #x80 0) (bitwise-and gain #x7F)))
+
+;; --- per-endpoint volume -----------------------------------------------------
+;; Volume is a 0..100 percentage mapped onto the target amp's gain range. The
+;; target is the PIN's own amp when it has one (so a speaker and a headphone jack
+;; sharing one DAC get INDEPENDENT volume); otherwise the converter's amp (shared,
+;; but the only knob available). Output endpoints drive the output amp, input
+;; endpoints the input (capture) amp. vol 0 mutes.
+
+;; widget-caps bit2 = out-amp present, bit1 = in-amp present.
+(define (widget-has-amp? cdc nid dir)
+  (let ((caps (cdc-param cdc nid PARAM-AUDIO-WIDGET-CAPS)))
+    (and caps (not (= 0 (bitwise-and caps (if (eq? dir 'out) #x4 #x2)))))))
+
+;; The GET_PARAMETER amp-caps id for an endpoint's direction.
+(define (amp-cap-param dir) (if (eq? dir 'out) PARAM-OUTPUT-AMP-CAPS PARAM-INPUT-AMP-CAPS))
+
+;; The node whose amp carries this endpoint's volume: the pin if it has the right
+;; amp, else the converter.
+(define (ep-amp-target cdc ep)
+  (if (widget-has-amp? cdc (ep-pin ep) (ep-dir ep)) (ep-pin ep) (ep-conv ep)))
+
+;; Issue SET_AMP_GAIN_MUTE for a direction.
+(define (apply-amp! cdc nid dir gain mute)
+  (cdc-verb cdc nid (v4 VERB-SET-AMP-GAIN-MUTE
+                        (if (eq? dir 'out) (amp-out-payload gain mute)
+                            (amp-in-payload gain mute)))))
+
+;; clamp v to 0..100
+(define (clamp-vol v) (cond ((< v 0) 0) ((> v 100) 100) (else v)))
+
+;; Set an endpoint's volume (0..100): map onto the target amp's step range and
+;; program it (mute at 0), then remember it on the endpoint. Returns the clamped
+;; volume actually applied.
+(define (set-endpoint-volume! cdc ep vol)
+  (let* ((dir   (ep-dir ep))
+         (nid   (ep-amp-target cdc ep))
+         (steps (amp-max-gain cdc nid (amp-cap-param dir)))
+         (v     (clamp-vol vol))
+         (gain  (quotient (* v steps) 100)))
+    (apply-amp! cdc nid dir gain (= v 0))
+    (ep-vol! ep v)
+    v))
+
+;; Mute/unmute without losing the stored volume: re-issue the amp at the endpoint's
+;; current volume gain, with the mute bit set/cleared.
+(define (set-endpoint-mute! cdc ep on?)
+  (let* ((dir   (ep-dir ep))
+         (nid   (ep-amp-target cdc ep))
+         (steps (amp-max-gain cdc nid (amp-cap-param dir)))
+         (gain  (quotient (* (ep-vol ep) steps) 100)))
+    (apply-amp! cdc nid dir gain on?)))
+
+;; Find an endpoint by its id within a card's endpoint list, or #f.
+(define (ep-by-id eps id)
+  (cond ((null? eps) #f)
+        ((= (ep-id (car eps)) id) (car eps))
+        (else (ep-by-id (cdr eps) id))))
 
 ;; Power the converter + pin to D0, program the DAC's format/stream, route the pin
 ;; to the DAC and enable its output (pin control + amp + EAPD). The output amps are
@@ -682,6 +741,17 @@
                       (loop cur)))))
         ((eq? (car m) 'endpoints)       ; (endpoints reply)
          (send (nth m 1) (endpoint-descs eps)) (loop cur))
+        ((eq? (car m) 'set-volume)      ; (set-volume ep-id vol)
+         (let ((ep (ep-by-id eps (nth m 1))))
+           (if ep (set-endpoint-volume! cdc ep (nth m 2))
+               (begin (display "[hdaudio] set-volume: no endpoint ") (display (nth m 1)) (newline))))
+         (loop cur))
+        ((eq? (car m) 'get-volume)      ; (get-volume ep-id reply)
+         (let ((ep (ep-by-id eps (nth m 1))))
+           (send (nth m 2) (if ep (ep-vol ep) #f))) (loop cur))
+        ((eq? (car m) 'mute)            ; (mute ep-id on?)
+         (let ((ep (ep-by-id eps (nth m 1))))
+           (if ep (set-endpoint-mute! cdc ep (nth m 2)))) (loop cur))
         ((eq? (car m) 'get-status)
          (send (nth m 1) 'playing) (loop cur))
         (else (loop cur))))))

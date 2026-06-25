@@ -25,8 +25,16 @@ its DAC through the connection list; an input pin to the ADC that reaches it), a
 records the jack's presence. An endpoint is a mutable record so later work can
 update its volume / presence in place.
 
+Per-endpoint **volume** is a 0..100 percentage mapped onto the target amp's step
+range (`SET_AMP_GAIN_MUTE`; 0 mutes). The target is the pin's own amp when it has
+one — so a speaker and a headphone jack sharing one DAC get *independent* volume —
+otherwise the converter's amp. Messages: `(set-volume name ep-id vol)` /
+`(get-volume name ep-id reply)` / `(mute name ep-id on?)`; the serial REPL exposes
+`(set-vol ep-id vol)`.
+
 Done: multi-controller bring-up, the full endpoint model (speakers/headphones/
-line-out + mics/line-in), and output playback on the primary output endpoint (the
-codec graph walk is unit-tested with a mock codec — SysTest `check_hdaudio`).
-TODO (follow-up PRs): per-endpoint volume control, capture (driving the input
-stream descriptors so mics/line-in record), and codec/jack hotplug.
+line-out + mics/line-in), output playback on the primary output endpoint, and
+per-endpoint volume/mute (codec graph walk + volume math unit-tested with a mock
+codec — SysTest `check_hdaudio` / `check_hdaudio_volume`).
+TODO (follow-up PRs): capture (driving the input stream descriptors so mics/
+line-in record), and codec/jack hotplug.

@@ -15,7 +15,7 @@
 ;; when debugging the OS, a narrow grant when not.
 
 (define-module init
-  (export system-init start-repl play-tone)
+  (export system-init start-repl play-tone set-vol)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
           corenetdebug coreusb ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci
           cardfs hdaudio uhci xhci usb-hid usb-hub usb-storage sys-pci sys-cmdline)
@@ -84,6 +84,16 @@
          (if (and (integer? freq) (integer? amp) (integer? frames))
              (begin (send audio-service (list 'play 'hda0 freq amp frames)) 'playing)
              'bad-args)))))
+
+  ;; REPL command: set an endpoint's volume on card 'hda0, through coreaudio.
+  ;;   (set-vol ep-id vol)   vol 0..100 (0 mutes); ep-id from the boot endpoint log
+  ;; Returns 'ok, 'no-audio, or 'bad-args.
+  (define (set-vol ep-id vol)
+    (cond
+      ((not audio-service) 'no-audio)
+      ((and (integer? ep-id) (integer? vol))
+       (send audio-service (list 'set-volume 'hda0 ep-id vol)) 'ok)
+      (else 'bad-args)))
 
   ;; The system entry point: called once on the BSP after the scheduler is live.
   ;; Each Core* service is a long-lived context; bring up the ones that exist
@@ -224,7 +234,7 @@
               ;; clause is deliberate: importing all of init would also expose
               ;; system-init / start-repl, which a stray REPL call could use to
               ;; re-run the whole boot or spawn a second REPL that steals COM1.
-              (repl-eval "(import (init (only play-tone)))")
+              (repl-eval "(import (init (only play-tone set-vol)))")
               (display "[repl] serial REPL ready on COM1 -- try (play-tone)") (newline)
               (console-flush)                        ; log is batched -- push the banner out now
               (let loop ((seen (irq-count irq)))

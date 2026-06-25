@@ -1853,6 +1853,80 @@ static void check_hdaudio(lisp_value env) {
     }
 }
 
+// hdaudio per-endpoint volume, hardware-free. Same mock codec, but it RECORDS the
+// SET_AMP_GAIN_MUTE verbs it receives (a v4-encoded verb, so its selector is
+// payload>>16 == 3, distinct from the v12/GET_PARAMETER verbs the graph walk
+// sends). The speaker pin (3) advertises no out-amp, so volume must target the
+// converter (2); 50% of a 127-step range is gain 63 -> payload 0xB03F; volume 0
+// mutes -> 0xB080; unmuting at the stored volume 0 -> 0xB000. Confirms gain
+// mapping, mute encoding, and pin->converter amp fallback.
+static void check_hdaudio_volume(lisp_value env) {
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import hdaudio driver-util)"
+        // mock builder: `pin-amp` makes the output pin (node 3) advertise its own
+        // out-amp (widget-caps bit2); `alog` captures SET_AMP_GAIN_MUTE verbs (v4
+        // verb -> selector payload>>16 == 3) as (node data).
+        "(define (make-mock pin-amp alog)"
+        "  (lambda (node payload)"
+        "    (let ((sel (arithmetic-shift payload -8)) (lo (bitwise-and payload 255)))"
+        "      (cond"
+        "        ((= (arithmetic-shift payload -16) 3)"
+        "         (cell-set! alog (cons (list node (bitwise-and payload #xFFFF)) (cell-ref alog))) 0)"
+        "        ((= sel #xF00)"
+        "         (cond"
+        "           ((= lo #x04) (cond ((= node 0) (bitwise-or (arithmetic-shift 1 16) 1))"
+        "                              ((= node 1) (bitwise-or (arithmetic-shift 2 16) 4)) (else 0)))"
+        "           ((= lo #x05) (if (= node 1) 1 0))"
+        "           ((= lo #x09) (cond ((= node 2) 0)"
+        "                              ((= node 3) (bitwise-or (arithmetic-shift 4 20) (if pin-amp #x4 0)))"
+        "                              ((= node 4) (arithmetic-shift 1 20))"
+        "                              ((= node 5) (arithmetic-shift 4 20)) (else 0)))"
+        "           ((= lo #x0C) (cond ((= node 3) #x10) ((= node 5) #x20) (else 0)))"
+        "           ((= lo #x0E) (cond ((= node 3) 1) ((= node 4) 1) (else 0)))"
+        "           ((= lo #x12) #x7F00)"
+        "           (else 0)))"
+        "        ((= sel #xF1C) (cond ((= node 3) (bitwise-or (arithmetic-shift 1 20) (arithmetic-shift 2 30)))"
+        "                             ((= node 5) (arithmetic-shift #xA 20)) (else 0)))"
+        "        ((= sel #xF09) #x80000000)"
+        "        ((= sel #xF02) (cond ((and (= node 3) (= lo 0)) 2)"
+        "                             ((and (= node 4) (= lo 0)) 5) (else 0)))"
+        "        (else 0)))))"
+        // (A) pin has NO amp -> volume must target the converter (node 2): 50% of
+        //     127 steps = gain 63 -> 0xB03F (45119); vol 0 mutes -> 0xB080 (45184);
+        //     unmute at stored vol 0 -> 0xB000 (45056).
+        "(define la (make-cell '()))"
+        "(define ma (make-mock #f la))"
+        "(define oa (primary-output (enumerate-endpoints ma)))"
+        "(define va (set-endpoint-volume! ma oa 50))"
+        "(set-endpoint-volume! ma oa 0)"
+        "(set-endpoint-mute! ma oa #f)"
+        // (B) pin HAS an amp -> volume must target the PIN (node 3) instead.
+        "(define lb (make-cell '()))"
+        "(define mb (make-mock #t lb))"
+        "(define ob (primary-output (enumerate-endpoints mb)))"
+        "(set-endpoint-volume! mb ob 50)"
+        "(define resv (list va (ep-vol oa) (reverse (cell-ref la)) (reverse (cell-ref lb))))",
+        env, &err);
+    lisp_value res = lisp_eval_string("resv", env, &err);
+    char rb[160];
+    lisp_print(res, rb, sizeof rb);
+    if (err == NULL &&
+        strcmp(rb, "(50 0 ((2 45119) (2 45184) (2 45056)) ((3 45119)))") == 0) {
+        print_str("[SysLisp]  ok  hdaudio volume: gain map + mute + pin/converter amp target\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL hdaudio-volume  res-> ");
+        print_str(rb);
+        if (err) {
+            print_str("  err: ");
+            print_str(err);
+        }
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // VirtioGpu-in-Lisp, hardware-free. Three layers, all under the real scheduler:
 //   (1) command-struct LAYOUT: build each control-queue command and assert the
 //       exact little-endian bytes + total length. This is the offset regression
@@ -2399,6 +2473,7 @@ static void run_self_test(lisp_value env) {
     check_netdebug(env);
     check_rtl8169(env);
     check_hdaudio(env);
+    check_hdaudio_volume(env);
     check_gpu(env);
     check_lfb(env);
     check_rtl8139(env);
