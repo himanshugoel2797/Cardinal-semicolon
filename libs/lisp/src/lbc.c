@@ -2744,12 +2744,26 @@ static bool lbc_vm_grow_frames(lbc_vm *vm, int need) {
 // comparison isolates the dispatch mechanism alone.
 #ifdef LBC_THREADED
 // Resolve every instruction's handler-label address once per chunk. The &&label
-// values are only in scope inside lbc_vm_exec, so the table is passed in.
-static void lbc_build_thread(bcchunk *k, void *const *lbl) {
+// values are only in scope inside lbc_vm_exec, so the table is passed in. Returns
+// the populated table (which the caller uses directly), or NULL on failure with
+// *err set. A chunk can be shared by closures running in different contexts on
+// different cores, so two cores may build concurrently: the table is published
+// with a release store after it is fully populated (a concurrent acquire-reader
+// thus never sees a half-filled table), and a loser simply leaks its identical
+// copy. The opcode is range-checked -- the switch path's default: rejects a bad
+// opcode (e.g. from malformed bytecode) and the threaded path must too, rather
+// than index lbl[] out of bounds.
+static void **lbc_build_thread(bcchunk *k, void *const *lbl, const char **err) {
+    if (k->nrcode <= 0) { *err = "empty chunk"; return NULL; }
     void **t = (void **)malloc((size_t)k->nrcode * sizeof(void *));
-    for (int i = 0; i < k->nrcode; i++)
-        t[i] = lbl[k->rcode[i].op];
-    k->thread = t;
+    if (t == NULL) { *err = "out of memory"; return NULL; }
+    for (int i = 0; i < k->nrcode; i++) {
+        uint8_t op = k->rcode[i].op;
+        if (op > ROP_DEFG) { free(t); *err = "bad register opcode"; return NULL; }
+        t[i] = lbl[op];
+    }
+    __atomic_store_n(&k->thread, t, __ATOMIC_RELEASE);
+    return t;
 }
 #endif
 
@@ -2793,10 +2807,13 @@ static lisp_ctx_status lbc_vm_exec(lbc_vm *vm, lisp_ctx_t *cx,
         }                                                                 \
         f = &frames[depth - 1];                                          \
         Rf = R + f->base;                                                 \
-        if (__builtin_expect(f->chunk->thread == NULL, 0))               \
-            lbc_build_thread(f->chunk, lbl_tab);                          \
+        void **th = __atomic_load_n(&f->chunk->thread, __ATOMIC_ACQUIRE); \
+        if (__builtin_expect(th == NULL, 0)) {                           \
+            th = lbc_build_thread(f->chunk, lbl_tab, &err);              \
+            if (th == NULL) goto fail;                                    \
+        }                                                                 \
         ins = f->chunk->rcode[f->pc++];                                   \
-        goto *f->chunk->thread[f->pc - 1];                               \
+        goto *th[f->pc - 1];                                              \
     }
     NEXT;
 #else
