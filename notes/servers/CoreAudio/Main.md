@@ -32,9 +32,16 @@ otherwise the converter's amp. Messages: `(set-volume name ep-id vol)` /
 `(get-volume name ep-id reply)` / `(mute name ep-id on?)`; the serial REPL exposes
 `(set-vol ep-id vol)`.
 
+**Capture** drives the first input stream descriptor: `configure-input!` powers the
+ADC + input pin, enables the pin's input (`PIN_CONTROL` IN_EN), routes the ADC to
+the pin, and sets the capture format + stream tag; the controller then DMAs into a
+cyclic ring. Messages: `(capture-start name ep-id)` / `(capture-read name reply)`
+(a bytes copy of the ring) / `(capture-pos name reply)` (DMA position) /
+`(capture-stop name)`. `cardinal.mictest` is a boot self-check.
+
 Done: multi-controller bring-up, the full endpoint model (speakers/headphones/
-line-out + mics/line-in), output playback on the primary output endpoint, and
-per-endpoint volume/mute (codec graph walk + volume math unit-tested with a mock
-codec — SysTest `check_hdaudio` / `check_hdaudio_volume`).
-TODO (follow-up PRs): capture (driving the input stream descriptors so mics/
-line-in record), and codec/jack hotplug.
+line-out + mics/line-in), output playback, per-endpoint volume/mute, and capture
+(mic/line-in). Unit-tested with a mock codec — SysTest `check_hdaudio` /
+`check_hdaudio_volume` / `check_hdaudio_capture`; the capture DMA is validated live
+(`cardinal.mictest`: the input-stream position advances).
+TODO (follow-up PR): codec/jack hotplug.

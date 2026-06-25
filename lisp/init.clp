@@ -95,6 +95,38 @@
        (send audio-service (list 'set-volume 'hda0 ep-id vol)) 'ok)
       (else 'bad-args)))
 
+  ;; Capture self-check (gated on cardinal.mictest): in its own context, find card
+  ;; hda0's first input endpoint, start capturing, sample the DMA position twice,
+  ;; and log whether it advanced (the capture engine is live) plus the captured
+  ;; byte count. QEMU has no mic source so the PCM is silence, but the input stream
+  ;; DMA still runs -- LPIB advancing is the proof the path works end to end.
+  (define (start-mictest)
+    (spawn-restricted '()
+      (lambda ()
+        (sleep 2000000000)                                  ; let hda0 finish bring-up
+        (send audio-service (list 'endpoints 'hda0 (self)))
+        (let find ((es (recv)))
+          (cond
+            ((null? es) (display "[mictest] no input endpoint") (newline))
+            ((eq? (cadr (car es)) 'in)
+             (let ((id (car (car es))))
+               (send audio-service (list 'capture-start 'hda0 id))
+               (sleep 300000000)
+               (send audio-service (list 'capture-pos 'hda0 (self)))
+               (let ((p1 (recv)))
+                 (sleep 100000000)
+                 (send audio-service (list 'capture-pos 'hda0 (self)))
+                 (let ((p2 (recv)))
+                   (send audio-service (list 'capture-read 'hda0 (self)))
+                   (let ((buf (recv)))
+                     (send audio-service (list 'capture-stop 'hda0))
+                     (display "[mictest] ep ") (display id)
+                     (display " pos ") (display p1) (display " -> ") (display p2)
+                     (display (if (and p1 p2 (not (= p1 p2))) " ADVANCING" " (no advance)"))
+                     (display " captured-bytes=") (display (if buf (bytes-length buf) 0))
+                     (newline))))))
+            (else (find (cdr es))))))))
+
   ;; The system entry point: called once on the BSP after the scheduler is live.
   ;; Each Core* service is a long-lived context; bring up the ones that exist
   ;; today (input, audio, power) and the NIC. Audio/power have no drivers feeding
@@ -118,7 +150,10 @@
          (lambda (ecam)
            (hdaudio-init audio (string->symbol (string-append "hda" (number->string idx))) ecam)
            (set! idx (+ idx 1)))
-         (pci-find-class-all #x04 #x03))))
+         (pci-find-class-all #x04 #x03)))
+      ;; Optional capture self-check: start capturing on hda0's first input
+      ;; endpoint and confirm the DMA engine runs (see start-mictest).
+      (if (cmdline-has? "cardinal.mictest") (start-mictest)))
     (start-power-service)
     ;; Storage registry (the AHCI block driver AND the USB mass-storage class
     ;; driver feed it); cardfs registers as an fs provider FIRST so it is offered

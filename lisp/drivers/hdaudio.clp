@@ -35,7 +35,7 @@
   ;; endpoint set without real hardware -- the same testable-internals posture as
   ;; the rtl8169 driver's exported descriptor helpers.
   (export hdaudio-init enumerate-endpoints endpoint-descs primary-output ep-desc
-          set-endpoint-volume! set-endpoint-mute! ep-vol)
+          set-endpoint-volume! set-endpoint-mute! ep-vol configure-input!)
   (import sys-mmio sys-pci driver-util)
 
 ;; --- the controllers we bind (matched by PCI class, not VID/DID) -------------
@@ -616,15 +616,19 @@
 ;; drive the FIRST output stream descriptor.
 (define SD-CTL  #x00)   ; byte0: 0 SRST, 1 RUN, 2 IOCE; byte2 bits4-7 = stream #
 (define SD-STS  #x03)   ; W1C: bit2 BCIS, bit3 FIFOE, bit4 DESE
+(define SD-LPIB #x04)   ; u32: link position in buffer (DMA progress, bytes)
 (define SD-CBL  #x08)   ; u32: cyclic buffer length (bytes)
 (define SD-LVI  #x0C)   ; u16: last valid BDL index
 (define SD-FMT  #x12)   ; u16: stream format (== the converter format)
 (define SD-BDPL #x18)   ; u32: BDL base lower
 (define SD-BDPU #x1C)   ; u32: BDL base upper
 
-(define (out-sd-base regs)
-  (let ((iss (bitwise-and (arithmetic-shift (r16 regs GCAP) -8) #xF)))
-    (+ #x80 (* iss #x20))))
+;; Stream descriptors are laid out input-streams-first: input stream n at
+;; 0x80 + n*0x20, output stream n at 0x80 + (iss+n)*0x20, where iss (GCAP
+;; bits8-11) is the input-stream count. We drive the first of each.
+(define (iss-of regs) (bitwise-and (arithmetic-shift (r16 regs GCAP) -8) #xF))
+(define (in-sd-base regs)  #x80)                       ; input stream 0 (regs unused; symmetric with out-sd-base)
+(define (out-sd-base regs) (+ #x80 (* (iss-of regs) #x20)))   ; output stream 0
 
 ;; Write one 16-byte BDL entry {u64 addr; u32 len; u32 ioc} at byte offset `eoff`.
 (define (bdl-entry! bdl eoff phys len)
@@ -633,11 +637,13 @@
   (bytes-u32-set! bdl (+ eoff 8)  len)
   (bytes-u32-set! bdl (+ eoff 12) 1))           ; IOC
 
-;; Point output stream 0 at `buf` (total-bytes of PCM) via a two-entry BDL (the
-;; spec wants >= 2 entries) and run it. The stream engine cycles the BDL forever
-;; (wrapping at SDCBL), so a short buffer plays as a continuous loop -- exactly
-;; what a steady tone wants. Mirrors the SRST handshake every HDA stream needs.
-(define (stream-run! regs sd bdl buf total-bytes)
+;; Point stream descriptor `sd` at `buf` (total-bytes) via a two-entry BDL (the
+;; spec wants >= 2 entries), tag it `stream-num`, and run it. The stream engine
+;; cycles the BDL forever (wrapping at SDCBL), so an output buffer plays as a
+;; continuous loop and an input buffer is a continuously-overwritten capture ring.
+;; Mirrors the SRST handshake every HDA stream needs. Used for both directions:
+;; output passes out-sd-base + STREAM-NUM, capture passes in-sd-base + CAPTURE-STREAM.
+(define (stream-run! regs sd bdl buf total-bytes stream-num)
   (let* ((bphys (bytes-phys buf))
          (half  (quotient total-bytes 2)))
     (bdl-entry! bdl #x00 bphys half)
@@ -655,8 +661,16 @@
     (w32! regs (+ sd SD-CBL) total-bytes)
     (w16! regs (+ sd SD-LVI) 1)             ; two BDL entries -> last index 1
     (w16! regs (+ sd SD-FMT) FMT-48K-16-STEREO)
-    (w8!  regs (+ sd (+ SD-CTL 2)) (arithmetic-shift STREAM-NUM 4))   ; stream #
+    (w8!  regs (+ sd (+ SD-CTL 2)) (arithmetic-shift stream-num 4))   ; stream #
     (w8!  regs (+ sd SD-CTL) (bitwise-or (r8 regs (+ sd SD-CTL)) #x02))))  ; RUN
+
+;; Stop a running stream descriptor: clear RUN and wait for the controller to
+;; acknowledge it (RUN reads back 0). The wait matters because a stopped capture
+;; stream's buffer is dropped right after; the DMA engine can finish one more
+;; transfer after RUN=0, so we must see it halt before the buffer is GC-eligible.
+(define (stream-stop! regs sd)
+  (w8! regs (+ sd SD-CTL) (bitwise-and (r8 regs (+ sd SD-CTL)) (bitwise-not #x02)))
+  (wait-until (lambda () (= 0 (bitwise-and (r8 regs (+ sd SD-CTL)) #x02))) 1000000))
 
 ;; --- tone synthesis ----------------------------------------------------------
 ;; No FP trig primitive exists, so synthesize a square wave with integer math:
@@ -688,10 +702,55 @@
          (buf (dma-alloc-32 nbytes))
          (bdl (dma-alloc-32 256)))            ; 16 BDL entries' worth (we use 2)
     (fill-tone! buf nframes freq amp)
-    (stream-run! regs (out-sd-base regs) bdl buf nbytes)
+    (stream-run! regs (out-sd-base regs) bdl buf nbytes STREAM-NUM)
     (display "[hdaudio] playing ") (display freq) (display "Hz tone on stream ")
     (display STREAM-NUM) (newline)
     (list buf bdl)))
+
+;; --- capture (input stream) --------------------------------------------------
+;; Driving an input endpoint: configure the ADC + input pin, then run the FIRST
+;; input stream descriptor capturing into a cyclic buffer the controller fills.
+;; QEMU's hda has no input source under a `wav` audiodev, so captured PCM is
+;; silence there, but the DMA engine still runs (SD-LPIB advances) -- the proof
+;; the capture path is live; on real hardware the buffer holds mic/line-in audio.
+(define CAPTURE-STREAM 2)        ; stream tag for capture (output uses 1)
+(define CAP-FRAMES 4800)         ; 0.1 s cyclic capture ring at 48 kHz stereo16
+
+;; Configure an input endpoint's path: power ADC + pin, enable the pin's input
+;; (PIN_CONTROL IN_EN bit5), route the ADC to the pin, set the ADC's capture
+;; format + stream tag, and open the input amps to the converter's max.
+(define (configure-input! cdc ep stream-num)
+  (let* ((afg (ep-afg ep)) (adc (ep-conv ep)) (pin (ep-pin ep))
+         (gain (amp-max-gain cdc adc PARAM-INPUT-AMP-CAPS)))
+    (cdc-verb cdc afg (v12 VERB-SET-POWER-STATE 0))
+    (cdc-verb cdc adc (v12 VERB-SET-POWER-STATE 0))
+    (cdc-verb cdc pin (v12 VERB-SET-POWER-STATE 0))
+    ;; pin: enable input (IN_EN bit5), unmute the pin's input amp
+    (cdc-verb cdc pin (v12 VERB-SET-PIN-CONTROL #x20))
+    (cdc-verb cdc pin (v4  VERB-SET-AMP-GAIN-MUTE (amp-in-payload gain #f)))
+    ;; ADC: route to the pin (if it selects among inputs), format, stream tag,
+    ;; unmute the ADC input amp.
+    (let ((ci (conn-index cdc adc pin)))
+      (if ci (cdc-verb cdc adc (v12 VERB-SET-CONN-SELECT ci))))
+    (cdc-verb cdc adc (v4  VERB-SET-CONVERTER-FORMAT FMT-48K-16-STEREO))
+    (cdc-verb cdc adc (v12 VERB-SET-STREAM-CHANNEL (arithmetic-shift stream-num 4)))
+    (cdc-verb cdc adc (v4  VERB-SET-AMP-GAIN-MUTE (amp-in-payload gain #f)))))
+
+;; Start capturing on an input endpoint: configure the path, allocate the cyclic
+;; ring, run input stream 0. Returns (buf bdl nbytes) -- the caller MUST retain it
+;; (the controller DMAs into buf forever).
+(define (capture-start! regs cdc ep)
+  (configure-input! cdc ep CAPTURE-STREAM)
+  (let* ((nbytes (* CAP-FRAMES 4))
+         (buf (dma-alloc-32 nbytes))
+         (bdl (dma-alloc-32 256)))
+    (stream-run! regs (in-sd-base regs) bdl buf nbytes CAPTURE-STREAM)
+    (display "[hdaudio] capturing on stream ") (display CAPTURE-STREAM)
+    (display " pin=") (display (ep-pin ep)) (display " adc=") (display (ep-conv ep)) (newline)
+    (list buf bdl nbytes)))
+
+;; The capture DMA position (bytes written into the ring so far, mod CBL).
+(define (capture-pos regs) (r32 regs (+ (in-sd-base regs) SD-LPIB)))
 
 ;; --- endpoint selection + reporting ------------------------------------------
 ;; An endpoint descriptor is the plain-data view of an endpoint that crosses the
@@ -718,43 +777,58 @@
 
 ;; --- the long-lived driver context -------------------------------------------
 ;; After bring-up the spawned context becomes the audio card's service loop. It
-;; closes over the codec handle + the endpoint list, retains the currently-playing
-;; buffers (so the stream's DMA source stays live), and answers coreaudio: (tone)
-;; replays the default tone, (play freq amp frames) plays a square-wave tone on the
-;; primary output, (endpoints reply) reports the card's endpoint descriptors,
-;; (get-status reply) reports state. Tone parameters are plain fixnums, so nothing
-;; crosses the context boundary except small values.
+;; closes over the codec handle + the endpoint list and threads two pieces of
+;; retained state: `cur` = the playing output buffers (so the output stream's DMA
+;; source stays live) and `cap` = the capture state (buf bdl nbytes) or #f (so the
+;; input stream's DMA target stays live). It answers coreaudio: (tone)/(play ...)
+;; output; (set-volume)/(get-volume)/(mute) per endpoint; (capture-start ep-id)/
+;; (capture-read reply)/(capture-pos reply)/(capture-stop) input; (endpoints reply)
+;; and (get-status reply) introspection.
 (define (hda-driver-loop regs cdc eps refs)
-  (let loop ((cur refs))
+  (let loop ((cur refs) (cap #f))
     (let ((m (recv)))
       (cond
         ((eq? (car m) 'tone)
-         (loop (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES)))
+         (loop (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES) cap))
         ((eq? (car m) 'play)            ; (play freq amp frames)
          ;; Validate before synthesis: freq 0 divides by zero in fill-tone!, amp
          ;; outside [1,32767] overflows the signed-16 sample, frames 0 writes
          ;; CBL=0 (an undefined running stream). A bad request is dropped, not fatal.
          (let ((freq (nth m 1)) (amp (nth m 2)) (frames (nth m 3)))
            (if (and (> freq 0) (> amp 0) (< amp 32768) (> frames 0))
-               (loop (play-tone! regs freq amp frames))
+               (loop (play-tone! regs freq amp frames) cap)
                (begin (display "[hdaudio] play: bad params, ignored") (newline)
-                      (loop cur)))))
+                      (loop cur cap)))))
         ((eq? (car m) 'endpoints)       ; (endpoints reply)
-         (send (nth m 1) (endpoint-descs eps)) (loop cur))
+         (send (nth m 1) (endpoint-descs eps)) (loop cur cap))
         ((eq? (car m) 'set-volume)      ; (set-volume ep-id vol)
          (let ((ep (ep-by-id eps (nth m 1))))
            (if ep (set-endpoint-volume! cdc ep (nth m 2))
                (begin (display "[hdaudio] set-volume: no endpoint ") (display (nth m 1)) (newline))))
-         (loop cur))
+         (loop cur cap))
         ((eq? (car m) 'get-volume)      ; (get-volume ep-id reply)
          (let ((ep (ep-by-id eps (nth m 1))))
-           (send (nth m 2) (if ep (ep-vol ep) #f))) (loop cur))
+           (send (nth m 2) (if ep (ep-vol ep) #f))) (loop cur cap))
         ((eq? (car m) 'mute)            ; (mute ep-id on?)
          (let ((ep (ep-by-id eps (nth m 1))))
-           (if ep (set-endpoint-mute! cdc ep (nth m 2)))) (loop cur))
+           (if ep (set-endpoint-mute! cdc ep (nth m 2)))) (loop cur cap))
+        ((eq? (car m) 'capture-start)   ; (capture-start ep-id)
+         (let ((ep (ep-by-id eps (nth m 1))))
+           (if (and ep (eq? (ep-dir ep) 'in))
+               (loop cur (capture-start! regs cdc ep))
+               (begin (display "[hdaudio] capture-start: no input endpoint ")
+                      (display (nth m 1)) (newline) (loop cur cap)))))
+        ((eq? (car m) 'capture-read)    ; (capture-read reply) -> a copy of the ring, or #f
+         (send (nth m 1) (if cap (copy-bytes (car cap) 0 (caddr cap)) #f))
+         (loop cur cap))
+        ((eq? (car m) 'capture-pos)     ; (capture-pos reply) -> DMA position, or #f
+         (send (nth m 1) (if cap (capture-pos regs) #f)) (loop cur cap))
+        ((eq? (car m) 'capture-stop)    ; (capture-stop)
+         (if cap (stream-stop! regs (in-sd-base regs)))
+         (loop cur #f))
         ((eq? (car m) 'get-status)
-         (send (nth m 1) 'playing) (loop cur))
-        (else (loop cur))))))
+         (send (nth m 1) 'playing) (loop cur cap))
+        (else (loop cur cap))))))
 
 ;; --- bring-up body (runs in the spawned, yielding context) -------------------
 ;; Mirrors module_init + hdaudio_initialize, scoped to controller + codec
@@ -828,8 +902,8 @@
                          (display (if (ep-present e) " present" " absent")) (newline))
                        eps)
                       ;; Configure every output endpoint so a later (play) can drive
-                      ;; any of them; inputs are enumerated now and wired for capture
-                      ;; in a follow-up (PR3).
+                      ;; any of them; input endpoints are configured on demand by
+                      ;; configure-input! when a (capture-start) arrives.
                       (for-each (lambda (e) (if (eq? (ep-dir e) 'out) (configure-output! cdc e)))
                                 eps)
                       (send audio (list 'register name (self) (endpoint-descs eps)))
