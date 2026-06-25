@@ -380,7 +380,9 @@
                                                       (let loop ()
                                                         (let ((m (recv)))
                                                           (if (eq? (car m) 'tx)
-                                                              (tx-send! regs txring txbuf free-cell (cadr m) (caddr m)))
+                                                              (begin
+                                                                (tx-send! regs txring txbuf free-cell (cadr m) (caddr m))
+                                                                (if (> (length m) 3) (send (nth m 3) (list 'tx-done)))))
                                                           (loop)))))))
                                               ;; RX pump: park on the MSI; on each wake
                                               ;; mask IMR, ack ISR, sweep the ring

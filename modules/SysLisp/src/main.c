@@ -1479,9 +1479,11 @@ static void check_txq(lisp_value env) {
     const char *err = NULL;
     lisp_eval_string(
         "(import corenetwork driver-util)"
-        // capture exactly 3 transmitted frames and summarise them
+        // capture 3 transmitted frames, acking each so the tx engine releases the
+        // next (the frames come from one engine), and summarise them
         "(define cap (spawn (lambda ()"
-        "  (let* ((f1 (cadr (recv))) (f2 (cadr (recv))) (f3 (cadr (recv))))"
+        "  (define (rx) (let ((m (recv))) (if (> (length m) 3) (send (nth m 3) (list 'tx-done))) (cadr m)))"
+        "  (let* ((f1 (rx)) (f2 (rx)) (f3 (rx)))"
         "    (list (get-be16 f1 12) (bytes-u8-ref f1 38) (bytes-u8-ref f1 41)"  // ARP + target IP
         "          (get-be16 f2 12) (get-be16 f3 12) (bytes-u8-ref f2 0))))))"   // 2 IPv4 + dst-mac
         "(define netT (start-network-service))"
@@ -1541,8 +1543,10 @@ static void check_frag(lisp_value env) {
         "(send netD (list 'udp-bind 4000 got))"
         // sender: interface 10.0.2.15, its NIC tx is a wire that relays to netD's rx
         "(define netS (start-network-service))"
+        // relay each fragment to netD, acking so the engine releases the next
         "(define wire (spawn (lambda () (let loop () (let ((m (recv)))"
-        "  (if (eq? (car m) 'tx) (send netD (list 'rx (cadr m) (caddr m)))) (loop))))))"
+        "  (if (eq? (car m) 'tx) (begin (send netD (list 'rx (cadr m) (caddr m)))"
+        "    (if (> (length m) 3) (send (nth m 3) (list 'tx-done))))) (loop))))))"
         "(send netS (list 'register-nic (list 2 0 0 0 0 15) wire))"
         "(send netS (list 'set-address #f (list 10 0 2 15) (list 255 255 255 0)"
         "                 (list 0 0 0 0) (list 0 0 0 0)))"
@@ -1559,6 +1563,44 @@ static void check_frag(lisp_value env) {
         g_pass++;
     } else {
         print_str("[SysLisp] FAIL frag -> ");
+        print_str(b);
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
+// Per-interface tx engine: bounded queue + one-in-flight backpressure. A mock NIC
+// that never acks keeps the single in-flight frame outstanding, so a burst piles
+// up behind it: 1 dispatched + TXE-MAX (64) queued, and the rest dropped + counted.
+// Flooding 70 frames should leave the queue full (64) with 5 dropped.
+static void check_txworker(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 4000000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import corenetwork driver-util)"
+        "(define netW (start-network-service))"
+        "(define mock (spawn (lambda () (let loop () (recv) (loop)))))"  // never acks tx-done
+        "(send netW (list 'register-nic (list 2 0 0 0 0 1) mock))"
+        "(send netW (list 'set-address #f (list 10 0 2 15) (list 255 255 255 0)"
+        "                 (list 0 0 0 0) (list 0 0 0 0)))"
+        // flood 70 pings through the engine (1 in flight, 64 queued, 5 dropped)
+        "(define (flood i) (if (< i 70)"
+        "  (begin (send netW (list 'ping (list 10 0 2 50) (list 9 9 9 9 9 9) i 0)) (flood (+ i 1))) 'done))"
+        "(flood 0)"
+        "(define stat (spawn (lambda () (recv))))"
+        "(send netW (list 'tx-stats stat))",
+        env, &err);
+    lisp_value stat = lisp_eval_string("stat", env, &err);
+    lisp_sched_run(&s, 0);
+    char b[32];
+    lisp_print(lisp_ctx_value(stat), b, sizeof b);
+    if (err == NULL && strcmp(b, "(64 5)") == 0) {
+        print_str("[SysLisp]  ok  tx engine: bounded queue + drop-on-overflow + backpressure\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL txworker -> ");
         print_str(b);
         print_str("\r\n");
         g_fail++;
@@ -2265,6 +2307,7 @@ static void run_self_test(lisp_value env) {
     check_firewall(env);
     check_txq(env);
     check_frag(env);
+    check_txworker(env);
     check_netdebug(env);
     check_rtl8169(env);
     check_gpu(env);

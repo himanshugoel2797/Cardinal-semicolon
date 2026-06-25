@@ -123,9 +123,15 @@
                                       (let loop ()
                                         (let ((m (recv)))
                                           (if (eq? (car m) 'tx)
-                                              (begin
+                                              (let ((before (bytes-u16-ref (q-used txq) 2)))
                                                 (bytes-copy-into! txbuf VNET-HDR (cadr m) (caddr m))
-                                                (tx-frame! txq txbuf notify mult (caddr m))))
+                                                (tx-frame! txq txbuf notify mult (caddr m))
+                                                ;; wait for the device to consume the (single) TX
+                                                ;; buffer before acking, so the engine never lets
+                                                ;; the next frame overwrite it.
+                                                (wait-until (lambda ()
+                                                  (not (= (bytes-u16-ref (q-used txq) 2) before))) 200000)
+                                                (if (> (length m) 3) (send (nth m 3) (list 'tx-done)))))
                                           (loop)))))))
                               ;; RX context: drain received frames and forward each
                               ;; (snapshotted out of the recycled rxbuf) to the

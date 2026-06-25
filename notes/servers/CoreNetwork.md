@@ -185,9 +185,20 @@ design and should be decided deliberately, in line with the microkernel model:
    which stores a raw word in bytes and only round-trips fixnums); flush is driven
    by the ARP rx path and retry/timeout by the 100ms tick. The blocking
    `arp-resolve` + caller-supplies-MAC path remains for synchronous callers (DNS,
-   `tcp-connect-blocking`). A per-device tx *worker/queue* draining to the driver
-   is still notional (sends go straight to the NIC tx context, which suffices at
-   current rates).
+   `tcp-connect-blocking`).
+
+   *Per-device tx engine (done).* `register-nic` wraps each NIC's raw tx context in
+   a `start-tx-engine` worker (`txworker.clp`) and stores that as the interface's
+   tx, so every `eth-tx` flows through it. The engine keeps **one frame in flight**
+   (forward a frame, then wait for the NIC's `(tx-done)` ack before the next) behind
+   a **bounded FIFO** (64 frames); a frame arriving when the FIFO is full is dropped
+   and counted (`(tx-stats reply)` → `(queued dropped)`). This bounds tx memory under
+   a burst and — since a frame is handed over only after the previous completes —
+   serialises a driver's single TX buffer (no in-flight overwrite; `virtio-net` now
+   acks only after the device consumes the descriptor). A NIC that never acks is
+   paced by a `(tx-tick)` fallback rather than wedged. Validated: a self-test floods
+   70 frames at a non-acking mock → 1 in flight, 64 queued, 5 dropped; live
+   DHCP/DNS/TCP (8 KB) flow through the engine unchanged.
 3. **Interface addressing / routing — *done (multi-homed host)*.** The stack is now
    multi-interface: each NIC `register-nic`s as a distinct interface with its own
    mac/tx and address config (`lisp/servers/corenetwork/route.clp`), and a
