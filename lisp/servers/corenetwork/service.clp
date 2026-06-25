@@ -34,6 +34,7 @@
 
 (define (start-network-service)
   (let* ((tcp0 (mk-tcp-state))
+         (fw (mk-fw))               ; inbound packet filter (closure state, mutated by fw-* msgs)
          (net
     (serve (mk-state '() '() '() '() tcp0)
     (lambda (st m)
@@ -56,7 +57,7 @@
                                 (handle-arp ifaces cache (uptime-ns) frame len)
                                 binds tcp))
                      ((= etype ETH-IPV4)
-                      (handle-ip ifaces routes cache binds tcp frame len)
+                      (handle-ip ifaces routes fw cache binds tcp frame len)
                       st)
                      (else st))))))
           ((eq? (car m) 'arp-request)          ; (arp-request ip) -- who-has on the route's link
@@ -140,6 +141,20 @@
            (tcp-do-test-loss tcp (cadr m))
            (display "[corenetwork] tcp test-loss: drop 1 in ")
            (display (cadr m)) (newline)
+           st)
+          ;; --- inbound firewall config (fw mutated in place) ---
+          ((eq? (car m) 'fw-policy)            ; (fw-policy allow|deny) -- default action
+           (fw-set-policy! fw (eq? (cadr m) 'allow))
+           (display "[corenetwork] firewall default ") (display (cadr m)) (newline)
+           st)
+          ((eq? (car m) 'fw-add)               ; (fw-add action proto src-net src-len dport)
+           (fw-add! fw (fw-rule (cadr m) (caddr m) (cadddr m) (nth m 4) (nth m 5)))
+           (display "[corenetwork] firewall rule added") (newline)
+           st)
+          ((eq? (car m) 'fw-clear)             ; (fw-clear) -- drop all rules
+           (fw-clear! fw) st)
+          ((eq? (car m) 'fw-query)             ; (fw-query proto src-ip dport reply) -> #t|#f
+           (send (nth m 4) (fw-allow? fw (cadr m) (caddr m) (cadddr m)))
            st)
           (else st)))))))
     (start-tcp-ticker net)

@@ -169,6 +169,11 @@
       ;; Test-only TCP fault injection: cardinal.tcploss makes the stack drop 1 in
       ;; 4 received segments, exercising retransmission + out-of-order reassembly.
       (if (cmdline-has? "cardinal.tcploss") (send net (list 'tcp-test-loss 4)))
+      ;; Test-only firewall demo: cardinal.fwtest installs a rule that DENIES
+      ;; inbound TCP to port 7, so the netdbg TCP echo becomes unreachable while
+      ;; everything else (DHCP/DNS/UDP echo) still works -- a visible deny.
+      (if (cmdline-has? "cardinal.fwtest")
+          (send net (list 'fw-add 'deny 6 'any 0 7)))
       ;; Test-only DNS probe: resolve a hostname via the DHCP-learned server and
       ;; print the result (after DHCP has had time to bind the interface).
       (if (cmdline-has? "cardinal.dnstest")

@@ -1434,6 +1434,65 @@ static void check_routing(lisp_value env) {
     }
 }
 
+// Inbound firewall: ordered allow/deny rules + default policy, matched on
+// (proto, src-IP/prefix, dport). Drives the real fw-allow? decision (the same
+// function handle-ip gates every received packet through) via fw-query.
+static void check_firewall(lisp_value env) {
+    lisp_sched_t s;
+    lisp_sched_init(&s, 2000000);
+    s.per_context_heaps = 1;
+    const char *err = NULL;
+    // A separate service per policy scenario: all config messages are applied
+    // before any fw-query is scheduled, so each query must see its OWN service's
+    // final firewall state (one service cannot test intermediate states).
+    lisp_eval_string(
+        "(import corenetwork driver-util)"
+        "(define (fq net proto src dp)"   // ask a firewall for a verdict
+        "  (spawn (lambda () (send net (list 'fw-query proto src dp (self))) (recv))))"
+        // Scenario A: default-deny, allow only TCP(6) dport 7 and ICMP(1) from a /24.
+        "(define netA (start-network-service))"
+        "(send netA (list 'fw-policy 'deny))"
+        "(send netA (list 'fw-add 'allow 6 'any 0 7))"
+        "(send netA (list 'fw-add 'allow 1 (list 10 0 2 0) 24 'any))"
+        "(define w-tcp7 (fq netA 6 (list 9 9 9 9) 7))"      // allowed (rule 1)
+        "(define w-tcp8 (fq netA 6 (list 9 9 9 9) 8))"      // denied (default deny)
+        "(define w-udp7 (fq netA 17 (list 9 9 9 9) 7))"     // denied (proto mismatch)
+        "(define w-icmp-in (fq netA 1 (list 10 0 2 9) 0))"  // allowed (rule 2, in /24)
+        "(define w-icmp-out (fq netA 1 (list 10 9 9 9) 0))" // denied (outside /24)
+        // Scenario B: default-allow with a deny rule shadowing one subnet.
+        "(define netB (start-network-service))"
+        "(send netB (list 'fw-add 'deny 6 (list 192 168 0 0) 16 'any))"
+        "(define w-default (fq netB 6 (list 1 2 3 4) 80))"  // allowed (default, no match)
+        "(define w-block (fq netB 6 (list 192 168 5 5) 80))" // denied (deny rule)
+        "(define w-pass  (fq netB 6 (list 8 8 8 8) 80))",    // allowed (default)
+        env, &err);
+    const char *names[] = {"w-tcp7", "w-tcp8", "w-udp7", "w-icmp-in",
+                           "w-icmp-out", "w-default", "w-block", "w-pass"};
+    const char *want[] = {"#t", "#f", "#f", "#t", "#f", "#t", "#f", "#t"};
+    lisp_value ctxs[8];
+    for (int i = 0; i < 8; i++) ctxs[i] = lisp_eval_string(names[i], env, &err);
+    lisp_sched_run(&s, 0);
+    int ok = (err == NULL);
+    for (int i = 0; i < 8; i++) {
+        char b[16];
+        lisp_print(lisp_ctx_value(ctxs[i]), b, sizeof b);
+        if (strcmp(b, want[i]) != 0) {
+            ok = 0;
+            print_str("[SysLisp] FAIL firewall ");
+            print_str(names[i]);
+            print_str(" -> ");
+            print_str(b);
+            print_str("\r\n");
+        }
+    }
+    if (ok) {
+        print_str("[SysLisp]  ok  firewall allow/deny rules + proto/src/dport match + default policy\r\n");
+        g_pass++;
+    } else {
+        g_fail++;
+    }
+}
+
 // CoreNetDebug-in-Lisp: a mock network service captures the echo endpoint's
 // reply. start-netdebug binds its handlers to the mock; delivering a (udp-rx ...)
 // to the echo port must bounce the same payload back via (udp-send ...) with the
@@ -2072,6 +2131,7 @@ static void run_self_test(lisp_value env) {
     check_ahci(env);
     check_network(env);
     check_routing(env);
+    check_firewall(env);
     check_netdebug(env);
     check_rtl8169(env);
     check_gpu(env);
