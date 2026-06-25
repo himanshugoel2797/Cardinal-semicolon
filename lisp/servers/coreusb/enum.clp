@@ -39,12 +39,20 @@
 ;; selects its configuration, and dispatches it to the matching class context.
 ;; `class-table` is a snapshot alist (class-byte . class-ctx); `usb` is the
 ;; coreusb handle to report the outcome to. parent-addr is 0 for a root port.
+;; Retried control round-trip: the enumeration control transfers are one-shot and
+;; the first ones happen while the device has only just been reset, so a transient
+;; NAK/timeout shouldn't doom the device. Returns the (complete n data) of the
+;; first attempt with n >= need, or the last attempt's completion otherwise.
+(define (ctl-need hci addr speed mps setup data len need)
+  (with-retries 3 10000000 (lambda (c) (>= (complete-n c) need))
+    (lambda () (hci-control hci addr speed mps setup data len))))
+
 (define (enumerate hci port speed parent addr class-table usb)
   ;; 1) 8-byte device descriptor at the default address -> max packet size (ep0).
-  (let ((c (hci-control hci 0 speed 8
-                        (make-setup USB-REQ-DIR-IN USB-REQ-GET-DESCRIPTOR
-                                    (arithmetic-shift USB-DESC-DEVICE 8) 0 8)
-                        #f 8)))
+  (let ((c (ctl-need hci 0 speed 8
+                     (make-setup USB-REQ-DIR-IN USB-REQ-GET-DESCRIPTOR
+                                 (arithmetic-shift USB-DESC-DEVICE 8) 0 8)
+                     #f 8 8)))
     (if (< (complete-n c) 8)
         (begin (display "[coreusb] initial GET_DESCRIPTOR failed") (newline)
                (send usb (list 'enum-failed addr)))
@@ -52,9 +60,9 @@
                (mps0 (let ((m (bytes-u8-ref d8 7))) (if (= m 0) 8 m))))
           ;; 2) SET_ADDRESS (still at the default address), then the recovery delay.
           (if (< (complete-n
-                  (hci-control hci 0 speed mps0
-                               (make-setup USB-REQ-DIR-OUT USB-REQ-SET-ADDRESS addr 0 0)
-                               #f 0)) 0)
+                  (ctl-need hci 0 speed mps0
+                            (make-setup USB-REQ-DIR-OUT USB-REQ-SET-ADDRESS addr 0 0)
+                            #f 0 0)) 0)
               (begin (display "[coreusb] SET_ADDRESS failed") (newline)
                      (send usb (list 'enum-failed addr)))
               (begin
@@ -63,10 +71,10 @@
 
 (define (enumerate-stage2 hci port speed parent addr mps0 class-table usb)
   ;; 3) full (18-byte) device descriptor at the new address.
-  (let ((c (hci-control hci addr speed mps0
-                        (make-setup USB-REQ-DIR-IN USB-REQ-GET-DESCRIPTOR
-                                    (arithmetic-shift USB-DESC-DEVICE 8) 0 18)
-                        #f 18)))
+  (let ((c (ctl-need hci addr speed mps0
+                     (make-setup USB-REQ-DIR-IN USB-REQ-GET-DESCRIPTOR
+                                 (arithmetic-shift USB-DESC-DEVICE 8) 0 18)
+                     #f 18 18)))
     (if (< (complete-n c) 18)
         (begin (display "[coreusb] device descriptor read failed") (newline)
                (send usb (list 'enum-failed addr)))
@@ -76,19 +84,19 @@
           (display "[coreusb] enumerated device: vid=") (display vid)
           (display " pid=") (display pid) (display " class=") (display dclass) (newline)
           ;; 4) config descriptor: 9-byte header for wTotalLength, then the whole.
-          (let ((ch (hci-control hci addr speed mps0
-                                 (make-setup USB-REQ-DIR-IN USB-REQ-GET-DESCRIPTOR
-                                             (arithmetic-shift USB-DESC-CONFIG 8) 0 9)
-                                 #f 9)))
+          (let ((ch (ctl-need hci addr speed mps0
+                              (make-setup USB-REQ-DIR-IN USB-REQ-GET-DESCRIPTOR
+                                          (arithmetic-shift USB-DESC-CONFIG 8) 0 9)
+                              #f 9 9)))
             (if (< (complete-n ch) 9)
                 (begin (display "[coreusb] config header read failed") (newline)
                        (send usb (list 'enum-failed addr)))
                 (let* ((total0 (bytes-u16-ref (complete-data ch) 2))
                        (total (if (> total0 512) 512 total0))
-                       (cf (hci-control hci addr speed mps0
-                                        (make-setup USB-REQ-DIR-IN USB-REQ-GET-DESCRIPTOR
-                                                    (arithmetic-shift USB-DESC-CONFIG 8) 0 total)
-                                        #f total)))
+                       (cf (ctl-need hci addr speed mps0
+                                     (make-setup USB-REQ-DIR-IN USB-REQ-GET-DESCRIPTOR
+                                                 (arithmetic-shift USB-DESC-CONFIG 8) 0 total)
+                                     #f total total)))
                   (if (< (complete-n cf) total)
                       (begin (display "[coreusb] config (full) read failed") (newline)
                              (send usb (list 'enum-failed addr)))
@@ -97,9 +105,9 @@
                              (dev (make-usb-dev hci addr speed mps0 config total)))
                         ;; 5) select the configuration.
                         (if (< (complete-n
-                                (hci-control hci addr speed mps0
-                                             (make-setup USB-REQ-DIR-OUT USB-REQ-SET-CONFIGURATION
-                                                         cfgval 0 0) #f 0)) 0)
+                                (ctl-need hci addr speed mps0
+                                          (make-setup USB-REQ-DIR-OUT USB-REQ-SET-CONFIGURATION
+                                                      cfgval 0 0) #f 0 0)) 0)
                             (begin (display "[coreusb] SET_CONFIGURATION failed") (newline)
                                    (send usb (list 'enum-failed addr)))
                             ;; 6) advisory: log device strings, then dispatch by

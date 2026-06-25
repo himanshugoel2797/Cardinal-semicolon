@@ -34,6 +34,8 @@
           ;; standard requests + strings
           usb-get-descriptor usb-set-interface
           usb-string usb-string-raw usb-string-decode usb-langid
+          ;; robustness: retry + endpoint-halt recovery
+          with-retries usb-clear-halt USB-FEATURE-ENDPOINT-HALT make-setup
           ;; request/descriptor/class/speed constants used by class drivers
           USB-REQ-DIR-IN USB-REQ-DIR-OUT USB-REQ-TYPE-CLASS
           USB-REQ-RECIP-DEVICE USB-REQ-RECIP-INTERFACE USB-REQ-RECIP-ENDPOINT
