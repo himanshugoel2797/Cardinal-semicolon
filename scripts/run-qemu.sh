@@ -24,6 +24,12 @@
 #   NET_PCAP=path                with NIC set, dump the link to a pcap file
 #   DISK=path        attach an ICH9 AHCI controller (8086:2922) + a raw-image SATA
 #                    drive on port 0 (drives the Lisp ahci block-device driver)
+#   AUDIO=none|hda   attach an Intel HD Audio controller (ich9-intel-hda, 8086:293e)
+#                    + an hda-output line-out codec, with a `wav` audiodev that
+#                    captures everything the codec plays to AUDIO_WAV. Drives the
+#                    Lisp hdaudio driver; a non-silent WAV is the playback proof.
+#   AUDIO_WAV=path   where AUDIO=hda writes the captured audio (default
+#                    /tmp/cardinal-audio.wav)
 #   DISPLAY_MODE=none|gtk|sdl    qemu display backend (default none = headless)
 #   SCREENSHOT=path  after booting, dump the guest screen to a PPM and exit
 #   TIMEOUT=30      seconds before auto-killing the guest (0 = no timeout)
@@ -111,6 +117,24 @@ case "${USB:-none}" in
   *) echo "error: unknown USB=$USB (none|uhci-kbd|xhci-kbd|uhci-hub|uhci-storage|xhci-storage)" >&2; exit 1 ;;
 esac
 
+# Optional HD Audio. AUDIO=hda attaches an ich9-intel-hda controller (8086:293e,
+# the first ID the Lisp hdaudio driver tries) plus an hda-output line-out codec,
+# routed to a `wav` audiodev that records the played audio to AUDIO_WAV. With the
+# driver's bring-up tone, the captured WAV is non-silent -- the end-to-end proof
+# that a guest stream reaches a host sink.
+audio_args=()
+case "${AUDIO:-none}" in
+  none) ;;
+  hda)
+    AUDIO_WAV="${AUDIO_WAV:-/tmp/cardinal-audio.wav}"
+    audio_args=(-audiodev "wav,id=snd0,path=$AUDIO_WAV"
+                -device ich9-intel-hda,id=hda0
+                -device hda-output,bus=hda0.0,audiodev=snd0)
+    echo "[run-qemu] HD Audio capture -> $AUDIO_WAV"
+    ;;
+  *) echo "error: unknown AUDIO=$AUDIO (none|hda)" >&2; exit 1 ;;
+esac
+
 [ -f "$ISO" ] || { echo "error: ISO not found: $ISO (run the 'image' target first)" >&2; exit 1; }
 command -v qemu-system-x86_64 >/dev/null || { echo "error: qemu-system-x86_64 not installed" >&2; exit 1; }
 
@@ -135,6 +159,7 @@ common_args=(
   "${nic_args[@]}"
   "${disk_args[@]}"
   "${usb_args[@]}"
+  "${audio_args[@]}"
   -no-reboot -no-shutdown
   -d guest_errors
 )
