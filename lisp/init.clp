@@ -15,7 +15,7 @@
 ;; when debugging the OS, a narrow grant when not.
 
 (define-module init
-  (export system-init start-repl)
+  (export system-init start-repl play-tone)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
           corenetdebug coreusb ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci
           cardfs hdaudio uhci xhci usb-hid usb-hub usb-storage sys-pci sys-cmdline)
@@ -56,6 +56,35 @@
         (lambda () (ps2-keyboard-driver input)))
       input))
 
+  ;; The running coreaudio service handle, published by system-init so the serial
+  ;; REPL can drive playback interactively (start-repl imports `play-tone` into the
+  ;; REPL env). #f until the audio service is up.
+  (define audio-service #f)
+
+  ;; REPL command: play a tone through the audio stack. Routes through the live
+  ;; coreaudio service to the registered card 'hda0 -- the exact path a real client
+  ;; uses -- so it doubles as an end-to-end check of the hdaudio playback path.
+  ;;   (play-tone)               default bring-up tone (500 Hz)
+  ;;   (play-tone freq)          freq Hz at the default amplitude / length
+  ;;   (play-tone freq amp)      + amplitude (1..32767)
+  ;;   (play-tone freq amp n)    + length in frames (each frame = 1/48000 s)
+  ;; Returns 'playing, or 'no-audio if no HD Audio controller came up.
+  (define (play-tone . args)
+    (cond
+      ((not audio-service) 'no-audio)
+      ((null? args)
+       (send audio-service (list 'tone 'hda0)) 'playing)
+      (else
+       (let ((freq   (car args))
+             (amp    (if (>= (length args) 2) (cadr args) 8000))
+             (frames (if (>= (length args) 3) (caddr args) 4800)))
+         ;; Guard arg types here: a non-integer would otherwise reach the card
+         ;; context's (> freq 0) and kill it (the card handle then goes dead until
+         ;; reboot). The card ALSO range-checks; this just stops bad types early.
+         (if (and (integer? freq) (integer? amp) (integer? frames))
+             (begin (send audio-service (list 'play 'hda0 freq amp frames)) 'playing)
+             'bad-args)))))
+
   ;; The system entry point: called once on the BSP after the scheduler is live.
   ;; Each Core* service is a long-lived context; bring up the ones that exist
   ;; today (input, audio, power) and the NIC. Audio/power have no drivers feeding
@@ -69,6 +98,7 @@
     ;; up the HD Audio controller feeding it. hdaudio-init is gated on pci-find, so
     ;; a default boot with no HDA controller just logs "no device" and returns.
     (let ((audio (start-audio-service)))
+      (set! audio-service audio)      ; publish for the REPL `play-tone` command
       (hdaudio-init audio))
     (start-power-service)
     ;; Storage registry (the AHCI block driver AND the USB mass-storage class
@@ -147,7 +177,15 @@
             (begin (display "[repl] irq-register failed") (newline))
             (begin
               (console-arm-rx)                     ; enable COM1 RX IRQ now it is routed
-              (display "[repl] serial REPL ready on COM1") (newline)
+              ;; Expose init's REPL command(s) in the REPL's persistent env so they
+              ;; can be called bare, e.g. (play-tone 440). repl-eval evaluates in
+              ;; that env; init is already loaded, so this just binds the export
+              ;; (idempotent), it does not re-run system-init. The (only play-tone)
+              ;; clause is deliberate: importing all of init would also expose
+              ;; system-init / start-repl, which a stray REPL call could use to
+              ;; re-run the whole boot or spawn a second REPL that steals COM1.
+              (repl-eval "(import (init (only play-tone)))")
+              (display "[repl] serial REPL ready on COM1 -- try (play-tone)") (newline)
               (console-flush)                        ; log is batched -- push the banner out now
               (let loop ((seen (irq-count irq)))
                 (let ((in (console-poll)))

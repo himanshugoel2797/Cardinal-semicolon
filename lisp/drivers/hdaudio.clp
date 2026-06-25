@@ -14,8 +14,9 @@
 ;; bottom of this file and the notes in the final report.
 ;;
 ;; hdaudio-init is the entry point init.clp calls (with the coreaudio handle). It:
-;;   1. finds the HDA controller (8086:293e ICH9, or 8086:2668 ICH6) via pci-find --
-;;      gated, so a default boot with no audio device just logs + returns,
+;;   1. finds the HDA controller by PCI class (0x04/0x03, any HD Audio controller)
+;;      via pci-find-class -- gated, so a default boot with no audio device just
+;;      logs + returns,
 ;;   2. maps the HDA MMIO BAR (BAR0; pci-assign-bars if firmware left it
 ;;      unconfigured), enables memory + bus-master,
 ;;   3. runs reset + CORB/RIRB setup + codec enumeration inside a SPAWNED restricted
@@ -23,21 +24,21 @@
 ;;      MSI and registers the card with coreaudio.
 ;;
 ;; The driver imports exactly the capabilities it needs -- sys-mmio (mmio-map /
-;; dma-alloc / dma-alloc-32), sys-pci (pci-find / pci-assign-bars / pci-setup-msi +
-;; the MSI wake bridge msi-count / msi-wait) -- plus the generic driver-util
+;; dma-alloc / dma-alloc-32), sys-pci (pci-find-class / pci-assign-bars /
+;; pci-setup-msi + the MSI wake bridge msi-count / msi-wait) -- plus the generic
+;; driver-util
 ;; helpers. It exports just the entry point hdaudio-init.
 (define-module hdaudio
   (export hdaudio-init)
   (import sys-mmio sys-pci driver-util)
 
-;; --- the controllers we bind (pci-find matches VID/DID only) ----------------
-;; QEMU's `-device intel-hda` (ICH9) is 8086:293e; the older ICH6 is 8086:2668.
-;; A class-code (04/03) pci-find that would match any HDA controller is a noted
-;; future substrate addition -- NOT built here. hdaudio-init tries both IDs.
-(define HDA-ICH9-VID #x8086)
-(define HDA-ICH9-DID #x293e)
-(define HDA-ICH6-VID #x8086)
-(define HDA-ICH6-DID #x2668)
+;; --- the controllers we bind (matched by PCI class, not VID/DID) -------------
+;; Every HD Audio controller advertises base class 0x04 (multimedia) subclass 0x03
+;; (HD Audio), so pci-find-class binds ANY of them -- QEMU's intel-hda (8086:2668)
+;; and ich9-intel-hda (8086:293e), plus real Intel/NVIDIA/AMD/VIA HDA controllers
+;; -- without an ever-growing VID/DID table.
+(define HDA-CLASS    #x04)     ; PCI base class: multimedia controller
+(define HDA-SUBCLASS #x03)     ; PCI subclass: HD Audio
 (define HDA-BAR 0)             ; HD Audio exposes its register block in BAR0
 
 ;; --- MMIO register offsets (from inc/regs.h, == the HDA spec) ----------------
@@ -586,11 +587,10 @@
                              regs (play-tone! regs TONE-HZ TONE-AMP TONE-FRAMES)))))))))))))
 
 ;; --- entry point -------------------------------------------------------------
-;; hdaudio-init takes the coreaudio service handle. Gated on pci-find so a no-audio
-;; boot just logs + returns.
+;; hdaudio-init takes the coreaudio service handle. Gated on pci-find-class so a
+;; no-audio boot just logs + returns.
 (define (find-hda)
-  (let ((a (pci-find HDA-ICH9-VID HDA-ICH9-DID)))
-    (if a a (pci-find HDA-ICH6-VID HDA-ICH6-DID))))
+  (pci-find-class HDA-CLASS HDA-SUBCLASS))
 
 (define (hdaudio-init audio)
   (let ((ecam (find-hda)))
