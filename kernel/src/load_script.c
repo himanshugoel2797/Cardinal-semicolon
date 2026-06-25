@@ -20,16 +20,29 @@ int module_load(char *name)
     if (!Initrd_GetFile(name, &mod_loc, &len))
         PANIC("[Kernel] Failed to find module!");
 
-    // decompress celf's elf section
     ModuleHeader *hdr = (ModuleHeader *)mod_loc;
 
+    // elf_load places each section in-place at base + sh_offset and relies on it
+    // landing at the alignment the linker assumed -- e.g. .rodata is 16-aligned so
+    // optimized (-O2) module code can use 16-byte SSE moves (movaps) against
+    // constants there. The initrd only aligns hdr->data to 8 bytes, so a movaps on
+    // a "16-aligned" constant #GPs. Copy the ELF to a buffer aligned past any
+    // section requirement (64 covers SSE/AVX + cache lines) before loading it.
+    enum { MOD_ALIGN = 64 };
+    uint8_t *raw = (uint8_t *)malloc((size_t)hdr->uncompressed_len + MOD_ALIGN);
+    if (raw == NULL)
+        PANIC("[Kernel] module load buffer alloc failed.");
+    uint8_t *elf =
+        (uint8_t *)(((uintptr_t)raw + (MOD_ALIGN - 1)) & ~(uintptr_t)(MOD_ALIGN - 1));
+    memcpy(elf, hdr->data, hdr->uncompressed_len);
+
     int (*entry_pt)() = NULL;
-    if (elf_load(hdr->data, hdr->uncompressed_len, &entry_pt))
+    if (elf_load(elf, hdr->uncompressed_len, &entry_pt))
         PANIC("[Kernel] Elf load failed.");
 
     char tmp_entry_addr[20];
     print_str("[Kernel] Loaded at ");
-    print_str(ltoa((uint64_t)hdr->data, tmp_entry_addr, 16));
+    print_str(ltoa((uint64_t)elf, tmp_entry_addr, 16));
     print_str("\r\n");
 
     int err = entry_pt();
