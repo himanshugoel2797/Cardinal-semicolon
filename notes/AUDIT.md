@@ -660,6 +660,43 @@ and `-smp 2`.
 
 ---
 
+## USB stack — bugs found during USB hardening (2026-06)
+
+These surfaced while extending the USB stack (enumeration foundation, robustness,
+mass-storage). All three turned out to be **one root cause** — a VM capture-
+analysis bug, fixed in `libs/lisp/src/lbc.c`. With that fix, UHCI + xHCI both
+enumerate and UHCI mass-storage works end-to-end.
+
+### [FIXED] VM #PF / silent state corruption: `(define (f) ..)` capture missed
+The register-bytecode VM's capture analysis (`collect_captures`) recognized
+`lambda` and named-`let` heads but **not** the `(define (f . params) body)`
+internal-define shorthand. A binding referenced ONLY inside an internal-define
+body was never boxed (`ROP_MKCELL`) yet was read/written as a cell
+(`ROP_CELLGET`/`CELLSET` → `lisp_car` on a raw value): a `#PF` (`cr2` small, e.g.
+`0x9`) on a captured-and-mutated binding, and **silent value corruption** on one
+that was only read. Fixed by handling the define shorthand like a lambda in
+`collect_captures`. `cardfs` survived only by luck — its one mutable binding was
+also referenced in a body-level named-let, which the analysis did catch.
+
+The two symptoms below were the SAME bug downstream, both fixed by the above:
+
+### [FIXED] UHCI: transfers from a class-driver context never completed
+Was: the `usb-storage` block server's first bulk stalled forever. Cause: the
+captured params `dev`/`in-ep`/`out-ep` (used only inside internal defines) were
+corrupted, so the bulk's `(usb-dev-hci dev)` handle was garbage and the send went
+nowhere. With the capture fix, UHCI mass-storage runs INQUIRY / READ CAPACITY /
+register cleanly. (The make-cell "workaround" tried earlier was insufficient — it
+celled the four `let` bindings but not the captured params — proof a workaround is
+not a fix; `usb-storage` is back to plain `set!`.)
+
+### [FIXED] xHCI: root-port poll never detected a connected device
+Was: `poll-ports!` never reported a connect (no `[xhci] port up`). Cause: the
+port-poll path captured a binding only inside internal defines, corrupted by the
+same VM bug, so connect detection silently failed. With the fix, `USB=xhci-kbd`
+enumerates the keyboard and `xhci-storage` the disk.
+
+---
+
 ## Toolchain / build notes (addressed in the revival PRs)
 
 - `cmake_minimum_required(VERSION 2.8)` is a hard error on CMake 4.x — bumped to 3.20.
