@@ -180,10 +180,19 @@ design and should be decided deliberately, in line with the microkernel model:
    (hold the packet, emit an ARP request, retry/timeout on reply). *Outbound ARP
    resolution now exists in the Lisp stack (`arp-resolve`); the async tx-queue /
    packet-hold-during-resolution and waiter-coalescing remain.*
-3. **Interface addressing / configuration.** *DHCP is now the Lisp stack's default
-   (see "Lisp port status"), with `cardinal.ip=` as the static override; subnet
-   mask + gateway are stored on the interface.* Still deferred: a **routing table**
-   over the learned gateway, a DNS resolver, and a userspace config/query surface.
+3. **Interface addressing / routing — *done (multi-homed host)*.** The stack is now
+   multi-interface: each NIC `register-nic`s as a distinct interface with its own
+   mac/tx and address config (`lisp/servers/corenetwork/route.clp`), and a
+   longest-prefix-match **routing table** (`route-lookup`/`route-egress`) decides,
+   per destination, the egress interface and next hop. `set-address` installs an
+   interface's on-link route plus a default route via its gateway; replies egress on
+   the interface that owns the addressed IP, active sends route by destination, and
+   the limited broadcast (DHCP) goes out the primary interface. **No forwarding** —
+   this is a multi-homed host, not a router (the firewall, when added, filters
+   inbound on src-IP/port). DHCP runs on the primary interface; per-interface DHCP
+   and multi-NIC *bring-up* (init enumerating more than one NIC) are the remaining
+   pieces. A DNS resolver now exists (item below); a userspace config/query surface
+   is moot (the message API is the userspace surface — see item 1).
 4. **IPv4 options / fragmentation / reassembly.** Only `ihl == 5`, unfragmented
    datagrams are meaningfully handled.
 5. **TCP.** *Implemented* (`lisp/servers/corenetwork/tcp.clp`): active + passive

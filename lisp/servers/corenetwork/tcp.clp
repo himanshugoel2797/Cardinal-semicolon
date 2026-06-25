@@ -71,12 +71,17 @@
 (define C-RTX 18)      ; retransmit deadline (ns), 0 = timer off
 (define C-RTO 19)      ; current RTO (ns), doubles on timeout
 (define C-TW 20)       ; TIME-WAIT expiry (ns), 0 = not in TIME-WAIT
-(define C-LEN 21)
+(define C-SIP 21)      ; our (egress) source IP for this connection
+(define C-SMAC 22)     ; our (egress) source MAC
+(define C-STX 23)      ; the egress interface's tx context
+(define C-LEN 24)
 
 (define (cg c i) (vector-ref c i))
 (define (cs! c i v) (vector-set! c i v))
 
-(define (mk-conn id owner lport rip rport rmac iss)
+;; A connection carries its EGRESS (sip/smac/stx) so the ticker/retransmit path
+;; can send on the right interface without a global current-interface.
+(define (mk-conn id owner lport rip rport rmac iss sip smac stx)
   (let ((c (make-vector C-LEN 0)))
     (cs! c C-STATE 'closed) (cs! c C-ID id) (cs! c C-OWNER owner)
     (cs! c C-LPORT lport) (cs! c C-RIP rip) (cs! c C-RPORT rport) (cs! c C-RMAC rmac)
@@ -85,6 +90,7 @@
     (cs! c C-RCV-NXT 0) (cs! c C-OOO '())
     (cs! c C-FINQ #f) (cs! c C-FIN-SENT #f) (cs! c C-FIN-SEQ #f)
     (cs! c C-RTX 0) (cs! c C-RTO RTO-INIT) (cs! c C-TW 0)
+    (cs! c C-SIP sip) (cs! c C-SMAC smac) (cs! c C-STX stx)
     c))
 
 ;; --- TCP state for the service (one per interface) --------------------------
@@ -149,13 +155,14 @@
       (put-be16! seg 16 (if (= c 0) #xFFFF c)))
     seg))
 
-;; Send a segment for connection `c`. `payload` is a bytes slice or #f.
-(define (tcp-xmit ip mac tx c seq ack flags payload with-mss)
+;; Send a segment for connection `c`, on c's stored egress (sip/smac/stx).
+;; `payload` is a bytes slice or #f.
+(define (tcp-xmit c seq ack flags payload with-mss)
   (let* ((seg (tcp-build (cg c C-LPORT) (cg c C-RPORT) seq ack flags RCV-WND
-                         ip (cg c C-RIP) payload with-mss))
+                         (cg c C-SIP) (cg c C-RIP) payload with-mss))
          (slen (bytes-length seg)))
-    (eth-tx tx mac (cg c C-RMAC) ETH-IPV4
-            (build-ipv4 ip (cg c C-RIP) IP-TCP seg slen) (+ 20 slen))))
+    (eth-tx (cg c C-STX) (cg c C-SMAC) (cg c C-RMAC) ETH-IPV4
+            (build-ipv4 (cg c C-SIP) (cg c C-RIP) IP-TCP seg slen) (+ 20 slen))))
 
 ;; A RST aimed back at a segment we have no connection for (or to abort), built
 ;; from the offending frame's addressing -- responder style. Follows RFC 793's
@@ -185,7 +192,7 @@
 ;; --- transmit unsent data (and the FIN) within the window -------------------
 ;; Sends new segments from snd-nxt up to the window/queue limit; emits the FIN
 ;; once all queued data has been sent and the owner has asked to close.
-(define (tcp-output ip mac tx c now)
+(define (tcp-output c now)
   (let* ((dbase (cg c C-DBASE))
          (data-end (seq+ dbase (bytes-length (cg c C-SNDQ))))  ; seq just past last data byte
          (win (if (> (cg c C-SND-WND) 0) (cg c C-SND-WND) 1))  ; >=1: a zero-window probe
@@ -198,7 +205,7 @@
                    (n (tcp-min TCP-MSS avail))
                    (off (seq- nxt dbase))
                    (slice (copy-bytes (cg c C-SNDQ) off n)))
-              (tcp-xmit ip mac tx c nxt (cg c C-RCV-NXT)
+              (tcp-xmit c nxt (cg c C-RCV-NXT)
                         (bitwise-or TCP-PSH TCP-ACK) slice #f)
               (cs! c C-SND-NXT (seq+ nxt n))
               (loop)))))
@@ -208,7 +215,7 @@
              (seq< (cg c C-SND-NXT) (seq+ (cg c C-SND-UNA) win)))
         (begin
           (cs! c C-FIN-SEQ (cg c C-SND-NXT))
-          (tcp-xmit ip mac tx c (cg c C-SND-NXT) (cg c C-RCV-NXT)
+          (tcp-xmit c (cg c C-SND-NXT) (cg c C-RCV-NXT)
                     (bitwise-or TCP-FIN TCP-ACK) #f #f)
           (cs! c C-SND-NXT (seq+ (cg c C-SND-NXT) 1))
           (cs! c C-FIN-SENT #t)))
@@ -285,14 +292,14 @@
 ;; OOO list too, so one path coalesces), deliver what is now contiguous, then ACK.
 ;; Returns #t if an in-order FIN landed. Drops segments outside the receive window
 ;; and caps the queue length so a malicious/lossy peer cannot exhaust the heap.
-(define (tcp-accept-segment ip mac tx c seq fin payload)
+(define (tcp-accept-segment c seq fin payload)
   (if (and (or (> (bytes-length payload) 0) fin)
            (seq< seq (seq+ (cg c C-RCV-NXT) RCV-WND))    ; within the advertised window
            (< (length (cg c C-OOO)) 64))                 ; bounded reassembly queue
       (cs! c C-OOO (ooo-insert (cg c C-OOO) (cg c C-RCV-NXT) seq fin payload)))
   (let ((finned (tcp-deliver c)))
     ;; cumulative ACK of everything delivered so far
-    (tcp-xmit ip mac tx c (cg c C-SND-NXT) (cg c C-RCV-NXT) TCP-ACK #f #f)
+    (tcp-xmit c (cg c C-SND-NXT) (cg c C-RCV-NXT) TCP-ACK #f #f)
     finned))
 
 ;; --- the rx state machine ---------------------------------------------------
@@ -328,7 +335,7 @@
                 (cond
                   ;; test-only injected loss: behave as if the segment never arrived
                   ((tcp-test-drop? tcp synf) 'test-dropped)
-                  (c (tcp-rx-conn ip mac tx tcp c synf ackf finf rstf seq ack
+                  (c (tcp-rx-conn tcp c synf ackf finf rstf seq ack
                                   window payload))
                   ;; No connection: a SYN to a listening port opens one.
                   ((and synf (not ackf) (not rstf)
@@ -349,18 +356,19 @@
   (let* ((id (tcp-next-id tcp))
          (owner (hash-ref (cg tcp T-LISTEN) lport #f))
          (iss (bitwise-and (uptime-ns) #xFFFFFFFF))
-         (c (mk-conn id owner lport rip rport rmac iss)))
+         (c (mk-conn id owner lport rip rport rmac iss ip mac tx)))  ; egress = the addressed iface
     (cs! c C-STATE 'syn-rcvd)
     (cs! c C-RCV-NXT (seq+ their-seq 1))      ; consume their SYN
     (cs! c C-SND-WND window)
     (cs! c C-SND-NXT (seq+ iss 1))            ; our SYN consumes one seq
     (tcp-conn-add tcp c)
-    (tcp-xmit ip mac tx c iss (cg c C-RCV-NXT) (bitwise-or TCP-SYN TCP-ACK) #f #t)
+    (tcp-xmit c iss (cg c C-RCV-NXT) (bitwise-or TCP-SYN TCP-ACK) #f #t)
     (tcp-arm! c (uptime-ns))
     'syn-rcvd))
 
-;; Drive an existing connection on a received segment.
-(define (tcp-rx-conn ip mac tx tcp c synf ackf finf rstf seq ack window payload)
+;; Drive an existing connection on a received segment. The connection carries its
+;; own egress (sip/smac/stx), so no interface is threaded in here.
+(define (tcp-rx-conn tcp c synf ackf finf rstf seq ack window payload)
   (let ((now (uptime-ns)) (st (cg c C-STATE)))
     (cond
       (rstf (tcp-abort tcp c) 'reset)
@@ -371,13 +379,13 @@
              (cs! c C-RCV-NXT (seq+ seq 1)) (cs! c C-SND-UNA ack)
              (cs! c C-SND-WND window) (cs! c C-STATE 'established)
              (tcp-rearm! c now)
-             (tcp-xmit ip mac tx c (cg c C-SND-NXT) (cg c C-RCV-NXT) TCP-ACK #f #f)
+             (tcp-xmit c (cg c C-SND-NXT) (cg c C-RCV-NXT) TCP-ACK #f #f)
              (send (cg c C-OWNER) (list 'tcp-connected (cg c C-ID)))
              ;; Data piggybacked on the SYN-ACK starts one past its seq (the SYN
              ;; consumed that number); pass the data's true start seq.
              (if (or (> (bytes-length payload) 0) finf)
-                 (tcp-accept-segment ip mac tx c (seq+ seq 1) finf payload))
-             (tcp-output ip mac tx c now)
+                 (tcp-accept-segment c (seq+ seq 1) finf payload))
+             (tcp-output c now)
              'established)
            'ignore))
       ;; --- passive open: waiting for the handshake's final ACK ---
@@ -389,9 +397,9 @@
              (send (cg c C-OWNER)
                    (list 'tcp-accept (cg c C-LPORT) (cg c C-ID) (cg c C-RIP) (cg c C-RPORT)))
              (if (or (> (bytes-length payload) 0) finf)
-                 (if (tcp-accept-segment ip mac tx c seq finf payload)
+                 (if (tcp-accept-segment c seq finf payload)
                      (cs! c C-STATE 'close-wait)))
-             (tcp-output ip mac tx c now)
+             (tcp-output c now)
              'established)
            'ignore))
       ;; --- the connected / closing states ---
@@ -399,10 +407,10 @@
        (if ackf (let ((fin-acked (tcp-process-ack c ack window now)))
                   (tcp-advance-after-ack c fin-acked now)))
        (let ((finned (if (or (> (bytes-length payload) 0) finf)
-                         (tcp-accept-segment ip mac tx c seq finf payload)
+                         (tcp-accept-segment c seq finf payload)
                          #f)))
          (if finned (tcp-on-peer-fin c now)))
-       (tcp-output ip mac tx c now)
+       (tcp-output c now)
        (tcp-maybe-reap tcp c)
        (cg c C-STATE)))))
 
@@ -442,19 +450,21 @@
 (define (tcp-do-listen tcp port owner)
   (hash-set! (cg tcp T-LISTEN) port owner))
 
+;; ip/mac/tx are the egress chosen by the service's route lookup for dst-ip; they
+;; are stored on the connection so all later sends use the same interface.
 (define (tcp-do-connect ip mac tx tcp dst-ip dst-mac dport owner)
   (let* ((id (tcp-next-id tcp))
          (lport (+ 49152 (modulo (uptime-ns) 16000)))   ; ephemeral local port
          (iss (bitwise-and (uptime-ns) #xFFFFFFFF))
-         (c (mk-conn id owner lport dst-ip dport dst-mac iss)))
+         (c (mk-conn id owner lport dst-ip dport dst-mac iss ip mac tx)))
     (cs! c C-STATE 'syn-sent)
     (cs! c C-SND-NXT (seq+ iss 1))            ; SYN consumes one seq
     (tcp-conn-add tcp c)
-    (tcp-xmit ip mac tx c iss 0 TCP-SYN #f #t)
+    (tcp-xmit c iss 0 TCP-SYN #f #t)
     (tcp-arm! c (uptime-ns))
     id))
 
-(define (tcp-do-send ip mac tx tcp id data)
+(define (tcp-do-send tcp id data)
   (let ((c (tcp-conn-by-id tcp id)))
     (if (and c (memq (cg c C-STATE) '(established close-wait)))
         (let* ((old (cg c C-SNDQ)) (ol (bytes-length old)) (dl (bytes-length data))
@@ -462,16 +472,16 @@
           (bytes-copy-into! merged 0 old ol)
           (bytes-copy-into! merged ol data dl)
           (cs! c C-SNDQ merged)
-          (tcp-output ip mac tx c (uptime-ns))))))
+          (tcp-output c (uptime-ns))))))
 
-(define (tcp-do-close ip mac tx tcp id)
+(define (tcp-do-close tcp id)
   (let ((c (tcp-conn-by-id tcp id)))
     (if c
         (let ((st (cg c C-STATE)))
           (cs! c C-FINQ #t)
           (cond ((eq? st 'established) (cs! c C-STATE 'fin-wait-1))
                 ((eq? st 'close-wait) (cs! c C-STATE 'last-ack)))
-          (tcp-output ip mac tx c (uptime-ns))))))
+          (tcp-output c (uptime-ns))))))
 
 ;; --- blocking client helper (runs in the CALLER's context) ------------------
 ;; A synchronous active open, mirroring arp-resolve: send the connect request
@@ -489,7 +499,7 @@
             (else (loop))))))                          ; ignore anything unrelated
 
 ;; --- the periodic tick: retransmission + TIME-WAIT expiry --------------------
-(define (tcp-do-tick ip mac tx tcp)
+(define (tcp-do-tick tcp)
   (let ((now (uptime-ns)))
     (for-each
       (lambda (c)
@@ -500,22 +510,22 @@
           ;; A live retransmit timer fired: back off and resend (Go-Back-N).
           ((and (> (cg c C-RTX) 0) (>= now (cg c C-RTX)))
            (cs! c C-RTO (tcp-min RTO-MAX (* 2 (cg c C-RTO))))
-           (tcp-retransmit ip mac tx c now))))
+           (tcp-retransmit c now))))
       (hash-values (cg tcp T-ID)))))
 
 ;; Resend the oldest unacknowledged data. SYN / SYN-ACK (snd-una == iss) is a
 ;; control retransmit; otherwise rewind snd-nxt to snd-una and let tcp-output
-;; re-emit the data and FIN.
-(define (tcp-retransmit ip mac tx c now)
+;; re-emit the data and FIN. Egress comes from the connection.
+(define (tcp-retransmit c now)
   (if (seq< (cg c C-SND-UNA) (seq+ (cg c C-ISS) 1))
       (cond ((eq? (cg c C-STATE) 'syn-sent)
-             (tcp-xmit ip mac tx c (cg c C-ISS) 0 TCP-SYN #f #t))
+             (tcp-xmit c (cg c C-ISS) 0 TCP-SYN #f #t))
             ((eq? (cg c C-STATE) 'syn-rcvd)
-             (tcp-xmit ip mac tx c (cg c C-ISS) (cg c C-RCV-NXT)
+             (tcp-xmit c (cg c C-ISS) (cg c C-RCV-NXT)
                        (bitwise-or TCP-SYN TCP-ACK) #f #t)))
       (begin
         (cs! c C-SND-NXT (cg c C-SND-UNA))           ; rewind
         (if (and (cg c C-FIN-SEQ) (seq<= (cg c C-SND-UNA) (cg c C-FIN-SEQ)))
             (cs! c C-FIN-SENT #f))                    ; allow tcp-output to resend the FIN
-        (tcp-output ip mac tx c now)))
+        (tcp-output c now)))
   (cs! c C-RTX (+ now (cg c C-RTO))))                 ; re-arm with the backed-off RTO
