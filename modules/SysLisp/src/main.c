@@ -1927,6 +1927,73 @@ static void check_hdaudio_volume(lisp_value env) {
     }
 }
 
+// hdaudio capture path config, hardware-free. The mock codec RECORDS the verbs
+// configure-input! emits for the input endpoint (mic pin 5 -> ADC 4), classifying
+// v4 verbs (verb id 2=format / 3=amp, in payload bits16-19, 16-bit data) vs v12
+// verbs (verb id in payload bits8-19, 8-bit data; e.g. 0x705 power=1797,
+// 0x707 pin-control=1799, 0x701 conn-select=1793, 0x706 stream-channel=1798).
+// Confirms: D0 power on afg/adc/pin; pin PIN_CONTROL IN_EN (0x20=32); pin input amp
+// (0x7040=28736, the 0x7000 input-amp form); ADC routed to the pin (conn-select 0);
+// ADC capture format (0x11=17); ADC stream tag CAPTURE-STREAM 2<<4 (0x20=32); ADC
+// input amp. The actual stream-descriptor DMA is validated live (cardinal.mictest).
+static void check_hdaudio_capture(lisp_value env) {
+    const char *err = NULL;
+    lisp_eval_string(
+        "(import hdaudio driver-util)"
+        "(define wlog (make-cell '()))"
+        "(define (mockc node payload)"
+        "  (let ((sel (arithmetic-shift payload -8)) (lo (bitwise-and payload 255))"
+        "        (v16 (arithmetic-shift payload -16)))"
+        "    (cond"
+        "      ((= sel #xF00)"
+        "       (cond"
+        "         ((= lo #x04) (cond ((= node 0) (bitwise-or (arithmetic-shift 1 16) 1))"
+        "                            ((= node 1) (bitwise-or (arithmetic-shift 2 16) 4)) (else 0)))"
+        "         ((= lo #x05) (if (= node 1) 1 0))"
+        "         ((= lo #x09) (cond ((= node 2) 0) ((= node 3) (arithmetic-shift 4 20))"
+        "                            ((= node 4) (arithmetic-shift 1 20))"
+        "                            ((= node 5) (arithmetic-shift 4 20)) (else 0)))"
+        "         ((= lo #x0C) (cond ((= node 3) #x10) ((= node 5) #x20) (else 0)))"
+        "         ((= lo #x0E) (cond ((= node 3) 1) ((= node 4) 1) (else 0)))"
+        "         ((= lo #x12) #x7F00) ((= lo #x0D) #x4000)"
+        "         (else 0)))"
+        "      ((= sel #xF1C) (cond ((= node 3) (bitwise-or (arithmetic-shift 1 20) (arithmetic-shift 2 30)))"
+        "                           ((= node 5) (arithmetic-shift #xA 20)) (else 0)))"
+        "      ((= sel #xF09) #x80000000)"
+        "      ((= sel #xF02) (cond ((and (= node 3) (= lo 0)) 2)"
+        "                           ((and (= node 4) (= lo 0)) 5) (else 0)))"
+        "      (else (cell-set! wlog"
+        "              (cons (if (or (= v16 2) (= v16 3))"
+        "                        (list node (- 0 v16) (bitwise-and payload #xFFFF))"
+        "                        (list node sel (bitwise-and payload #xFF)))"
+        "                    (cell-ref wlog))) 0))))"
+        "(define (find-in es) (cond ((null? es) #f)"
+        "  ((eq? (cadr (ep-desc (car es))) 'in) (car es)) (else (find-in (cdr es)))))"
+        "(define eprec (find-in (enumerate-endpoints mockc)))"
+        "(cell-set! wlog '())"
+        "(configure-input! mockc eprec 2)"
+        "(define resc (reverse (cell-ref wlog)))",
+        env, &err);
+    lisp_value res = lisp_eval_string("resc", env, &err);
+    char rb[256];
+    lisp_print(res, rb, sizeof rb);
+    if (err == NULL &&
+        strcmp(rb, "((1 1797 0) (4 1797 0) (5 1797 0) (5 1799 32) (5 -3 28736) "
+                   "(4 1793 0) (4 -2 17) (4 1798 32) (4 -3 28736))") == 0) {
+        print_str("[SysLisp]  ok  hdaudio capture: input path config (IN_EN + ADC fmt/stream/amps)\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL hdaudio-capture  res-> ");
+        print_str(rb);
+        if (err) {
+            print_str("  err: ");
+            print_str(err);
+        }
+        print_str("\r\n");
+        g_fail++;
+    }
+}
+
 // VirtioGpu-in-Lisp, hardware-free. Three layers, all under the real scheduler:
 //   (1) command-struct LAYOUT: build each control-queue command and assert the
 //       exact little-endian bytes + total length. This is the offset regression
@@ -2474,6 +2541,7 @@ static void run_self_test(lisp_value env) {
     check_rtl8169(env);
     check_hdaudio(env);
     check_hdaudio_volume(env);
+    check_hdaudio_capture(env);
     check_gpu(env);
     check_lfb(env);
     check_rtl8139(env);

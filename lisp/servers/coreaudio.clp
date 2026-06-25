@@ -19,6 +19,10 @@
 ;;   (set-volume <name> <ep-id> <vol>)     set an endpoint's volume (0..100)
 ;;   (get-volume <name> <ep-id> <reply>)   reply an endpoint's volume, or #f
 ;;   (mute <name> <ep-id> <on?>)           mute/unmute an endpoint
+;;   (capture-start <name> <ep-id>)        begin capturing on an input endpoint
+;;   (capture-stop <name>)                 stop capturing
+;;   (capture-read <name> <reply>)         reply a bytes copy of the capture ring, or #f
+;;   (capture-pos <name> <reply>)          reply the capture DMA position, or #f
 ;; Unknown messages are ignored (a wedged client can't crash the service).
 ;;
 ;; An endpoint descriptor names one jack/converter on a card -- a speaker, a
@@ -74,4 +78,18 @@
                  (send (nth m 3) #f))) cards)
           ((eq? (car m) 'mute)                 ; (mute name ep-id on?)
            (to-card (nth m 1) cards (list 'mute (nth m 2) (nth m 3))) cards)
+          ((eq? (car m) 'capture-start)        ; (capture-start name ep-id)
+           (to-card (nth m 1) cards (list 'capture-start (nth m 2))) cards)
+          ((eq? (car m) 'capture-stop)         ; (capture-stop name)
+           (to-card (nth m 1) cards (list 'capture-stop)) cards)
+          ((eq? (car m) 'capture-read)         ; (capture-read name reply)
+           (let ((rec (card-find (nth m 1) cards)))
+             (if rec
+                 (send (card-ctx rec) (list 'capture-read (nth m 2)))
+                 (send (nth m 2) #f))) cards)
+          ((eq? (car m) 'capture-pos)          ; (capture-pos name reply)
+           (let ((rec (card-find (nth m 1) cards)))
+             (if rec
+                 (send (card-ctx rec) (list 'capture-pos (nth m 2)))
+                 (send (nth m 2) #f))) cards)
           (else cards))))))
