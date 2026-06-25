@@ -102,7 +102,10 @@
                                                          cfgval 0 0) #f 0)) 0)
                             (begin (display "[coreusb] SET_CONFIGURATION failed") (newline)
                                    (send usb (list 'enum-failed addr)))
-                            ;; 6) dispatch by class (interface class if present, else device).
+                            ;; 6) advisory: log device strings, then dispatch by
+                            ;; class (interface class if present, else device).
+                            (begin
+                            (log-device-strings dev dd)
                             (let* ((iclass (usb-iface-class dev))
                                    (klass (if (>= iclass 0) iclass dclass))
                                    (cdrv (assq-ctx klass class-table)))
@@ -114,7 +117,23 @@
                                   (begin
                                     (display "[coreusb] no class driver for class ")
                                     (display klass) (newline)
-                                    (send usb (list 'enum-failed addr)))))))))))))))
+                                    (send usb (list 'enum-failed addr))))))))))))))))
+
+;; Best-effort: read the device's manufacturer/product strings and log them, plus
+;; note a multi-configuration device. Never fails enumeration -- string reads are
+;; advisory. `dd` is the 18-byte device descriptor (iManufacturer=14, iProduct=15,
+;; iSerial=16, bNumConfigurations=17).
+(define (log-device-strings dev dd)
+  (let ((nconf (bytes-u8-ref dd 17))
+        (iman (bytes-u8-ref dd 14)) (iprod (bytes-u8-ref dd 15)))
+    (if (> nconf 1)
+        (begin (display "[coreusb]   ") (display nconf)
+               (display " configurations present (using configuration 0)") (newline)))
+    (if (or (> iman 0) (> iprod 0))
+        (let ((lang (usb-langid dev)))
+          (display "[coreusb]   mfr=\"") (display (usb-string dev iman lang))
+          (display "\" product=\"") (display (usb-string dev iprod lang)) (display "\"")
+          (newline)))))
 
 (define (assq-ctx k table)
   (cond ((null? table) #f)
