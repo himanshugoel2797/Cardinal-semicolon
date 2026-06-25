@@ -58,6 +58,10 @@
            (display (cadr m)) (newline)
            (mk-state ip mac tx cache (cons (cons (cadr m) (caddr m)) binds)
                      nm gw dns tcp))
+          ((eq? (car m) 'udp-unbind)           ; (udp-unbind port) -- drop the binding
+           (mk-state ip mac tx cache
+                     (filter (lambda (b) (not (= (car b) (cadr m)))) binds)
+                     nm gw dns tcp))
           ((eq? (car m) 'udp-send)             ; (udp-send dst-ip dst-mac sport dport payload)
            (if (and mac tx)
                (udp-send ip mac tx (cadr m) (caddr m) (cadddr m)
