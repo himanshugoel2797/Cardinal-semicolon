@@ -18,7 +18,7 @@
   (export system-init start-repl play-tone set-vol)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
           corenetdebug coreusb ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci
-          cardfs hdaudio uhci xhci usb-hid usb-hub usb-storage usb-audio sys-pci sys-cmdline)
+          cardfs hdaudio uhci xhci ehci usb-hid usb-hub usb-storage usb-audio sys-pci sys-cmdline)
 
   ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
   ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
@@ -203,7 +203,8 @@
       (usb-audio-init usb audio-service)
       ;; Then bring up the host controllers.
       (uhci-init usb)
-      (xhci-init usb))
+      (xhci-init usb)
+      (ehci-init usb))
     ;; Bring up the display registry, then the GPU driver, which brings the
     ;; virtio-gpu device to DRIVER_OK, paints a framebuffer, and registers itself
     ;; with the display service. Guarded: with no GPU present it just logs and

@@ -730,6 +730,34 @@ and exits the context instead of leaking it.
 Not yet wired: volume/mute (a UAC Feature Unit — accepted + ignored), capture (mic),
 non-48 kHz formats, and UAC2 clock-source rate setting.
 
+### EHCI host controller (added)
+`lisp/drivers/ehci/` is a third host-controller driver (USB 2.0 high-speed),
+registering with coreusb like uhci/xhci. It uses the minimal **async-only,
+single-reusable-QH** model (mirroring uhci's single control QH): one Queue Head is
+the async reclamation head; per transfer it builds a qTD chain, rewrites the QH's
+endpoint fields, and arms by writing the overlay Next-qTD pointer **last** (the
+atomic arm, so the always-on async schedule never executes a half-updated QH).
+Control/bulk/interrupt-in all ride the async schedule — a one-shot async IN serves
+an interrupt poll exactly as it serves bulk. Completion is polled from the qTD
+token in DMA (no MSI), as uhci does. Validated with QEMU `usb-ehci` + a HS
+`usb-storage` (`USB=ehci-storage`): enumerates, INQUIRY / READ CAPACITY / CBW /
+CSW, registers `usb0`.
+
+Not implemented (noted for follow-up):
+- **Periodic schedule** (hardware-paced interrupt/iso intervals) — interrupt-in is
+  a one-shot async IN with a NAK budget (fine for HID polling cadence), and **iso
+  replies an error** (no iTD/siTD).
+- **Split transactions** (a FS/LS device behind a HS hub via a TT). EHCI root ports
+  are HS-only here; a FS/LS device on a root port is **released to a companion**
+  controller (PortOwner). A bare `usb-ehci` with no companion can't bind FS/LS.
+- One reusable QH ⇒ one outstanding transfer at a time (the single-context model
+  already serializes), and per-transfer QH-field rewrites are done while the QH is
+  idle (safe under the always-on async schedule).
+
+A port-ack bug found in review and fixed before merge: the PORTSC W1C
+acknowledge preserved PED, which is write-1-to-disable — writing back a read PED=1
+would have disabled the just-enumerated port (PED dropped from the preserve mask).
+
 ---
 
 ## Toolchain / build notes (addressed in the revival PRs)
