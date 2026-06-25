@@ -29,6 +29,7 @@
 import argparse
 import os
 import select
+import shlex
 import socket
 import subprocess
 import sys
@@ -195,6 +196,11 @@ def connect_qemu(args):
         sys.stderr.write("csmux-repl: FTDI link; pre-mux boot log -> %s\n" % com1_log)
     else:
         cmd += ["-serial", "chardev:mux"]
+    # QEMU_EXTRA: extra qemu args (shell-split), e.g. attaching an HD Audio
+    # controller + a wav audiodev to drive/capture the REPL (play-tone) command.
+    extra = os.environ.get("QEMU_EXTRA")
+    if extra:
+        cmd += shlex.split(extra)
     sys.stderr.write("csmux-repl: launching: %s\n" % " ".join(cmd))
     qemu = subprocess.Popen(cmd)
     srv.settimeout(20)

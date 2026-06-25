@@ -362,6 +362,37 @@ static lisp_value prim_pci_find(lisp_value *a, int n, const char **e) {
     return ecam == 0 ? LISP_FALSE : lisp_fixnum((int64_t)ecam);
 }
 
+// (pci-find-class class subclass) -> the ECAM of the first PCI function whose
+// CLASS/SUBCLASS match, or #f. Lets a driver bind ANY device of a class (e.g. any
+// HD Audio controller, class 0x04 subclass 0x03) instead of enumerating VID/DID
+// pairs. The enumerator records CLASS (config byte 0x0B) and SUBCLASS (byte 0x0A)
+// next to VENDOR_ID/DEVICE_ID (see modules/SysReg/src/pci.c).
+static uint64_t pci_find_ecam_class(uint32_t cls, uint32_t subcls) {
+    uint64_t count = 0;
+    if (registry_readkey_uint("HW/PCI", "COUNT", &count) != CS_OK)
+        return 0;
+    for (uint64_t i = 0; i < count; i++) {
+        char key[64] = "HW/PCI/";
+        char num[16];
+        strncat(key, itoa((int)i, num, 16), sizeof(key) - 8);
+        uint64_t c = 0, s = 0, ecam = 0;
+        if (registry_readkey_uint(key, "CLASS", &c) != CS_OK) continue;
+        if (registry_readkey_uint(key, "SUBCLASS", &s) != CS_OK) continue;
+        if (c == cls && s == subcls &&
+            registry_readkey_uint(key, "ECAM_ADDR", &ecam) == CS_OK)
+            return ecam;
+    }
+    return 0;
+}
+
+static lisp_value prim_pci_find_class(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "pci-find-class: expects (class subclass)"), LISP_UNDEF;
+    uint64_t ecam = pci_find_ecam_class((uint32_t)lisp_fixnum_val(a[0]),
+                                        (uint32_t)lisp_fixnum_val(a[1]));
+    return ecam == 0 ? LISP_FALSE : lisp_fixnum((int64_t)ecam);
+}
+
 // --- the driver MSI(-X) -> ISR -> wake-context bridge -------------------------
 //
 // Each MSI source gets its own slot in a table PARALLEL to g_irq_lines (the ISA
@@ -731,7 +762,8 @@ static const lisp_builtin_export sys_mmio_exports[] = {
     {"dma-alloc-32", prim_dma_alloc_32},
 };
 static const lisp_builtin_export sys_pci_exports[] = {
-    {"pci-find", prim_pci_find},   {"pci-setup-msi", prim_pci_setup_msi},
+    {"pci-find", prim_pci_find},   {"pci-find-class", prim_pci_find_class},
+    {"pci-setup-msi", prim_pci_setup_msi},
     {"msi-count", prim_msi_count}, {"msi-wait", prim_msi_wait},
     {"pci-assign-bars", prim_pci_assign_bars},
 };
