@@ -131,9 +131,11 @@ case "${USB:-none}" in
   uhci-hub)     usb_args=(-device piix3-usb-uhci,id=uhci
                           -device usb-hub,bus=uhci.0,port=1
                           -device usb-kbd,bus=uhci.0,port=1.1) ;;
-  xhci-storage|uhci-storage)
+  xhci-storage|uhci-storage|ehci-storage)
+    # EHCI carries a HIGH-speed usb-storage; UHCI a full-speed one; xHCI is super.
     ctl="qemu-xhci"; bus="xhci"
     [ "${USB}" = uhci-storage ] && { ctl="piix3-usb-uhci"; bus="uhci"; }
+    [ "${USB}" = ehci-storage ] && { ctl="usb-ehci"; bus="ehci"; }
     usbdisk="${USB_DISK:-/tmp/cardinal-usb-disk.img}"
     [ -f "$usbdisk" ] || { command -v qemu-img >/dev/null && qemu-img create -f raw "$usbdisk" 8M >/dev/null; }
     usb_args=(-device "$ctl,id=$bus"
@@ -150,7 +152,7 @@ case "${USB:-none}" in
               -audiodev "wav,id=usbsnd,path=$USB_AUDIO_WAV"
               -device "usb-audio,bus=$bus.0,audiodev=usbsnd")
     echo "[run-qemu] USB audio capture -> $USB_AUDIO_WAV" ;;
-  *) echo "error: unknown USB=$USB (none|uhci-kbd|xhci-kbd|uhci-hub|uhci-storage|xhci-storage|uhci-audio|xhci-audio)" >&2; exit 1 ;;
+  *) echo "error: unknown USB=$USB (none|uhci-kbd|xhci-kbd|uhci-hub|uhci-storage|xhci-storage|ehci-storage|uhci-audio|xhci-audio)" >&2; exit 1 ;;
 esac
 
 # Optional HD Audio. AUDIO=hda attaches an ich9-intel-hda controller (8086:293e,
