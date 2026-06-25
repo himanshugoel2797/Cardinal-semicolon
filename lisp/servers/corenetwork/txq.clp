@@ -18,13 +18,11 @@
 (define TXQ-ARP-INTERVAL-NS 500000000)   ; re-ARP an unresolved next hop every 500ms
 (define TXQ-DROP-NS 3000000000)          ; give up (drop held frames) after 3s
 
-;; A 1-element vector as the mutable box -- NOT make-cell: make-cell stores a raw
-;; 64-bit word in a bytes buffer (round-trips fixnums only, and is a GC leaf), but
-;; the queue holds a LIST of heap objects, which must be stored as a real value and
-;; traced by the GC. A vector slot is both.
-(define (mk-txq) (make-vector 1 '()))
-(define (txq-get txq) (vector-ref txq 0))
-(define (txq-put! txq v) (vector-set! txq 0 v))
+;; The queue is a mutable cell holding the list of pending entries. (make-cell is
+;; now vector-backed, so it safely holds a list and is GC-traced -- see driver-util.)
+(define (mk-txq) (make-cell '()))
+(define (txq-get txq) (cell-ref txq))
+(define (txq-put! txq v) (cell-set! txq v))
 
 ;; Pending-entry accessors (a plain list; rebuilt functionally on change).
 (define (pe-nexthop e) (nth e 0))
