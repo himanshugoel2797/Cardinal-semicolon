@@ -222,12 +222,76 @@ Implications for this design:
   the screen owner) is embarrassingly parallel. The *only* missing piece is a
   scheduler-placement primitive.
 
-So multi-core compositing needs **one new substrate item, separable from v1**: a
-`spawn-on-core` / cross-core enqueue primitive plus hardened cross-core wakeup
-(today's single `%event-wait` waiter slot is BSP-centric — main.c:120 flags it
-for a per-core rework). Until then, the per-client handlers and the compositor
-root all cooperatively share the BSP, which is correct and adequate for bring-up;
-the design does not *depend* on parallelism, it's positioned to *adopt* it.
+The scaling model avoids scheduler migration entirely: instead of moving work to
+other cores, run **one compositor instance per core**, born locally on that core,
+and shard clients across them — see the next section. v1 is the single-instance
+(N=1) degenerate case, so nothing is thrown away.
+
+## Sharded per-core compositor (two-level layer merge)
+
+Post-v1, the compositor scales as **one instance per core**, clients sharded
+across them, the single screen produced by a **two-level layer merge**. Chosen
+over region-partitioning because the shards stay independent (no cross-core
+shared mutable window list). v1 is exactly N=1 of this model — build v1 to
+generalize.
+
+### Bootstrap: instances are born on their core (no migration)
+
+`spawn` enqueues onto the current core, so each instance is spawned *by code
+already running on that core*: the AP proof-of-life spawn (`main.c:3033`) becomes
+"spawn this core's compositor instance." The only substrate addition is a
+**per-core bring-up hook** (run a thunk as each core enters `lisp_core_loop`) —
+far smaller than general migration / `spawn-on-core`. The scanout-owning instance
+(core 0) additionally runs the screen setup in `(system-init)`.
+
+### Client sharding
+
+A client `connect`s to the well-known **owner**; the owner assigns it to the
+least-loaded instance and replies with that instance's handle (the per-client
+secondary channel, now possibly on another core). That instance owns the client's
+mailbox, surfaces, grants, and damage, and composites the client's windows into
+**its own layer**. This is the per-connection-handler model above, promoted to
+per-core.
+
+### Layers + the merge
+
+- Each instance composites its clients' windows into a **layer**: a grant-shared
+  buffer carrying per pixel `(color, z)` — `z` is the window's global z-key
+  (empty where the layer has no content). Damage-bounded.
+- The **owner** maps all N layers (read, WB, via grant — the same substrate as
+  client surfaces) and merges them into the scanout by **per-pixel topmost-z
+  pick** (a z-buffer composite), over the union of the layers' damaged rects, then
+  flushes those rects through the driver.
+- Cost: N layer buffers + a z-plane each; merge is O(damaged-area · N) on one
+  core, not O(clients · screen).
+
+### The z-correctness constraint (honest tradeoff)
+
+A flat "alpha-over the layers in order" merge is **wrong** when windows from two
+shards overlap with interleaved z. The z-buffer pick fixes this **for opaque
+windows** (pick the max-z contributor per pixel — correct regardless of
+cross-shard z interleaving). It does **not** generalize to translucency, because
+alpha-over is order-dependent, not a pick. So the rule: **translucent windows
+that overlap a window owned by another shard must be co-assigned to the same
+shard** (or accept artifacts). Most windows are opaque; translucency is the
+menu/shadow edge case, and co-assignment is a cheap assignment constraint.
+
+### Global z authority
+
+Window z is a global value, so the **owner is the z authority**: raise/lower asks
+the owner for a fresh top z-stamp (a monotonic counter). Light cross-instance
+messaging, no shared mutable z-list.
+
+### Why this composes
+
+- Reuses **grant** shared memory (phase 1) for the layer buffers — no new sharing
+  mechanism.
+- Reuses the **secondary-channel / per-connection-handler** model — the handler
+  just lives on the assigned core.
+- Needs only a **per-core bring-up hook** + the layer/merge/z-authority protocol —
+  no scheduler migration, no `spawn-on-core`.
+- **v1 (N=1) is the same code with the merge as a no-op** — the single instance is
+  both owner and the only shard.
 
 ## Placement
 
@@ -253,18 +317,22 @@ after `coredisplay` + the display driver bind (it needs the driver's
    contexts (two handlers) drawing independent windows; screenshot validation.
 6. **(v2)** input routing (tagged `(input …)` on the secondary mailbox; compositor
    as `coreinput`→focused-window router), move/resize, zero-page revoke hardening.
-7. **(substrate follow-up, separable)** `spawn-on-core` / cross-core enqueue +
-   per-core event-wait, then tiled multi-core render fan-out over the
-   grant-shared back-buffer. The data path already supports it; only scheduler
-   placement is missing.
+7. **(scaling, separable) Sharded per-core instances** — a per-core bring-up hook
+   spawning one instance per core; client assignment + global z authority on the
+   owner; grant-shared `(color,z)` layer buffers; z-buffer merge on the owner over
+   union damage. v1's single instance is the N=1 case of this code.
 
 ## Open / deferred
 
 - Input routing deferred to v2 (compositor is the natural focus owner). Events
   arrive tagged on the secondary mailbox the client already drives — no third
   channel needed.
-- Multi-core render fan-out gated on a `spawn-on-core` primitive (phase 7); v1 is
-  cooperative on the BSP and does not depend on parallelism.
+- Multi-core scaling uses **per-core-born instances + two-level layer merge**
+  (phase 7) — no scheduler migration. v1 is the single-instance N=1 case and does
+  not depend on parallelism.
+- Translucent windows overlapping another shard's window must be co-assigned to
+  one shard (z-buffer merge is opaque-correct only); pure-opaque overlap is
+  always correct.
 - No vsync on virtio-gpu (explicit flush) — fine; pacing is per-commit.
 - QEMU can't show the WC win (trapped-VRAM dirty-tracking, see
   `notes/AUDIT.md` / the gfx bench in `init.clp`); virtio-gpu path is the
