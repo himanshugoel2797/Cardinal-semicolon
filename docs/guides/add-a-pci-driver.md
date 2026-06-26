@@ -357,7 +357,10 @@ USB class drivers register *before* the host controller is brought up:
 
 !!! warning "Never hold a driver lock across a receive-handler call"
     This rule applies to the network RX path and any service that answers
-    requests synchronously.
+    requests synchronously. For *why* the Lisp message model dissolves this
+    deadlock class, see
+    [Message passing & concurrency](../concepts/message-passing.md#driver-rx-handlers-may-re-enter-the-tx-path);
+    this section is the driver-side checklist.
 
 In the C driver model, calling `network_rx_packet()` runs the network stack
 synchronously. If a received frame requires a reply (ARP who-has, ICMP echo,
@@ -461,6 +464,15 @@ logs, registers, and exits autonomously. This mirrors `ahci-init`,
 `virtio-gpu-init`, and `hdaudio-init`.
 
 ---
+
+## Next steps
+
+- [Add a Core\* server](add-a-server.md) — design the message protocol your
+  driver registers against
+- [Debug the OS](debugging.md) — the REPL, the `sys-debug` context inspector,
+  and interrupt-delivery triage when your MSI never fires
+- [Message passing & concurrency](../concepts/message-passing.md) — the model
+  behind `spawn-restricted`, `send`/`recv`, and the RX-handler rule
 
 ## See also
 

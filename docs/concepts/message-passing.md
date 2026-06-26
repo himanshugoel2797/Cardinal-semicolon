@@ -279,8 +279,10 @@ not free.
 
 Once a second core is live, the shared system heap is frozen: it grows only
 (never collected), because the conservative system-heap collector cannot see
-other cores' C stacks. Per-context heaps remain collectable precisely from
-their CEK registers at scheduler safe points.
+other cores' C stacks. Per-context heaps remain collectable precisely: a
+context suspends at a scheduler safe point with its entire state (the bytecode
+VM's register stack and continuation frames) in a heap object the collector can
+trace exactly.
 
 ### SMP count amplifies or hides races
 

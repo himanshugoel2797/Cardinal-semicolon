@@ -69,44 +69,64 @@ All knobs are documented at the top of `scripts/run-qemu.sh`.
 
 ---
 
-## 2. The interactive Lisp REPL on COM1
+## 2. The interactive Lisp REPL
 
-The REPL is an opt-in feature gated on the kernel command line.  Add
-`cardinal.repl` to the GRUB command line (or to `platform/x86_64/pc/grub.cfg`
-for persistent development use) to activate it.
-
-When the flag is present, `system-init` in `lisp/init.clp` calls
-`(start-repl)`, which spawns a **root-authority context** that:
+The REPL is an opt-in feature gated on the kernel command line. When the kernel
+boots with `cardinal.repl`, `system-init` in `lisp/init.clp` calls
+`(start-repl)`, which `spawn`s a **root-authority context** that:
 
 1. Imports `sys-console` and `sys-irq`.
-2. Registers COM1 RX as ISA IRQ 4 via `(irq-register 4)`.
+2. Claims COM1 RX as ISA IRQ 4 via `(irq-register 4)`.
 3. Arms the UART receive interrupt with `(console-arm-rx)`.
-4. Drops into an IRQ-driven `recv` loop — no busy-polling; the BSP idles
-   between keystrokes.
-5. Exposes `(play-tone)` and `(set-vol)` from the `init` module so you can
+4. Binds `(play-tone)` and `(set-vol)` into the REPL environment so you can
    call them bare at the prompt.
+5. Parks in an IRQ-driven loop — `(console-poll)` for input, `(irq-wait …)`
+   between keystrokes — so the BSP idles when nothing is typed (no busy-poll).
 
-The REPL evaluates each line you type and writes the result back to COM1.
-Because the spawned context has full (root) import authority, you can
-`(import sys-debug)` at the prompt and immediately use the context-inspection
-primitives described in the next section.
+### The serial link is framed CSMUX, not a raw console
 
-!!! warning "REPL authority"
-    The REPL context has root authority — it can `(import sys-pci)` and reach
-    new hardware. Do not enable `cardinal.repl` in production images.
+Under `cardinal.repl`, SysLisp multiplexes the single COM1 link with **CSMUX**
+framing: the debug log rides channel 0 and the REPL rides channel 2
+(`modules/SysDebug/src/csmux.c`). A raw terminal therefore sees byte-stuffed
+garbage — you must demultiplex the stream with the host tool
+`scripts/csmux-repl.py`, which prints the log and REPL output and frames
+whatever you type onto the REPL channel.
 
-Connect to the REPL with any terminal emulator at 115 200 8N1 over COM1.
-Under QEMU you can keep COM1 on stdio and type directly:
+Build the REPL ISO with the `repl-image` CMake target, then launch the demuxer
+(it boots `build/ISO/os-repl.iso` under QEMU by default):
 
 ```bash
-TIMEOUT=0 ./scripts/run-qemu.sh
-# ... boot messages scroll by ...
+cmake --build build --target repl-image   # -> build/ISO/os-repl.iso
+python3 scripts/csmux-repl.py             # launches QEMU + demuxes COM1
+# ... boot log scrolls by ...
 # [repl] serial REPL ready on COM1 -- try (play-tone)
 (+ 1 2)
 3
 (play-tone 440 4000 9600)
 playing
 ```
+
+Drive the REPL non-interactively (for tests) with `--exec` (repeatable) or
+`--script FILE`, which wait for the `serial REPL ready` banner, send each line,
+print the output, and exit:
+
+```bash
+python3 scripts/csmux-repl.py --exec '(+ 1 2)' --exec '(play-tone)'
+```
+
+On real hardware, point the same tool at the adapter instead of QEMU:
+
+```bash
+python3 scripts/csmux-repl.py --serial-device /dev/ttyUSB0
+```
+
+Because the spawned context has full (root) import authority, you can
+`(import sys-debug)` at the prompt and immediately use the context-inspection
+primitives described in the next section.
+
+!!! warning "REPL authority"
+    The REPL context has root authority — it can `(import sys-pci)` and reach
+    new hardware. Do not boot production images with `cardinal.repl`.
 
 ---
 
@@ -257,12 +277,14 @@ landed.  Practical workarounds:
 - Set a breakpoint in kernel code that calls into the module after load, step
   into the module, and derive the load address from the PC.
 
-### USB-serial transport (real hardware)
+### On hardware without a native serial port
 
-On real hardware without a native serial port, `SysGdb` can route its stub
-over a FTDI USB-serial adapter via `drivers/usb_serial`.  See
-`notes/debugging-gdb.md` for the QEMU emulation recipe using `-device
-usb-serial`.
+The old FTDI USB-serial GDB transport (`drivers/usb_serial`) was removed with
+the rest of the C USB stack, so `SysGdb` now speaks only over a real COM2.
+On a board without a second UART, the in-OS Lisp REPL is the interactive debug
+path: it runs over the single COM1 link (framed CSMUX, see Section 2) and
+`scripts/csmux-repl.py` reaches it over a USB-serial adapter with
+`--serial-device`. See `notes/debugging-gdb.md` for the COM2 GDB recipes.
 
 ---
 
@@ -304,11 +326,15 @@ MSI edge.  This is documented in `CLAUDE.md` under "PCI drivers".
 
 ### RX-handler self-deadlock
 
-`network_rx_packet()` runs the network stack synchronously.  For frames that
-trigger a reply (ARP, ICMP, UDP services), it re-enters the driver's TX path.
-If you hold a driver lock across `network_rx_packet`, you will self-deadlock
-the moment a reply-triggering frame arrives.  See `CLAUDE.md` for the full
-rule.
+A receive handler that runs the network stack synchronously can re-enter the
+same driver's TX path when a frame needs a reply (ARP, ICMP, a UDP service).
+Holding a driver lock across that call self-deadlocks the moment a
+reply-triggering frame arrives — the RX ring then fills and frames stop being
+processed. The Lisp driver model avoids this structurally (separate RX and TX
+contexts, non-blocking `send`); see
+[Message passing & concurrency](../concepts/message-passing.md#driver-rx-handlers-may-re-enter-the-tx-path)
+for the full rule and [Add a PCI driver](add-a-pci-driver.md#6-the-rx-handler-locking-rule)
+for the driver-side checklist.
 
 ---
 

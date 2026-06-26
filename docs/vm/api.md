@@ -8,10 +8,29 @@
 | | |
 |---|---|
 | **Source** | `libs/lisp/src/` |
-| **Kind** | Kernel-resident bytecode VM (CEK machine) |
+| **Kind** | Kernel-resident Lisp bytecode VM |
 | **Entry point** | `SysLisp.celf` — `lisp_scheduler_enter` (per-core loop) |
-| **Evaluator** | Register-bytecode VM (`lbc.c`); the CEK explicit-stack model in `eval.c` |
+| **Evaluator** | Bytecode compiler + threaded register VM (`lbc.c`), driven through `lisp_ctx_resume` in `eval.c` |
 | **Language** | Scheme-like; R7RS-inspired but deliberately smaller |
+
+---
+
+## Contents
+
+1. [Overview](#1-overview) — what the VM is, value types, memory model
+2. [Reader syntax](#2-reader-syntax) — literals the reader recognizes
+3. [Special forms](#3-special-forms) — the forms the compiler knows
+4. [Core primitives](#4-core-primitives) — the ambient (no-import) builtins
+5. [Modules and capabilities](#5-modules-and-capabilities) — `define-module`, `import`, the sandbox gate
+6. [Concurrency and messaging](#6-concurrency-and-messaging) — `spawn`, `send`, `recv`, `sleep`
+7. [The sys-* capability modules](#7-the-sys-capability-modules) — hardware authority by import
+8. [2D graphics and font library](#8-2d-graphics-and-font-library) — `graphics`, `font`, `ttf`
+9. [`driver-util` module](#9-driver-util-module-shared-driver-utilities) — shared driver helpers
+10. [Notes and gotchas](#10-notes-and-gotchas)
+
+For the *why* behind this surface, read the concept articles:
+[Capabilities & the sandbox](../concepts/capabilities-and-sandbox.md) and
+[Message passing & concurrency](../concepts/message-passing.md).
 
 ---
 
@@ -25,9 +44,12 @@ VM is:
   loads before any server or driver.  There is no ring-3 userspace; the Lisp
   sandbox IS the userspace boundary (a capability-gated context, not an
   architectural privilege level).
-- **A register-bytecode VM** — the compiler (`lbc.c`) lowers source to
-  bytecode at first resume; the CEK explicit-stack model in `eval.c` makes
-  computations suspendable and GC-precise.
+- **A register-bytecode VM** — the compiler (`lbc.c`) lowers each context's
+  source to bytecode the first time it is resumed, then runs it on a threaded
+  register VM with proper tail calls. A context's execution state lives in a
+  heap object (`lisp_ctx_t`), so a computation can be suspended at a safe point,
+  resumed later, and traced precisely by the GC. `eval.c` drives this through
+  `lisp_ctx_resume`.
 - **Cooperative round-robin** — each context (green thread) runs for a
   reduction budget, then the scheduler advances.  Tail calls are O(1);
   non-tail recursion grows a heap-linked continuation chain rather than the C
@@ -949,11 +971,9 @@ Only available when `cardinal.repl` is on the kernel command line.
 | `(console-arm-rx)` | Enable COM1 receive interrupt |
 | `(console-flush)` | Flush the coalesced debug log buffer |
 
-### `sys-shader` — GPU shader capability
-
-Gated capability for running typed, verified Lisp kernels on the GPU (S0-S4
-shader tiers, as of PR #78).  Details are in
-`notes/core/lisp-vm.md`.
+The `sys-console` module is registered only when the kernel boots with
+`cardinal.repl`; see [Debug the OS](../guides/debugging.md) for the REPL access
+path (the link is framed CSMUX, driven by `scripts/csmux-repl.py`).
 
 ---
 

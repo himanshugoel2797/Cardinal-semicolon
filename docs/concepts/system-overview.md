@@ -58,7 +58,7 @@ Once this layer completes, `loadscript.txt` ends with `LOAD:./SysLisp.celf` then
 
 `SysLisp` wraps `libs/lisp`, a kernel-resident Scheme-inspired Lisp runtime. It is a Scheme-*inspired* dialect — not R7RS-conformant by design: `call/cc` and `syntax-rules` macros were implemented and removed as not yet earning their complexity. The runtime provides:
 
-- A **CEK abstract machine** with an explicit value/continuation stack (not C-stack recursion). This gives cheap, safe suspension: a context's entire execution state is a GC root on the heap, so it can be parked at any safe point and resumed later.
+- A **bytecode compiler and threaded register VM** (`libs/lisp/src/lbc.c`). Each context's source is compiled to bytecode the first time the context is resumed, then run on a register VM with proper tail calls — not C-stack recursion. This gives cheap, safe suspension: a context's entire execution state is a heap object (a GC root), so it can be parked at any safe point and resumed later.
 - A **cooperative round-robin scheduler** over Lisp *contexts* — independent root environments, each with its own private heap. A reduction budget is charged at every call and loop back-edge; when it hits zero the context yields and the scheduler picks the next. An infinite loop cannot wedge a core.
 - **Per-context garbage collection**: each context's heap is collected independently (precise, from the CEK registers and continuation stack), so a GC pause is bounded by one context's heap, not the whole OS.
 - **Copy-on-send IPC**: a value sent between contexts is deep-copied into the receiver's heap. Interned symbols are the only shared-immutable region, so there are no cross-heap pointer hazards.
@@ -117,7 +117,9 @@ The trust chain has two links. The **first** is the signed module format. Every 
 The **second** link is the Lisp capability model. Once the OS is running, a context's authority is exactly what is bound in its lexical environment; `import` of a `sys-*` module is gated on the context's capability grant; a restricted context cannot escalate. Reflection — the ability to inspect or manipulate other contexts — is itself a capability withheld from untrusted code. The trusted surface is the runtime itself (`libs/lisp`) plus the C primitives it exposes; everything else is Lisp that cannot escape its grant.
 
 !!! warning "Known limitations and stubs"
-    The system is in active development. `notes/AUDIT.md` tracks known stubs and incomplete areas. As of mid-2026: TCP and the userspace socket API are unimplemented (UDP and the `RDT` reliable transport work); `tarfs`'s `module_init` is a stub; cross-core context messaging is not yet built; the hardware-ring sandbox for truly untrusted (non-Lisp) native code is a planned future feature. Check `notes/AUDIT.md` before assuming something is broken rather than intentionally unfinished.
+    The system is in active development. `notes/AUDIT.md` tracks known stubs and incomplete areas. As of mid-2026: TCP and the userspace socket API are unimplemented (UDP and the `RDT` reliable transport work); `tarfs`'s `module_init` is a stub; cross-core context messaging is not yet built. Check `notes/AUDIT.md` before assuming something is broken rather than intentionally unfinished.
+
+(The absence of a hardware ring-3 boundary is *not* on this list — it is a deliberate design choice. The Lisp context is the userspace isolation unit; see [Capabilities & the sandbox](capabilities-and-sandbox.md).)
 
 ---
 
@@ -142,7 +144,7 @@ The server and driver references document the concrete message protocols:
 
 - [Capabilities & the sandbox](capabilities-and-sandbox.md) — the W7 capability model, `spawn-restricted`, and why the sandbox is not ring-3.
 - [Message passing & concurrency](message-passing.md) — `send`/`recv`, copy-on-send, the cooperative scheduler, and the per-context GC.
-- [`lisp/init.clp`](https://github.com/himanshu-goel0/Cardinal-semicolon/blob/master/lisp/init.clp) — the single boot-policy file; reading it gives the complete picture of what the OS brings up and in what order.
+- `lisp/init.clp` — the single boot-policy file; reading it gives the complete picture of what the OS brings up and in what order.
 - `notes/AUDIT.md` — tracked known bugs, stubs, and intentionally unfinished areas.
 - `notes/core/lisp-substrate.md` — the full internal design note on why Lisp and what was rejected.
 - [Lisp VM reference](../vm/api.md) — the concrete language and capability-primitive surface.
