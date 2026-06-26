@@ -1779,6 +1779,103 @@ static lisp_value prim_gfx_blend(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// --- the phase-7 two-level layer merge (notes/servers/CoreCompositor.md) --------
+// The sharded compositor composites each shard's opaque windows into a per-core
+// LAYER carrying, per pixel, a colour and the window's global z (z==0 = empty). The
+// owner merges N such layers into the scanout in two passes; both passes are O(px)
+// per layer/window in C (a per-pixel Lisp loop would be the 200-650x trap), and
+// SSE2-vectorisable like the other gfx ops.
+
+// (gfx-zpick! acc-color acc-z src-color src-z npixels) -> z-buffer pick of ONE
+// opaque layer into an accumulator: for each of npixels pixels, if src-z > acc-z,
+// copy the source's colour AND z into the accumulator. Folding this over N opaque
+// shard layers (acc starts cleared, z==0) flattens them into one image plus a
+// per-pixel topmost-opaque z (Zop) -- independent of how windows are sharded across
+// layers, because a max-z pick has no ordering dependence. All four planes are
+// tightly packed, 4 bytes/pixel (32-bit colour; 32-bit z, z==0 = no contributor).
+static lisp_value prim_gfx_zpick(lisp_value *a, int n, const char **e) {
+    if (n != 5 || !lisp_is_bytes(a[0]) || !lisp_is_bytes(a[1]) ||
+        !lisp_is_bytes(a[2]) || !lisp_is_bytes(a[3]) || !lisp_is_fixnum(a[4]))
+        return prim_err(e, "gfx-zpick! expects (acc-color acc-z src-color src-z npixels)");
+    lisp_bytes *ac = as_bytes(a[0]), *az = as_bytes(a[1]),
+               *sc = as_bytes(a[2]), *sz = as_bytes(a[3]);
+    BYTES_WR_GUARD(a[0], e, "gfx-zpick!");   // acc-color is written
+    BYTES_WR_GUARD(a[1], e, "gfx-zpick!");   // acc-z is written
+    if (lisp_bytes_grant_dead(a[2]) || lisp_bytes_grant_dead(a[3]))
+        return LISP_UNDEF;  // a revoked source layer reads as a zero page: contributes nothing
+    int64_t np = lisp_fixnum_val(a[4]);
+    if (np < 0) return prim_err(e, "gfx-zpick!: negative npixels");
+    if (np > (int64_t)(((size_t)-1) / 4)) return prim_err(e, "gfx-zpick!: npixels too large");
+    size_t need = (size_t)np * 4;
+    if (ac->len < need || az->len < need || sc->len < need || sz->len < need)
+        return prim_err(e, "gfx-zpick!: a plane is smaller than npixels*4");
+    if ((((uintptr_t)ac->data | (uintptr_t)az->data |
+          (uintptr_t)sc->data | (uintptr_t)sz->data) & 3) != 0)
+        return prim_err(e, "gfx-zpick!: planes must be 4-aligned");
+    uint32_t *acp = (uint32_t *)ac->data, *azp = (uint32_t *)az->data;
+    const uint32_t *scp = (const uint32_t *)sc->data, *szp = (const uint32_t *)sz->data;
+    for (int64_t i = 0; i < np; i++)
+        if (szp[i] > azp[i]) { acp[i] = scp[i]; azp[i] = szp[i]; }
+    return LISP_UNDEF;
+}
+
+// (gfx-blend-z! dst dstride dw dh dx dy src sstride sw sh zbuf wz) -> alpha-over the
+// translucent src ARGB image (alpha in the top byte) onto dst, but ONLY where the
+// window's global z `wz` is strictly above the per-pixel topmost-opaque z in zbuf
+// (Zop): where wz <= Zop the window is behind the nearest opaque surface and is
+// occluded. zbuf shares dst's pixel layout (same byte stride, 4-byte z per pixel).
+// The translucent merge pass -- the owner holds EVERY translucent window, so one
+// ordered back-to-front sweep over them is exactly correct.
+static lisp_value prim_gfx_blend_z(lisp_value *a, int n, const char **e) {
+    if (n != 12 || !lisp_is_bytes(a[0]) || !lisp_is_bytes(a[6]) || !lisp_is_bytes(a[10]))
+        return prim_err(e, "gfx-blend-z! expects (dst dstride dw dh dx dy src sstride sw sh zbuf wz)");
+    for (int i = 1; i < 12; i++)
+        if (i != 6 && i != 10 && !lisp_is_fixnum(a[i]))
+            return prim_err(e, "gfx-blend-z!: non-fixnum arg");
+    lisp_bytes *d = as_bytes(a[0]), *s = as_bytes(a[6]), *z = as_bytes(a[10]);
+    BYTES_WR_GUARD(a[0], e, "gfx-blend-z!");
+    if (lisp_bytes_grant_dead(a[6]) || lisp_bytes_grant_dead(a[10]))
+        return LISP_UNDEF;  // a revoked src or zbuf reads as a zero page: nothing to compose
+    int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
+    int64_t sstride = lisp_fixnum_val(a[7]), sw = lisp_fixnum_val(a[8]), sh = lisp_fixnum_val(a[9]);
+    // wz is compared as an unsigned 32-bit z against the stored Zop. A negative
+    // fixnum would truncate to ~0u and pass the `wz > Zop` gate at EVERY pixel,
+    // letting the window composite over all content regardless of z -- so range-
+    // check it (the z stored in zbuf is always a 0..0xFFFFFFFF stamp).
+    int64_t wz_i = lisp_fixnum_val(a[11]);
+    if (wz_i < 0 || wz_i > 0xFFFFFFFFLL) return prim_err(e, "gfx-blend-z!: wz out of range");
+    uint32_t wz = (uint32_t)wz_i;
+    int64_t cx, cy, cw, ch, sx, sy;
+    if (dstride <= 0 || sstride <= 0 || dw < 0 || dh < 0) return prim_err(e, "gfx-blend-z!: bad geometry");
+    // Only zbuf is read as uint32_t (dst/src are byte-addressed like gfx-blend!), so
+    // only zbuf->data + dstride need 4-alignment for the per-row z reads.
+    if (((uintptr_t)z->data & 3) != 0 || (dstride & 3) != 0)
+        return prim_err(e, "gfx-blend-z!: zbuf/stride not 4-aligned");
+    if (!gfx_clip(lisp_fixnum_val(a[4]), lisp_fixnum_val(a[5]), sw, sh, dw, dh,
+                  &cx, &cy, &cw, &ch, &sx, &sy))
+        return LISP_UNDEF;
+    if (!gfx_fits(cx, cy, cw, ch, dstride, d->len) ||
+        !gfx_fits(sx, sy, cw, ch, sstride, s->len) ||
+        !gfx_fits(cx, cy, cw, ch, dstride, z->len))   // zbuf shares dst's stride/geometry
+        return prim_err(e, "gfx-blend-z!: out of bounds");
+    for (int64_t r = 0; r < ch; r++) {
+        uint8_t *dp = d->data + (cy + r) * dstride + cx * 4;
+        const uint8_t *sp = s->data + (sy + r) * sstride + sx * 4;
+        const uint32_t *zp = (const uint32_t *)(z->data + (cy + r) * dstride) + cx;
+        for (int64_t i = 0; i < cw; i++, dp += 4, sp += 4) {
+            if (wz <= zp[i]) continue;  // occluded by an opaque surface at this pixel
+            uint32_t al = sp[3];
+            if (al == 0) continue;
+            if (al == 255) { dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; continue; }
+            uint32_t ia = 255 - al;
+            dp[0] = (uint8_t)((sp[0] * al + dp[0] * ia + 127) / 255);
+            dp[1] = (uint8_t)((sp[1] * al + dp[1] * ia + 127) / 255);
+            dp[2] = (uint8_t)((sp[2] * al + dp[2] * ia + 127) / 255);
+        }
+    }
+    return LISP_UNDEF;
+}
+
 // (gfx-glyph! dst dstride dw dh dx dy bitmap boff gw gh fg bg draw-bg scale) -> blit
 // a 1-bpp glyph (MSB = leftmost; row stride = ceil(gw/8) bytes) at (dx,dy), each
 // glyph pixel expanded to a scale*scale block. A set bit paints `fg`; a clear bit
@@ -1922,6 +2019,8 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "gfx-fill-rect!", prim_gfx_fill_rect);
     def(env, "gfx-blit!", prim_gfx_blit);
     def(env, "gfx-blend!", prim_gfx_blend);
+    def(env, "gfx-zpick!", prim_gfx_zpick);
+    def(env, "gfx-blend-z!", prim_gfx_blend_z);
     def(env, "gfx-glyph!", prim_gfx_glyph);
     def(env, "gfx-cover!", prim_gfx_cover);
     def(env, "=", prim_numeq);

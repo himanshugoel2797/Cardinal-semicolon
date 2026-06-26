@@ -525,11 +525,21 @@ after `coredisplay` + the display driver bind (it needs the driver's
      empirical **cross-core `send`** proof (`cardinal.percoretest`: an AP-spawned
      context messages a BSP collector). See "Bootstrap" above. No layer/merge yet —
      this is just the scheduler substrate the rest stands on.
-   - **7B merge — TODO.** `connect`-time transparency routing (opaque → shard,
+   - **7B merge core — ✅ DONE.** The two-pass merge's hot loops as C primitives
+     (`libs/lisp/src/prims.c`, SSE2-vectorisable like the other gfx ops — a per-pixel
+     Lisp loop would be the 200-650x trap): **`gfx-zpick!`** folds one opaque
+     `(color,z)` shard layer into an accumulator by a per-pixel max-z pick (yielding
+     the flattened opaque image + per-pixel topmost-opaque z `Zop`), and
+     **`gfx-blend-z!`** alpha-overs a translucent window onto the scanout only where
+     its z is above `Zop`. The z-pick is **sharding-order-independent** by
+     construction (a max pick is commutative/associative) — host-tested
+     (`test_merge.c`: same windows merged in two different shard orders give an
+     identical result; the z-gate occludes below `Zop`).
+   - **7B wiring — TODO.** `connect`-time transparency routing (opaque → shard,
      translucent → owner) + global z authority on the owner; grant-shared opaque
-     `(color,z)` layer buffers with `layer-update` damage reports; two-pass merge on
-     the owner (opaque z-buffer pick, then ordered alpha-over) bounded to union
-     damage. v1's single instance is the N=1 case of this code.
+     `(color,z)` layer buffers with `layer-update` damage reports; the owner mapping
+     all N layers and driving the two merge passes above over union damage; instances
+     born per core via the 7A hook. v1's single instance is the N=1 case of this code.
 
 ## Open / deferred
 
