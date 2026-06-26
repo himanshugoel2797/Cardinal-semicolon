@@ -53,8 +53,12 @@
 ;; (transfer + flush). Returns (list scanout-idx res-id w h fb) on success, or #f
 ;; if the framebuffer allocation failed (caller logs + bails without registering).
 ;;
-;; The framebuffer is a single contiguous dma-alloc. attach-backing here uses one
-;; mem entry; a chunked (scatter-gather) attach for very large modes is a TODO.
+;; The framebuffer is a single contiguous WRITE-BACK (cached) dma-alloc-wb: the
+;; CPU composes into it at cache speed and the device reads it coherently (x86 DMA
+;; is cache-coherent; the flush path fences before signalling). WB -- not the usual
+;; uncached dma-alloc -- because this buffer is CPU-write/device-read only, never a
+;; CPU-polled device-write ring. attach-backing here uses one mem entry; a chunked
+;; (scatter-gather) attach for very large modes is a TODO.
 (define (init-scanout ctrlq notify mult scanout-idx res-id w h)
   (let* ((nbytes (* w h 4))
          (cr (gpu-cmd-ok! ctrlq notify mult
@@ -64,7 +68,7 @@
     ;; would NACK in a loop and leave the scanout in a confused state.
     (if (not (and cr (= (gpu-resp-type cr) GPU-RESP-OK-NODATA)))
         #f
-        (let ((fb (dma-alloc nbytes)))
+        (let ((fb (dma-alloc-wb nbytes)))
           (if (not fb)
               (begin (display "[virtio-gpu] framebuffer alloc failed") (newline) #f)
               (begin

@@ -252,7 +252,8 @@
   (define (damage-empty? d) (null? (cell-ref d)))
 
   ;; Flush just the damaged rects of a double-buffer to its (WC) front, then clear
-  ;; the list for the next frame. The per-rect copies share one trailing fence.
+  ;; the list for the next frame. Each db-flush-rect fences after its own copy (so a
+  ;; few-rect frame issues a few sfences -- harmless, only strengthens ordering).
   (define (db-flush-damage db d)
     (for-each (lambda (r) (db-flush-rect db (nth r 0) (nth r 1) (nth r 2) (nth r 3)))
               (damage-rects d))

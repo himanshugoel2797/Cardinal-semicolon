@@ -27,10 +27,21 @@
 ;; (offset = row*stride + col*4 into the resource's own stride) and flush only it.
 ;; This is the dirty-rect path -- when a frame changes a small area, the host
 ;; copy + display update touch only those pixels, not the whole scanout.
+;;
+;; The rect is CLAMPED to the scanout bounds first: flush-rects is a generic
+;; message any context can send, and an out-of-range rect would make the host read
+;; past the attached backing (h overrunning) or NACK -- so a rect that falls wholly
+;; outside, or has zero area after clamping, is dropped rather than issued.
 (define (gpu-flush-one-rect! ctrlq notify mult s x y w h)
-  (let ((off (+ (* y (* (sc-w s) 4)) (* x 4))))
-    (gpu-cmd! ctrlq notify mult (make-transfer-2d (sc-res-id s) off x y w h) 56)
-    (gpu-cmd! ctrlq notify mult (make-flush (sc-res-id s) x y w h) 48)))
+  (let* ((sw (sc-w s)) (sh (sc-h s))
+         (x0 (if (< x 0) 0 x)) (y0 (if (< y 0) 0 y))
+         (x1 (let ((e (+ x w))) (if (> e sw) sw e)))
+         (y1 (let ((e (+ y h))) (if (> e sh) sh e)))
+         (cw (- x1 x0)) (ch (- y1 y0)))
+    (if (and (> cw 0) (> ch 0))
+        (let ((off (+ (* y0 (* sw 4)) (* x0 4))))
+          (gpu-cmd! ctrlq notify mult (make-transfer-2d (sc-res-id s) off x0 y0 cw ch) 56)
+          (gpu-cmd! ctrlq notify mult (make-flush (sc-res-id s) x0 y0 cw ch) 48)))))
 
 ;; Flush a LIST of dirty rects (each (x y w h)) in one driver turn, so a frame
 ;; with several damaged regions costs one IPC round-trip, not one per rect.
