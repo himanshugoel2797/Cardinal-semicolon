@@ -224,6 +224,7 @@ static void print_val(sink *s, lisp_value v, bool readable) {
             emit_int(s, (int64_t)lisp_hashtable_count(v));
             emit_ch(s, '>');
             return;
+        case LISP_OBJ_GRANT: emit_cstr(s, "#<grant>"); return;
         default: emit_cstr(s, "#<obj>"); return;
     }
 }

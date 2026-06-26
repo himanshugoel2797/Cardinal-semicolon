@@ -614,6 +614,31 @@ No-op on a single core / before `vmem_smp_init`. Verified: full KVM SMP boot to
 
 ---
 
+## Compositor — shared-memory grants (phase 1)
+
+The grant substrate (`libs/lisp/src/grant.c`, `sys-shm`/`sys-shm-mint` in
+`modules/SysLisp/src/main.c`) backs the compositor's zero-copy surfaces; design
+in `notes/servers/CoreCompositor.md`. Two known limitations are tracked here:
+
+### [INCOMPLETE] Read-only grants are not page-table-enforced
+`modules/SysLisp/src/main.c` `prim_map_grant`
+
+A grant records a perms bit (`'rw`/`'ro`) and `map-grant` constructs vmem flags
+from it, but `vmem_phystovirt` (`modules/SysVirtualMemory/.../vmem.c:748`) selects
+a prebuilt physmap window purely by cache type and ignores write-permission bits;
+all physmap windows are mapped RW at init. So a `'ro` grant still maps writable —
+the perms bit is **advisory** (recorded, surfaced by `lisp_grant_resolve`), not an
+access boundary. Making it structural needs a dedicated read-only physmap window
+(or per-mapping page-table entries). Do not rely on `'ro` for isolation until then.
+
+### [INCOMPLETE] Use-after-revoke is a contract, not enforced
+`grant-revoke` flips the table slot so future `map-grant` returns `#f`, but it does
+**not** tear down a grantee's existing mapping. The v1 contract is that a grantee
+stops touching a surface once it acks `destroy-surface`; a late write after the
+owner frees the backing is a UAF into reused RAM. Hardening (remap revoked views
+onto a shared zero page so a late access faults harmlessly) is a follow-up — see
+the sharp-edge note in `notes/servers/CoreCompositor.md`.
+
 ## Servers + other drivers
 
 ### [VERIFIED] CorePower passes a NULL output pointer to the queue

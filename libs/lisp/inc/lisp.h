@@ -84,6 +84,7 @@ typedef enum {
     LISP_OBJ_BYTES = 12,     // a mutable byte buffer (driver MMIO/DMA + bulk IPC)
     LISP_OBJ_BCCLOSURE = 13, // a compiled closure: a bytecode chunk + captured cells (lbc.c)
     LISP_OBJ_HASHTABLE = 14, // a mutable equal?-keyed hash table (chained buckets)
+    LISP_OBJ_GRANT = 15,     // a shared-memory grant: an unforgeable, revocable capability to map a phys region (compositor surfaces)
     // reserved for later phases: BYTEVECTOR, BOX, ...
 } lisp_objtype;
 
@@ -155,6 +156,22 @@ typedef struct {
     double val;
 } lisp_flonum;
 
+// A shared-memory GRANT: an unforgeable, revocable capability to map a specific
+// physical region into another context (the compositor's zero-copy surfaces and
+// layer buffers). Minted by an owner over a DMA/MMIO buffer it holds; sent BY
+// IDENTITY (never copied, like a context handle) to a grantee, which maps exactly
+// that region with the kernel-side map-grant. grant-revoke invalidates it
+// globally. The object is a small handle into a kernel-side grant table: `index`
+// names the slot, `generation` invalidates a stale handle after a slot is revoked
+// and reused. Allocated in the SYSTEM heap (like a context) so passing it across
+// contexts is GC-safe; a GC leaf (no Lisp children) -- the table slot is reclaimed
+// by revoke, not by the collector.
+typedef struct {
+    lisp_header h;
+    uint32_t index;
+    uint32_t generation;
+} lisp_grant;
+
 // --- Tag predicates ---------------------------------------------------------
 
 static inline unsigned lisp_tag(lisp_value v) { return (unsigned)(v & LISP_TAG_MASK); }
@@ -203,6 +220,7 @@ static inline bool lisp_is_vector(lisp_value v) { return lisp_is_objtype(v, LISP
 static inline bool lisp_is_hashtable(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_HASHTABLE); }
 static inline bool lisp_is_flonum(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_FLONUM); }
 static inline bool lisp_is_bytes(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_BYTES); }
+static inline bool lisp_is_grant(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_GRANT); }
 // A callable: a C primitive, a tree-walker closure, or a compiled (bytecode)
 // closure. Anything that checks "is this a procedure" must accept all three.
 static inline bool lisp_is_procedure(lisp_value v) {
@@ -264,6 +282,18 @@ lisp_value lisp_make_bytes_foreign(void *ptr, size_t len, uint64_t phys);
 size_t lisp_bytes_len(lisp_value v);
 void *lisp_bytes_data(lisp_value v);
 uint64_t lisp_bytes_phys(lisp_value v);
+
+// Shared-memory grants (the compositor's zero-copy surfaces; see lisp_grant). A
+// grant is an unforgeable, revocable capability to map a specific physical region
+// into another context. The table + mint/revoke/resolve are PORTABLE (no vmem) so
+// they are host-testable; only the actual mapping (map-grant) is kernel-side. The
+// minter holds a buffer and re-exposes ITS phys region -- never arbitrary phys.
+// perms: 0 = read-only, 1 = read-write. lisp_grant_resolve validates a handle is
+// live (slot live + generation matches) and yields its region for the caller to
+// map; map-grant returns #f (not an error) when resolve fails -- the revoke path.
+lisp_value lisp_grant_mint(uint64_t phys, size_t len, uint32_t perms);  // grant, or LISP_UNDEF if the table is full / OOM
+int lisp_grant_revoke(lisp_value g);   // 0 = revoked, -1 = not a live grant (idempotent)
+int lisp_grant_resolve(lisp_value g, uint64_t *phys, size_t *len, uint32_t *perms);  // 0 = live, -1 = revoked/stale
 
 const char *lisp_named_name(lisp_value v);  // symbol/keyword name (NUL-terminated)
 size_t lisp_named_len(lisp_value v);

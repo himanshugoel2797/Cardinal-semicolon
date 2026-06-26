@@ -328,10 +328,15 @@ after `coredisplay` + the display driver bind (it needs the driver's
 
 ## Phasing
 
-1. **VM substrate** — `grant` value type, grant table, `map-grant` /
-   `grant-mint` / `grant-revoke` prims, `sys-shm` capability module. Host + SysTest
-   coverage for mint/map/revoke/UAF-contract. *(touches `libs/lisp` — gated on
-   sign-off, done.)*
+1. **VM substrate** — ✅ **DONE.** `LISP_OBJ_GRANT` value type (`libs/lisp`,
+   identity-passed on send, system-heap, GC leaf), portable grant table
+   (`grant.c`: mint/resolve/revoke + generation invalidation), kernel prims
+   `grant-mint`/`map-grant`/`grant-revoke`, split capabilities `sys-shm-mint`
+   (owner) vs `sys-shm` (grantee). Host test (`test_grant.c`, 13 checks) + in-OS
+   self-test (full vmem round-trip + capability-split + strict-perms). Two tracked
+   limitations in `notes/AUDIT.md`: `'ro` is advisory (not page-table-enforced on
+   this platform) and use-after-revoke is a contract (revoke doesn't tear down
+   existing maps).
 2. **corecompositor.clp root** — the primary mailbox + `connect` handshake that
    spawns a **per-client handler context**; the handler holds that client's
    window list, grants, and damage. Single client first.

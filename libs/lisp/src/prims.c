@@ -342,6 +342,10 @@ static bool deep_equal(lisp_value a, lisp_value b) {
                     return false;
             return true;
         }
+        // Capability/handle types (contexts, grants) have no structural equality:
+        // identical handles already matched the eq? short-circuit above, and two
+        // DISTINCT handles are intentionally not equal? -- they are identities, not
+        // data. They land here and correctly return false.
         return false;
     }
 }

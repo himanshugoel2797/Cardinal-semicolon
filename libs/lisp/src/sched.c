@@ -117,6 +117,14 @@ static lisp_value deep_copy(lisp_value v, int depth, const char **err) {
             // context a mailbox points at is never swept out from under the handle
             // -- regardless of whether the system heap is frozen (multicore) yet.
             return v;
+        case LISP_OBJ_GRANT:
+            // A shared-memory grant is an UNFORGEABLE CAPABILITY, not data: it is
+            // passed by IDENTITY (like a context handle) so the grantee maps the
+            // same physical region the owner minted -- copying it would be
+            // meaningless (the table slot is the authority) and would break revoke.
+            // GC-safe for the same reason as a context: minted in the system heap
+            // (grant.c make_grant_obj), external to every per-context collector.
+            return v;
         case LISP_OBJ_STRING:
             return lisp_make_string(lisp_string_data(v), lisp_string_len(v));
         case LISP_OBJ_FLONUM:

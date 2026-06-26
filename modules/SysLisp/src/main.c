@@ -391,6 +391,89 @@ static lisp_value prim_dma_alloc_32(lisp_value *a, int n, const char **e) {
                           "dma-alloc-32: out of 32-bit physical memory");
 }
 
+// --- Shared-memory grants (the compositor's zero-copy surfaces) --------------
+// A grant is an unforgeable, revocable capability to map a SPECIFIC physical
+// region into another context. The portable table + mint/revoke/resolve live in
+// libs/lisp/src/grant.c; only the actual phys->virt mapping is kernel-side, so it
+// lives here. The split capability: the OWNER (compositor) imports sys-shm-mint
+// (grant-mint/grant-revoke); a semi-trusted client imports sys-shm (map-grant
+// only) -- it can map ONLY what it was granted, never arbitrary phys, which is the
+// security win over handing a client raw sys-mmio. See notes/servers/CoreCompositor.md.
+
+// (grant-mint buffer [perms]) -> a grant over `buffer`'s physical region. `buffer`
+// must be a DMA/MMIO region (phys != 0) the minter already holds (it came from a
+// gated dma-alloc*/mmio-map), so the grant re-exposes only THAT region. `perms` is
+// the symbol 'rw (default) or 'ro. Gated as sys-shm-mint.
+static lisp_value prim_grant_mint(lisp_value *a, int n, const char **e) {
+    if (n < 1 || n > 2 || !lisp_is_bytes(a[0]))
+        return (*e = "grant-mint: expects (buffer [perms])"), LISP_UNDEF;
+    uint64_t phys = lisp_bytes_phys(a[0]);
+    if (phys == 0)
+        return (*e = "grant-mint: buffer has no physical address (not a DMA/MMIO region)"), LISP_UNDEF;
+    uint32_t perms = 1;  // read-write by default
+    if (n == 2) {
+        // Strict: only 'rw or 'ro. A typo'd/unknown symbol is an ERROR, never a
+        // silent fall-through to read-write -- a hidden writable grant is exactly
+        // the bug strictness here prevents.
+        if (!lisp_is_symbol(a[1]) || lisp_named_len(a[1]) != 2)
+            return (*e = "grant-mint: perms must be the symbol 'rw or 'ro"), LISP_UNDEF;
+        const char *pn = lisp_named_name(a[1]);
+        if (memcmp(pn, "ro", 2) == 0)
+            perms = 0;
+        else if (memcmp(pn, "rw", 2) == 0)
+            perms = 1;
+        else
+            return (*e = "grant-mint: perms must be the symbol 'rw or 'ro"), LISP_UNDEF;
+    }
+    lisp_value g = lisp_grant_mint(phys, lisp_bytes_len(a[0]), perms);
+    if (g == LISP_UNDEF)
+        return (*e = "grant-mint: grant table full"), LISP_UNDEF;
+    return g;
+}
+
+// (map-grant g) -> a WRITE-BACK byte view of the granted region, or #f if the
+// grant was revoked or is stale. The grantee maps ONLY what it was handed -- it
+// never names a physical address. Mapped write-back to match the dma-alloc-wb
+// backing the compositor allocates (no UC/WB aliasing of the same pages); a
+// read-only grant omits the writable bit. Revoked/stale returns #f (the contract,
+// not an error). Gated as sys-shm.
+static lisp_value prim_map_grant(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_grant(a[0]))
+        return (*e = "map-grant: expects (grant)"), LISP_UNDEF;
+    uint64_t phys;
+    size_t len;
+    uint32_t perms;
+    if (lisp_grant_resolve(a[0], &phys, &len, &perms) != 0)
+        return LISP_FALSE;  // revoked or stale
+    // Map write-back to match the dma-alloc-wb backing (no UC/WB aliasing of the
+    // same pages). CAVEAT: read-only grants are NOT page-table-enforced on this
+    // platform -- vmem_phystovirt returns a prebuilt physmap window that is always
+    // mapped RW and ignores write-permission bits, so the perms bit below is a
+    // no-op today. perms is therefore ADVISORY (recorded in the grant, surfaced by
+    // resolve); 'ro is not yet an access boundary. See notes/AUDIT.md; making it
+    // structural needs a dedicated read-only physmap window.
+    vmem_flags_t f = vmem_flags_cachewriteback | vmem_flags_kernel;
+    if (perms)
+        f |= vmem_flags_rw;
+    intptr_t virt = vmem_phystovirt((intptr_t)phys, len, f);
+    lisp_value b = lisp_make_bytes_foreign((void *)virt, len, phys);
+    if (b == LISP_UNDEF)
+        return (*e = "map-grant: out of memory"), LISP_UNDEF;
+    return b;
+}
+
+// (grant-revoke g) -> #t. Invalidates the grant: future map-grant returns #f.
+// Existing mappings are NOT torn down -- the v1 contract is that a grantee stops
+// touching a surface once it acks destroy (the use-after-revoke sharp edge + the
+// zero-page hardening follow-up are documented in notes/servers/CoreCompositor.md).
+// Idempotent. Gated as sys-shm-mint.
+static lisp_value prim_grant_revoke(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_grant(a[0]))
+        return (*e = "grant-revoke: expects (grant)"), LISP_UNDEF;
+    lisp_grant_revoke(a[0]);  // already-dead -> -1, but revoke is idempotent
+    return LISP_TRUE;
+}
+
 // (pci-find vendor-id device-id) -> the ECAM physical address of the first
 // matching PCI function, or #f. The PCI bus is enumerated into the registry at
 // boot (HW/PCI/COUNT + HW/PCI/<hex-idx>/{VENDOR_ID,DEVICE_ID,ECAM_ADDR,...}); a
@@ -957,6 +1040,16 @@ static const lisp_builtin_export sys_initrd_exports[] = {
 static const lisp_builtin_export sys_ttf_exports[] = {
     {"ttf-rasterize", prim_ttf_rasterize}, {"ttf-vmetrics", prim_ttf_vmetrics},
 };
+// Shared-memory grants, split into two capabilities: sys-shm-mint is the owner
+// (compositor) authority to mint/revoke grants over buffers it holds; sys-shm is
+// the grantee authority -- map-grant ONLY, so a client maps just what it was
+// granted, never arbitrary phys (the security boundary, see CoreCompositor.md).
+static const lisp_builtin_export sys_shm_exports[] = {
+    {"map-grant", prim_map_grant},
+};
+static const lisp_builtin_export sys_shm_mint_exports[] = {
+    {"grant-mint", prim_grant_mint}, {"grant-revoke", prim_grant_revoke},
+};
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -974,6 +1067,8 @@ static void register_driver_modules(lisp_value env) {
         {"sys-reg", sys_reg_exports, ARRAY_LEN(sys_reg_exports)},
         {"sys-initrd", sys_initrd_exports, ARRAY_LEN(sys_initrd_exports)},
         {"sys-ttf", sys_ttf_exports, ARRAY_LEN(sys_ttf_exports)},
+        {"sys-shm", sys_shm_exports, ARRAY_LEN(sys_shm_exports)},
+        {"sys-shm-mint", sys_shm_mint_exports, ARRAY_LEN(sys_shm_mint_exports)},
     };
     for (size_t i = 0; i < ARRAY_LEN(mods); i++)
         // Only OOM can fail this, and only at boot with a fresh heap -- but a
@@ -1216,10 +1311,25 @@ static void check_capabilities(lisp_value env) {
         "    (lambda () (import sys-mmio) (> (bytes-phys (dma-alloc 32)) 0))))"
         "(define cap-deny"
         "  (spawn-restricted '(sys-irq)"
-        "    (lambda () (import sys-mmio) 'leaked)))",
+        "    (lambda () (import sys-mmio) 'leaked)))"
+        // The grant capability SPLIT: a grantee holding only sys-shm (map-grant)
+        // must NOT be able to import sys-shm-mint -- it can map what it was granted
+        // but cannot mint or revoke. This is the security boundary the compositor
+        // relies on, so assert it the same way (the restricted context errors).
+        "(define shm-deny"
+        "  (spawn-restricted '(sys-shm)"
+        "    (lambda () (import sys-shm-mint) 'leaked)))"
+        // grant-mint is STRICT about perms: an unknown symbol must error, never
+        // silently yield a writable grant. Assert it errors the context.
+        "(define mint-bad"
+        "  (spawn-restricted '(sys-mmio sys-shm-mint)"
+        "    (lambda () (import sys-mmio sys-shm-mint)"
+        "               (grant-mint (dma-alloc-wb 4096) 'bogus))))",
         env, &err);
     lisp_value ok = lisp_eval_string("cap-ok", env, &err);
     lisp_value deny = lisp_eval_string("cap-deny", env, &err);
+    lisp_value shm_deny = lisp_eval_string("shm-deny", env, &err);
+    lisp_value mint_bad = lisp_eval_string("mint-bad", env, &err);
     lisp_sched_run(&s, 0);
 
     char buf[64];
@@ -1227,6 +1337,18 @@ static void check_capabilities(lisp_value env) {
     bool ok_pass = err == NULL && lisp_ctx_state(ok) == LISP_CTX_DONE &&
                    strcmp(buf, "#t") == 0;
     bool deny_pass = lisp_ctx_state(deny) == LISP_CTX_ERROR;
+    bool shm_split = lisp_ctx_state(shm_deny) == LISP_CTX_ERROR;
+    bool mint_strict = lisp_ctx_state(mint_bad) == LISP_CTX_ERROR;
+    if (shm_split && mint_strict) {
+        print_str("[SysLisp]  ok  grant capability split + strict perms (sys-shm cannot mint; bad perms rejected)\r\n");
+        g_pass++;
+    } else {
+        print_str("[SysLisp] FAIL grant capability split/perms ");
+        print_str(shm_split ? "" : " sys-shm-only-context-MINTED");
+        print_str(mint_strict ? "" : " bad-perms-ACCEPTED");
+        print_str("\r\n");
+        g_fail++;
+    }
     if (ok_pass && deny_pass) {
         print_str("[SysLisp]  ok  capability gate (granted imports, ungranted denied)\r\n");
         g_pass++;
@@ -2721,6 +2843,28 @@ static void run_self_test(lisp_value env) {
                // in the shared env (a common name a later driver might want).
                "  (import (dma-probe (prefix dp:)))"
                "  (dp:run))",
+          "#t");
+    // Shared-memory grants (the compositor's zero-copy surface substrate): the
+    // FULL kernel path that the host test_grant.c cannot reach. Mint a grant over a
+    // WB DMA buffer, map a SECOND view of it via the grantee capability, write
+    // through that view and read it back through the owner's buffer -- the same
+    // physical pages, both write-back, so the store is coherent -- then revoke and
+    // confirm a post-revoke map-grant returns #f. Owner authority (grant-mint/
+    // grant-revoke) is sys-shm-mint; grantee authority (map-grant) is sys-shm.
+    check(env, "(begin"
+               "  (define-module shm-probe (export run)"
+               "    (import sys-mmio sys-shm sys-shm-mint)"
+               "    (define (run)"
+               "      (let* ((buf  (dma-alloc-wb 4096))"
+               "             (g    (grant-mint buf 'rw))"
+               "             (view (map-grant g)))"
+               "        (bytes-u32-set! view 0 305419896)"      // write through the grantee view
+               "        (let ((seen (bytes-u32-ref buf 0)))"    // read through the owner's buffer
+               "          (grant-revoke g)"
+               "          (and (= seen 305419896)"              // coherent: same physical page
+               "               (eq? (map-grant g) #f))))))"     // revoked -> map-grant returns #f
+               "  (import (shm-probe (prefix shm:)))"
+               "  (shm:run))",
           "#t");
     // sys-cmdline through the capability path: the mechanism, asserted without
     // depending on any boot-specific flag so it holds on every boot (cardinal.test
