@@ -63,21 +63,25 @@
           ((eq? (car m) 'play)                 ; (play name freq amp frames)
            (to-card (nth m 1) cards (list 'play (nth m 2) (nth m 3) (nth m 4))) cards)
           ((eq? (car m) 'cards)                ; (cards reply)
-           (send (nth m 1) (map car cards)) cards)
+           (reply-to (nth m 1) (map car cards)) cards)
           ((eq? (car m) 'endpoints)            ; (endpoints name reply)
            ;; Forward to the driver context for LIVE endpoint state (presence can
            ;; change), rather than answering from the registration-time snapshot.
+           ;; Guard the forward: (nth m 2) is the CLIENT's reply handle from an
+           ;; untrusted message -- validate it before handing it to the driver.
            (let ((rec (card-find (nth m 1) cards)))
              (if rec
-                 (send (card-ctx rec) (list 'endpoints (nth m 2)))
-                 (send (nth m 2) '()))) cards)
+                 (if (ctx? (nth m 2)) (send (card-ctx rec) (list 'endpoints (nth m 2))))
+                 (reply-to (nth m 2) '()))) cards)
           ((eq? (car m) 'set-volume)           ; (set-volume name ep-id vol)
            (to-card (nth m 1) cards (list 'set-volume (nth m 2) (nth m 3))) cards)
           ((eq? (car m) 'get-volume)           ; (get-volume name ep-id reply)
+           ;; Guard the forward: (nth m 3) is the CLIENT's reply handle from an
+           ;; untrusted message -- validate it before handing it to the driver.
            (let ((rec (card-find (nth m 1) cards)))
              (if rec
-                 (send (card-ctx rec) (list 'get-volume (nth m 2) (nth m 3)))
-                 (send (nth m 3) #f))) cards)
+                 (if (ctx? (nth m 3)) (send (card-ctx rec) (list 'get-volume (nth m 2) (nth m 3))))
+                 (reply-to (nth m 3) #f))) cards)
           ((eq? (car m) 'mute)                 ; (mute name ep-id on?)
            (to-card (nth m 1) cards (list 'mute (nth m 2) (nth m 3))) cards)
           ((eq? (car m) 'capture-start)        ; (capture-start name ep-id)
@@ -85,15 +89,19 @@
           ((eq? (car m) 'capture-stop)         ; (capture-stop name)
            (to-card (nth m 1) cards (list 'capture-stop)) cards)
           ((eq? (car m) 'capture-read)         ; (capture-read name reply)
+           ;; Guard the forward: (nth m 2) is the CLIENT's reply handle from an
+           ;; untrusted message -- validate it before handing it to the driver.
            (let ((rec (card-find (nth m 1) cards)))
              (if rec
-                 (send (card-ctx rec) (list 'capture-read (nth m 2)))
-                 (send (nth m 2) #f))) cards)
+                 (if (ctx? (nth m 2)) (send (card-ctx rec) (list 'capture-read (nth m 2))))
+                 (reply-to (nth m 2) #f))) cards)
           ((eq? (car m) 'capture-pos)          ; (capture-pos name reply)
+           ;; Guard the forward: (nth m 2) is the CLIENT's reply handle from an
+           ;; untrusted message -- validate it before handing it to the driver.
            (let ((rec (card-find (nth m 1) cards)))
              (if rec
-                 (send (card-ctx rec) (list 'capture-pos (nth m 2)))
-                 (send (nth m 2) #f))) cards)
+                 (if (ctx? (nth m 2)) (send (card-ctx rec) (list 'capture-pos (nth m 2))))
+                 (reply-to (nth m 2) #f))) cards)
           ((eq? (car m) 'rescan)               ; (rescan name) -- force a codec re-scan
            (to-card (nth m 1) cards (list 'codec-change)) cards)
           ((eq? (car m) 'poll-jacks)           ; (poll-jacks name) -- force a jack re-poll

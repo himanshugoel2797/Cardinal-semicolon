@@ -11,7 +11,7 @@
   (export nth make-cell cell-ref cell-set!
           put-be16! get-be16 put-be32! get-be32
           copy-bytes bytes-copy-into! put-list!
-          wait-until wait-until-spin serve
+          wait-until wait-until-spin serve reply-to
           PCI-COMMAND bar-base pci-enable-mem-bus-master!)
 
   (define (nth lst k) (if (= k 0) (car lst) (nth (cdr lst) (- k 1))))
@@ -123,4 +123,16 @@
     (spawn-restricted '()
       (lambda ()
         (let loop ((state init))
-          (loop (step state (recv))))))))
+          (loop (step state (recv)))))))
+
+  ;; Reply to a request whose reply address arrived INSIDE an (untrusted) message.
+  ;; Deliver only if `target` is a context. The VM has no try/catch, so a `send` to
+  ;; a non-context aborts the calling context -- and a `serve` loop has no recovery,
+  ;; so a forged/garbage reply handle from any sender would otherwise permanently
+  ;; kill the service. `ctx?` makes the type checkable; `reply-to` is the one-liner
+  ;; every request/reply server uses instead of a bare `send` to a message field.
+  ;; Returns #t if delivered. (For a reply handle being FORWARDED into another
+  ;; message rather than sent to, guard the forward with `(ctx? handle)` directly --
+  ;; the eventual sender is what must be protected.)
+  (define (reply-to target msg)
+    (if (ctx? target) (begin (send target msg) #t) #f)))

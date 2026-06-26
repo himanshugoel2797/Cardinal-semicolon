@@ -75,7 +75,7 @@
                          (build-arp 1 (ig i I-MAC) (ig i I-IP) (list 0 0 0 0 0 0) (cadr m)) 28)))
            st)
           ((eq? (car m) 'arp-lookup)           ; (arp-lookup ip reply)
-           (send (caddr m) (cache-get cache (cadr m) (uptime-ns)))
+           (reply-to (caddr m) (cache-get cache (cadr m) (uptime-ns)))
            st)
           ((eq? (car m) 'udp-bind)             ; (udp-bind port handler)
            (display "[corenetwork] udp port bound: ")
@@ -126,14 +126,14 @@
                    (mk-state ifaces (routes-install routes i) cache binds tcp)))))
           ((eq? (car m) 'get-address)          ; (get-address reply) -> (ip nm gw dns) of primary
            (let ((i (primary-iface ifaces)))
-             (send (cadr m) (if i (list (ig i I-IP) (ig i I-MASK) (ig i I-GW) (ig i I-DNS))
-                                (list IP-ANY IP-ANY IP-ANY IP-ANY))))
+             (reply-to (cadr m) (if i (list (ig i I-IP) (ig i I-MASK) (ig i I-GW) (ig i I-DNS))
+                                    (list IP-ANY IP-ANY IP-ANY IP-ANY))))
            st)
           ((eq? (car m) 'route-query)          ; (route-query dst reply) -> (src-ip mac tx next-hop)|#f
            (let ((e (route-egress routes (cadr m))))
-             (send (caddr m)
-                   (if e (list (ig (car e) I-IP) (ig (car e) I-MAC) (ig (car e) I-TX) (cdr e))
-                       #f)))
+             (reply-to (caddr m)
+                       (if e (list (ig (car e) I-IP) (ig (car e) I-MAC) (ig (car e) I-TX) (cdr e))
+                           #f)))
            st)
           ((eq? (car m) 'dhcp-start)           ; (dhcp-start) -- DHCP on the primary interface
            (let ((i (primary-iface-any ifaces)))
@@ -191,7 +191,7 @@
           ((eq? (car m) 'fw-clear)             ; (fw-clear) -- drop all rules
            (fw-clear! fw) st)
           ((eq? (car m) 'fw-query)             ; (fw-query proto src-ip dport reply) -> #t|#f
-           (send (nth m 4) (fw-allow? fw (cadr m) (caddr m) (cadddr m)))
+           (reply-to (nth m 4) (fw-allow? fw (cadr m) (caddr m) (cadddr m)))
            st)
           (else st)))))))
     (start-tcp-ticker net)

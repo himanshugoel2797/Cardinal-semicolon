@@ -647,6 +647,24 @@ owner frees the backing is a UAF into reused RAM. Hardening (remap revoked views
 onto a shared zero page so a late access faults harmlessly) is a follow-up — see
 the sharp-edge note in `notes/servers/CoreCompositor.md`.
 
+### Reply-handle validation in request/reply servers (`ctx?` / `reply-to`)
+`lisp/lib/driver-util.clp` (`reply-to`); `libs/lisp/src/sched.c` (`ctx?`)
+
+A `serve` loop has no try/catch, so a `send` to a non-context **aborts the service
+permanently**. Any request/reply server that `send`s to a reply handle taken from
+an (untrusted) message was therefore one forged handle away from a DoS. The fix is
+the `ctx?` predicate + the `reply-to` helper (deliver only to a context): a server
+either `reply-to`s a direct reply, or guards `(ctx? handle)` before forwarding a
+reply handle into another message (so the eventual sender is protected). Adopted in
+`coreaudio`, `cardfs`, `corestorage` (read/write dispatch), `corenetwork`
+(service + txworker). **Still open:** (a) trusted-registration handles
+(`corepower`/`coreinput` device ctx, `corenetwork/tcp` connection owner) are
+validated only by virtue of trusted callers, not at registration — harden if those
+become client-reachable; (b) this guards the *type* of the reply handle, not message
+*arity* — a too-short message still aborts the loop on `cadr`/`nth`; full per-verb
+arity validation is a broader, separate sweep (the compositor does it, most servers
+don't yet).
+
 ## Servers + other drivers
 
 ### [VERIFIED] CorePower passes a NULL output pointer to the queue

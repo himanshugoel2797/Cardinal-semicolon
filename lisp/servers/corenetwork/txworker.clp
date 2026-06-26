@@ -50,6 +50,6 @@
                    (pump ring dropped)
                    (loop ring busy disp dropped)))
               ((eq? (car m) 'tx-stats)                           ; (tx-stats reply)
-               (send (cadr m) (list (length ring) dropped))
+               (reply-to (cadr m) (list (length ring) dropped))
                (loop ring busy disp dropped))
               (else (loop ring busy disp dropped)))))))))
