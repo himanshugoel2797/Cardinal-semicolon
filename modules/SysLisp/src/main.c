@@ -68,9 +68,12 @@ static int g_runtime_lock = 0;
 static void lisp_lock(void) { local_spinlock_lock(&g_runtime_lock); }
 static void lisp_unlock(void) { local_spinlock_unlock(&g_runtime_lock); }
 
-// The one shared global environment, built once on the BSP and read (never
-// mutated) by every core's contexts. Living in the frozen system heap, it is a
-// permanent root; per-context heaps mark-stop at it.
+// The one shared global environment, built once on the BSP and thereafter
+// read-only to every core's contexts -- with one controlled exception: while
+// single-core in (system-init), set-per-core-init does one last define
+// (%per-core-init) BEFORE the APs are let past the g_per_core_ready barrier, so no
+// concurrent reader exists for that write. Living in the frozen system heap, it is
+// a permanent root; per-context heaps mark-stop at it.
 static lisp_value g_env = LISP_EMPTY;
 
 // --- Output sink: route (display)/(write)/(newline) to the debug log ----------
@@ -93,6 +96,73 @@ static void lisp_out(const char *s, size_t len, void *ctx) {
 }
 
 // --- Foreign-function examples: kernel services as Lisp primitives ------------
+
+// --- Per-core bring-up hook (the phase-7 sharding substrate) -------------------
+//
+// Every core runs lisp_core_loop as it goes live, but the APs are released
+// (mp_set_ap_entry) BEFORE the BSP runs (system-init) in its own loop, so a hook
+// that needs a service handle built in system-init must wait for it. The policy
+// (init.clp) registers a 0-arg thunk with (set-per-core-init); each core runs
+// `(%per-core-init)` once it is live, after the BSP has published the hook. The
+// thunk calls (core-id) to learn which core it is on and spawns that core's
+// contexts onto THIS core's scheduler (spawn enqueues locally). With no hook
+// registered, each core keeps its old liveness proof -- behaviour is unchanged.
+//
+// g_per_core_ready is the publish barrier: the BSP sets it after (system-init)
+// returns, and every AP pause-spins on it before reading %per-core-init. Both
+// flags are _Atomic with release/acquire ordering (NOT plain volatile): the
+// release store of g_per_core_ready publishes everything written before it on the
+// BSP -- the %per-core-init env-define and the g_per_core_hook_set store -- so an
+// AP whose acquire load sees ready == 1 is guaranteed to also see the bound hook.
+// (x86 TSO would give this for free, but the explicit release/acquire is what the
+// C memory model actually requires, and keeps a non-TSO port honest.) Plain int
+// accessed only via the __atomic_* builtins, matching local_spinlock.h.
+static int g_per_core_hook_set = 0;  // a hook was registered
+static int g_per_core_ready = 0;     // BSP published it (system-init done)
+
+// (core-id) -> this core's scheduler index (APIC-id-derived), an exact integer.
+// Ambient: it bears no authority, it only reports placement -- the per-core hook
+// and the sharded compositor use it to pick this core's role (0 = owner/BSP).
+static lisp_value prim_core_id(lisp_value *a, int n, const char **e) {
+    (void)a;
+    if (n != 0)
+        return (*e = "core-id: expects no arguments"), LISP_UNDEF;
+    return lisp_fixnum((int64_t)interrupt_get_cpu_idx());
+}
+
+// (core-count) -> the number of live Lisp scheduler cores (BSP + APs). Ambient,
+// no authority. The sharded compositor uses it to size its shard set; the
+// per-core proof uses it to know how many APs should report in.
+static lisp_value prim_core_count(lisp_value *a, int n, const char **e) {
+    (void)a;
+    if (n != 0)
+        return (*e = "core-count: expects no arguments"), LISP_UNDEF;
+    return lisp_fixnum((int64_t)mp_corecount());
+}
+
+// (set-per-core-init thunk) -> register the 0-arg thunk run on every core as it
+// goes live. Boot policy: init calls this once in (system-init) on the BSP; the
+// closure typically captures service handles and branches on (core-id). Stored in
+// the shared env under a hidden name the C loop evals. It needs no capability gate
+// -- like the other ambient boot prims (uptime-ns/sleep), the authority is in WHO
+// runs init, and a post-boot call is refused outright (below). The thunk must be a
+// procedure, since the C loop applies it as `(%per-core-init)`.
+static lisp_value prim_set_per_core_init(lisp_value *a, int n, const char **e) {
+    if (n != 1)
+        return (*e = "set-per-core-init: expects (thunk)"), LISP_UNDEF;
+    if (!lisp_is_procedure(a[0]))
+        return (*e = "set-per-core-init: argument must be a procedure"), LISP_UNDEF;
+    // Refuse once the barrier has passed: no further core will read the hook, and
+    // mutating g_env now would race the lock-free env lookups the already-live APs
+    // are doing in their own contexts. Before the barrier (the intended call site,
+    // inside system-init) the APs are still pause-spinning, so the define is safe.
+    if (__atomic_load_n(&g_per_core_ready, __ATOMIC_ACQUIRE))
+        return (*e = "set-per-core-init: cores already live"), LISP_UNDEF;
+    lisp_env_define(g_env, lisp_make_symbol("%per-core-init", 14), a[0]);
+    // Release: order the env-define ahead of the flag an AP acquire-loads.
+    __atomic_store_n(&g_per_core_hook_set, 1, __ATOMIC_RELEASE);
+    return LISP_UNDEF;
+}
 
 // (uptime-ns) -> nanoseconds since boot, as an exact integer. The fixnum range is
 // 62-bit (~146 years of ns), so no truncation in practice; a no-counter timer
@@ -3203,6 +3273,33 @@ static void NORETURN lisp_core_loop(void) {
                 print_str("\r\n");
             }
         }
+        // (system-init) has now run and registered the per-core hook (if any), so
+        // publish it: the APs pause-spin on this flag before reading %per-core-init
+        // (they were released before this core ran system-init). The RELEASE store
+        // orders the hook env-define + g_per_core_hook_set ahead of it, so an AP
+        // whose ACQUIRE load sees ready == 1 also sees the bound hook.
+        __atomic_store_n(&g_per_core_ready, 1, __ATOMIC_RELEASE);
+    }
+
+    // Per-core bring-up hook. Wait until the BSP has published it (system-init
+    // done) -- the APs reach here before that -- then run `(%per-core-init)` on
+    // THIS core: the policy thunk reads (core-id) and spawns this core's contexts
+    // onto this scheduler (e.g. a sharded compositor instance). Done HERE, before
+    // the proof's lisp_sched_run below (which set_sched(NULL)s on return, leaving no
+    // current scheduler for `spawn`); the scheduler is still current from
+    // lisp_sched_init/(system-init) above, and lisp_eval_string does not run it, so
+    // the hook's spawns enqueue cleanly and run in the proof loop / resident loop.
+    // With no hook registered, nothing runs and behaviour is unchanged.
+    while (!__atomic_load_n(&g_per_core_ready, __ATOMIC_ACQUIRE))
+        __asm__ volatile("pause");
+    if (__atomic_load_n(&g_per_core_hook_set, __ATOMIC_ACQUIRE)) {
+        const char *herr = NULL;
+        lisp_eval_string("(%per-core-init)", g_env, &herr);
+        if (herr != NULL) {
+            print_str("[SysLisp] per-core hook error: ");
+            print_str(herr);
+            print_str("\r\n");
+        }
     }
 
     // Per-core proof of life: spawn a context that does a real (heap-allocating,
@@ -3295,6 +3392,15 @@ int lisp_scheduler_enter() {
     // by the timeout queue + the periodic tick armed below.
     lisp_env_define(g_env, lisp_make_symbol("sleep", 5),
                     lisp_make_primitive(prim_sleep, "sleep"));
+    // Placement + the per-core bring-up hook (phase-7 sharding substrate). Ambient
+    // boot prims: core-id reports this core's index; set-per-core-init registers a
+    // thunk lisp_core_loop runs on every core as it goes live (see their comments).
+    lisp_env_define(g_env, lisp_make_symbol("core-id", 7),
+                    lisp_make_primitive(prim_core_id, "core-id"));
+    lisp_env_define(g_env, lisp_make_symbol("core-count", 10),
+                    lisp_make_primitive(prim_core_count, "core-count"));
+    lisp_env_define(g_env, lisp_make_symbol("set-per-core-init", 17),
+                    lisp_make_primitive(prim_set_per_core_init, "set-per-core-init"));
     // Arm the periodic tick on the BSP now, so a (sleep)/timeout wait works during
     // the single-core self-test phase too (each AP arms its own in lisp_core_loop).
     lisp_arm_timer_tick();

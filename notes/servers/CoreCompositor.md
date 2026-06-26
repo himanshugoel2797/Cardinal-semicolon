@@ -278,11 +278,32 @@ generalize.
 ### Bootstrap: instances are born on their core (no migration)
 
 `spawn` enqueues onto the current core, so each instance is spawned *by code
-already running on that core*: the AP proof-of-life spawn (`main.c:3033`) becomes
-"spawn this core's compositor instance." The only substrate addition is a
-**per-core bring-up hook** (run a thunk as each core enters `lisp_core_loop`) —
-far smaller than general migration / `spawn-on-core`. The scanout-owning instance
-(core 0) additionally runs the screen setup in `(system-init)`.
+already running on that core*: the AP proof-of-life spawn becomes "spawn this
+core's compositor instance." The substrate addition — a **per-core bring-up
+hook** (run a thunk as each core enters `lisp_core_loop`) — is **✅ implemented**:
+`(set-per-core-init thunk)` publishes a 0-arg policy thunk that every core runs
+once it is live, and `(core-id)` reports the core's index so the thunk picks its
+role (0 = owner/BSP). Far smaller than general migration / `spawn-on-core`. The
+scanout-owning instance (core 0) additionally runs the screen setup in
+`(system-init)`.
+
+**Ordering** (cost a debug cycle, worth recording): the APs are released
+(`mp_set_ap_entry`) *before* the BSP runs `(system-init)` in its own
+`lisp_core_loop`, so a hook that needs a service handle built in `system-init`
+must wait for it — a `g_per_core_ready` flag the BSP sets after `system-init`,
+which each AP pause-spins on before reading the hook (x86 TSO orders the hook's
+env-define ahead of the ready store). And the hook must run **before** the proof's
+`lisp_sched_run` (which `set_sched(NULL)`s on return, leaving no current scheduler
+for `spawn`); it runs while the scheduler is still current from
+`lisp_sched_init`/`system-init`.
+
+**Cross-core `send` is proven** (`cardinal.percoretest`): a context spawned on an
+AP `send`s to a collector on the BSP and it arrives — validating the mechanism the
+sharded model assumes (the receiver's heap-lock deposit + `blocked`-flag clear
+wakes a context that stays enqueued in its owner core's run queue, which the owner
+reschedules on its next periodic-tick `lisp_sched_run` pass). The old comment that
+cross-core messaging was "a later step" was conservative; the pieces were already
+in place.
 
 ### Client sharding & transparency routing
 
@@ -498,12 +519,17 @@ after `coredisplay` + the display driver bind (it needs the driver's
    through the per-client handler while input reaches the root by another path, so an
    injected event can overtake an un-processed `configure` — a relayed probe (recv'd)
    drains the handler→root FIFO before any input is injected.
-7. **(scaling, separable) Sharded per-core instances** — a per-core bring-up hook
-   spawning one instance per core; `connect`-time transparency routing (opaque →
-   shard, translucent → owner) + global z authority on the owner; grant-shared
-   opaque `(color,z)` layer buffers with `layer-update` damage reports; two-pass
-   merge on the owner (opaque z-buffer pick, then ordered alpha-over) bounded to
-   union damage. v1's single instance is the N=1 case of this code.
+7. **(scaling, separable) Sharded per-core instances** — split in two:
+   - **7A substrate — ✅ DONE.** The **per-core bring-up hook**
+     (`set-per-core-init` / `core-id` in `modules/SysLisp/src/main.c`) + an
+     empirical **cross-core `send`** proof (`cardinal.percoretest`: an AP-spawned
+     context messages a BSP collector). See "Bootstrap" above. No layer/merge yet —
+     this is just the scheduler substrate the rest stands on.
+   - **7B merge — TODO.** `connect`-time transparency routing (opaque → shard,
+     translucent → owner) + global z authority on the owner; grant-shared opaque
+     `(color,z)` layer buffers with `layer-update` damage reports; two-pass merge on
+     the owner (opaque z-buffer pick, then ordered alpha-over) bounded to union
+     damage. v1's single instance is the N=1 case of this code.
 
 ## Open / deferred
 

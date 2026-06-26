@@ -536,6 +536,42 @@
     ;; `input` is bound here because the USB-HID class driver feeds the same
     ;; coreinput service the ps2 keyboard does; the whole bring-up runs in its scope.
     (let ((input (setup-input)))
+    ;; Phase-7 substrate proof (cardinal.percoretest): the per-core bring-up hook +
+    ;; cross-core messaging the sharded compositor (phase 7B) will stand on. A
+    ;; `collector` context lives on the BSP (core 0). The hook -- run on EVERY core
+    ;; as it goes live (set-per-core-init) -- spawns, on each AP, a context that
+    ;; sends a (core-hello id) to the collector. A message crossing from an AP's
+    ;; context to the BSP's collector proves cross-core send works end to end (the
+    ;; receiver's heap-lock deposit + blocked-flag wake + the owner core's
+    ;; periodic-tick reschedule). The hook reads (core-id) to pick its role; core 0
+    ;; only hosts the collector (it doesn't message itself).
+    (if (cmdline-has? "cardinal.percoretest")
+        (let* ((expected (- (core-count) 1))   ; APs that should report (BSP excluded)
+               (collector
+                (spawn-restricted '()
+                  (lambda ()
+                    (if (<= expected 0)
+                        (begin (display "[percoretest] single core; no APs to report")
+                               (newline))
+                        ;; receive exactly one (core-hello id) per AP, then finish
+                        ;; (the context terminates and leaves the BSP run queue --
+                        ;; no permanently-parked collector).
+                        (let loop ((got 0))
+                          (let ((m (recv)))
+                            (cond ((and (pair? m) (eq? (car m) 'core-hello))
+                                   (display "[percoretest] cross-core send OK: core ")
+                                   (display (cadr m)) (display " -> BSP collector") (newline)
+                                   (if (>= (+ got 1) expected)
+                                       (begin (display "[percoretest] all ") (display expected)
+                                              (display " AP(s) reported in") (newline))
+                                       (loop (+ got 1))))
+                                  (else (loop got))))))))))
+          (set-per-core-init
+            (lambda ()
+              (let ((id (core-id)))            ; this core's index, read once
+                (if (> id 0)
+                    (spawn-restricted '()
+                      (lambda () (send collector (list 'core-hello id))))))))))
     ;; Audio: start the service, capture its handle (formerly dropped), and bring
     ;; up the HD Audio controller feeding it. hdaudio-init is gated on pci-find, so
     ;; a default boot with no HDA controller just logs "no device" and returns.
