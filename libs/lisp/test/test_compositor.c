@@ -65,7 +65,7 @@ static const char *PROG =
     "(define (frevoke g) #t)"
     // present is the phase-4 driver seam; a host has no display, so #f (off-screen
     // RAM screen). The compositor still composites; it just flushes nothing.
-    "(define screen (make-surface (make-bytes (* 16 16 4)) 16 16 (* 16 4)))"
+    "(define screen (make-surface (make-bytes (* 64 64 4)) 64 64 (* 64 4)))"
     "(define comp (start-compositor-service screen (make-compositor-caps falloc fmint frevoke #f)))"
     "(define t (spawn (lambda ()"
     "  (define fails '())"
@@ -138,6 +138,63 @@ static const char *PROG =
     // the owner can still destroy it -> the attacker did not affect it.
     "  (send h (list 'destroy-surface 2))"
     "  (ck 'owner-destroy-ok (recv) 'ok)"
+    // --- 4. input routing + drag-move (phase 6). Drive (input ev) on the primary
+    // mailbox -- exactly the envelope coreinput forwards to its subscriber. Focus
+    // is the top-most visible window; a key routes to its client (us); a title-bar
+    // pointer press begins a compositor-internal MOVE. ---
+    // a key with no visible window is dropped, not a crash.
+    "  (send comp (list 'input (list 'key 1 1)))"
+    "  (send h (list 'create-surface 40 40))"
+    "  (define s4 (recv))"
+    "  (define w4 (cadr s4))"
+    "  (send h (list 'configure w4 10 10 #t))"            // place visible at (10,10)
+    "  (send h (list 'commit w4 0 '()))"
+    // SYNC: configure/commit are relayed via the handler, but (input ev) goes
+    // DIRECT to the root and could overtake them (window not yet visible). A
+    // relayed probe, recv'd, drains the handler -> root FIFO first, so the window
+    // is visible before any input below. (The same barrier guards the in-OS test.)
+    "  (send h (list 'probe-pixel 0 0))"
+    "  (recv)"
+    // keyboard -> the focused window's client (us), verbatim.
+    "  (send comp (list 'input (list 'key 7 1)))"
+    "  (define ke (recv))"
+    "  (ck 'input-key-tag  (car ke)  'input)"
+    "  (ck 'input-key-body (cadr ke) (list 'key 7 1))"
+    // a malformed input event falls through harmlessly; the next key still routes.
+    "  (send comp (list 'input 'garbage))"
+    "  (send comp (list 'input (list 'key 8 1)))"
+    "  (ck 'input-after-bad (cadr (recv)) (list 'key 8 1))"
+    // title-bar drag: press in the title strip (y-10 < TITLE-H), motion, release ->
+    // the window moves (10,10) -> (30,30) [grab offset (5,2); release at (35,32)].
+    "  (send comp (list 'input (list 'pointer 15 12 #t)))" // press in title
+    "  (send comp (list 'input (list 'pointer 35 32 #t)))" // drag
+    "  (send comp (list 'input (list 'pointer 35 32 #f)))" // release
+    // probe via the handler so it is FIFO-ordered AFTER the moves (the press/move/
+    // release are already enqueued on the root). The fake backing is zeroed, so the
+    // window reads 0 where it now is; the vacated old spot recomposites to background.
+    "  (send h (list 'probe-pixel 15 12))"                // old title spot -> background
+    "  (ck 'move-vacated (recv) (rgb screen 28 30 44))"
+    "  (send h (list 'probe-pixel 35 32))"                // new title spot -> window (zeroed)
+    "  (ck 'move-landed (recv) 0)"
+    // --- 4b. drag-state is released when the dragged surface is destroyed
+    // mid-drag (else the root's drag logic pins on the stale id and no further
+    // window is draggable). Start a drag on w4, destroy it, then a fresh window
+    // must still be draggable. (w4 is at (30,30) after the move above.) ---
+    "  (send comp (list 'input (list 'pointer 33 32 #t)))" // press w4 title -> drag starts
+    "  (send h (list 'destroy-surface w4))"                // destroy mid-drag -> clears drag
+    "  (ck 'destroy-dragged-ok (recv) 'ok)"
+    "  (send h (list 'create-surface 20 20))"
+    "  (define w5 (cadr (recv)))"
+    "  (send h (list 'configure w5 5 5 #t))"
+    "  (send h (list 'commit w5 0 '()))"
+    "  (send h (list 'probe-pixel 0 0)) (recv)"            // sync barrier (drain relay)
+    "  (send comp (list 'input (list 'pointer 8 6 #t)))"   // press w5 title (local 3,1) -> NEW drag
+    "  (send comp (list 'input (list 'pointer 18 16 #t)))" // move -> w5 to (15,15)
+    "  (send comp (list 'input (list 'pointer 18 16 #f)))" // release
+    "  (send h (list 'probe-pixel 8 6))"                   // vacated -> background
+    "  (ck 'wedge-vacated (recv) (rgb screen 28 30 44))"
+    "  (send h (list 'probe-pixel 18 16))"                 // landed -> window (zeroed)
+    "  (ck 'wedge-landed (recv) 0)"
     "  (if (null? fails) 'ALLOK (cons 'FAILED (reverse fails))))))";
 
 int main(int argc, char **argv) {

@@ -664,11 +664,84 @@
                  (present (if target (cdr target) #f))
                  (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke present))
                  (comp (start-compositor-service screen caps)))
+            ;; phase 6: the compositor owns focus, so it subscribes to the input
+            ;; service -- coreinput now forwards every (input ev) here, and the
+            ;; compositor routes each to the focused window's client (keyboard) or
+            ;; handles it internally (a title-bar pointer drag MOVES the window).
+            ;; This is the real keyboard path: ps2 -> coreinput -> compositor ->
+            ;; focused client. `input` is the service handle from setup-input above.
+            (send input (list 'subscribe comp))
             (if (and compdemo? (not target))
                 (begin (display "[compositor-demo] no display present; nothing to show")
                        (newline)))
             ;; phase-4 demo: a client draws a real window onto the owned scanout.
             (if (and compdemo? target) (start-compositor-demo-client comp))
+            ;; cardinal.compositorinput: exercise phase-6 input routing end to end.
+            ;; One client draws a window with a known title-bar colour and places it,
+            ;; then INJECTS synthetic events through the input service (QEMU delivers
+            ;; no PS2/HID input to the guest, so the events are injected -- the path
+            ;; coreinput -> compositor -> client is otherwise identical to a real
+            ;; keyboard/mouse). The injected sequence is a title-bar drag (press in
+            ;; the title strip -> motion -> release = a window MOVE) then a key.
+            ;; Because all four events traverse ONE FIFO (this client -> input ->
+            ;; compositor), the key is processed last; the compositor routes it back
+            ;; to the focused window (= this client), and its receipt is the
+            ;; happens-after BARRIER proving the move completed. The client then
+            ;; probes the old vs new title-bar pixel: the old spot now reads the
+            ;; desktop background (the window vacated it), the new spot reads the
+            ;; title colour (the window moved there). Proves coreinput subscribe/
+            ;; fan-out + focus routing + drag-move with no racy cross-context order.
+            (if (cmdline-has? "cardinal.compositorinput")
+                (spawn-restricted '(sys-shm)
+                  (lambda ()
+                    (import sys-shm)
+                    (send comp (list 'connect #f (self)))
+                    (let ((r (recv)))                   ; (connected handler fmt)
+                      (if (not (eq? (car r) 'connected))
+                          (begin (display "[compositorinput] FAIL no connected reply") (newline))
+                          (let* ((h (cadr r)) (fmt (caddr r))
+                                 (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
+                                 (sw 120) (sh 90))
+                            (send h (list 'create-surface sw sh))
+                            (let ((s (recv)))           ; (surface id g0 g1 stride)
+                              (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                                     (surf (make-surface* (map-grant g0) sw sh stride ro go bo '()))
+                                     (title-col (rgb surf 54 92 168))
+                                     (bg-col (rgb surf 28 30 44)))
+                                (clear surf (rgb surf 245 246 250))
+                                (fill-rect surf 0 0 sw 28 title-col)   ; title strip (>= TITLE-H)
+                                (send h (list 'configure id 40 40 #t)) ; place at (40,40)
+                                (send h (list 'commit id 0 '()))
+                                ;; SYNC: configure/commit are relayed via the handler,
+                                ;; but the injected events reach the root by another
+                                ;; path (input service) and could overtake them. A
+                                ;; relayed probe, recv'd, drains the handler->root FIFO
+                                ;; so the window is visible/committed before any event.
+                                (send h (list 'probe-pixel 0 0))
+                                (recv)
+                                ;; inject a title-bar drag + a key, all via the input
+                                ;; service so coreinput's subscribe/fan-out is exercised.
+                                (send input (list 'event (list 'pointer 50 45 #t))) ; press in title (local 10,5)
+                                (send input (list 'event (list 'pointer 90 85 #t))) ; drag -> window to (80,80)
+                                (send input (list 'event (list 'pointer 90 85 #f))) ; release -> end drag
+                                (send input (list 'event (list 'key 30 1)))         ; key -> focused window
+                                (let ((ev (recv)))      ; BARRIER: the routed key echo
+                                  (display "[compositorinput] focus ")
+                                  (display (if (and (pair? ev) (eq? (car ev) 'input)
+                                                    (pair? (cadr ev)) (eq? (car (cadr ev)) 'key))
+                                               "OK key routed to focused window"
+                                               "FAIL key not routed"))
+                                  (newline))
+                                ;; window moved (40,40)->(80,80); probe old vs new title pixel.
+                                (send h (list 'probe-pixel 50 45))   ; old title spot -> background
+                                (let ((oldpx (recv)))
+                                  (send h (list 'probe-pixel 90 85)) ; new title spot -> title colour
+                                  (let ((newpx (recv)))
+                                    (display "[compositorinput] move ")
+                                    (display (if (and (= oldpx bg-col) (= newpx title-col))
+                                                 "OK title-bar drag moved the window"
+                                                 "FAIL window did not move"))
+                                    (newline)))))))))))
             ;; cardinal.compositortest: a real end-to-end surface round-trip under the
             ;; kernel scheduler -- connect, create a surface, map its grant (zero-copy),
             ;; draw a known colour, commit, then probe the composited screen. The client

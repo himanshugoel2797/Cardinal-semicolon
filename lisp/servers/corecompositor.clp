@@ -135,6 +135,31 @@
     (let ((r (find-surf id surfaces)))
       (if r (cons r (drop-surf id surfaces)) surfaces)))
 
+  ;; --- input hit-testing (phase 6) --------------------------------------------
+  ;; The grabbable strip at the top of every window, in pixels: a pointer press
+  ;; here begins a compositor-internal MOVE (title-bar drag); a press below it is
+  ;; routed to the client. A fixed compositor policy -- independent of whatever a
+  ;; client happens to paint as its title bar (cosmetic), so the compositor needs
+  ;; no per-window chrome metadata.
+  (define TITLE-H 28)
+  ;; The top-most VISIBLE surface (the list is stored top-first), or #f. This is
+  ;; the focus target: keyboard events route here.
+  (define (focused surfaces)
+    (cond ((null? surfaces) #f)
+          ((sf (car surfaces) SF-VIS) (car surfaces))
+          (else (focused (cdr surfaces)))))
+  ;; The top-most visible surface whose on-screen rect contains (x,y), or #f --
+  ;; the window a pointer press lands on (walk top-first so the upper window wins
+  ;; an overlap, matching the painter's order).
+  (define (surf-at surfaces x y)
+    (cond ((null? surfaces) #f)
+          ((let ((r (car surfaces)))
+             (and (sf r SF-VIS)
+                  (>= x (sf r SF-X)) (< x (+ (sf r SF-X) (sf r SF-W)))
+                  (>= y (sf r SF-Y)) (< y (+ (sf r SF-Y) (sf r SF-H)))))
+           (car surfaces))
+          (else (surf-at (cdr surfaces) x y))))
+
   ;; --- the per-client handler (secondary channel; a relay) --------------------
   ;; Forwards the client's surface ops to the root tagged with the client identity
   ;; and the transparency flag it declared at connect (so the root marks the
@@ -165,7 +190,7 @@
   ;; reply field in the message, so a client cannot make the root `send` to an
   ;; arbitrary (or non-context) target. Every op validates arity AND ownership and
   ;; falls through harmlessly rather than killing the serve context.
-  (define (handle-op st client transparency? m screen bg caps)
+  (define (handle-op st client transparency? m screen bg caps drag-state)
     (let ((next-id (car st)) (surfaces (cdr st))
           (verb (if (pair? m) (car m) #f)))
       ;; A surface this client is allowed to act on, or #f. Ownership is by the
@@ -245,6 +270,10 @@
                (let ((old (surf-rect r)) (was-vis (sf r SF-VIS)))
                  ((caps-revoke caps) (sf r SF-G0))
                  ((caps-revoke caps) (sf r SF-G1))
+                 ;; if this surface is the one being dragged, abandon the drag --
+                 ;; its id is about to be invalid, and a pointer-up may never come.
+                 (let ((d (vector-ref drag-state 0)))
+                   (if (and d (= (car d) (cadr m))) (vector-set! drag-state 0 #f)))
                  (let ((s2 (drop-surf (cadr m) surfaces)))
                    (recomposite screen bg s2)
                    (if was-vis (present! (list old)))
@@ -263,15 +292,88 @@
          (display "[corecompositor] handler op ignored: ") (display verb) (newline)
          st))))
 
+  ;; --- input routing + drag-move (phase 6) ------------------------------------
+  ;; The compositor is `coreinput`'s subscriber and the focus owner: every input
+  ;; event arrives here as `(input ev)` on the PRIMARY mailbox and is routed by
+  ;; policy. `drag-state` is a 1-slot mutable cell holding #f or `(id offx offy)`
+  ;; while a title-bar drag is in progress (offx/offy = grab point relative to the
+  ;; window origin, so the window tracks the pointer without jumping). Threaded
+  ;; `st` is `(next-id . surfaces)`, returned (possibly re-stacked by a focus
+  ;; raise) like handle-op. Two event shapes, both arity/type-guarded so a
+  ;; malformed event falls through rather than killing the root:
+  ;;   (key code pressed?)   -> the focused (top-most visible) window's client
+  ;;   (pointer x y down?)   -> title-bar press = MOVE; body press = route to client
+  ;; Resize is deferred: the surface backing is a fixed-size DMA buffer, so a true
+  ;; resize needs a client-cooperative realloc (re-create-surface) -- move only here.
+  (define (handle-input st ev screen bg caps drag-state)
+    (let ((next-id (car st)) (surfaces (cdr st))
+          (tag (if (pair? ev) (car ev) #f)))
+      (define (present! rects) (let ((p (caps-present caps))) (if p (p rects))))
+      (cond
+        ;; keyboard -> the focused window's client (the authenticated identity, not
+        ;; a message field), verbatim. No focused window -> dropped.
+        ((and (eq? tag 'key) (len>= ev 3))
+         (let ((r (focused surfaces)))
+           (if r (send (sf r SF-CLIENT) (list 'input ev))))
+         st)
+        ;; pointer: drag in progress -> move/end; else a press hit-tests the stack.
+        ;; `down?` MUST be a boolean: Scheme treats integer 0 as TRUE, so a driver
+        ;; that mirrored ps2's 1/0 key convention for the button would read a release
+        ;; (0) as a press. Require #t/#f so the button state is unambiguous.
+        ((and (eq? tag 'pointer) (len>= ev 4)
+              (integer? (cadr ev)) (integer? (caddr ev)) (boolean? (cadddr ev)))
+         (let ((x (cadr ev)) (y (caddr ev)) (down? (cadddr ev))
+               (d (vector-ref drag-state 0)))
+           (cond
+             ;; an active drag: a button-down event moves the window to follow the
+             ;; pointer (recomposite + flush old∪new); a button-up ends the drag. If
+             ;; the dragged surface has vanished (destroyed mid-drag), abandon the
+             ;; drag -- destroy-surface clears it proactively, but a stale id here
+             ;; (any path that drops a surface) must not pin drag-state forever.
+             (d
+              (if down?
+                  (let ((r (find-surf (car d) surfaces)))
+                    (if r (let ((old (surf-rect r)))
+                            (vector-set! r SF-X (- x (cadr d)))
+                            (vector-set! r SF-Y (- y (caddr d)))
+                            (recomposite screen bg surfaces)
+                            (present! (list old (surf-rect r))))
+                        (vector-set! drag-state 0 #f)))
+                  (vector-set! drag-state 0 #f))
+              st)
+             ;; a fresh press: focus-follows-click (raise the hit window), then a
+             ;; title-bar press starts a drag, a body press routes to the client in
+             ;; window-local coordinates. A press on no window is ignored.
+             (down?
+              (let ((r (surf-at surfaces x y)))
+                (if (not r) st
+                    (let ((s2 (raise-surf (sf r SF-ID) surfaces)))
+                      (recomposite screen bg s2)
+                      (present! (list (surf-rect r)))
+                      (if (< (- y (sf r SF-Y)) TITLE-H)
+                          (vector-set! drag-state 0
+                            (list (sf r SF-ID) (- x (sf r SF-X)) (- y (sf r SF-Y))))
+                          (send (sf r SF-CLIENT)
+                                (list 'input (list 'pointer (- x (sf r SF-X))
+                                                   (- y (sf r SF-Y)) #t))))
+                      (cons next-id s2)))))
+             ;; pointer motion with no button and no drag: no hover routing in v1.
+             (else st))))
+        (else st))))
+
   ;; The PRIMARY mailbox loop. Demuxes the connect handshake, the handler-relayed
-  ;; surface ops (`op`), and a test/debug `probe-pixel` (reads the composited
-  ;; screen so an end-to-end test can assert what landed there).
+  ;; surface ops (`op`), input events from coreinput (`input`), and a test/debug
+  ;; `probe-pixel` (reads the composited screen so an end-to-end test can assert).
   (define (start-compositor-service screen caps)
     (let ((bg (rgb screen 28 30 44))
           ;; the screen's pixel format, advertised to clients so they draw into
           ;; their granted backing with the SAME channel layout the screen uses
           ;; (gfx-blit! is a raw copy -- see surf-src). (r-off g-off b-off).
-          (fmt (list (surface-r-off screen) (surface-g-off screen) (surface-b-off screen))))
+          (fmt (list (surface-r-off screen) (surface-g-off screen) (surface-b-off screen)))
+          ;; ephemeral title-bar-drag state: #f, or (id offx offy) mid-drag. A
+          ;; captured 1-slot cell rather than threaded `st` -- it is interaction
+          ;; state, not part of the surface table, and the root is single-threaded.
+          (drag-state (make-vector 1 #f)))
       ;; Phase 4: paint the desktop background and push the whole screen once, so the
       ;; display shows the compositor's backdrop immediately (before any client) and
       ;; every later op only needs to flush its own damage rect.
@@ -296,7 +398,12 @@
             ;; test-only probe-pixel; see handle-op for why it goes via the handler).
             ;; Sent only by a (trusted) handler, but length-guarded all the same.
             ((and (eq? (car m) 'op) (len>= m 4))
-             (handle-op st (cadr m) (caddr m) (cadddr m) screen bg caps))
+             (handle-op st (cadr m) (caddr m) (cadddr m) screen bg caps drag-state))
+            ;; (input ev) -> a coreinput event (the compositor is subscribed to the
+            ;; input service in init); route it by focus/hit-test. ev is validated
+            ;; inside handle-input, so a malformed event can't crash the root.
+            ((and (eq? (car m) 'input) (pair? (cdr m)))
+             (handle-input st (cadr m) screen bg caps drag-state))
             (else
              (display "[corecompositor] primary: ignoring malformed ")
              (display (car m)) (newline)

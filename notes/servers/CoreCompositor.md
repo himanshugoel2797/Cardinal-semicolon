@@ -1,8 +1,9 @@
 # CoreCompositor — multi-client window compositor
 
-Status: **phases 1–4 implemented** (grant substrate + IPC root + surface protocol
-& compositing + the driver seam: the compositor now owns the real scanout and a
-window appears on the display). Branch `claude/corecompositor-design`.
+Status: **phases 1–4 + phase 6 implemented** (grant substrate + IPC root + surface
+protocol & compositing + the driver seam — the compositor owns the real scanout and a
+window appears on the display — plus phase-6 input routing/focus/drag-move and
+zero-page revoke hardening). Phase 5 (two-client demo) lands in a parallel PR.
 
 A new `Core*` Lisp server that owns the screen and composites off-screen
 surfaces owned by independent client contexts, using **zero-copy shared-memory
@@ -473,8 +474,30 @@ after `coredisplay` + the display driver bind (it needs the driver's
      the monitor `screendump` captures).
 5. **Two-client demo** — generalize `init.clp`'s proto-compositor into two client
    contexts (two handlers) drawing independent windows; screenshot validation.
-6. **(v2)** input routing (tagged `(input …)` on the secondary mailbox; compositor
-   as `coreinput`→focused-window router), move/resize, zero-page revoke hardening.
+6. **input routing + drag-move + revoke hardening** — ✅ **DONE** (revoke in its own
+   PR; input routing + move here). `coreinput` gained a **`subscribe`** verb (a
+   consumer registers and receives every `(input <payload>)`; the service stays pure
+   fan-out mechanism, `ctx?`-guarded). `init` subscribes the compositor, so the live
+   path is **ps2 → coreinput → compositor → focused client**. The compositor is the
+   **focus owner**: an `(input ev)` on its primary mailbox is routed by policy —
+   `(key …)` to the **top-most visible window's client** (the authenticated identity,
+   tagged `(input ev)` on the channel the client already drives), and `(pointer x y
+   down?)` hit-tests the z-stack: a press in the top **title strip** (`TITLE-H`)
+   begins a **compositor-internal MOVE** (the window tracks the pointer; focus
+   follows the click via `raise`), a body press routes to the client in window-local
+   coordinates. Drag state is a captured 1-slot cell (ephemeral interaction state,
+   not the surface table). **Resize is deferred**: the surface backing is a
+   fixed-size DMA buffer, so a true resize needs a client-cooperative
+   re-create-surface — move only here. Zero-page **revoke hardening** shipped
+   separately (see the sharp-edge note above / `notes/AUDIT.md`). Tests: host
+   `test_compositor` section 4 (focus routing, malformed-event survival, title-bar
+   drag moves the window — probed) drives `(input ev)` on the real service; in-OS
+   `cardinal.compositorinput` injects a drag+key through the **real** coreinput
+   service (QEMU delivers no PS2/HID input, so events are injected) and asserts both
+   focus and move. **Ordering gotcha** both tests hit: surface ops are *relayed*
+   through the per-client handler while input reaches the root by another path, so an
+   injected event can overtake an un-processed `configure` — a relayed probe (recv'd)
+   drains the handler→root FIFO before any input is injected.
 7. **(scaling, separable) Sharded per-core instances** — a per-core bring-up hook
    spawning one instance per core; `connect`-time transparency routing (opaque →
    shard, translucent → owner) + global z authority on the owner; grant-shared
@@ -484,9 +507,11 @@ after `coredisplay` + the display driver bind (it needs the driver's
 
 ## Open / deferred
 
-- Input routing deferred to v2 (compositor is the natural focus owner). Events
-  arrive tagged on the secondary mailbox the client already drives — no third
-  channel needed.
+- Input routing **implemented** (phase 6): the compositor is the focus owner;
+  `coreinput` fans events to it (`subscribe`) and it routes `(key …)` to the
+  focused window's client and handles title-bar `(pointer …)` drags as a window
+  move. Events arrive tagged `(input ev)` on the channel the client already drives —
+  no third channel. Pointer hover routing and true resize are still deferred.
 - Multi-core scaling uses **per-core-born instances + two-level layer merge**
   (phase 7) — no scheduler migration. v1 is the single-instance N=1 case and does
   not depend on parallelism.
