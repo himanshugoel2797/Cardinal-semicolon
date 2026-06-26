@@ -24,19 +24,25 @@
                   (make-flush (sc-res-id s) 0 0 (sc-w s) (sc-h s)) 48))))
 
 ;; The driver recv loop. Messages:
-;;   (flush)                 -- re-transfer + flush scanout 0 to the host display
-;;   (get-framebuffer reply) -- send the caller (fb w h) for scanout 0
-;;   (display-info)          -- stub for the future resize-event path
+;;   (flush)        -- re-transfer + flush scanout 0 to the host (fire-and-forget)
+;;   (flush reply)  -- same, then ack `reply` once the controlq round-trip completes
+;;                     (a synchronous flush: the caller learns when the frame is up)
+;;   (get-framebuffer reply) -- send the caller (w h phys) for scanout 0. NOT the fb
+;;                     bytes: those are copy-on-send (a 4 MB copy whose writes never
+;;                     reach the device), so a consumer maps the backing PHYS itself
+;;                     (mmio-map / mmio-map-wb) in its own context and draws there.
+;;   (display-info) -- stub for the future resize-event path
 (define (gpu-driver-loop ctrlq notify mult scanouts)
   (let loop ()
     (let ((m (recv)))
       (cond
         ((eq? (car m) 'flush)
-         (gpu-flush-scanout0 ctrlq notify mult scanouts))
+         (gpu-flush-scanout0 ctrlq notify mult scanouts)
+         (if (pair? (cdr m)) (send (cadr m) 'flushed)))   ; optional completion ack
         ((eq? (car m) 'get-framebuffer)
          (if (not (null? scanouts))
              (let ((s (car scanouts)))
-               (send (cadr m) (list (sc-fb s) (sc-w s) (sc-h s))))
+               (send (cadr m) (list (sc-w s) (sc-h s) (bytes-phys (sc-fb s)))))
              (send (cadr m) #f)))
         ((eq? (car m) 'display-info)
          'todo)                          ; resize path: re-read GET_DISPLAY_INFO

@@ -320,6 +320,26 @@ static lisp_value prim_mmio_map_wc(lisp_value *a, int n, const char **e) {
     return b;
 }
 
+// (mmio-map-wb phys size) -> a WRITE-BACK (cached) view of a physical range.
+// Use it to compose into a device's DMA backing that was allocated uncached
+// (dma-alloc) but is read coherently by the device: x86 DMA is cache-coherent,
+// so the CPU can write the backing through this fast cached view and the device
+// still sees the data (an sfence before the device is told to read enforces
+// store ordering). This is the virtio-gpu render path -- compose into the WB
+// backing, then a virtqueue flush does the device-side transfer.
+static lisp_value prim_mmio_map_wb(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]) ||
+        lisp_fixnum_val(a[0]) <= 0 || lisp_fixnum_val(a[1]) <= 0)
+        return (*e = "mmio-map-wb: expects (phys-addr size), phys > 0"), LISP_UNDEF;
+    intptr_t phys = (intptr_t)lisp_fixnum_val(a[0]);
+    size_t size = (size_t)lisp_fixnum_val(a[1]);
+    intptr_t virt = vmem_phystovirt(phys, size, vmem_flags_cachewriteback | vmem_flags_kernel | vmem_flags_rw);
+    lisp_value b = lisp_make_bytes_foreign((void *)virt, size, (uint64_t)phys);
+    if (b == LISP_UNDEF)
+        return (*e = "mmio-map-wb: out of memory"), LISP_UNDEF;
+    return b;
+}
+
 // (dma-alloc size) -> a physically-contiguous, zeroed, uncached byte buffer for
 // device DMA. (bytes-phys b) gives the physical address to program into the
 // device; the accessors read/write the CPU-side view.
@@ -894,6 +914,7 @@ static const lisp_builtin_export sys_io_exports[] = {
 };
 static const lisp_builtin_export sys_mmio_exports[] = {
     {"mmio-map", prim_mmio_map}, {"mmio-map-wc", prim_mmio_map_wc},
+    {"mmio-map-wb", prim_mmio_map_wb},
     {"dma-alloc", prim_dma_alloc},
     {"dma-alloc-32", prim_dma_alloc_32},
 };
