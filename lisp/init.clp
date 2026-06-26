@@ -342,7 +342,44 @@
                 (display (quotient dt (* 10 1000))) (display " us, ")
                 (display (quotient cfps 100)) (display ".") (display (modulo cfps 100))
                 (display " fps @ ") (display w) (display "x") (display h) (newline)))
+            ;; 4) dirty-rect: the SAME frame, but only the moving box is recomposed
+            ;; and flushed each step -- the win when a UI changes a small region.
+            (gpu-dirty-bench gpu surf fnt tf w h)
             surf))))
+
+  ;; Animate a box over the desktop background, recomposing + flushing only its
+  ;; damage each frame (erase old rect to bg, draw new rect, flush both). Contrast
+  ;; with step 3: there the whole UI is recomposed; here the per-frame work is a
+  ;; ~140x140 region, so the rate is bounded by the flush round-trip, not compose.
+  ;; The box stays over the uniform desktop, so erase-to-bg restores correctly
+  ;; (no underlying UI to repaint -- that is the compositor's job, a later step).
+  (define (gpu-dirty-bench gpu surf fnt tf w h)
+    (let ((bg  (rgb surf 28 30 44)) (ink (rgb surf 240 240 245))
+          (box (rgb surf 232 124 80)) (bw 140) (bh 140) (by 300) (step 8))
+      (clear surf bg)
+      (if tf (ttf-draw-text surf tf 40 40
+                            "Dirty-rect: only the moving box is recomposed + flushed" ink 22))
+      (sfence) (send gpu (list 'flush (self))) (recv)   ; push the static scene once
+      (let ((dmg (make-damage)) (frames 200) (t0 (uptime-ns)))
+        (let loop ((i 0) (x 40) (px 40))
+          (if (< i frames)
+              (begin
+                (fill-rect surf px by bw bh bg)           ; erase previous box
+                (fill-rect surf x  by bw bh box)          ; draw at new position
+                (damage-add! dmg px by bw bh)
+                (damage-add! dmg x  by bw bh)
+                (sfence)
+                (send gpu (list 'flush-rects (damage-rects dmg) (self))) (recv)
+                (damage-clear! dmg)
+                (let ((nx (+ x step)))
+                  (loop (+ i 1) (if (> (+ nx bw) w) 40 nx) x)))
+              (let* ((dt (- (uptime-ns) t0))
+                     (cfps (if (= dt 0) 0 (quotient (* 100000000000 frames) dt))))
+                (display "[gpu-bench] dirty-rect anim (")
+                (display bw) (display "x") (display bh) (display " box): ")
+                (display (quotient dt (* frames 1000))) (display " us/frame, ")
+                (display (quotient cfps 100)) (display ".") (display (modulo cfps 100))
+                (display " fps") (newline)))))))
 
   ;; The virtio-gpu demo: compose into the WB-mapped scanout backing, benchmark the
   ;; render path, then redraw a stable frame. Gated by the caller on a virtio-gpu
