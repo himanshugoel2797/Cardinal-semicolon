@@ -1553,6 +1553,185 @@ static lisp_value prim_bytes_copy(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// --- 2D graphics blitters ----------------------------------------------------
+// The per-pixel inner loops a UI needs that the interpreted layer can't run fast
+// (a per-element Lisp loop is the ~200-650x trap bytes-fill32!/bytes-copy! exist to
+// avoid). Each is the SOFTWARE fallback the graphics library's backend dispatch
+// (lisp/lib/graphics.clp) uses; a HW-2D driver can override an op with its own.
+//
+// All operate on a 32-bit-per-pixel destination `bytes` (XRGB/ARGB) with a byte
+// `stride` (pitch). `dw`/`dh` are the dst's pixel bounds; every op CLIPS its target
+// rectangle to (0,0,dw,dh), so off-screen and partially-off-screen draws are safe.
+// They are non-volatile bulk DATA writers (framebuffer pixels), like the bytes-*
+// bulk ops above -- not for MMIO control registers.
+
+// Clip a w*h rect at (x,y) to (0,0,dw,dh); writes the clipped box into *cx..*ch and
+// the source-origin shift into *sx,*sy. Returns 0 if fully clipped away (empty).
+static int gfx_clip(int64_t x, int64_t y, int64_t w, int64_t h, int64_t dw, int64_t dh,
+                    int64_t *cx, int64_t *cy, int64_t *cw, int64_t *ch, int64_t *sx, int64_t *sy) {
+    int64_t x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
+    int64_t x1 = x + w, y1 = y + h;
+    if (x1 > dw) x1 = dw;
+    if (y1 > dh) y1 = dh;
+    if (x0 >= x1 || y0 >= y1) return 0;
+    *cx = x0; *cy = y0; *cw = x1 - x0; *ch = y1 - y0;
+    *sx = x0 - x; *sy = y0 - y;
+    return 1;
+}
+
+// Does the clipped box [cx,cx+cw) x [cy,cy+ch), at 4 bytes/pixel over `stride`-byte
+// rows, fit within a `len`-byte buffer? Overflow-SAFE: a malicious caller can pass
+// huge fixnum stride/dims, so the naive `(cy+ch-1)*stride + (cx+cw)*4 <= len` check
+// can wrap int64 and pass falsely -- here every product is bounded by a division
+// against `len`/((size_t)-1) first. Inputs are post-clip (cw,ch >= 1; cx,cy >= 0).
+static int gfx_fits(int64_t cx, int64_t cy, int64_t cw, int64_t ch, int64_t stride, size_t len) {
+    if (stride <= 0 || cx < 0 || cy < 0 || cw <= 0 || ch <= 0) return 0;
+    size_t srow = (size_t)stride;
+    size_t last_row = (size_t)cy + (size_t)ch - 1;          // index of the last row written
+    if (last_row != 0 && srow > ((size_t)-1) / last_row) return 0;   // last_row*srow overflows
+    size_t row_off = last_row * srow;
+    if (row_off > len) return 0;
+    if ((size_t)cx + (size_t)cw > ((size_t)-1) / 4) return 0;   // (cx+cw)*4 overflows
+    size_t col_end = ((size_t)cx + (size_t)cw) * 4;
+    return col_end <= len - row_off;                        // row_off+col_end <= len, no overflow
+}
+
+// (gfx-fill-rect! dst stride dw dh x y w h color) -> fill the clipped rect.
+static lisp_value prim_gfx_fill_rect(lisp_value *a, int n, const char **e) {
+    if (n != 9 || !lisp_is_bytes(a[0]))
+        return prim_err(e, "gfx-fill-rect! expects (dst stride dw dh x y w h color)");
+    for (int i = 1; i < 9; i++)
+        if (!lisp_is_fixnum(a[i])) return prim_err(e, "gfx-fill-rect!: non-fixnum arg");
+    lisp_bytes *d = as_bytes(a[0]);
+    int64_t stride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
+    uint32_t color = (uint32_t)lisp_fixnum_val(a[8]);
+    int64_t cx, cy, cw, ch, sx, sy;
+    if (stride <= 0 || dw < 0 || dh < 0) return prim_err(e, "gfx-fill-rect!: bad geometry");
+    if (((uintptr_t)d->data & 3) != 0 || (stride & 3) != 0)   // 32-bit stores need 4-alignment
+        return prim_err(e, "gfx-fill-rect!: data/stride not 4-aligned");
+    if (!gfx_clip(lisp_fixnum_val(a[4]), lisp_fixnum_val(a[5]), lisp_fixnum_val(a[6]),
+                  lisp_fixnum_val(a[7]), dw, dh, &cx, &cy, &cw, &ch, &sx, &sy))
+        return LISP_UNDEF;
+    if (!gfx_fits(cx, cy, cw, ch, stride, d->len))
+        return prim_err(e, "gfx-fill-rect!: out of bounds");
+    for (int64_t r = 0; r < ch; r++) {
+        uint32_t *row = (uint32_t *)(void *)(d->data + (cy + r) * stride + cx * 4);
+        for (int64_t i = 0; i < cw; i++) row[i] = color;
+    }
+    return LISP_UNDEF;
+}
+
+// (gfx-blit! dst dstride dw dh dx dy src sstride sw sh) -> opaque copy of the src
+// (sw*sh) image to (dx,dy), clipped. src has its own byte stride.
+static lisp_value prim_gfx_blit(lisp_value *a, int n, const char **e) {
+    if (n != 10 || !lisp_is_bytes(a[0]) || !lisp_is_bytes(a[6]))
+        return prim_err(e, "gfx-blit! expects (dst dstride dw dh dx dy src sstride sw sh)");
+    if (!lisp_is_fixnum(a[1]) || !lisp_is_fixnum(a[2]) || !lisp_is_fixnum(a[3]) ||
+        !lisp_is_fixnum(a[4]) || !lisp_is_fixnum(a[5]) || !lisp_is_fixnum(a[7]) ||
+        !lisp_is_fixnum(a[8]) || !lisp_is_fixnum(a[9]))
+        return prim_err(e, "gfx-blit!: non-fixnum arg");
+    lisp_bytes *d = as_bytes(a[0]), *s = as_bytes(a[6]);
+    int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
+    int64_t sstride = lisp_fixnum_val(a[7]), sw = lisp_fixnum_val(a[8]), sh = lisp_fixnum_val(a[9]);
+    int64_t cx, cy, cw, ch, sx, sy;
+    if (dstride <= 0 || sstride <= 0 || dw < 0 || dh < 0) return prim_err(e, "gfx-blit!: bad geometry");
+    if (!gfx_clip(lisp_fixnum_val(a[4]), lisp_fixnum_val(a[5]), sw, sh, dw, dh,
+                  &cx, &cy, &cw, &ch, &sx, &sy))
+        return LISP_UNDEF;
+    if (!gfx_fits(cx, cy, cw, ch, dstride, d->len) ||
+        !gfx_fits(sx, sy, cw, ch, sstride, s->len))
+        return prim_err(e, "gfx-blit!: out of bounds");
+    for (int64_t r = 0; r < ch; r++)
+        memcpy(d->data + (cy + r) * dstride + cx * 4,
+               s->data + (sy + r) * sstride + sx * 4, (size_t)cw * 4);
+    return LISP_UNDEF;
+}
+
+// (gfx-blend! dst dstride dw dh dx dy src sstride sw sh) -> alpha-composite the src
+// ARGB image (alpha in the top byte) "over" the dst, clipped. The low 3 bytes are
+// blended per-byte by alpha, so this is correct for any RGB-in-low-24-bits layout;
+// the dst's top byte is left intact.
+static lisp_value prim_gfx_blend(lisp_value *a, int n, const char **e) {
+    if (n != 10 || !lisp_is_bytes(a[0]) || !lisp_is_bytes(a[6]))
+        return prim_err(e, "gfx-blend! expects (dst dstride dw dh dx dy src sstride sw sh)");
+    if (!lisp_is_fixnum(a[1]) || !lisp_is_fixnum(a[2]) || !lisp_is_fixnum(a[3]) ||
+        !lisp_is_fixnum(a[4]) || !lisp_is_fixnum(a[5]) || !lisp_is_fixnum(a[7]) ||
+        !lisp_is_fixnum(a[8]) || !lisp_is_fixnum(a[9]))
+        return prim_err(e, "gfx-blend!: non-fixnum arg");
+    lisp_bytes *d = as_bytes(a[0]), *s = as_bytes(a[6]);
+    int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
+    int64_t sstride = lisp_fixnum_val(a[7]), sw = lisp_fixnum_val(a[8]), sh = lisp_fixnum_val(a[9]);
+    int64_t cx, cy, cw, ch, sx, sy;
+    if (dstride <= 0 || sstride <= 0 || dw < 0 || dh < 0) return prim_err(e, "gfx-blend!: bad geometry");
+    if (!gfx_clip(lisp_fixnum_val(a[4]), lisp_fixnum_val(a[5]), sw, sh, dw, dh,
+                  &cx, &cy, &cw, &ch, &sx, &sy))
+        return LISP_UNDEF;
+    if (!gfx_fits(cx, cy, cw, ch, dstride, d->len) ||
+        !gfx_fits(sx, sy, cw, ch, sstride, s->len))
+        return prim_err(e, "gfx-blend!: out of bounds");
+    for (int64_t r = 0; r < ch; r++) {
+        uint8_t *dp = d->data + (cy + r) * dstride + cx * 4;
+        const uint8_t *sp = s->data + (sy + r) * sstride + sx * 4;
+        for (int64_t i = 0; i < cw; i++, dp += 4, sp += 4) {
+            uint32_t al = sp[3];
+            if (al == 0) continue;
+            if (al == 255) { dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; continue; }
+            uint32_t ia = 255 - al;
+            dp[0] = (uint8_t)((sp[0] * al + dp[0] * ia + 127) / 255);
+            dp[1] = (uint8_t)((sp[1] * al + dp[1] * ia + 127) / 255);
+            dp[2] = (uint8_t)((sp[2] * al + dp[2] * ia + 127) / 255);
+        }
+    }
+    return LISP_UNDEF;
+}
+
+// (gfx-glyph! dst dstride dw dh dx dy bitmap boff gw gh fg bg draw-bg scale) -> blit
+// a 1-bpp glyph (MSB = leftmost; row stride = ceil(gw/8) bytes) at (dx,dy), each
+// glyph pixel expanded to a scale*scale block. A set bit paints `fg`; a clear bit
+// paints `bg` only when draw-bg is non-zero (else it is transparent). The fast
+// bitmap-font path -- one C call per glyph.
+static lisp_value prim_gfx_glyph(lisp_value *a, int n, const char **e) {
+    if (n != 14 || !lisp_is_bytes(a[0]) || !lisp_is_bytes(a[6]))
+        return prim_err(e, "gfx-glyph! expects (dst dstride dw dh dx dy bitmap boff gw gh fg bg draw-bg scale)");
+    for (int i = 1; i < 14; i++)
+        if (i != 6 && !lisp_is_fixnum(a[i])) return prim_err(e, "gfx-glyph!: non-fixnum arg");
+    lisp_bytes *d = as_bytes(a[0]), *bm = as_bytes(a[6]);
+    int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
+    int64_t dx = lisp_fixnum_val(a[4]), dy = lisp_fixnum_val(a[5]);
+    int64_t boff = lisp_fixnum_val(a[7]), gw = lisp_fixnum_val(a[8]), gh = lisp_fixnum_val(a[9]);
+    uint32_t fg = (uint32_t)lisp_fixnum_val(a[10]), bg = (uint32_t)lisp_fixnum_val(a[11]);
+    int64_t draw_bg = lisp_fixnum_val(a[12]), scale = lisp_fixnum_val(a[13]);
+    // Bound the dimensions well below any real glyph so gw*scale / gh*rowbytes can't
+    // overflow int64 (an overflowed product could wrap a bounds check -- see gfx_fits).
+    if (dstride <= 0 || dw < 0 || dh < 0 || gw < 0 || gh < 0 || boff < 0 ||
+        scale < 1 || scale > 0x10000 || gw > 0x10000 || gh > 0x10000)
+        return prim_err(e, "gfx-glyph!: bad geometry");
+    if (((uintptr_t)d->data & 3) != 0 || (dstride & 3) != 0)   // 32-bit stores need 4-alignment
+        return prim_err(e, "gfx-glyph!: data/stride not 4-aligned");
+    int64_t rowbytes = (gw + 7) / 8;
+    // boff + gh*rowbytes <= bm->len, checked overflow-safe (gh,rowbytes bounded above).
+    if ((size_t)boff > bm->len ||
+        (rowbytes > 0 && (size_t)gh > (bm->len - (size_t)boff) / (size_t)rowbytes))
+        return prim_err(e, "gfx-glyph!: bitmap out of bounds");
+    int64_t cx, cy, cw, ch, sx, sy;
+    if (!gfx_clip(dx, dy, gw * scale, gh * scale, dw, dh, &cx, &cy, &cw, &ch, &sx, &sy))
+        return LISP_UNDEF;
+    if (!gfx_fits(cx, cy, cw, ch, dstride, d->len))
+        return prim_err(e, "gfx-glyph!: out of bounds");
+    for (int64_t r = 0; r < ch; r++) {
+        int64_t gyrow = (sy + r) / scale;                  // glyph source row
+        const uint8_t *grow = bm->data + boff + gyrow * rowbytes;
+        uint32_t *dp = (uint32_t *)(void *)(d->data + (cy + r) * dstride + cx * 4);
+        for (int64_t i = 0; i < cw; i++) {
+            int64_t gxcol = (sx + i) / scale;              // glyph source column
+            int set = grow[gxcol >> 3] & (0x80 >> (gxcol & 7));
+            if (set) dp[i] = fg;
+            else if (draw_bg) dp[i] = bg;
+        }
+    }
+    return LISP_UNDEF;
+}
+
 static lisp_value prim_b_u8_ref(lisp_value *a, int n, const char **e) { return bytes_ref(a, n, e, 1); }
 static lisp_value prim_b_u16_ref(lisp_value *a, int n, const char **e) { return bytes_ref(a, n, e, 2); }
 static lisp_value prim_b_u32_ref(lisp_value *a, int n, const char **e) { return bytes_ref(a, n, e, 4); }
@@ -1598,6 +1777,10 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "bytes-u64-set!", prim_b_u64_set);
     def(env, "bytes-fill32!", prim_bytes_fill32);
     def(env, "bytes-copy!", prim_bytes_copy);
+    def(env, "gfx-fill-rect!", prim_gfx_fill_rect);
+    def(env, "gfx-blit!", prim_gfx_blit);
+    def(env, "gfx-blend!", prim_gfx_blend);
+    def(env, "gfx-glyph!", prim_gfx_glyph);
     def(env, "=", prim_numeq);
     def(env, "<", prim_lt);
     def(env, ">", prim_gt);

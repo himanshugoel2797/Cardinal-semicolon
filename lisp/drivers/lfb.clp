@@ -128,8 +128,12 @@
   ;; scheduled context's per-context heap is GC-collected mid-loop -- painting in
   ;; the root init context (a direct eval, never GC'd) would exhaust the system
   ;; heap. A desktop would clear/own the framebuffer once it took over.
-  (define (lfb-driver-loop display-svc fb width height pitch r-off g-off b-off)
-    (fb-test-pattern! fb width height pitch r-off g-off b-off)
+  (define (lfb-driver-loop display-svc fb width height pitch r-off g-off b-off paint?)
+    ;; The bring-up test pattern is ~width*height uncached MMIO writes -- slow on an
+    ;; emulated VGA. Skip it when a real consumer (e.g. the graphics demo) is about
+    ;; to own the framebuffer, so lfb registers immediately and the consumer isn't
+    ;; blocked waiting behind the paint.
+    (if paint? (fb-test-pattern! fb width height pitch r-off g-off b-off))
     (lfb-register-msg display-svc width height pitch (self))
     (let loop ()
       (let ((m (recv)))
@@ -154,7 +158,9 @@
   ;; context, which paints the test pattern (the live proof -- on its own GC'd
   ;; heap, NOT the root init heap), registers with coredisplay, and serves display
   ;; requests. Returns the spawned handle (or #f when there is no boot framebuffer).
-  (define (lfb-init display-svc)
+  ;; `paint?` (default #t via lfb-init's one caller) chooses whether to paint the
+  ;; bring-up gradient; init passes #f when the graphics demo will own the screen.
+  (define (lfb-init display-svc paint?)
     (let ((p (fb-params)))
       (if (not p)
           (begin (display "[lfb] no boot framebuffer; not registering") (newline) #f)
@@ -167,4 +173,4 @@
               (spawn-restricted '()
                 (lambda ()
                   (lfb-driver-loop display-svc fb width height pitch
-                                   r-off g-off b-off)))))))))
+                                   r-off g-off b-off paint?)))))))))
