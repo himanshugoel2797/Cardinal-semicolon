@@ -19,14 +19,15 @@ TARGET_INCLUDE_DIRECTORIES(lisp SYSTEM PUBLIC "${KERN_STDLIB_INCLUDE_DIR}")
 # SSE function realign its own stack -- the standard fix for SSE in a kernel that
 # is otherwise built without it.
 #
-# -fno-vectorize -fno-slp-vectorize: the flonum path is SCALAR double arithmetic
-# (movsd/addsd, which tolerate unaligned operands). Auto-vectorization turns it
-# into PACKED ops (subpd) that load 16-byte constants from .rodata with an ALIGNED
-# move (movapd) -- and the kernel module loader does not 16-align section data, so
-# that aligned load #GPs. Disabling vectorization keeps the runtime scalar (its
-# intent anyway) and alignment-safe.
-TARGET_COMPILE_OPTIONS(lisp PRIVATE -fno-pic -msse -msse2 -mstackrealign
-                                    -fno-vectorize -fno-slp-vectorize)
+# Auto-vectorization is now SAFE (and on): it emits PACKED ops (subpd) that load
+# 16-byte constants from .rodata with an ALIGNED move (movapd), which formerly #GP'd
+# because the module loader didn't align section data. The loader now lands a module
+# at a 64-aligned base (load_script.c) and aligns .bss to sh_addralign (elf.c), so the
+# linker's sh_addralign-aligned .rodata.cst16 / packed constants are aligned at
+# runtime. Auto-vectorized loops over runtime heap pointers use UNALIGNED moves
+# (movups) anyway, so only those aligned constant loads needed the fix. Kept at SSE2
+# width (no AVX): some targets (Cherry Trail / Airmont) lack AVX.
+TARGET_COMPILE_OPTIONS(lisp PRIVATE -fno-pic -msse -msse2 -mstackrealign)
 
 # Direct-threaded VM dispatch (lbc_vm_exec): a per-chunk table of computed-goto
 # handler labels instead of a switch. It only pays off once the surrounding loop

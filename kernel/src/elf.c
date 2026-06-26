@@ -251,7 +251,17 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)())
         Elf64_Shdr *shdr = &shdr_root[i];
 
         if ((shdr->sh_type == SHT_STRTAB) || (shdr->sh_type == SHT_PROGBITS))
+        {
             shdr->sh_addr = (uintptr_t)hdr + shdr->sh_offset;
+            // PROGBITS run/read in place, so an ALLOC section that vectorized code
+            // accesses with ALIGNED moves must land at its required alignment. The
+            // 64-aligned blob base (load_script.c) + the linker's sh_addralign-aligned
+            // file offsets make this hold; assert it so a toolchain change that breaks
+            // the assumption fails loudly here instead of as a stray #GP at runtime.
+            if ((shdr->sh_flags & SHF_ALLOC) && shdr->sh_addralign > 1 &&
+                (shdr->sh_addr & (shdr->sh_addralign - 1)) != 0)
+                PANIC("Module ALLOC section is under-aligned for its sh_addralign.");
+        }
     }
 
     if (reloading)
@@ -300,10 +310,20 @@ int elf_load(void *elf, size_t elf_len, int (**entry_point)())
 
             if (shdr->sh_flags & SHF_ALLOC)
             {
-                // Allocate and clear memory
-                void *mem = malloc(shdr->sh_size);
-                if (mem == NULL)
+                // Allocate and clear memory, honouring the section's alignment.
+                // Vectorized module code (the SSE flonum runtime, the TrueType
+                // rasterizer) emits ALIGNED loads/stores (movaps) against
+                // higher-aligned .bss globals; malloc only guarantees a small
+                // alignment, so over-allocate and round the base up to sh_addralign
+                // (the loaded module is never freed, so the slack is not reclaimed --
+                // same as the rest of in-place loading). PROGBITS .rodata is already
+                // aligned: the blob base is 64-aligned (see load_script.c) and the
+                // linker aligns each section's file offset to sh_addralign.
+                uint64_t align = shdr->sh_addralign ? shdr->sh_addralign : 1;
+                void *raw = malloc(shdr->sh_size + align);
+                if (raw == NULL)
                     PANIC("Critical Memory Allocation Failure!");
+                void *mem = (void *)(((uintptr_t)raw + (align - 1)) & ~(uintptr_t)(align - 1));
 
                 memset(mem, 0, shdr->sh_size);
                 shdr->sh_offset = (uint64_t)mem - (uint64_t)hdr;
