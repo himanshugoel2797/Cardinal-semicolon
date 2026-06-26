@@ -90,7 +90,79 @@ novel logic is z-ordered occlusion and folding per-client damage into screen
 damage. `lisp/init.clp:200-330` is effectively a single-owner proto-compositor
 (WC/WB scanout mapping + double-buffer + damage) to generalize.
 
-## Surface model & protocol
+## IPC model & wiring
+
+Cardinal's VM is a **shared-nothing actor model** (`libs/lisp/src/sched.c`).
+Every context is an actor with a single **FIFO mailbox**; the whole kernel IPC
+surface is five primitives:
+
+| prim | semantics |
+|---|---|
+| `(self)` | this context's handle |
+| `(send target msg)` | **deep-copies** `msg` into `target`'s mailbox + wakes it. Cross-core safe (serialises on the receiver's heap lock). |
+| `(recv)` | pop oldest message; `%block` until one arrives if empty. FIFO. |
+| `(spawn t)` / `(spawn-restricted caps t)` | create a context, **return its handle** |
+| `(yield)` | cooperative reschedule |
+
+Two semantics drive the protocol design:
+
+- **Messages deep-copy on send — except context handles (and our `grant`), which
+  pass by *identity*.** So a request embeds `(self)` as its reply address, and a
+  `grant` / a channel handle can be handed to a peer without being copied. This is
+  exactly why `grant` is specced as an identity-passed value type.
+- **One FIFO mailbox per context, no selective receive.** A context that
+  multiplexes several conversations on its primary mailbox must demux them
+  itself. We avoid that with secondary channels (below) and a tagged envelope.
+- **No name service.** A server handle is the return value of
+  `spawn`/`start-X-service`; `init.clp` holds it and hands it to clients by
+  lexical closure. The compositor handle is distributed the same way — `init`
+  passes it into the contexts it spawns. There is no global lookup.
+
+### Message envelope
+
+Every message is a list whose **head is a tag symbol**, so a context can demux a
+mailbox that carries more than one kind of traffic (compositor replies *and*,
+later, input events):
+
+```
+(tag . args)            ; e.g. (commit id buf rects), (input 'key ...), (connected ch)
+```
+
+Request/reply embeds the caller's handle as the last element:
+`(verb args… reply-handle)`; the server replies with `(send reply-handle …)`.
+Fire-and-forget omits the reply handle (used for the per-frame `commit`, so a
+client never blocks presenting a frame).
+
+### Secondary channels = per-connection handler contexts
+
+A **mailbox is inseparable from a context**, so "open a separate mailbox after an
+initial negotiation" is realised as "spawn a dedicated handler context and hand
+the peer its handle." This single mechanism also *is* the per-client compositor
+thread (see Threading). The handshake runs once over the well-known **primary**
+mailbox; all subsequent per-client traffic flows on the **secondary** channel:
+
+```
+client                         compositor (primary)         per-client handler (secondary)
+──────                         ────────────────────         ──────────────────────────────
+(send comp (list 'connect (self)))
+                               spawn handler ctx ──────────► owns this client's window list,
+                               reply (connected handler)      grants, damage; its own mailbox
+◄── (connected handler) ──────
+;; from here the client talks ONLY to `handler`:
+(send handler (list 'create-surface W H (self)))
+◄── (surface id grant stride) ─────────────────────────────  mint grant, reply
+(map-grant grant) ; zero-copy
+(send handler (list 'commit id buf rects))  ; fire-and-forget per frame ──►
+```
+
+The handler owns one client's surfaces/grants/damage and forwards composited
+damage to the single screen-owner (the compositor root, which serialises access
+to the scanout + driver). This gives per-client isolation (a wedged client only
+backs up its own handler's mailbox) and a clean home for per-client input
+routing in v2 — input events arrive tagged on the same secondary mailbox the
+client already drives.
+
+## Surface protocol (on the secondary channel)
 
 Per-surface **double-buffered** (chosen): the grant covers *two* backing buffers;
 `commit` names the ready one, the compositor reads only the committed-front, so a
@@ -99,13 +171,16 @@ surface RAM.
 
 | message | reply | meaning |
 |---|---|---|
-| `(create-surface w h reply)` | `(id grant stride)` | alloc 2 backings, mint grant over both |
+| `(connect reply)` *(primary)* | `(connected handler)` | spawn per-client handler, return its handle |
+| `(create-surface w h reply)` | `(surface id grant stride)` | alloc 2 backings, mint grant over both |
 | `(configure id x y z visible)` | — | placement + z-order |
 | `(commit id buf rects)` | — | `buf` (0/1) is ready; these rects changed → recomposite |
 | `(destroy-surface id reply)` | `'ok` | revoke grant, free backings, repaint exposed area |
+| `(input …)` *(v2, server→client)* | — | tagged input event delivered on the secondary mailbox |
 
-Client flow: `create-surface` → `map-grant` → draw with `graphics.clp` into the
-back buffer → `commit`. Wayland-ish `wl_surface.commit` shape.
+Client flow: `connect` (once, on primary) → `create-surface` → `map-grant` →
+draw with `graphics.clp` into the back buffer → `commit`. Wayland-ish
+`wl_surface.commit` shape.
 
 ## Compositing
 
@@ -117,6 +192,42 @@ On each `commit`, for the union of dirty screen rects:
 3. `sfence` + `flush-rects` the screen damage to the driver, then clear it.
 
 Reuses the screen-side double-buffer + damage helpers from `graphics.clp`.
+
+## Threading & parallelism
+
+A single context is **strictly single-threaded** — one CEK machine, cooperative
+switching at safe points, no native preemption (this is *why* SSE/FP is safe in
+the runtime). "Threads" are therefore separate **contexts**, and the runtime has
+two layers (`modules/SysLisp/src/main.c`):
+
+- **Per-core scheduler, true cross-core parallelism.** Every core runs its own
+  `lisp_core_loop` over its own run queue simultaneously; `send` is cross-core
+  safe (locks the receiver's heap, `sched.c:379`).
+- **…but `spawn` only enqueues onto the *current* core** (`cur_sched()`). There
+  is **no migration, work-stealing, or spawn-on-core** today — main.c:3001 is
+  explicit: *"Long-lived OS services live on the BSP for now (cross-core
+  messaging is a later step, so a service + its drivers must share one core)."*
+  APs come up as live Lisp cores but currently run only a local proof-of-life
+  context. **In practice all services run on the BSP.**
+
+Implications for this design:
+
+- **Per-client handler contexts work *now*** (the secondary-channel model above)
+  — cooperative concurrency on the BSP. This is the structure we build to;
+  isolation and clean per-client state are real even without parallelism.
+- **Multi-core render fan-out is *data-ready but not schedule-ready*.** A render
+  worker on any core can map the shared back-buffer **by phys grant** (mapping is
+  core-agnostic), so tiling a frame across cores (each worker composites a
+  disjoint scanline band into the shared back-buffer, then a barrier `send` to
+  the screen owner) is embarrassingly parallel. The *only* missing piece is a
+  scheduler-placement primitive.
+
+So multi-core compositing needs **one new substrate item, separable from v1**: a
+`spawn-on-core` / cross-core enqueue primitive plus hardened cross-core wakeup
+(today's single `%event-wait` waiter slot is BSP-centric — main.c:120 flags it
+for a per-core rework). Until then, the per-client handlers and the compositor
+root all cooperatively share the BSP, which is correct and adequate for bring-up;
+the design does not *depend* on parallelism, it's positioned to *adopt* it.
 
 ## Placement
 
@@ -131,17 +242,29 @@ after `coredisplay` + the display driver bind (it needs the driver's
    `grant-mint` / `grant-revoke` prims, `sys-shm` capability module. Host + SysTest
    coverage for mint/map/revoke/UAF-contract. *(touches `libs/lisp` — gated on
    sign-off, done.)*
-2. **corecompositor.clp** — window list, create/configure/commit/destroy, the
-   composite-on-commit loop over `graphics.clp`. Single client first.
-3. **Driver seam** — own the scanout via `get-framebuffer`, drive `flush-rects`.
-4. **Two-client demo** — generalize `init.clp`'s proto-compositor into two client
-   contexts drawing independent windows; screenshot validation.
-5. **(v2)** input routing (compositor as `coreinput`→focused-window router),
-   move/resize, zero-page revoke hardening.
+2. **corecompositor.clp root** — the primary mailbox + `connect` handshake that
+   spawns a **per-client handler context**; the handler holds that client's
+   window list, grants, and damage. Single client first.
+3. **Surface ops + composite loop** — create/configure/commit/destroy on the
+   secondary channel, the composite-on-commit loop over `graphics.clp`, screen
+   owner serialising the scanout.
+4. **Driver seam** — own the scanout via `get-framebuffer`, drive `flush-rects`.
+5. **Two-client demo** — generalize `init.clp`'s proto-compositor into two client
+   contexts (two handlers) drawing independent windows; screenshot validation.
+6. **(v2)** input routing (tagged `(input …)` on the secondary mailbox; compositor
+   as `coreinput`→focused-window router), move/resize, zero-page revoke hardening.
+7. **(substrate follow-up, separable)** `spawn-on-core` / cross-core enqueue +
+   per-core event-wait, then tiled multi-core render fan-out over the
+   grant-shared back-buffer. The data path already supports it; only scheduler
+   placement is missing.
 
 ## Open / deferred
 
-- Input routing deferred to v2 (compositor is the natural focus owner).
+- Input routing deferred to v2 (compositor is the natural focus owner). Events
+  arrive tagged on the secondary mailbox the client already drives — no third
+  channel needed.
+- Multi-core render fan-out gated on a `spawn-on-core` primitive (phase 7); v1 is
+  cooperative on the BSP and does not depend on parallelism.
 - No vsync on virtio-gpu (explicit flush) — fine; pacing is per-commit.
 - QEMU can't show the WC win (trapped-VRAM dirty-tracking, see
   `notes/AUDIT.md` / the gfx bench in `init.clp`); virtio-gpu path is the
