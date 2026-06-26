@@ -1,0 +1,61 @@
+site_name: "Cardinal; OS Documentation"
+site_description: "API reference for the Cardinal; microkernel: Lisp servers, drivers, and the kernel Lisp VM."
+repo_url: https://github.com/himanshugoel2797/Cardinal-semicolon
+repo_name: Cardinal-semicolon
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: red
+      accent: red
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: red
+      accent: red
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.details
+  - pymdownx.snippets
+
+plugins:
+  - search
+
+# The authoring template is a contributor reference, not a published page.
+exclude_docs: |
+  _authoring-template.md
+
+# Lisp/Scheme isn't a default Pygments-highlit lexer name everyone agrees on;
+# `scheme` and `lisp` both work in fenced blocks (```scheme / ```lisp).
+
+# `nav` is intentionally omitted: Material auto-builds the nav tree from the
+# docs/ directory layout. Fill in an explicit `nav:` later if ordering matters.

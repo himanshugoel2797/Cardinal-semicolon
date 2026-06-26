@@ -79,3 +79,6 @@ CMakeSettings.json
 /.cache/
 .claude/
 tests_build/
+
+# MkDocs build output
+/site/
