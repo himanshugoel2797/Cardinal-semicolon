@@ -647,6 +647,33 @@ owner frees the backing is a UAF into reused RAM. Hardening (remap revoked views
 onto a shared zero page so a late access faults harmlessly) is a follow-up — see
 the sharp-edge note in `notes/servers/CoreCompositor.md`.
 
+### [INCOMPLETE] Phase-4 present blocks the root serve loop on the flush ack
+`lisp/init.clp` (`compositor-gpu-target` present closure); `lisp/servers/corecompositor.clp` (`present!`)
+
+The injected virtio-gpu `present` does `(send gpu (list 'flush-rects rects (self)))`
+then `(recv)` to block on the driver's `'flushed` ack — deliberate **backpressure**
+so a fast client can't pile unacked frames in the driver's mailbox. But `present!`
+runs **inside the root `serve` step** (per commit/configure/raise/destroy), so if the
+GPU driver context has exited (device hang, future driver error — a `serve` loop dies
+on any unguarded prim error, and `send` to a dead ctx is silently dropped), the
+`(recv)` never returns and the **root compositor wedges permanently**. v1 contract:
+the GPU driver does not exit (QEMU never faults it); a production seam needs a
+deadline-bounded flush wait or driver-liveness detection that degrades to off-screen
+compositing. Same shape as the documented `start-gpu-demo` get-framebuffer block
+(`init.clp`), promoted from demo to infrastructure.
+
+### [DONE] Per-verb arity + type validation (the compositor)
+`lisp/servers/corecompositor.clp` (`len>=`, the per-op guards)
+
+The compositor is the first `serve` service to fully validate message **shape**, not
+just the reply-handle type: every primary-loop and handler-op verb guards with a
+safe `len>=` length walk (never `cdddr`, whose `(cdr '())` would abort the loop on a
+truncated message) and `integer?`-checks every id/x/y/buf before it can reach `=` /
+`gfx-blit!`. So no malformed message from a semi-trusted client — short, non-integer
+id, garbage `buf` — can kill the root or a handler. This is the concrete instance of
+the "broader arity sweep" the `ctx?`/`reply-to` note below leaves open for the other
+servers.
+
 ### Reply-handle validation in request/reply servers (`ctx?` / `reply-to`)
 `lisp/lib/driver-util.clp` (`reply-to`); `libs/lisp/src/sched.c` (`ctx?`)
 

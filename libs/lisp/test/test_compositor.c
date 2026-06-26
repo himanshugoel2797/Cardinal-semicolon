@@ -63,8 +63,10 @@ static const char *PROG =
     "(define (falloc n) (make-bytes n))"
     "(define (fmint b p) (list 'fake-grant b))"
     "(define (frevoke g) #t)"
+    // present is the phase-4 driver seam; a host has no display, so #f (off-screen
+    // RAM screen). The compositor still composites; it just flushes nothing.
     "(define screen (make-surface (make-bytes (* 16 16 4)) 16 16 (* 16 4)))"
-    "(define comp (start-compositor-service screen (make-compositor-caps falloc fmint frevoke)))"
+    "(define comp (start-compositor-service screen (make-compositor-caps falloc fmint frevoke #f)))"
     "(define t (spawn (lambda ()"
     "  (define fails '())"
     "  (define (ck name got want)"

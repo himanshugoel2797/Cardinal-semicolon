@@ -452,6 +452,81 @@
                                  (loop (+ k 1)))
                           'done))))))))))
 
+  ;; --- phase 4: the compositor owns the real scanout --------------------------
+  ;; Build the compositor's (screen . present) target for the live display. The
+  ;; compositor composites into `screen` (a cached WB back-buffer) and, after each
+  ;; change, calls `present` with the damaged (x y w h) rects to push them to the
+  ;; actual display. init holds the sys-mmio authority to map the scanout; the
+  ;; compositor never does -- the seam is exactly one injected closure.
+  ;;
+  ;; virtio-gpu: ask the driver for its scanout (w h phys), map the backing WB (the
+  ;; coherent cached view the device reads -- the modern path), and present by
+  ;; flushing the dirty rects over the controlq. get-framebuffer BLOCKS until the
+  ;; driver's async bring-up has a scanout, so this MUST run in a yielding context.
+  (define (compositor-gpu-target gpu)
+    (send gpu (list 'get-framebuffer (self)))
+    (let ((r (recv)))
+      (if (not (pair? r))
+          #f
+          (let* ((w (car r)) (h (cadr r)) (phys (caddr r)) (stride (* w 4))
+                 ;; virtio-gpu X8R8G8B8 -> channel offsets R=8/G=16/B=24 (see gpu-bench).
+                 (screen (make-surface* (mmio-map-wb phys (* stride h)) w h stride 8 16 24 '())))
+            (cons screen
+                  (lambda (rects)
+                    (sfence)
+                    (send gpu (list 'flush-rects rects (self)))
+                    (recv))))))) ; block on the flush ack so frames pace to the device
+
+  ;; Boot framebuffer (lfb / -vga std): the scanout is WC-mapped MMIO with no driver
+  ;; flush. Compose into a cached WB back-buffer (make-double-buffer) and present by
+  ;; copying the dirty rects back->front (db-flush-rect) after an sfence.
+  (define (compositor-fb-target)
+    (let ((front (gfx-map-framebuffer)))
+      (if (not front)
+          #f
+          (let ((db (make-double-buffer front)))
+            (cons (db-back db)
+                  (lambda (rects)
+                    (sfence)
+                    (for-each (lambda (r)
+                                (db-flush-rect db (nth r 0) (nth r 1) (nth r 2) (nth r 3)))
+                              rects)))))))
+
+  ;; The phase-4 compositor demo client: connect, create one window-sized surface,
+  ;; map its grant (zero-copy), draw a titled window into it (using the screen pixel
+  ;; format the compositor advertised at connect, since gfx-blit! is a raw copy),
+  ;; place it on the desktop and commit -- so a real window appears on the real
+  ;; display via the compositor's flush path. Restricted to '(sys-shm): it can map
+  ;; only granted memory (the window-client posture). Leaves a stable frame.
+  (define (start-compositor-demo-client comp)
+    (let ((ttfbytes (initrd-file TTF-FONT-PATH)))
+      (spawn-restricted '(sys-shm)
+        (lambda ()
+          (import sys-shm)
+          (let ((tf (if ttfbytes (make-ttf-font ttfbytes) #f)))
+            (send comp (list 'connect #f (self)))
+            (let ((r (recv)))                            ; (connected handler fmt)
+              (if (not (eq? (car r) 'connected))
+                  (begin (display "[compositor-demo] FAIL no connected reply") (newline))
+                  (let* ((h (cadr r)) (fmt (caddr r))
+                         (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
+                         (sw 360) (sh 240))
+                    (send h (list 'create-surface sw sh))
+                    (let ((s (recv)))                    ; (surface id g0 g1 stride)
+                      (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                             (surf (make-surface* (map-grant g0) sw sh stride ro go bo '())))
+                        (clear surf (rgb surf 245 246 250))               ; window body
+                        (fill-rect surf 0 0 sw 28 (rgb surf 54 92 168))   ; title bar
+                        (if tf (ttf-draw-text surf tf 10 5 "Compositor window"
+                                              (rgb surf 255 255 255) 18))
+                        (draw-rect surf 0 0 sw sh 1 (rgb surf 30 40 60))  ; border
+                        (fill-rect surf 28 70 110 90 (rgb surf 230 90 70))
+                        (fill-circle surf 250 120 50 (rgb surf 70 170 110))
+                        (send h (list 'configure id 140 110 #t))
+                        (send h (list 'commit id 0 '()))
+                        (display "[compositor-demo] window presented on the real scanout")
+                        (newline)))))))))))
+
   ;; The system entry point: called once on the BSP after the scheduler is live.
   ;; Each Core* service is a long-lived context; bring up the ones that exist
   ;; today (input, audio, power) and the NIC. Audio/power have no drivers feeding
@@ -555,47 +630,75 @@
       (if demo?
           (if (pci-find #x1af4 #x1050) (start-gpu-demo gpu) (start-gfx-demo)))
       ;; Stand up the multi-client window compositor (notes/servers/CoreCompositor.md).
-      ;; Phase 3: the IPC root + the surface protocol (create/configure/commit/
-      ;; destroy) compositing into a screen back-buffer. The kernel authority the
-      ;; root needs is INJECTED here (init holds it): dma-alloc-wb for surface
-      ;; backings + grant-mint/grant-revoke for the zero-copy grants. The screen is
-      ;; a RAM back-buffer for now -- phase 4 swaps it for the real scanout and adds
-      ;; the flush-rects path; until then nothing is displayed, so the bring-up is
-      ;; inert unless a client connects.
-      (let* ((cw 256) (ch 256)
-             (screen (make-surface (make-bytes (* cw ch 4)) cw ch (* cw 4)))
-             (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke))
-             (comp (start-compositor-service screen caps)))
-        ;; cardinal.compositortest: a real end-to-end surface round-trip under the
-        ;; kernel scheduler -- connect, create a surface, map its grant (zero-copy),
-        ;; draw a known colour, commit, then probe the composited screen. The client
-        ;; is spawn-restricted to '(sys-shm) so it can map ONLY granted memory (the
-        ;; window-client posture), proving map-grant works from a restricted ctx.
-        ;; The host test_compositor covers paint-windows + the protocol mechanics.
-        (if (cmdline-has? "cardinal.compositortest")
-            (spawn-restricted '(sys-shm)
-              (lambda ()
-                (import sys-shm)
-                (send comp (list 'connect #f (self)))
-                (let ((r (recv)))                       ; (connected handler)
-                  (if (not (eq? (car r) 'connected))
-                      (begin (display "[compositor-test] FAIL no connected reply") (newline))
-                      (let ((h (cadr r)))
-                        (send h (list 'create-surface 4 4))   ; reply comes to us
-                        (let ((s (recv)))               ; (surface id g0 g1 stride)
-                          (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
-                                 (surf (make-surface (map-grant g0) 4 4 stride))
-                                 (red (rgb surf 255 0 0)))
-                            (fill-rect surf 0 0 4 4 red)  ; draw into back buffer (front=0=g0)
-                            (send h (list 'configure id 10 10 #t))
-                            (send h (list 'commit id 0 '()))
-                            ;; probe via the handler so it is ordered after commit.
-                            (send h (list 'probe-pixel 10 10))
-                            (let ((px (recv)))
-                              (display "[compositor-test] ")
-                              (display (if (= px red) "OK surface created, drawn, composited"
-                                           "FAIL composited pixel mismatch"))
-                              (newline))))))))))))
+      ;; Phases 2-4: the IPC root + surface protocol, compositing into a screen
+      ;; back-buffer that -- in phase 4 -- IS the real scanout. The kernel authority
+      ;; the compositor needs is INJECTED here (init holds it): dma-alloc-wb for
+      ;; surface backings, grant-mint/grant-revoke for the zero-copy grants, and a
+      ;; `present` closure that pushes composited damage to the display (virtio-gpu
+      ;; flush-rects, or a WC-framebuffer copy).
+      ;;
+      ;; The whole bring-up runs in a SPAWNED context because acquiring the GPU
+      ;; scanout (get-framebuffer) blocks until the driver's async bring-up has a
+      ;; scanout -- which needs the scheduler to run -- so system-init must not block
+      ;; on it. The spawned context starts the service, then exits; the root + its
+      ;; per-client handlers live on independently. It holds '(sys-shm) NOT to use
+      ;; itself (its scanout map / grant mint are captured prims, which work in any
+      ;; context) but so it can DELEGATE sys-shm to the window clients it spawns --
+      ;; spawn-restricted refuses to grant a capability the spawner lacks.
+      (spawn-restricted '(sys-shm)
+        (lambda ()
+          (let* ((compdemo? (cmdline-has? "cardinal.compositordemo"))
+                 ;; phase 4: own the real scanout for the demo. Otherwise an
+                 ;; off-screen RAM screen (the phase-3 posture: composites but
+                 ;; displays nothing, inert until a client connects), which also
+                 ;; keeps the headless compositortest working.
+                 (target (if compdemo?
+                             (begin (sleep 800000000)        ; let virtio-gpu bring-up finish
+                                    (if (pci-find #x1af4 #x1050)
+                                        (compositor-gpu-target gpu)
+                                        (compositor-fb-target)))
+                             #f))
+                 (cw 256) (ch 256)
+                 (screen (if target (car target)
+                             (make-surface (make-bytes (* cw ch 4)) cw ch (* cw 4))))
+                 (present (if target (cdr target) #f))
+                 (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke present))
+                 (comp (start-compositor-service screen caps)))
+            (if (and compdemo? (not target))
+                (begin (display "[compositor-demo] no display present; nothing to show")
+                       (newline)))
+            ;; phase-4 demo: a client draws a real window onto the owned scanout.
+            (if (and compdemo? target) (start-compositor-demo-client comp))
+            ;; cardinal.compositortest: a real end-to-end surface round-trip under the
+            ;; kernel scheduler -- connect, create a surface, map its grant (zero-copy),
+            ;; draw a known colour, commit, then probe the composited screen. The client
+            ;; is spawn-restricted to '(sys-shm) so it can map ONLY granted memory (the
+            ;; window-client posture), proving map-grant works from a restricted ctx.
+            ;; The host test_compositor covers paint-windows + the protocol mechanics.
+            (if (cmdline-has? "cardinal.compositortest")
+                (spawn-restricted '(sys-shm)
+                  (lambda ()
+                    (import sys-shm)
+                    (send comp (list 'connect #f (self)))
+                    (let ((r (recv)))                   ; (connected handler fmt)
+                      (if (not (eq? (car r) 'connected))
+                          (begin (display "[compositor-test] FAIL no connected reply") (newline))
+                          (let ((h (cadr r)))
+                            (send h (list 'create-surface 4 4))   ; reply comes to us
+                            (let ((s (recv)))           ; (surface id g0 g1 stride)
+                              (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                                     (surf (make-surface (map-grant g0) 4 4 stride))
+                                     (red (rgb surf 255 0 0)))
+                                (fill-rect surf 0 0 4 4 red) ; draw into back buffer (front=0=g0)
+                                (send h (list 'configure id 10 10 #t))
+                                (send h (list 'commit id 0 '()))
+                                ;; probe via the handler so it is ordered after commit.
+                                (send h (list 'probe-pixel 10 10))
+                                (let ((px (recv)))
+                                  (display "[compositor-test] ")
+                                  (display (if (= px red) "OK surface created, drawn, composited"
+                                               "FAIL composited pixel mismatch"))
+                                  (newline))))))))))))))
     ;; Bring up the network stack, then a NIC, which registers itself with the
     ;; stack and forwards frames to it. Prefer the proven virtio-net when present;
     ;; otherwise fall back to the rtl8139 (the `-device rtl8139` boot, where no

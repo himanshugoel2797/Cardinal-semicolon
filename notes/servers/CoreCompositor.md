@@ -1,7 +1,8 @@
 # CoreCompositor — multi-client window compositor
 
-Status: **phases 1–3 implemented** (grant substrate + IPC root + surface protocol
-& compositing). Branch `claude/corecompositor-design`.
+Status: **phases 1–4 implemented** (grant substrate + IPC root + surface protocol
+& compositing + the driver seam: the compositor now owns the real scanout and a
+window appears on the display). Branch `claude/corecompositor-design`.
 
 A new `Core*` Lisp server that owns the screen and composites off-screen
 surfaces owned by independent client contexts, using **zero-copy shared-memory
@@ -186,7 +187,7 @@ non-context target. The `connect` `reply` is the one bootstrap handle, and it is
 
 | message | reply (→ connecting client) | meaning |
 |---|---|---|
-| `(connect transparency? reply)` *(primary)* | `(connected handler)` | `reply` must be `ctx?`; route by `transparency?` (→ owner if set, else a shard), return the assigned instance's handle |
+| `(connect transparency? reply)` *(primary)* | `(connected handler fmt)` | `reply` must be `ctx?`; route by `transparency?` (→ owner if set, else a shard), return the assigned instance's handle + the screen pixel `fmt` = `(r-off g-off b-off)` so the client draws into its granted backing in the display's channel layout (`gfx-blit!` is a raw copy — see phase 4) |
 | `(create-surface w h)` *(via handler)* | `(surface id grant0 grant1 stride)` / `(surface-error …)` | validate `w,h ∈ [1,MAX-DIM]`, alloc 2 backings, mint a grant over each |
 | `(configure id x y visible)` *(via handler)* | — | placement + show/hide → recomposite. (z is list-order; `raise` re-stacks — see below) |
 | `(commit id buf rects)` *(via handler)* | — | `buf` (0/1) is the ready front → recomposite. Fire-and-forget |
@@ -210,9 +211,11 @@ v1 deviations from the headline protocol, noted for honesty:
   rather than an absolute `z` field in `configure`. The owner-authority z-stamp
   arrives with the sharded model (phase 7).
 - **`commit` recomposites the whole screen** (clear + painter's pass over all
-  visible surfaces), ignoring `rects`. Simplest and obviously correct; `rects`
-  will bound the flush (phase 4) and later the recomposite. The QEMU framebuffer
-  path dominates cost regardless (see Open/deferred).
+  visible surfaces) into the back-buffer, ignoring the client's `rects`. Simplest
+  and obviously correct; the **flush** to the display *is* now bounded to the op's
+  damage rect (phase 4), and bounding the recomposite (and honouring the client's
+  per-commit `rects`) is a later refinement. The QEMU framebuffer path dominates
+  cost regardless (see Open/deferred).
 
 ## Compositing
 
@@ -423,7 +426,47 @@ after `coredisplay` + the display driver bind (it needs the driver's
    survives); in-OS `cardinal.compositortest` (the *real* grant path — a
    `sys-shm`-restricted client maps a granted backing, draws, commits, and the
    composited pixel is probed: `OK surface created, drawn, composited`).
-4. **Driver seam** — own the scanout via `get-framebuffer`, drive `flush-rects`.
+4. **Driver seam** — ✅ **DONE.** The compositor now owns the **real scanout** and
+   pushes composited damage to the display, so a window actually appears on screen
+   (validated: `build/ISO/os-compositordemo.iso` boot, screenshot shows a titled
+   window on the compositor desktop). Decisions:
+   - **The driver seam is one injected `present` closure**, not a driver import.
+     `make-compositor-caps` gains a 4th cap `(present rects)`; the compositor calls
+     it after every recomposite with the changed `(x y w h)` rects. `init` builds it
+     per backend: **virtio-gpu** → `mmio-map-wb` the driver's `get-framebuffer` phys
+     (the coherent cached view the device reads — the modern path) and present =
+     `sfence` + `(flush-rects rects)` over the controlq; **boot framebuffer** (lfb /
+     `-vga std`) → compose into a `make-double-buffer` back-buffer and present =
+     `sfence` + `db-flush-rect` (back→front WC copy) per rect; **headless** → `#f`
+     (composite into RAM, display nothing — the phase-3 posture, kept for the
+     self-test). The compositor stays import-only-`driver-util graphics` (host-loadable).
+   - **Bounded flush.** `recomposite` still repaints the whole back-buffer (cheap
+     cached RAM), but `present` flushes only the op's damage rect(s): configure flushes
+     old∪new (a moved/hidden/shown window), commit/raise the surface rect, destroy the
+     vacated rect. The whole-screen background is flushed once at startup. Everything
+     not in a damage rect is already correct on the display (nothing else moved), so a
+     bounded flush is correct.
+   - **The compositor advertises the screen pixel format** (`(connected handler fmt)`,
+     `fmt = (r-off g-off b-off)`). `gfx-blit!` is a RAW 32-bit pixel copy — it does not
+     repack channels — so the client's granted backing, the compositor's `surf-src`,
+     and the screen must share one layout. The boot framebuffer is 0xRRGGBB (16/8/0);
+     the virtio-gpu **X8R8G8B8** scanout is 8/16/24. Clients draw with the advertised
+     `fmt`; `surf-src` stamps the screen's offsets on every source. (Alpha windows on a
+     non-0xRRGGBB scanout are a follow-up — `gfx-blend!` reads alpha from the top byte,
+     which is `B` under X8R8G8B8; phase-4 windows are opaque.)
+   - **Bring-up runs in a spawned context** holding `'(sys-shm)`: `get-framebuffer`
+     blocks until the driver's async bring-up has a scanout (so `system-init` must not
+     call it directly), and the context must **hold** `sys-shm` to *delegate* it to the
+     window clients it spawns — `spawn-restricted` refuses to grant a capability the
+     spawner lacks (the bring-up's own scanout-map / grant-mint are captured prims,
+     which work in any context regardless of caps).
+   - Demo: `cardinal.compositordemo` + the `compositordemo-image` CMake target
+     (`grub_compositordemo.cfg`); a `'(sys-shm)` client connects, creates a 360×240
+     surface, maps `g0`, draws a titled window, configures + commits → it composites
+     onto the owned scanout. Capture with
+     `ISO=build/ISO/os-compositordemo.iso GPU=virtio-vga SCREENSHOT=out.ppm ./scripts/run-qemu.sh`
+     (`virtio-vga`, not `virtio`, so the virtio-gpu scanout is the *primary* display
+     the monitor `screendump` captures).
 5. **Two-client demo** — generalize `init.clp`'s proto-compositor into two client
    contexts (two handlers) drawing independent windows; screenshot validation.
 6. **(v2)** input routing (tagged `(input …)` on the secondary mailbox; compositor

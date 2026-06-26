@@ -64,6 +64,17 @@ COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-gfxdemo.iso" "ISO/isod
 COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
 DEPENDS image)
 
+# ISO that boots with "cardinal.compositordemo": after the display registers, init
+# brings up the window compositor OWNING the real scanout and a client draws a
+# composited window onto it (notes/servers/CoreCompositor.md phase 4 -- the driver
+# seam). Capture with:
+#   ISO=build/ISO/os-compositordemo.iso GPU=virtio SCREENSHOT=out.ppm ./scripts/run-qemu.sh
+add_custom_target(compositordemo-image
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub_compositordemo.cfg" "ISO/isodir/boot/grub/grub.cfg"
+COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-compositordemo.iso" "ISO/isodir"
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
+DEPENDS image)
+
 add_custom_target(disk.img
     COMMAND qemu-img create -f raw disk.img 128M)
 

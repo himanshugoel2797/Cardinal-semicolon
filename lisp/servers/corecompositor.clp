@@ -1,9 +1,12 @@
 ;; corecompositor: the multi-client window compositor (notes/servers/CoreCompositor.md).
 ;;
-;; PHASES 2-3. Phase 2 stood up the IPC root: the well-known PRIMARY mailbox
+;; PHASES 2-4. Phase 2 stood up the IPC root: the well-known PRIMARY mailbox
 ;; (`start-compositor-service`) + the `connect` handshake that spawns a dedicated
-;; PER-CLIENT HANDLER context (the "secondary channel"). Phase 3 adds the SURFACE
-;; PROTOCOL + the composite loop:
+;; PER-CLIENT HANDLER context (the "secondary channel"). Phase 3 added the SURFACE
+;; PROTOCOL + the composite loop. Phase 4 is the DRIVER SEAM: the compositor owns
+;; the real scanout and pushes composited damage to the display through an injected
+;; `present` capability (virtio-gpu flush-rects, or a WC-framebuffer copy) -- so
+;; windows now actually appear on screen, not just in a RAM back-buffer:
 ;;
 ;;   client                handler (relay)            root / instance (this serve loop)
 ;;   ------                --------------             ---------------------------------
@@ -41,11 +44,17 @@
   ;; --- injected capabilities --------------------------------------------------
   ;; (alloc nbytes) -> a phys-backed, zeroed DMA buffer (init: dma-alloc-wb);
   ;; (mint buf perms) -> a grant over buf (init: grant-mint);
-  ;; (revoke g) -> invalidate a grant (init: grant-revoke).
-  (define (make-compositor-caps alloc mint revoke) (list alloc mint revoke))
-  (define (caps-alloc c)  (nth c 0))
-  (define (caps-mint c)   (nth c 1))
-  (define (caps-revoke c) (nth c 2))
+  ;; (revoke g) -> invalidate a grant (init: grant-revoke);
+  ;; (present rects) -> push the listed (x y w h) screen rects to the real display
+  ;;   (phase 4: virtio-gpu flush-rects, or a WC-framebuffer back->front copy), or
+  ;;   #f for an off-screen RAM screen (the compositor composites but displays
+  ;;   nothing -- the phase-3 posture, kept for the headless self-test).
+  (define (make-compositor-caps alloc mint revoke present)
+    (list alloc mint revoke present))
+  (define (caps-alloc c)   (nth c 0))
+  (define (caps-mint c)    (nth c 1))
+  (define (caps-revoke c)  (nth c 2))
+  (define (caps-present c) (nth c 3))
 
   ;; --- the surface record (a mutable vector; lives only in the root) ----------
   ;; Two backings (double-buffered): the client draws into the buffer it is NOT
@@ -67,10 +76,19 @@
       (vector-set! v SF-ALPHA alpha?)
       v))
   (define (sf r i) (vector-ref r i))
-  ;; The committed-front backing as a source surface for blitting.
-  (define (surf-src r)
-    (make-surface (if (= (sf r SF-FRONT) 0) (sf r SF-B0) (sf r SF-B1))
-                  (sf r SF-W) (sf r SF-H) (sf r SF-STRIDE)))
+  ;; The committed-front backing as a source surface for blitting. The screen's
+  ;; channel offsets (ro/go/bo) are stamped on it because `gfx-blit!` is a RAW
+  ;; 32-bit pixel copy -- it does not repack channels -- so a source must share the
+  ;; screen's pixel layout or red/blue would swap. The client draws into the same
+  ;; backing using the format the compositor advertised at connect, so all three
+  ;; (client draw, this source, the screen) agree. (The boot framebuffer is
+  ;; 0xRRGGBB = 16/8/0; the virtio-gpu X8R8G8B8 scanout is 8/16/24.)
+  (define (surf-src r ro go bo)
+    (make-surface* (if (= (sf r SF-FRONT) 0) (sf r SF-B0) (sf r SF-B1))
+                   (sf r SF-W) (sf r SF-H) (sf r SF-STRIDE) ro go bo '()))
+  ;; The surface's on-screen bounding rect (x y w h) -- the damage a change to it
+  ;; contributes to the flush.
+  (define (surf-rect r) (list (sf r SF-X) (sf r SF-Y) (sf r SF-W) (sf r SF-H)))
 
   ;; --- the painter (pure: no caps, no IPC -> host-testable) -------------------
   ;; `windows` is a back-to-front list of (src x y alpha?) specs (only the visible
@@ -91,11 +109,21 @@
   ;; top-first (newest on top), so reverse it to paint back-to-front, drop the
   ;; hidden ones, and project each record to a painter spec.
   (define (recomposite screen bg surfaces)
-    (paint-windows screen bg
-      (map (lambda (r) (list (surf-src r) (sf r SF-X) (sf r SF-Y) (sf r SF-ALPHA)))
-           (filter (lambda (r) (sf r SF-VIS)) (reverse surfaces)))))
+    (let ((ro (surface-r-off screen)) (go (surface-g-off screen)) (bo (surface-b-off screen)))
+      (paint-windows screen bg
+        (map (lambda (r) (list (surf-src r ro go bo) (sf r SF-X) (sf r SF-Y) (sf r SF-ALPHA)))
+             (filter (lambda (r) (sf r SF-VIS)) (reverse surfaces))))))
 
   ;; --- surface-table helpers --------------------------------------------------
+  ;; Does proper list `lst` have at least `n` elements? Walks safely (checks pair?
+  ;; before cdr), so it never errors on a short/improper message -- unlike `cdddr`,
+  ;; whose `(cdr '())` aborts the context. Every per-op arity guard uses this: a
+  ;; client is semi-trusted and the serve loop has no try/catch, so a truncated
+  ;; message must fall through, not kill the root.
+  (define (len>= lst n)
+    (cond ((<= n 0) #t)
+          ((pair? lst) (len>= (cdr lst) (- n 1)))
+          (else #f)))
   (define (find-surf id surfaces)
     (cond ((null? surfaces) #f)
           ((= (sf (car surfaces) SF-ID) id) (car surfaces))
@@ -146,6 +174,13 @@
       (define (owned id)
         (let ((r (find-surf id surfaces)))
           (if (and r (eq? (sf r SF-CLIENT) client)) r #f)))
+      ;; Phase 4 driver seam: after recompositing into the screen back-buffer, push
+      ;; the changed `rects` to the real display via the injected present cap. The
+      ;; whole back-buffer is repainted (v1), but only the damaged rects are flushed
+      ;; -- everything else on the display is already correct (nothing else moved),
+      ;; so a bounded flush is correct and cheap. present is #f for a RAM screen.
+      (define (present! rects)
+        (let ((p (caps-present caps))) (if p (p rects))))
       (cond
         ;; (create-surface w h): validate dims, alloc 2 backings, mint 2 grants,
         ;; record (invisible until configured), reply with the grants. stride = w*4.
@@ -163,49 +198,65 @@
                (send client (list 'surface next-id g0 g1 stride))
                (cons (+ next-id 1) (cons r surfaces)))))   ; prepend = top of stack
         ;; (configure id x y visible): place + show/hide, then recomposite. Fire-
-        ;; and-forget; only the owner's surface is touched.
-        ((and (eq? verb 'configure) (pair? (cdr (cdddr m))))
+        ;; and-forget; only the owner's surface is touched. Damage = the old rect
+        ;; (vacated -> repaint to whatever is now under it) plus, when the surface is
+        ;; now visible, the new rect (where it landed) -- so a moved/shown window
+        ;; flushes both; a hide flushes only the vacated rect. id/x/y must be integers
+        ;; (a non-integer would reach `=`/`gfx-blit!` and kill the root).
+        ((and (eq? verb 'configure) (len>= m 5)
+              (integer? (cadr m)) (integer? (caddr m)) (integer? (cadddr m)))
          (let ((r (owned (cadr m))))
-           (if r (begin (vector-set! r SF-X (caddr m))
-                        (vector-set! r SF-Y (cadddr m))
-                        (vector-set! r SF-VIS (nth m 4))
-                        (recomposite screen bg surfaces))))
+           (if r (let ((old (surf-rect r)))
+                   (vector-set! r SF-X (caddr m))
+                   (vector-set! r SF-Y (cadddr m))
+                   (vector-set! r SF-VIS (nth m 4))
+                   (recomposite screen bg surfaces)
+                   (present! (if (sf r SF-VIS) (list old (surf-rect r)) (list old))))))
          st)
-        ;; (commit id buf rects): flip the presented buffer, recomposite. Fire-and-
-        ;; forget -- a client never blocks presenting a frame. The guard requires
-        ;; `rects` to be present (phase 4 reads it to bound the flush; v1 ignores it
-        ;; and recomposites whole-screen).
-        ((and (eq? verb 'commit) (pair? (cdddr m)))
+        ;; (commit id buf rects): flip the presented buffer, recomposite, flush the
+        ;; surface's rect (its content changed in place). Fire-and-forget -- a client
+        ;; never blocks presenting a frame. id/buf must be integers (buf reaches `=`
+        ;; in surf-src); a non-integer would kill the root. `rects` (position 3) is
+        ;; required present (v1 flushes the whole surface rect; bounding to the
+        ;; client's `rects` is a later refinement).
+        ((and (eq? verb 'commit) (len>= m 4) (integer? (cadr m)) (integer? (caddr m)))
          (let ((r (owned (cadr m))))
            (if r (begin (vector-set! r SF-FRONT (caddr m))
-                        (recomposite screen bg surfaces))))
+                        (recomposite screen bg surfaces)
+                        (if (sf r SF-VIS) (present! (list (surf-rect r)))))))
          st)
-        ;; (raise id): move the owner's surface to the top of the z-stack. Only
-        ;; recomposite if it actually moved.
-        ((and (eq? verb 'raise) (pair? (cdr m)))
+        ;; (raise id): move the owner's surface to the top of the z-stack, then flush
+        ;; its rect (occlusion within it changed). Only recomposite if it owns the id.
+        ((and (eq? verb 'raise) (pair? (cdr m)) (integer? (cadr m)))
          (if (owned (cadr m))
              (let ((s2 (raise-surf (cadr m) surfaces)))
                (recomposite screen bg s2)
+               (let ((r (find-surf (cadr m) s2)))
+                 (if (and r (sf r SF-VIS)) (present! (list (surf-rect r)))))
                (cons next-id s2))
              st))
-        ;; (destroy-surface id): revoke both grants, drop, recomposite, ack. Only
-        ;; the owner can destroy; a bad/foreign id gets an error, not a spurious ok.
-        ((and (eq? verb 'destroy-surface) (pair? (cdr m)))
+        ;; (destroy-surface id): revoke both grants, drop, recomposite, flush the
+        ;; vacated rect, ack. Only the owner can destroy; a bad/foreign id gets an
+        ;; error, not a spurious ok.
+        ((and (eq? verb 'destroy-surface) (pair? (cdr m)) (integer? (cadr m)))
          (let ((r (owned (cadr m))))
            (if (not r)
                (begin (send client (list 'destroy-error 'no-such-surface)) st)
-               (begin ((caps-revoke caps) (sf r SF-G0))
-                      ((caps-revoke caps) (sf r SF-G1))
-                      (let ((s2 (drop-surf (cadr m) surfaces)))
-                        (recomposite screen bg s2)
-                        (send client 'ok)
-                        (cons next-id s2))))))
+               (let ((old (surf-rect r)) (was-vis (sf r SF-VIS)))
+                 ((caps-revoke caps) (sf r SF-G0))
+                 ((caps-revoke caps) (sf r SF-G1))
+                 (let ((s2 (drop-surf (cadr m) surfaces)))
+                   (recomposite screen bg s2)
+                   (if was-vis (present! (list old)))
+                   (send client 'ok)
+                   (cons next-id s2))))))
         ;; (probe-pixel x y): the composited screen pixel. A test/debug hook,
         ;; relayed through the handler (not sent to the root directly) so it is
         ;; FIFO-ordered AFTER the client's preceding commit on the same channel --
         ;; a direct-to-root probe could overtake the relayed commit and read the
         ;; screen before compositing.
-        ((and (eq? verb 'probe-pixel) (pair? (cddr m)))
+        ((and (eq? verb 'probe-pixel) (len>= m 3)
+              (integer? (cadr m)) (integer? (caddr m)))
          (send client (get-pixel screen (cadr m) (caddr m)))
          st)
         (else
@@ -216,7 +267,17 @@
   ;; surface ops (`op`), and a test/debug `probe-pixel` (reads the composited
   ;; screen so an end-to-end test can assert what landed there).
   (define (start-compositor-service screen caps)
-    (let ((bg (rgb screen 28 30 44)))
+    (let ((bg (rgb screen 28 30 44))
+          ;; the screen's pixel format, advertised to clients so they draw into
+          ;; their granted backing with the SAME channel layout the screen uses
+          ;; (gfx-blit! is a raw copy -- see surf-src). (r-off g-off b-off).
+          (fmt (list (surface-r-off screen) (surface-g-off screen) (surface-b-off screen))))
+      ;; Phase 4: paint the desktop background and push the whole screen once, so the
+      ;; display shows the compositor's backdrop immediately (before any client) and
+      ;; every later op only needs to flush its own damage rect.
+      (clear screen bg)
+      (let ((p (caps-present caps)))
+        (if p (p (list (list 0 0 (surface-width screen) (surface-height screen))))))
       (serve (cons 1 '())                       ; (next-id . surfaces)
         (lambda (st m)
           (cond
@@ -225,14 +286,16 @@
             ;; must be a context: it becomes the client's authenticated identity and
             ;; the address every later reply is sent to, so a non-context here (which
             ;; would abort the serve loop on the `send` below, since the VM has no
-            ;; try/catch) is rejected outright.
-            ((and (eq? (car m) 'connect) (pair? (cddr m)) (ctx? (caddr m)))
+            ;; try/catch) is rejected outright. The reply carries the screen `fmt` so
+            ;; the client packs pixels in the display's layout.
+            ((and (eq? (car m) 'connect) (len>= m 3) (ctx? (caddr m)))
              (let ((h (make-handler (self) (caddr m) (cadr m))))
-               (send (caddr m) (list 'connected h))
+               (send (caddr m) (list 'connected h fmt))
                st))
             ;; (op client transparency? msg) -> a relayed surface op (incl. the
             ;; test-only probe-pixel; see handle-op for why it goes via the handler).
-            ((and (eq? (car m) 'op) (pair? (cdddr m)))
+            ;; Sent only by a (trusted) handler, but length-guarded all the same.
+            ((and (eq? (car m) 'op) (len>= m 4))
              (handle-op st (cadr m) (caddr m) (cadddr m) screen bg caps))
             (else
              (display "[corecompositor] primary: ignoring malformed ")
