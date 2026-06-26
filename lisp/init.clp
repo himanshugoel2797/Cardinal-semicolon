@@ -287,6 +287,83 @@
           (display (quotient cfps 100)) (display ".") (display (modulo cfps 100))
           (display " fps @ ") (display W) (display "x") (display H) (newline)))))
 
+  ;; Benchmark rendering through the virtio-gpu driver -- the MODERN path that
+  ;; sidesteps the trapped-framebuffer problem entirely. The driver's scanout
+  ;; backing is guest RAM (dma-alloc, uncached); but the device reads it coherently,
+  ;; so we map the SAME physical pages WRITE-BACK (mmio-map-wb) and compose into
+  ;; that fast cached view. A virtqueue `(flush)` (TRANSFER_TO_HOST_2D +
+  ;; RESOURCE_FLUSH) then pushes the frame device-side -- no MMIO framebuffer
+  ;; writes, no per-page dirty-tracking fault. The flush is a synchronous controlq
+  ;; round-trip in the driver; we time it by following each (flush) with a
+  ;; (get-framebuffer) barrier (the driver answers its mailbox serially, so the
+  ;; reply lands only after the flush's used-ring completion).
+  (define (gpu-frame! gpu)              ; one fenced, synchronous flush (waits for ack)
+    (sfence)
+    (send gpu (list 'flush (self)))
+    (recv))
+  (define (gpu-benchmark gpu fnt tf)
+    (send gpu (list 'get-framebuffer (self)))
+    (let ((r (recv)))                   ; (w h phys) for scanout 0, or #f
+      (if (not (pair? r))
+          (begin (display "[gpu-bench] virtio-gpu returned no scanout") (newline))
+          (let* ((w (car r)) (h (cadr r)) (phys (caddr r))
+                 (stride (* w 4)) (fbytes (* stride h))
+                 ;; the reply's fb bytes are a copy-on-send shadow (phys lost); map
+                 ;; the backing PHYS the driver sent us, WRITE-BACK, and compose there.
+                 (wb   (mmio-map-wb phys fbytes))
+                 ;; virtio-gpu's VIRTIO_GPU_FORMAT_X8R8G8B8 is MEMORY byte order
+                 ;; [X,R,G,B] (byte0=X), so channel bit-offsets are R=8/G=16/B=24 --
+                 ;; NOT the std-vga 0xRRGGBB (16/8/0). Verified by pixel sampling.
+                 (surf (make-surface* wb w h stride 8 16 24 '()))
+                 (bg   (rgb surf 28 30 44)))
+            (display "[gpu-bench] virtio-gpu scanout ") (display w) (display "x") (display h)
+            (display " backing WB-mapped") (newline)
+            ;; 1) compose into the WB backing (real cached RAM -- representative).
+            (let ((t0 (uptime-ns)))
+              (let loop ((i 0)) (if (< i 20) (begin (clear surf bg) (loop (+ i 1)))))
+              (let ((dt (- (uptime-ns) t0)))
+                (display "[gpu-bench] backing compose (WB): ")
+                (display (mb-per-s (* fbytes 20) dt)) (display " MB/s") (newline)))
+            ;; 2) synchronous flush round-trip, no compose: the per-frame device +
+            ;; IPC cost (whole-frame transfer-2d + resource-flush + the ack barrier).
+            (let ((t0 (uptime-ns)))
+              (let loop ((i 0)) (if (< i 20) (begin (gpu-frame! gpu) (loop (+ i 1)))))
+              (let* ((dt (- (uptime-ns) t0)))
+                (display "[gpu-bench] flush round-trip (no compose): ")
+                (display (quotient dt (* 20 1000))) (display " us/frame, ")
+                (display (mb-per-s (* fbytes 20) dt)) (display " MB/s") (newline)))
+            ;; 3) full UI frame: compose + flush -> the real achievable fps.
+            (let ((t0 (uptime-ns)))
+              (let loop ((i 0))
+                (if (< i 10) (begin (draw-demo-ui surf fnt tf) (gpu-frame! gpu) (loop (+ i 1)))))
+              (let* ((dt (- (uptime-ns) t0))
+                     (cfps (if (= dt 0) 0 (quotient (* 100000000000 10) dt))))
+                (display "[gpu-bench] full UI frame (compose+flush): ")
+                (display (quotient dt (* 10 1000))) (display " us, ")
+                (display (quotient cfps 100)) (display ".") (display (modulo cfps 100))
+                (display " fps @ ") (display w) (display "x") (display h) (newline)))
+            surf))))
+
+  ;; The virtio-gpu demo: compose into the WB-mapped scanout backing, benchmark the
+  ;; render path, then redraw a stable frame. Gated by the caller on a virtio-gpu
+  ;; device being present, so the (get-framebuffer) recv can't block forever on a
+  ;; driver that never finished bring-up.
+  (define (start-gpu-demo gpu)
+    (let ((fontbytes (initrd-file FONT8X16-PATH))
+          (ttfbytes (initrd-file TTF-FONT-PATH)))
+      (spawn-restricted '()
+        (lambda ()
+          (sleep 800000000)             ; let virtio-gpu finish async bring-up
+          (let ((fnt (if fontbytes (make-font fontbytes FONT8X16-W FONT8X16-H) #f))
+                (tf  (if ttfbytes (make-ttf-font ttfbytes) #f)))
+            (let ((surf (gpu-benchmark gpu fnt tf)))
+              (if surf
+                  (let loop ((k 0))
+                    (if (< k 6)
+                        (begin (draw-demo-ui surf fnt tf) (gpu-frame! gpu)
+                               (sleep 2000000000) (loop (+ k 1)))
+                        'done)))))))))
+
   ;; Load the default font (init holds sys-initrd), map the live framebuffer, then
   ;; spawn a context that draws the demo. The surface is captured by the spawned
   ;; lambda (spawn shares captured state, unlike a message), so its draws land on
@@ -425,9 +502,13 @@
            ;; is about to own the framebuffer, so it registers immediately.
            (disp (if (not (pci-find #x1af4 #x1050)) (lfb-init display-svc (not demo?)) gpu)))
       disp
-      ;; With cardinal.gfxdemo set, draw the graphics demo frame directly into the
-      ;; mapped boot framebuffer (the end-to-end test of the 2D API).
-      (if demo? (start-gfx-demo)))
+      ;; With cardinal.gfxdemo set, draw the graphics demo. Prefer the virtio-gpu
+      ;; render path when that device is present (compose into a WB-mapped scanout
+      ;; backing + virtqueue flush -- the modern path, benchmarkable for real);
+      ;; otherwise draw into the WC-mapped boot framebuffer (std-vga) with a
+      ;; double-buffer. Same 2D API either way.
+      (if demo?
+          (if (pci-find #x1af4 #x1050) (start-gpu-demo gpu) (start-gfx-demo))))
     ;; Bring up the network stack, then a NIC, which registers itself with the
     ;; stack and forwards frames to it. Prefer the proven virtio-net when present;
     ;; otherwise fall back to the rtl8139 (the `-device rtl8139` boot, where no
