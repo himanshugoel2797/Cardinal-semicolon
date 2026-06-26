@@ -112,15 +112,20 @@ per SysFP):
 - `sqrt` is inline `sqrtsd` asm, NOT `__builtin_sqrt`: at `-O0` the builtin lowers to
   a *call* to `sqrt`, and the freestanding `sqrt` we define would then recurse.
 
-### [INCOMPLETE] Relocatable-module loader doesn't align section data
-`kernel/src/elf.c` places PROGBITS sections at `hdr + sh_offset` without honouring
-`sh_addralign`, so a module's `.rodata`/constant data is only as aligned as the ELF
-blob base. That forces every SSE-using module (`libs/lisp`, `libs/ttf`) to build
-`-fno-vectorize` — vectorized code emits 16-byte **aligned** packed loads
-(`movapd`/`vmovaps`) that `#GP` on under-aligned section data. Aligning ALLOC
-sections to `sh_addralign` (≥16, and 32 for AVX) at load would let those modules
-vectorize (a real speed win for the rasterizer and the flonum runtime). AVX itself is
-available at that point; alignment is the only blocker.
+### [FIXED] Relocatable-module loader now aligns section data (vectorization enabled)
+The loader lands a module at a **64-aligned base** (`load_script.c`, `MOD_ALIGN`) and
+now allocates **NOBITS (`.bss`) at `sh_addralign`** (`elf.c`); PROGBITS run in place,
+and the linker already aligns each section's file offset to `sh_addralign`, so a
+64-aligned base makes `hdr + sh_offset` aligned (asserted in `elf.c` so a toolchain
+change fails loudly, not as a stray `#GP`). With that, `libs/lisp` (the flonum
+runtime + whole VM) and `libs/ttf` (the rasterizer) build **with auto-vectorization**
+(the `-fno-vectorize` workaround is gone) — the aligned `.rodata.cst16` packed
+constant loads (`movapd`) are now safe; vectorized loops over runtime heap pointers
+already used unaligned moves. Kept at **SSE2 width, not AVX**: AVX *state* is enabled
+(SysFP `xsetbv` sets XCR0 to the CPU's XSAVE components; `xsave`/`xrstor` preserve
+YMM), but some targets (Cherry Trail / Airmont, e.g. the AtomicPi) have no AVX, so
+`-mavx` would `#UD` there — it can be an opt-in for AVX-only deployments. Validated
+Debug + Release (in-OS 45/0; the TrueType demo renders).
 
 ---
 
