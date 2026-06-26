@@ -18,7 +18,8 @@
   (export system-init start-repl play-tone set-vol)
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
           corenetdebug coreusb ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci
-          cardfs hdaudio uhci xhci ehci usb-hid usb-hub usb-storage usb-audio sys-pci sys-cmdline)
+          cardfs hdaudio uhci xhci ehci usb-hid usb-hub usb-storage usb-audio
+          graphics font sys-pci sys-cmdline sys-initrd sys-mmio sys-reg)
 
   ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
   ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
@@ -127,6 +128,114 @@
                      (newline))))))
             (else (find (cdr es))))))))
 
+  ;; --- graphics demo (gated on cardinal.gfxdemo) ------------------------------
+  ;; Draws a UI demo frame with the graphics + font libraries -- the end-to-end proof
+  ;; of the 2D API over a real framebuffer. Off by default; the gfxdemo-image ISO
+  ;; boots with the flag (capture via run-qemu.sh SCREENSHOT=).
+
+  ;; An off-screen ARGB image surface (for the alpha-blit demo).
+  (define (gfx-image w h) (make-surface (make-bytes (* w h 4)) w h (* w 4)))
+
+  (define (draw-demo-ui surf fnt)
+    (let ((W (surface-width surf)) (H (surface-height surf))
+          (white (rgb surf 240 240 245)))
+      (clear surf (rgb surf 28 30 44))                 ; desktop background
+      ;; top bar + title
+      (fill-rect surf 0 0 W 46 (rgb surf 46 50 72))
+      (if fnt (draw-text surf fnt 14 7 "Cardinal;  graphics demo" white 0 #f 2))
+      ;; a "window" with a title bar + body text at a few scales
+      (let ((wx 64) (wy 92) (ww 540) (wh 372) (ink (rgb surf 38 40 52)))
+        (fill-rect surf wx wy ww wh (rgb surf 244 245 250))
+        (draw-rect surf wx wy ww wh 2 (rgb surf 78 90 132))
+        (fill-rect surf (+ wx 2) (+ wy 2) (- ww 4) 30 (rgb surf 58 120 200))
+        (if fnt
+            (begin
+              (draw-text surf fnt (+ wx 10) (+ wy 9) "Hello, Cardinal" white 0 #f 1)
+              (draw-text surf fnt (+ wx 14) (+ wy 46)
+                         "Bitmap font via gfx-glyph!" ink 0 #f 1)
+              (draw-text surf fnt (+ wx 14) (+ wy 64)
+                         "ABCDEFG abcdefg 0123456789" ink 0 #f 1)
+              (draw-text surf fnt (+ wx 14) (+ wy 82)
+                         "!@#$%^&*()_+-=[]{};:',.<>/?" ink 0 #f 1)
+              (draw-text surf fnt (+ wx 14) (+ wy 112) "scaled 2x" (rgb surf 180 70 70) 0 #f 2)
+              (draw-text surf fnt (+ wx 14) (+ wy 150) "3x" (rgb surf 70 130 70) 0 #f 3)
+              (draw-text surf fnt (+ wx 14) (+ wy 210)
+                         "fills - lines - circles - blits" ink 0 #f 1))))
+      ;; shapes panel on the right
+      (let ((px 650) (py 110))
+        (fill-circle surf (+ px 64) (+ py 64) 54 (rgb surf 232 124 80))
+        (draw-circle surf (+ px 64) (+ py 64) 54 white)
+        (fill-rect surf px (+ py 150) 128 76 (rgb surf 82 200 142))
+        (draw-rect surf px (+ py 150) 128 76 3 white)
+        (let loop ((i 0))                              ; a fan of lines
+          (if (< i 11)
+              (begin (draw-line surf px (+ py 260) (+ px (* i 13)) (+ py 344)
+                                (rgb surf 120 180 240))
+                     (loop (+ i 1)))))
+        (let ((sw (list (rgb surf 230 60 60) (rgb surf 230 140 40) (rgb surf 230 215 50)
+                        (rgb surf 70 200 90) (rgb surf 60 160 230) (rgb surf 96 96 224)
+                        (rgb surf 170 80 200))))
+          (let loop ((i 0))                            ; rainbow swatches
+            (if (< i 7)
+                (begin (fill-rect surf (+ px (* i 26)) (+ py 360) 24 24 (nth sw i))
+                       (loop (+ i 1)))))))
+      ;; a translucent panel over the desktop, showing alpha compositing
+      (let ((img (gfx-image 420 86)))
+        (clear img (argb img 165 54 92 168))           ; ~65% opaque blue
+        (if fnt (draw-text img fnt 14 12 "alpha-blended panel (blit-alpha)" white 0 #f 1))
+        (if fnt (draw-text img fnt 14 44 "drawn over the live desktop" white 0 #f 1))
+        (blit-alpha surf img 64 486))
+      'done))
+
+  ;; Map the boot framebuffer into a live graphics surface. A framebuffer is shared
+  ;; memory, so it must be mmio-mapped IN the drawing context -- a get-framebuffer
+  ;; message would deliver a COPY (copy-on-send), whose writes never reach the
+  ;; scanout. init holds the sys-mmio/sys-reg authority to map it (the same geometry
+  ;; lfb reads). Returns a 0xRRGGBB surface, or #f if there is no boot framebuffer.
+  (define GFX-FB-PATH "HW/BOOTINFO/FRAMEBUFFER")
+  (define (reg-or path key d) (let ((v (reg-read-uint path key))) (if v v d)))
+  (define (gfx-map-framebuffer)
+    (let ((phys   (reg-read-uint GFX-FB-PATH "PHYS_ADDR"))
+          (pitch  (reg-read-uint GFX-FB-PATH "PITCH"))
+          (width  (reg-read-uint GFX-FB-PATH "WIDTH"))
+          (height (reg-read-uint GFX-FB-PATH "HEIGHT")))
+      (if (or (not phys) (not pitch) (not width) (not height)
+              (= phys 0) (= pitch 0) (= width 0) (= height 0))
+          #f
+          (make-surface* (mmio-map phys (* pitch height)) width height pitch
+                         (reg-or GFX-FB-PATH "RED_OFFSET" 16)
+                         (reg-or GFX-FB-PATH "GREEN_OFFSET" 8)
+                         (reg-or GFX-FB-PATH "BLUE_OFFSET" 0) '()))))
+
+  ;; Load the default font (init holds sys-initrd), map the live framebuffer, then
+  ;; spawn a context that draws the demo. The surface is captured by the spawned
+  ;; lambda (spawn shares captured state, unlike a message), so its draws land on
+  ;; the real scanout. It repaints a few times to cover straggler kernel-debug text
+  ;; (the SysDebug console shares this framebuffer), finishing silently so the final
+  ;; frame is stable for a screenshot.
+  (define (start-gfx-demo)
+    (let ((surf (gfx-map-framebuffer))
+          (fontbytes (initrd-file FONT8X16-PATH)))
+      (if (not surf)
+          (begin (display "[gfx-demo] no framebuffer") (newline))
+          (begin
+            (display "[gfx-demo] framebuffer ") (display (surface-width surf)) (display "x")
+            (display (surface-height surf)) (display " pitch ") (display (surface-stride surf))
+            (display " font=") (display (if fontbytes (bytes-length fontbytes) 0)) (newline)
+            (spawn-restricted '()
+              (lambda ()
+                (let ((fnt (if fontbytes (make-font fontbytes FONT8X16-W FONT8X16-H) #f)))
+                  (draw-demo-ui surf fnt)
+                  ;; self-check: read a pixel back from the live framebuffer.
+                  (display "[gfx-demo] frame drawn; ")
+                  (display (if (= (get-pixel surf 2 220) (rgb surf 28 30 44))
+                               "pixel-check OK" "pixel-check MISMATCH"))
+                  (newline)
+                  (let loop ((k 0))
+                    (if (< k 6)
+                        (begin (sleep 2000000000) (draw-demo-ui surf fnt) (loop (+ k 1)))
+                        'done)))))))))
+
   ;; The system entry point: called once on the BSP after the scheduler is live.
   ;; Each Core* service is a long-lived context; bring up the ones that exist
   ;; today (input, audio, power) and the NIC. Audio/power have no drivers feeding
@@ -215,9 +324,16 @@
     ;; registration result -- and matches the C "load lfb only if no display
     ;; registered". This gate would extend (an `or` over their pci-finds) if other
     ;; GPU drivers are added.
-    (let ((display-svc (start-display-service)))
-      (virtio-gpu-init display-svc)
-      (if (not (pci-find #x1af4 #x1050)) (lfb-init display-svc)))
+    (let* ((demo? (cmdline-has? "cardinal.gfxdemo"))
+           (display-svc (start-display-service))
+           (gpu (virtio-gpu-init display-svc))
+           ;; lfb skips its (slow, uncached-MMIO) bring-up test pattern when the demo
+           ;; is about to own the framebuffer, so it registers immediately.
+           (disp (if (not (pci-find #x1af4 #x1050)) (lfb-init display-svc (not demo?)) gpu)))
+      disp
+      ;; With cardinal.gfxdemo set, draw the graphics demo frame directly into the
+      ;; mapped boot framebuffer (the end-to-end test of the 2D API).
+      (if demo? (start-gfx-demo)))
     ;; Bring up the network stack, then a NIC, which registers itself with the
     ;; stack and forwards frames to it. Prefer the proven virtio-net when present;
     ;; otherwise fall back to the rtl8139 (the `-device rtl8139` boot, where no

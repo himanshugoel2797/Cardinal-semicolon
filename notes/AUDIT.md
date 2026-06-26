@@ -64,6 +64,32 @@ the LFB-equivalent path works, *then* DDI/DPLL/pipe mode-set.
 work; `set_resolution`/`set_brightness`/`set_state` mode-switching is not
 implemented (drivers expose the callbacks but the server never drives them).
 
+### 2D graphics API (added)
+`lisp/lib/graphics.clp` + `lisp/lib/font.clp` are a UI-oriented 2D drawing library
+over a framebuffer `surface`: solid/outline rects, h/v/Bresenham lines, midpoint +
+filled circles, opaque + alpha image blits, and bitmap-font text (default 8×16 font
+`lisp/data/font8x16.bin`, from `scripts/gen-font.py`). The per-pixel-heavy ops are
+four ambient C primitives (`gfx-fill-rect!`/`gfx-blit!`/`gfx-blend!`/`gfx-glyph!`,
+in `prims.c`, bounds-checked overflow-safe) — the interpreted layer is the usual
+200-650× per-pixel trap. A surface carries a **backend** dispatch alist so a HW-2D
+driver can override fill/blit/etc., falling back to software per-op (the
+override seam the user asked for). Validated by 61 host pixel-assertions
+(`test_graphics.c`) and a `cardinal.gfxdemo`-gated in-OS demo (the `gfxdemo-image`
+ISO; `run-qemu.sh SCREENSHOT=`).
+
+Two gotchas a real UI must handle (the demo works around both):
+- **A framebuffer can't be passed by message** — `send` copies `bytes` (copy-on-
+  send), so a `get-framebuffer` reply hands the consumer a COPY whose writes never
+  reach the scanout. The drawing context must `mmio-map` the framebuffer itself (the
+  demo maps `HW/BOOTINFO/FRAMEBUFFER` directly). lfb gained a `paint?` flag to skip
+  its bring-up gradient when a UI is taking over.
+- **SysDebug shares the LFB.** `sysdebug_install_lfb` mirrors the COM1 debug log to
+  the same framebuffer (`render_char`), so any `(display ...)` overwrites UI pixels.
+  There is no hook yet to hand the framebuffer to a UI / silence the LFB console —
+  a real compositor will want one. The demo repaints a few times to cover straggler
+  debug text. Also: a 24bpp boot mode mis-strides (lib + lfb assume 4-byte pixels);
+  the demo forces `gfxmode=...x32`.
+
 ---
 
 ## Kernel core + system modules

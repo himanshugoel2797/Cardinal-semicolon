@@ -55,6 +55,15 @@ COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-repl.iso" "ISO/isodir"
 COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
 DEPENDS image)
 
+# ISO that boots with "cardinal.gfxdemo": after the display registers, init draws a
+# UI demo frame (graphics.clp + font.clp) and flushes it -- the end-to-end graphics
+# proof. Capture with: ISO=build/ISO/os-gfxdemo.iso SCREENSHOT=out.ppm ./scripts/run-qemu.sh
+add_custom_target(gfxdemo-image
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub_gfxdemo.cfg" "ISO/isodir/boot/grub/grub.cfg"
+COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-gfxdemo.iso" "ISO/isodir"
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
+DEPENDS image)
+
 add_custom_target(disk.img
     COMMAND qemu-img create -f raw disk.img 128M)
 
