@@ -31,7 +31,9 @@
           clear fill-rect draw-rect draw-hline draw-vline draw-line
           put-pixel get-pixel draw-circle fill-circle
           blit blit-alpha draw-glyph
-          make-double-buffer db-back db-front db-flush db-flush-rect)
+          make-double-buffer db-back db-front db-flush db-flush-rect
+          make-damage damage-add! damage-rects damage-clear! damage-empty?
+          db-flush-damage)
   (import driver-util)
 
   ;; --- the surface record -----------------------------------------------------
@@ -233,4 +235,25 @@
                     (bytes-copy! ff off bf off rowbytes)
                     (loop (+ row 1)))
                   (sfence))))
-          'done))))
+          'done)))
+
+  ;; --- damage tracking --------------------------------------------------------
+  ;; A frame usually changes only a few small regions; redrawing/flushing the whole
+  ;; surface wastes most of the work. The damage list is where a UI records which
+  ;; rectangles it dirtied this frame; the consumer (db-flush-damage here, or the
+  ;; virtio-gpu driver's flush-rects message) then touches only those. Damage SOURCE
+  ;; is the caller's job -- a component knows what it changed -- which is cheaper and
+  ;; more precise than diffing the framebuffer. Each rect is (x y w h); the list is a
+  ;; mutable cell so accumulation across draw calls needs no threading.
+  (define (make-damage) (make-cell '()))
+  (define (damage-add! d x y w h) (cell-set! d (cons (list x y w h) (cell-ref d))))
+  (define (damage-rects d) (cell-ref d))
+  (define (damage-clear! d) (cell-set! d '()))
+  (define (damage-empty? d) (null? (cell-ref d)))
+
+  ;; Flush just the damaged rects of a double-buffer to its (WC) front, then clear
+  ;; the list for the next frame. The per-rect copies share one trailing fence.
+  (define (db-flush-damage db d)
+    (for-each (lambda (r) (db-flush-rect db (nth r 0) (nth r 1) (nth r 2) (nth r 3)))
+              (damage-rects d))
+    (damage-clear! d)))

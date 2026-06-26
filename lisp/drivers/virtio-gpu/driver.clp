@@ -23,10 +23,31 @@
         (gpu-cmd! ctrlq notify mult
                   (make-flush (sc-res-id s) 0 0 (sc-w s) (sc-h s)) 48))))
 
+;; Push ONE sub-rectangle of scanout 0: transfer just that region of the backing
+;; (offset = row*stride + col*4 into the resource's own stride) and flush only it.
+;; This is the dirty-rect path -- when a frame changes a small area, the host
+;; copy + display update touch only those pixels, not the whole scanout.
+(define (gpu-flush-one-rect! ctrlq notify mult s x y w h)
+  (let ((off (+ (* y (* (sc-w s) 4)) (* x 4))))
+    (gpu-cmd! ctrlq notify mult (make-transfer-2d (sc-res-id s) off x y w h) 56)
+    (gpu-cmd! ctrlq notify mult (make-flush (sc-res-id s) x y w h) 48)))
+
+;; Flush a LIST of dirty rects (each (x y w h)) in one driver turn, so a frame
+;; with several damaged regions costs one IPC round-trip, not one per rect.
+(define (gpu-flush-rects! ctrlq notify mult scanouts rects)
+  (if (not (null? scanouts))
+      (let ((s (car scanouts)))
+        (for-each (lambda (r)
+                    (gpu-flush-one-rect! ctrlq notify mult s (nth r 0) (nth r 1) (nth r 2) (nth r 3)))
+                  rects))))
+
 ;; The driver recv loop. Messages:
 ;;   (flush)        -- re-transfer + flush scanout 0 to the host (fire-and-forget)
 ;;   (flush reply)  -- same, then ack `reply` once the controlq round-trip completes
 ;;                     (a synchronous flush: the caller learns when the frame is up)
+;;   (flush-rects rects reply) -- transfer+flush only the listed (x y w h) dirty
+;;                     rects (the dirty-rect path), then ack `reply`. One round-trip
+;;                     per frame regardless of rect count.
 ;;   (get-framebuffer reply) -- send the caller (w h phys) for scanout 0. NOT the fb
 ;;                     bytes: those are copy-on-send (a 4 MB copy whose writes never
 ;;                     reach the device), so a consumer maps the backing PHYS itself
@@ -39,6 +60,9 @@
         ((eq? (car m) 'flush)
          (gpu-flush-scanout0 ctrlq notify mult scanouts)
          (if (pair? (cdr m)) (send (cadr m) 'flushed)))   ; optional completion ack
+        ((eq? (car m) 'flush-rects)                       ; (flush-rects rects [reply])
+         (gpu-flush-rects! ctrlq notify mult scanouts (cadr m))
+         (if (pair? (cddr m)) (send (caddr m) 'flushed)))
         ((eq? (car m) 'get-framebuffer)
          (if (not (null? scanouts))
              (let ((s (car scanouts)))
