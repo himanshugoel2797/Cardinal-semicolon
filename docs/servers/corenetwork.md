@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Source** | `lisp/servers/corenetwork.clp` (+ `lisp/servers/corenetwork/*.clp` — 15 component files) |
+| **Source** | `lisp/servers/corenetwork.clp` (+ `lisp/servers/corenetwork/*.clp` — 16 component files) |
 | **Kind** | server |
 | **Bound by** | `lisp/init.clp` — always; started unconditionally as `(start-network-service)` before any NIC driver runs |
 | **Registers with** | n/a — NIC drivers register *with* corenetwork via `register-nic` |
@@ -14,7 +14,7 @@
 
 corenetwork is a single long-lived service context created by `start-network-service`. It owns the interface table (each NIC is an interface record with its MAC, TX context, and address config), the IPv4 routing table (longest-prefix match, multi-homed host — no forwarding), the ARP cache (120 s TTL), the UDP port-bind table, and the TCP connection tables (mutable hash tables indexed by 4-tuple and by connection id).
 
-The module source is split across 15 component files in `lisp/servers/corenetwork/` that are spliced into the single module scope via `(include ...)`. None of the component files is importable on its own; the entire module exposes exactly four public symbols:
+The module source is split across 16 component files in `lisp/servers/corenetwork/` that are spliced into the single module scope via `(include ...)`. None of the component files is importable on its own; the entire module exposes exactly four public symbols:
 
 ```scheme
 start-network-service   ; → the service handle
@@ -23,7 +23,7 @@ tcp-connect-blocking    ; synchronous active-open helper (own context)
 dns-resolve             ; synchronous A-record lookup (own context)
 ```
 
-The original C server's synchronous call chain (e.g. the RX handler calling back into the TX path during ARP reply generation) is replaced entirely by message passing: the NIC sends `(rx frame len)`, the service demuxes it, and any reply is sent back to the NIC's TX context. There are no re-entrancy hazards and no locks.
+Everything is message passing: the NIC sends `(rx frame len)`, the service demuxes it, and any reply is sent back to the NIC's TX context as a separate `(tx ...)` message. Because the RX handler never re-enters the TX path synchronously, there are no re-entrancy hazards and no locks.
 
 Wire formats are big-endian; `put-be16!`/`get-be16` (from `driver-util`) do the byte assembly. The internet checksum (RFC 1071) is computed over big-endian 16-bit words in `checksum.clp`.
 
@@ -424,7 +424,7 @@ Key parameters:
 - Tick period: 100 ms (from the `start-tcp-ticker` context).
 - Out-of-order reassembly queue: bounded to 64 entries per connection.
 
-Absent features (deliberate, as noted in the source): congestion control, SACK, window scaling, TCP timestamps, and a ring-3/userspace socket API.
+Absent features (deliberate, as noted in the source): congestion control, SACK, window scaling, TCP timestamps, and a higher-level socket API.
 
 ### DHCP client (`dhcp.clp`)
 
@@ -434,9 +434,9 @@ The idle wait before renewal uses a deadline-poll loop (`dhcp-idle`) rather than
 
 ## Notes / Gotchas
 
-### RX-handler re-entrancy rule (historical context, no longer applies)
+### RX/TX is fully message-passing (no locks)
 
-The original C `CoreNetwork` forced a "copy handler out from under the lock" pattern because `network_rx_packet` was synchronous and a UDP handler that replied would re-enter the TX path while the RX side held its table lock, deadlocking. The Lisp port eliminates this entirely: the NIC sends `(rx ...)` as a message, the service processes it, and any outbound frame is sent back to the NIC's TX context as a separate `(tx ...)` message. **There are no re-entrancy hazards and no locks in corenetwork itself.**
+The service never re-enters a driver's TX path synchronously: the NIC sends `(rx ...)` as a message, the service processes it, and any outbound frame is sent back to the NIC's TX context as a separate `(tx ...)` message. **There are no re-entrancy hazards and no locks in corenetwork itself.**
 
 If you are writing a NIC driver, observe:
 - Never call into the service synchronously (no `send`+`recv` from inside a frame delivery path that already holds a lock).
@@ -456,7 +456,7 @@ The Lisp VM's `sleep` and `recv` share the blocked flag. A message arriving in a
 
 ### TCP — no userspace socket API
 
-TCP is fully wired at the service level but there is no ring-3 / capability-based socket API exposed to untrusted Lisp contexts. Owner contexts that receive `tcp-accept` / `tcp-connected` must be spawned inside the Lisp capability domain. A userspace socket layer is noted as TODO in the source comments and in `notes/AUDIT.md`.
+TCP is fully wired at the service level, but there is no higher-level socket API yet — callers drive connections directly via the `tcp-*` messages and the owner-event protocol above. A userspace socket layer is noted as TODO in the source comments and in `notes/AUDIT.md`.
 
 ### Firewall ordering
 

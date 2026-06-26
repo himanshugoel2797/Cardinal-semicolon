@@ -11,11 +11,11 @@
 | **Kind** | driver |
 | **Bound by** | `lisp/init.clp` — `(uhci-init usb)` always called; gated internally on `pci-find` |
 | **Registers with** | [coreusb](../servers/coreusb.md) via `port-connected` / `port-disconnected` messages (not a `register-class` call) |
-| **Capabilities** | `sys-io` (port-I/O register access), `sys-mmio` (config-space map + 32-bit DMA), `sys-pci` (device discovery + bus-master enable) |
+| **Capabilities** | `sys-io` (port-I/O register access), `sys-mmio` (config-space map + 32-bit DMA), `sys-pci` (device discovery + bus-master enable), `driver-util` (`wait-until`/USB constants), `coreusb` (transfer-protocol constants) |
 
 ## Overview
 
-UHCI is a port-I/O controller: its twelve registers live at an I/O BAR
+UHCI is a port-I/O controller: its registers live at an I/O BAR
 (BAR4) and are read/written with `in-u16`/`out-u16`/`out-u32` instructions
 gated by the `sys-io` capability.  Its schedule is entirely DMA memory the
 hardware walks autonomously: a 1024-entry frame list (one 32-bit physical
@@ -30,7 +30,7 @@ context, then spawns a single restricted `'()` context (`uhci-bringup`) that
 closes over them.  That context is the host-controller handle coreusb routes
 all transfers to.  Because the context services one mailbox message at a time,
 no lock is needed for the shared DMA buffers — the context itself is the
-serialization the original C `ctrl_lock` provided.
+serialization point.
 
 There is no interrupt path: the PIIX/ICH9 UHCI function exposes no MSI
 capability and the kernel lacks ACPI `_PRT` parsing for INTx# GSI routing.
@@ -349,7 +349,7 @@ All other definitions (`uhci-reset`, `enable-port!`, `poll-ports!`,
 component-private; they are not exported and are only accessible to the
 spawned HC context via closure.
 
-## Notes and gotchas
+## Notes / gotchas
 
 **No interrupt path.** UHCI PCI functions (PIIX/ICH9) expose no MSI
 capability, and the kernel has no ACPI `_PRT` parser for INTx# GSI routing.

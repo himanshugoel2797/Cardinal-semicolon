@@ -6,7 +6,7 @@
 |---|---|
 | **Source** | `lisp/drivers/ahci.clp` + `lisp/drivers/ahci/{hba,port,ata,driver}.clp` |
 | **Kind** | driver |
-| **Bound by** | `lisp/init.clp` — gated on `(pci-find 0x8086 0x2922)` (QEMU ICH9 only) |
+| **Bound by** | `lisp/init.clp` — called unconditionally in `system-init`; `ahci-init` self-gates on `(pci-find #x8086 #x2922)` (QEMU ICH9 only) and returns if no device is present |
 | **Registers with** | [corestorage](../servers/corestorage.md) via `register-blockdev` message |
 | **Capabilities** | `sys-mmio` (`mmio-map`, `dma-alloc`, `dma-alloc-32`), `sys-pci` (`pci-find`, `pci-assign-bars`, `pci-setup-msi`, `msi-count`, `msi-wait`), `driver-util` |
 
@@ -178,7 +178,7 @@ All port registers are accessed as `0x100 + 0x80 × port + field`. Key fields:
 
 ## Notes / gotchas
 
-**All waits yield.** Every reset and completion wait (`wait-until`, `sleep`, `msi-wait`) runs inside a spawned context so it deschedules the core rather than busy-spinning. This is unlike the C AHCI driver that was ported from, which was constrained to busy-spin because it ran during early boot (under `cli()`).
+**All waits yield.** Every reset and completion wait (`wait-until`, `sleep`, `msi-wait`) runs inside a spawned context so it deschedules the core rather than busy-spinning. The bring-up context is spawned precisely so these yields have somewhere to go — none of it runs on an early-boot `cli()` path.
 
 **MSI as a yield hint, not the truth.** `issue!` treats `PxCI` bit-0 clearing as the authoritative completion signal. `msi-wait` is called only to yield the core between polls (up to 50 ms per wait), bounded by a 3 s overall deadline. A missed or coalesced MSI therefore never wedges a command; `msi-count` is used only to log whether an interrupt carried a given completion.
 

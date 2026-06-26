@@ -31,13 +31,15 @@ over the bulk-OUT endpoint; the response is a 13-byte Command Status Wrapper
 (CSW) read from the bulk-IN endpoint, with an optional data phase in between.
 LUN 0 is always used; multi-LUN devices are not supported.
 
-Only the mass-storage **Bulk-Only** subclass (`bInterfaceProtocol == #x50`) is
-matched — Control/Bulk/Interrupt (CBI) devices are not handled.
+coreusb dispatches by interface class only (`#x08`); the driver itself does not
+inspect `bInterfaceProtocol`. It claims any such device that exposes both a
+bulk-IN and a bulk-OUT endpoint and drives it over Bulk-Only Transport (BBB).
+Control/Bulk/Interrupt (CBI) transport is not implemented.
 
 ## Initialization
 
 `init.clp` calls `usb-storage-init` before bringing up any host controller, so
-that the class driver is registered before the first `port-connected` can arrive:
+that the class driver is registered before the first `probe` can arrive:
 
 ```scheme
 (usb-storage-init usb storage)   ; → dispatcher context handle
@@ -92,8 +94,8 @@ the entry from the list.
 ### Constants
 
 ```scheme
-CBW-SIG  ; #x43425355  ("USBC") — dTag field of the CBW
-CSW-SIG  ; #x53425355  ("USBS") — dSignature field of the CSW
+CBW-SIG  ; #x43425355  ("USBC") — dCBWSignature field of the CBW
+CSW-SIG  ; #x53425355  ("USBS") — dCSWSignature field of the CSW
 MAX-BLK  ; 4           — maximum blocks per BBB transfer (4 × 512 = 2048 bytes)
 ```
 
@@ -375,8 +377,6 @@ the completion.
 
 **Bring-up sequence is synchronous in the spawned context.** The INQUIRY, TEST
 UNIT READY polling, READ CAPACITY, and MODE SENSE all run in the block-server
-context before it sends `register-blockdev`.  coreusb delivers `probe` before
-any host controller is fully initialized (not quite — initialization is
-sequential in `init.clp`), but the block-server bring-up can take up to ~1 s
-for slow media due to `wait-ready`'s 10 × 100 ms sleep.  This delay is confined
+context before it sends `register-blockdev`.  This bring-up can take up to ~1 s
+for slow media due to `wait-ready`'s 10 × 100 ms sleep, but the delay is confined
 to the spawned context and does not block the dispatcher or coreusb.

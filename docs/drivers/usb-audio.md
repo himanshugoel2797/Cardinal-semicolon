@@ -209,7 +209,7 @@ UAC-SAMPLING-FREQ-CONTROL   ; #x01  — UAC sampling frequency control selector
 
 **Volume/mute not implemented.** The UAC Feature Unit is not wired. `get-volume` always replies `#f`; `set-volume` and `mute` are silently consumed. Clients that send these messages will not wedge (the messages are handled), but no hardware effect occurs.
 
-**Capture not supported.** Only the isochronous OUT path is implemented. There is no isochronous IN endpoint scanning, no record ring, and no capture messages in the serve loop. The `:capture-start` / `:capture-stop` / `:capture-read` / `:capture-pos` messages forwarded by coreaudio are silently dropped by the `else` clause of the card's `cond`.
+**Capture not supported.** Only the isochronous OUT path is implemented. There is no isochronous IN endpoint scanning, no record ring, and no capture messages in the serve loop. The `capture-start` / `capture-stop` / `capture-read` / `capture-pos` messages forwarded by coreaudio are silently dropped by the `else` clause of the card's `cond`.
 
 **Stop-aware `await`, not `await-complete`.** The card context does **not** use the coreusb `usb-isoch-out` wrapper or `await-complete`. Using those would silently drop a `stop` message that arrives mid-transfer, leaving the context alive after hot-remove. The local `await` explicitly handles `('stop)` by setting a flag and looping back to wait for the `('complete ...)` reply, so the in-flight DMA buffer is always drained before teardown.
 

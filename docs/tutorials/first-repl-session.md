@@ -86,7 +86,7 @@ press Enter, and the transcript comes back.  Press Ctrl-C to quit.
 ## Step 3 — Evaluating expressions
 
 The REPL evaluates every complete S-expression in the chunk it receives, reports each result
-on its own line, and returns reader-faithful output (see the [VM reference](../vm/api.md) for
+on its own line, and returns reader-faithful output (see the [VM reference](../vm/index.md) for
 the value types and reader syntax).  Reader errors are reported with their line and column.
 
 ### Arithmetic
@@ -176,7 +176,7 @@ unrestricted:
 ```
 
 `#t` means unrestricted root — every `sys-*` module is importable.  See
-[Modules and capabilities](../vm/api.md#5-modules-and-capabilities) for how restricted
+[Modules and capabilities](../vm/capabilities.md#modules-and-capabilities) for how restricted
 contexts differ.
 
 ---
@@ -195,7 +195,7 @@ is root, you can import it at any time:
 
 This binds `ctx-list`, `ctx-blocked?`, `ctx-pause`, `ctx-unpause`, `ctx-make`, `ctx-step`,
 `ctx-status`, `ctx-control`, `ctx-value`, and `ctx-error` into the REPL environment.  See the
-[sys-debug reference](../vm/api.md#sys-debug-reflective-debugger-capability) for the full
+[sys-debug reference](../vm/capabilities.md#sys-debug-reflective-debugger-capability) for the full
 signature table.
 
 ### Listing live contexts

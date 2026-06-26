@@ -27,8 +27,8 @@ as restricted contexts; they captured their hardware primitives lexically at loa
 time.
 
 Because all communication is via `send` (one-way, non-blocking), the
-RX-handler-re-enters-TX self-deadlock that the old C `CoreInput` had to work
-around cannot arise by construction.
+RX-handler-re-enters-TX self-deadlock that synchronous callback ABIs are prone to
+cannot arise by construction — a `send` only enqueues.
 
 Event dispatch to consumer contexts (e.g. a focused window in the compositor)
 is not yet implemented: `event` currently logs to COM1 only. This is an
@@ -167,9 +167,8 @@ PS/2 or USB; it is pure mechanism. Which drivers feed it and how they are starte
 is entirely in `lisp/init.clp`. This is intentional: adding a new input source
 (e.g. a Bluetooth HID driver) only requires wiring it in `init.clp`.
 
-**`send` is non-blocking and one-way.** A driver calling `send input (list 'event ...)` never blocks or re-enters its own TX path, making the
-self-deadlock that required careful discipline in the old C `CoreInput` impossible
-to trigger.
+**`send` is non-blocking and one-way.** A driver calling `send input (list 'event ...)` never blocks or re-enters its own TX path, so the
+RX-handler-re-enters-TX self-deadlock cannot occur.
 
 **No capabilities in the service context.** `serve` uses `spawn-restricted '()`
 (see `lisp/lib/driver-util.clp`). The service loop inherits the driver primitives

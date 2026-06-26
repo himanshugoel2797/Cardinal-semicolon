@@ -8,7 +8,7 @@
 | **Kind** | driver |
 | **Bound by** | `lisp/init.clp` — always; `(usb-hid-init usb input)` is called unconditionally before USB host controllers are started |
 | **Registers with** | [coreusb](../servers/coreusb.md) via `register-class` (class byte `0x03` / `USB-CLASS-HID`) |
-| **Capabilities** | `coreusb` (transfer API + USB constants), `driver-util` (`serve`, `spawn-restricted`, `self`) |
+| **Capabilities** | None — no `sys-*` / hardware grants. Imports `coreusb` (transfer API + USB constants) and `driver-util` (`serve`); `spawn-restricted`, `self`, `send`, `recv` are VM primitives |
 
 ## Overview
 
@@ -165,8 +165,8 @@ keyboard from busy-looping the scheduler.
 
 ### Stall recovery (`clear-halt`)
 
-When two consecutive interrupt-IN transfers fail, `usb-hid` sends
-`CLEAR_FEATURE(ENDPOINT_HALT)` (USB feature selector `0`, recipient =
+After three consecutive interrupt-IN transfers fail (the failure counter
+reaches 2), `usb-hid` sends `CLEAR_FEATURE(ENDPOINT_HALT)` (USB feature selector `0`, recipient =
 `USB-REQ-RECIP-ENDPOINT`) via its own `ctl0` helper. `ctl0` routes the control
 transfer through the same stop-aware `await` rather than `await-complete`
 (the standard `usb-clear-halt` utility uses `await-complete` which drops
@@ -258,8 +258,9 @@ because it calls `await-complete`, which drops non-completion messages.
 through the stop-aware `await`, ensuring a `(stop)` that arrives during recovery
 is captured rather than lost.
 
-**Class-driver context holds no hardware capability.** `serve` spawns it with
-the capabilities the module imported (`coreusb`, `driver-util`), neither of
-which grants MMIO or DMA access. Poll contexts are spawned with `'()` (no
-capabilities at all) — all actual hardware communication is performed by the host
-controller context on the poll context's behalf, via message.
+**No context holds a hardware capability.** `serve` spawns the class-driver
+context with an empty capability grant (`'()`), and each poll context is spawned
+with `'()` as well; the handler closures merely capture the module's imports
+(`coreusb`, `driver-util`), neither of which grants MMIO or DMA access. All
+actual hardware communication is performed by the host-controller context on the
+driver's behalf, via message.

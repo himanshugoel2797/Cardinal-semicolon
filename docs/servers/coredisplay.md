@@ -14,7 +14,7 @@
 
 coredisplay is a thin, stateful display-device registry. It runs as a `serve` loop that accumulates display-driver registrations in a list. Drivers — currently `lfb` and `virtio-gpu` — call `send` with a `register` message once their hardware is up; from then on, consumers (notably [corecompositor](corecompositor.md)) hold the per-driver context handle received in that registration and communicate directly with the driver context, not with coredisplay.
 
-The second responsibility is `parse-edid`: a pure, capability-free parser that converts a 128-byte EDID binary blob into a Lisp alist of monitor capabilities. It mirrors `coredisplay_parse_edid` from the former C `servers/CoreDisplay`, ported to Lisp byte operations.
+The second responsibility is `parse-edid`: a pure, capability-free parser, implemented entirely in Lisp byte operations, that converts a 128-byte EDID binary blob into a Lisp alist of monitor capabilities.
 
 coredisplay does **not** itself perform any compositing, scanout, or mode-setting. It is an address-book / bring-up helper, not a display pipeline.
 
@@ -159,7 +159,7 @@ vborder       ; vertical border pixels
 - **Returns `#f`** in any of these cases:
   - The 8-byte EDID magic (`00 FF FF FF FF FF FF 00`) does not match.
   - Byte 20 bit 7 is set (digital input) and the colour-depth code is `7` (reserved).
-  - Any detailed timing descriptor is an analog timing (byte+17 bit 4 clear) — the entire parse is rejected, exactly matching the original C behaviour.
+  - Any detailed timing descriptor is an analog timing (byte+17 bit 4 clear) — the entire parse is rejected.
 
 ## Notes / gotchas
 
@@ -173,7 +173,7 @@ vborder       ; vertical border pixels
 
 **`lfb` test pattern runs in a spawned context.** The bring-up gradient (`fb-test-pattern!`) is millions of uncached MMIO writes; painting in the root `init` context (which is never GC-collected) would exhaust the system heap. `lfb-init` spawns a `spawn-restricted` context whose per-context heap is GC-managed. Pass `paint? = #f` (as `init.clp` does when `cardinal.gfxdemo` is active) to skip the paint and register immediately.
 
-**EDID analog-mode bail-out.** If *any* of the four 18-byte detailed descriptors is an analog timing (byte+17 bit 4 = 0), `parse-edid` returns `#f` for the whole block. Mixed analog/digital descriptor blocks are unsupported, matching the original C implementation.
+**EDID analog-mode bail-out.** If *any* of the four 18-byte detailed descriptors is an analog timing (byte+17 bit 4 = 0), `parse-edid` returns `#f` for the whole block. Mixed analog/digital descriptor blocks are unsupported.
 
 **`conn` is always `'unknown`.** No driver currently reads EDID at registration time; the connection-status field in the registry entry is a placeholder for a future plug-detect / EDID-query path.
 

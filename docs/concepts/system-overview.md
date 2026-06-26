@@ -131,7 +131,7 @@ If this is your first time in the codebase, the recommended path is:
 2. **[Write a Lisp driver](../guides/add-a-pci-driver.md)** — the fastest path to something running.
 3. **[Capabilities & the sandbox](capabilities-and-sandbox.md)** — understand how `import` and grants work before writing anything that touches hardware.
 4. **[Message passing & concurrency](message-passing.md)** — the server design model and the copy-on-send gotchas.
-5. **[Lisp VM reference](../vm/api.md)** — the full surface of special forms, builtins, scheduling primitives, and the `sys-*` capability modules.
+5. **[Lisp VM reference](../vm/index.md)** — the full surface of special forms, builtins, scheduling primitives, and the `sys-*` capability modules.
 
 The server and driver references document the concrete message protocols:
 
@@ -147,4 +147,4 @@ The server and driver references document the concrete message protocols:
 - `lisp/init.clp` — the single boot-policy file; reading it gives the complete picture of what the OS brings up and in what order.
 - `notes/AUDIT.md` — tracked known bugs, stubs, and intentionally unfinished areas.
 - `notes/core/lisp-substrate.md` — the full internal design note on why Lisp and what was rejected.
-- [Lisp VM reference](../vm/api.md) — the concrete language and capability-primitive surface.
+- [Lisp VM reference](../vm/index.md) — the concrete language and capability-primitive surface.

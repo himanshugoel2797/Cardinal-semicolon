@@ -10,7 +10,7 @@
 | **Kind** | driver |
 | **Bound by** | `lisp/init.clp` — unconditional call to `(ehci-init usb)` after uhci/xhci |
 | **Registers with** | [coreusb](../servers/coreusb.md) via `port-connected` / `port-disconnected` notifications |
-| **Capabilities** | `sys-mmio` (MMIO map + 32-bit DMA alloc), `sys-pci` (device find + bus-master + BAR assign) |
+| **Capabilities** | `sys-mmio` (MMIO map + 32-bit DMA alloc), `sys-pci` (device find + bus-master + BAR assign), `driver-util` (`wait-until`/USB constants), `coreusb` (transfer-protocol constants) |
 
 ## Overview
 

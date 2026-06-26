@@ -7,8 +7,8 @@
 | **Source** | `lisp/drivers/hdaudio.clp` |
 | **Kind** | driver |
 | **Bound by** | `lisp/init.clp` — iterates `(pci-find-class-all #x04 #x03)`; one `hdaudio-init` call per controller found |
-| **Registers with** | [coreaudio](../servers/coreaudio.md) via `(:register name self endpoint-descs)` |
-| **Capabilities** | `sys-mmio` (`mmio-map`, `dma-alloc-32`, `bytes-phys`), `sys-pci` (`pci-find-class`, `pci-assign-bars`, `pci-setup-msi`, `msi-count`, `msi-wait`), `driver-util` (`wait-until`, `make-cell`, `cell-ref`, `cell-set!`, `bar-base`, `nth`, `spawn-restricted`) |
+| **Registers with** | [coreaudio](../servers/coreaudio.md) via `(register name (self) endpoint-descs)` |
+| **Capabilities** | `sys-mmio` (`mmio-map`, `dma-alloc-32`, `bytes-phys`), `sys-pci` (`pci-find-class`, `pci-assign-bars`, `pci-setup-msi`, `msi-count`, `msi-wait`), `driver-util` (`wait-until`, `make-cell`, `cell-ref`, `cell-set!`, `bar-base`, `nth`, `copy-bytes`, `pci-enable-mem-bus-master!`) |
 
 ## Overview
 
@@ -332,9 +332,7 @@ Spawns a restricted context. Each iteration:
 1. Reads `STATESTS`. If non-zero, writes it back (W1C) to clear the sticky bits, then sends `(list 'codec-change)` to the driver loop.
 2. Parks on `(msi-wait msi seen)` until the MSI fires again.
 
-The watcher checks `STATESTS` at the **top** of each iteration (including before the first park) to catch codecs that hot-add during the boot window.
-
-The watcher is the **sole** `msi-wait` caller on this card's MSI handle. `hda-verb!` polls the RIRB directly (`wait-until` on `RIRBWP`) rather than using `msi-wait`, specifically to avoid stealing the watcher's slot.
+The watcher checks `STATESTS` at the **top** of each iteration (including before the first park) to catch codecs that hot-add during the boot window. It is the **sole** `msi-wait` caller on this card's MSI handle (see the [verb interface](#sending-a-verb-polled) and [Notes / gotchas](#notes-gotchas) for why `hda-verb!` polls the RIRB instead).
 
 On `(codec-change)`, the driver loop stops any active capture stream (the old ADC endpoint may be gone), calls the `rescan` thunk (`scan-all-codecs` + log), and continues with the fresh endpoint set. The output stream is **not** stopped; the output BDL/buffer is retained from `cur`.
 

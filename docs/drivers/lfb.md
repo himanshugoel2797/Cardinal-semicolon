@@ -7,14 +7,14 @@
 | **Source** | `lisp/drivers/lfb.clp` |
 | **Kind** | driver |
 | **Bound by** | `lisp/init.clp` — always attempted; gated on `(not (pci-find #x1af4 #x1050))` (i.e. only when no virtio-gpu device is present) |
-| **Registers with** | [coredisplay](../servers/coredisplay.md) via `display-register` (internally via `lfb-register-msg`) |
+| **Registers with** | [coredisplay](../servers/coredisplay.md) — sends a `register` message (built by `lfb-register-msg`) |
 | **Capabilities** | `sys-reg` (read boot-info registry keys), `sys-mmio` (map framebuffer MMIO), `driver-util` |
 
 ## Overview
 
 The boot firmware (multiboot2/GRUB) configures a linear framebuffer before handing control to the kernel. `SysReg` records its physical address and geometry under `HW/BOOTINFO/FRAMEBUFFER`. `lfb` reads those keys, maps the framebuffer as MMIO, and registers a `"Linear Framebuffer"` display entry with coredisplay. It acts as the narrowest-capability display driver in the tree: no PCI device, no DMA, no IRQ. The framebuffer is directly scanned out by the display controller hardware (e.g. QEMU `std-vga`, BIOS/UEFI GOP), so `flush` is a deliberate no-op.
 
-`lfb` is the fallback path. `init.clp` tries `virtio-gpu` first; `lfb` is only started when `pci-find` finds no virtio-gpu device on the bus. This mirrors the old C policy: "load lfb only if no display has already registered."
+`lfb` is the fallback path. `init.clp` tries `virtio-gpu` first; `lfb` is only started when `pci-find` finds no virtio-gpu device (`1af4:1050`) on the bus.
 
 The driver loop runs in a `spawn-restricted` context (no extra capabilities beyond those it imports) rather than in the root `init` context. This matters because the bring-up test-pattern paint involves millions of MMIO writes; only a spawned context has a per-context GC'd heap — running the paint in the root init context would exhaust the system heap.
 
@@ -43,7 +43,7 @@ The driver loop runs in a `spawn-restricted` context (no extra capabilities beyo
 | `GREEN_OFFSET` | no | `8` | Bit offset of the green channel |
 | `BLUE_OFFSET` | no | `0` | Bit offset of the blue channel |
 
-There is no `BPP` registry key (the C `bootinfo.c` writer only records masks/offsets). Bits-per-pixel is inferred as `(* 8 pitch) / width`; if the result is zero, 32 is used. `BYTES-PER-PIXEL` is the constant `4`.
+There is no `BPP` registry key — `SysReg`'s boot-info writer records only the channel masks/offsets, not a bit depth. Bits-per-pixel is inferred as `(* 8 pitch) / width`; if the result is zero, 32 is used. `BYTES-PER-PIXEL` is the constant `4`.
 
 ## Message protocol
 
@@ -111,7 +111,7 @@ Connection type is reported as `'unknown` (the linear framebuffer has no connect
 
 **Fallback driver only.** `lfb` is not started when `virtio-gpu` (PCI `1af4:1050`) is present. Extending to additional GPU drivers requires adding their `pci-find` results to the gate condition in `init.clp`.
 
-**Framebuffer size.** The MMIO region mapped is `pitch * height` bytes — exactly the C port's `vmem_phystovirt` size. Padding pixels in rows wider than `width * 4` bytes are mapped but the driver never writes them (fill uses `bytes-fill32!` per row up to `width` pixels only).
+**Framebuffer size.** The MMIO region mapped is `pitch * height` bytes. Padding pixels in rows wider than `width * 4` bytes are mapped but the driver never writes them (fill uses `bytes-fill32!` per row up to `width` pixels only).
 
 **`flush` is a deliberate no-op.** Code that calls `flush` to push a composed frame should verify at the coredisplay level which driver is active; on `virtio-gpu` the flush performs real virtqueue work, but on `lfb` it returns immediately without any action.
 

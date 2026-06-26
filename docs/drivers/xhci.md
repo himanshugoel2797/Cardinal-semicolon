@@ -231,12 +231,9 @@ matches any slot). Between polls it calls `(sleep 100000)` (100 µs). The
 deadline is computed once from `(uptime-ns)` at entry; every iteration checks
 the deadline before polling.
 
-**Critical gotcha:** `xhci-wait` polls the event ring buffer directly — the
-controller DMAs completion events there regardless of MSI delivery. It does NOT
-park on `msi-wait`. A missed or delayed MSI interrupt cannot wedge a transfer
-because the poll loop will catch the event unconditionally. Intervening events
-of a different type (e.g. port-status-change events arriving during a transfer
-wait) are consumed and discarded to prevent livelock.
+`xhci-wait` reads completions straight from the event-ring DMA buffer and does
+NOT park on `msi-wait`, and it consumes (discards) any non-matching event types
+seen while waiting. See **Notes / gotchas** below for the full rationale.
 
 ## Slot and address model
 

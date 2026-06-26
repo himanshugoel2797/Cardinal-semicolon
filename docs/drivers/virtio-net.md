@@ -181,12 +181,13 @@ capabilities (`cap-id 0x09`) looking for `cfg-type` 1 (COMMON), 2 (NOTIFY), and 
 ### RX-handler locking rule
 
 The RX context delivers frames by calling `(send net ...)`, which is a non-blocking
-message enqueue. The network service processes the frame and may immediately reply by
-sending to `tx-ctx`. Because `send` is non-blocking and the TX context is a separate
-scheduler entity, **no lock is held across the frame delivery** — there is no lock to
-deadlock. This is the Lisp-native solution to the C-level "never hold a driver lock
-across `network_rx_packet`" rule: the message-passing architecture eliminates shared
-mutable state between the RX and TX paths entirely.
+message enqueue. The network service runs the stack synchronously and may reply by
+sending to `tx-ctx` — for a reply-triggering frame (ARP response, ICMP echo reply, or a
+UDP/RDT service that answers) it re-enters the driver's TX path. Because `send` is
+non-blocking and `tx-ctx` is a separate scheduler entity, **no lock is held across the
+frame delivery**, so the re-entry cannot self-deadlock: the message-passing architecture
+keeps no shared mutable state between the RX and TX paths. See
+[message passing](../concepts/message-passing.md) for the wider rule.
 
 ### Single TX buffer
 

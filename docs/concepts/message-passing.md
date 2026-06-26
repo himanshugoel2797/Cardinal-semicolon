@@ -343,7 +343,7 @@ that `send` uses to unblock a receiver.
 
 - [Capabilities & sandbox](capabilities-and-sandbox.md) — how `import` and
   `spawn-restricted` gate a context's authority
-- [VM API reference](../vm/api.md) — full primitive reference including
+- [VM API reference](../vm/concurrency.md) — full primitive reference including
   `spawn`, `send`, `recv`, `self`, `ctx?`, `yield`, `sleep`, and the
   low-level `%mailbox-*` / `%block` primitives
 - [Adding a server](../guides/add-a-server.md) — step-by-step guide: `serve`,

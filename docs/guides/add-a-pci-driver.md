@@ -491,4 +491,4 @@ logs, registers, and exits autonomously. This mirrors `ahci-init`,
 - [`../servers/coreaudio.md`](../servers/coreaudio.md) — audio service
   (card registration, endpoint model, tone/capture)
 - [`../servers/coredisplay.md`](../servers/coredisplay.md) — display registry
-- [`../vm/api.md`](../vm/api.md) — full Lisp VM primitive reference
+- [Lisp VM reference](../vm/index.md) — full Lisp VM primitive reference

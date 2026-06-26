@@ -14,7 +14,7 @@
 
 `usb-hub` is the USB hub class driver (class byte `0x09`). It registers itself with the [coreusb](../servers/coreusb.md) service as the handler for any enumerated device whose interface class is `USB-CLASS-HUB`. When a hub is probed, the driver reads its class-specific hub descriptor to learn the downstream port count, tells the host controller to treat the device as a hub (`usb-mark-hub`), powers all ports, and then spawns a dedicated poll context that monitors each port's status at a 200 ms cadence. On downstream connect events the poll context resets the port and requests coreusb to enumerate the newly-attached device (which then dispatches to its own class driver). On disconnect it requests coreusb to tear the device down.
 
-Neither the class-driver context nor the poll contexts hold any hardware capability. Every control transfer is a message to the host-controller context that owns the bus; downstream enumeration and disconnection are fire-and-forget messages to the coreusb service handle. The driver imports `coreusb` (for the proto/enum helpers) and `driver-util` (not directly used in hub-specific logic; available for shared utilities).
+Neither the class-driver context nor the poll contexts hold any hardware capability. Every control transfer is a message to the host-controller context that owns the bus; downstream enumeration and disconnection are fire-and-forget messages to the coreusb service handle. The driver imports `coreusb` (for the proto/enum helpers) and `driver-util` (whose `serve` builds the class-driver message loop).
 
 ## Initialization
 

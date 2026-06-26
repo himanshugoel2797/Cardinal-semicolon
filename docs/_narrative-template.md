@@ -38,7 +38,7 @@ FORMATTING (MkDocs Material):
   `docs/guides/` or `docs/concepts/` or `docs/tutorials/`:
     - a server page:  `../servers/corepower.md`
     - a driver page:  `../drivers/rtl8139.md`
-    - the VM reference: `../vm/api.md`
+    - the VM reference: `../vm/index.md`
     - a sibling guide: `other-guide.md`
     - a guide from a tutorial: `../guides/add-a-pci-driver.md`
 - Refer to source files as inline code with repo-relative paths, e.g.

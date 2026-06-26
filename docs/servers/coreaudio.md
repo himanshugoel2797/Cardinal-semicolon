@@ -14,7 +14,7 @@
 
 coreaudio is a pure routing layer: it maintains a table of registered audio cards (each a `(name . ctx)` pair) and forwards every request to the owning driver context. It never touches hardware directly — that matches the least-privilege posture of the other `Core*` servers.
 
-The original C `CoreAudio` was a complete stub (its `module_init` only registered tests and nothing else). This Lisp replacement is fully functional once a driver registers a card.
+coreaudio is fully functional once a driver registers a card.
 
 Two driver types register with coreaudio:
 
@@ -209,4 +209,4 @@ No arguments. Returns a context handle. Side effect: spawns a new restricted con
 
 **REPL integration.** `init.clp` exports `play-tone` and `set-vol` as REPL commands that send `:play`/`:tone` and `:set-volume` to the stored `audio-service` handle targeting `'hda0`. These commands guard their arguments with `integer?` before forwarding, since a bad type reaching the driver's range-check kills the card context.
 
-**Known stubs (per `notes/AUDIT.md`).** The original C `CoreAudio` `module_init` was entirely empty. The Lisp rewrite is functionally complete for what the current drivers expose; there is no streaming API, no PCM mixing, and no latency/format negotiation — coreaudio routes single-card requests and does not mix across cards.
+**Known limits (per `notes/AUDIT.md`).** coreaudio is functionally complete for what the current drivers expose, but there is no streaming API, no PCM mixing, and no latency/format negotiation — it routes single-card requests and does not mix across cards.

@@ -325,7 +325,7 @@ point. The authority they need was baked into their closures when `init` ran
   and the Lisp OS layer.
 - [message-passing.md](message-passing.md) — `send`/`recv`, the scheduler, and
   the copy-on-send contract in depth.
-- [../vm/api.md](../vm/api.md) — the full Lisp VM primitive surface, including
+- [Lisp VM reference](../vm/index.md) — the full Lisp VM primitive surface, including
   `spawn`, `spawn-restricted`, `capabilities`, `send`, `recv`, and `self`.
 - [../servers/corecompositor.md](../servers/corecompositor.md) — how the
   compositor uses grants, capability injection, and the `sys-shm` / `sys-shm-mint`

@@ -12,12 +12,12 @@
 
 ## Overview
 
-`corenetdebug` is a lightweight debug transport ported from the original C `CoreNetDebug` server. It is **inert by default**: the entire module is a no-op unless `start-netdebug` is called, which only happens when the kernel command line contains the flag `cardinal.netdbg`. This gate is intentional — the server opens network-reachable attack surface and must be explicitly enabled, exactly like the serial REPL.
+`corenetdebug` is a lightweight debug transport. It is **inert by default**: the entire module is a no-op unless `start-netdebug` is called, which only happens when the kernel command line contains the flag `cardinal.netdbg`. This gate is intentional — the server opens network-reachable attack surface and must be explicitly enabled, exactly like the serial REPL.
 
 Once started, `start-netdebug` registers three handler contexts with [corenetwork](corenetwork.md):
 
 - **UDP echo on port 1337** — every received datagram is bounced back to the sender. Because the reply uses the captured source MAC from the `udp-rx` message, no ARP resolution is needed, making round-trip measurement possible even before ARP converges.
-- **UDP digest on port 1338** — every received datagram is FNV-1a (32-bit) digested and the length and digest printed to the debug console. This is a single-datagram stand-in for the reliable multi-packet blob upload that the C `RDT` layer provided; the Lisp [corenetwork](corenetwork.md) has UDP but not yet RDT, so multi-packet reliable upload is a follow-up.
+- **UDP digest on port 1338** — every received datagram is FNV-1a (32-bit) digested and the length and digest printed to the debug console. This is a single-datagram integrity check, so a host tool can confirm a blob arrived intact. The reliable, multi-packet path is the TCP echo on port 7 below.
 - **TCP echo on port 7** — a connection-oriented echo server. It accepts inbound connections, bounces every received chunk back, and closes its side when the peer half-closes. This exercises the full TCP handshake, in-order delivery, retransmission, and FIN teardown.
 
 Each endpoint runs in its own `spawn-restricted '()` context with no imported capabilities; all I/O is mediated by message-passing to and from the `net` corenetwork handle.
@@ -120,8 +120,8 @@ No other public functions are exported. `fnv1a` and `start-tcp-echo` are module-
 
 **No ARP required for UDP echo.** The `udp-send` reply fills the destination MAC directly from the captured `src-mac` field of `udp-rx`. This means the echo path works even if no ARP entry for the host exists, which is useful for liveness testing immediately after link-up.
 
-**UDP digest is single-datagram only.** Port 1338 is a partial replacement for the C `RDT` reliable blob-upload path. There is no reassembly, no acknowledgement, and no ordering guarantee across multiple datagrams. A host tool that sends a large blob in chunks will receive one digest line per datagram, not one for the whole blob. Full reliable upload is a noted follow-up item (see the module comment in the source).
+**UDP digest is single-datagram only.** Port 1338 digests each datagram independently: there is no reassembly, no acknowledgement, and no ordering guarantee across multiple datagrams. A host tool that sends a large blob in chunks will receive one digest line per datagram, not one for the whole blob. For a reliable multi-packet path use the TCP echo on port 7.
 
 **TCP firewall test interaction.** `init.clp` supports a `cardinal.fwtest` command-line flag that installs a `deny` firewall rule for inbound TCP port 7. When both `cardinal.netdbg` and `cardinal.fwtest` are present, the TCP echo server is registered but unreachable; UDP echo (1337) and UDP digest (1338) remain functional.
 
-**FNV-1a implementation.** The in-module `fnv1a` function uses the standard 32-bit FNV-1a parameters (offset basis `2166136261`, prime `16777619`) with explicit masking to 32 bits via `(bitwise-and … #xFFFFFFFF)`. Results match the C implementation in the original `CoreNetDebug`, so host-side comparison tools written for the C server work unchanged.
+**FNV-1a implementation.** The in-module `fnv1a` function uses the standard 32-bit FNV-1a parameters (offset basis `2166136261`, prime `16777619`) with explicit masking to 32 bits via `(bitwise-and … #xFFFFFFFF)`, so a host-side tool computing a standard FNV-1a digest will match.

@@ -1,9 +1,10 @@
 # Drivers
 
 Drivers live under `lisp/drivers/` and are bound to hardware by `lisp/init.clp`
-(each gated on a `pci-find`). A driver's `module_init`-equivalent entry receives its
-device, sets up DMA/MSI, and registers with the relevant `Core*` server (a NIC calls
-`network-register`, a display driver calls `display-register`, etc.).
+(each gated on a `pci-find`). A driver's init entry receives its device, sets up
+DMA/MSI, and registers with the relevant `Core*` server by message passing (a NIC
+registers with [corenetwork](../servers/corenetwork.md), a display driver with
+[coredisplay](../servers/coredisplay.md), etc.).
 
 | Driver | Device class |
 |--------|--------------|

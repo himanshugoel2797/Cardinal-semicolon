@@ -347,4 +347,4 @@ Subscribers call `(recv)` in their own loops and handle `'mybus-event` messages.
 - [coreaudio](../servers/coreaudio.md) — request/reply with `ctx?`/`reply-to` hardening
 - [corestorage](../servers/corestorage.md) — forwarding reply handles safely; the `probe`/`claim` pattern
 - [cardfs](../servers/cardfs.md) — single-context stash serialization for handlers that do message-IO
-- [Lisp VM API reference](../vm/api.md) — `spawn`, `spawn-restricted`, `send`, `recv`, `self`, `ctx?`, `capabilities`
+- [Lisp VM API reference](../vm/concurrency.md) — `spawn`, `spawn-restricted`, `send`, `recv`, `self`, `ctx?`, `capabilities`

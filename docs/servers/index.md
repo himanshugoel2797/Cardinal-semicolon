@@ -14,6 +14,6 @@ replies) rather than a C ABI.
 | [cardfs](cardfs.md) | `cardfs` object-store filesystem |
 | [coredisplay](coredisplay.md) | Display/framebuffer service |
 | [corecompositor](corecompositor.md) | Multi-client window compositor |
-| [corenetwork](corenetwork.md) | ARP/ICMP/IPv4 + UDP + RDT + TCP/DHCP/DNS |
+| [corenetwork](corenetwork.md) | ARP/ICMP/IPv4 + UDP + TCP/DHCP/DNS |
 | [corenetdebug](corenetdebug.md) | Network debug transport |
 | [coreusb](coreusb.md) | USB enumeration + class-driver dispatch |

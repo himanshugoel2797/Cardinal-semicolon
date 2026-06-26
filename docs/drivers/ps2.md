@@ -7,7 +7,7 @@
 | **Source** | `lisp/drivers/ps2.clp` |
 | **Kind** | driver |
 | **Bound by** | `lisp/init.clp` — always (not PCI-gated); `(ps2-init)` runs in the root init context, then `(ps2-keyboard-driver input)` is spawned as a restricted context |
-| **Registers with** | [coreinput](../servers/coreinput.md) via `(:register 'ps2-keyboard)` message |
+| **Registers with** | [coreinput](../servers/coreinput.md) via a `(register 'ps2-keyboard)` message |
 | **Capabilities** | `sys-io` (legacy port I/O: `in-u8`/`out-u8`), `sys-irq` (ISA-IRQ wake bridge: `irq-register`/`irq-count`/`irq-wait`) |
 
 ## Overview
@@ -76,7 +76,7 @@ Spawned by `init.clp` as a **restricted context with no import authority** — i
 inherits `sys-io` and `sys-irq` only through the closed-over module-level
 definitions, not through a fresh `import`. The context:
 
-1. Sends `(:register 'ps2-keyboard)` to `coreinput`.
+1. Sends a `(register 'ps2-keyboard)` message to `coreinput` (`(send coreinput (list 'register 'ps2-keyboard))`).
 2. Claims IRQ 1 with `(irq-register 1)`. Logs and returns `#f` if registration
    fails.
 3. Runs `(ps2-irq-selftest irq)` to prove the interrupt pipeline end-to-end.
@@ -140,7 +140,7 @@ without requiring a physical keypress:
 2. Send `0xEE` (echo command) to the keyboard via `ps2-write` (waits for IBF
    clear first).
 3. Park with `irq-wait` until IRQ 1 fires.
-4. Read back up to 4 bytes looking for `0xEE`. Any byte that raced the
+4. Read back up to 5 bytes (4 retries) looking for `0xEE`. Any byte that raced the
    just-unmasked line ahead of the reply is consumed and discarded so it does not
    leak into the pump as a bogus key event.
 5. Logs `[ps2] irq self-test ok (echo via IRQ 1)` on success, or

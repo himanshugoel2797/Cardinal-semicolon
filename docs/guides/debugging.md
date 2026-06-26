@@ -372,7 +372,7 @@ seconds.
 
 - [Add a PCI driver](add-a-pci-driver.md) — the MSI bring-up sequence in detail
 - [Message passing](../concepts/message-passing.md) — how Lisp contexts communicate; relevant to REPL→server calls
-- [VM API reference](../vm/api.md) — full list of Lisp primitives including `sys-debug`
+- [VM API reference](../vm/capabilities.md#sys-debug-reflective-debugger-capability) — full list of Lisp primitives including `sys-debug`
 
 ## See also
 

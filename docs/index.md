@@ -25,7 +25,7 @@ The reference documents the concrete Lisp layer:
   message protocol.
 - **[Drivers](drivers/index.md)** — the hardware drivers bound to PCI/legacy devices
   by `lisp/init.clp` (AHCI, virtio, USB controllers, NICs, HD Audio, PS/2, …).
-- **[Lisp VM](vm/api.md)** — the language and primitive (`prim`) surface exposed by
+- **[Lisp VM](vm/index.md)** — the language and primitive (`prim`) surface exposed by
   the kernel bytecode VM: special forms, builtins, capabilities, and the messaging
   and scheduling model that servers and drivers are built on.
 

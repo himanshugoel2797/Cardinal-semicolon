@@ -1,6 +1,6 @@
 # cardfs
 
-> A crash-consistent, integrity-checked object store that layers on top of [corestorage](../servers/corestorage.md) block devices, providing a flat key→blob map with CRC32-verified reads and log-structured, copy-on-write writes.
+> A crash-consistent, integrity-checked object store that layers on top of [corestorage](corestorage.md) block devices, providing a flat key→blob map with CRC32-verified reads and log-structured, copy-on-write writes.
 
 | | |
 |---|---|

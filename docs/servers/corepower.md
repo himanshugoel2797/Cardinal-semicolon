@@ -12,7 +12,7 @@
 
 ## Overview
 
-`corepower` is a Lisp port of the former C `servers/CorePower` server. It owns a list of registered power-managed devices; each entry is a triple `(name class-bits ctx)`. When a caller sends a power-transition event the service fans the event out — via `send`, never a re-entrant callback — to every device whose class bitmask intersects the event's class bitmask, then returns to its `recv` loop.
+`corepower` owns a list of registered power-managed devices; each entry is a triple `(name class-bits ctx)`. When a caller sends a power-transition event the service fans the event out — via `send`, never a re-entrant callback — to every device whose class bitmask intersects the event's class bitmask, then returns to its `recv` loop.
 
 The `send`-based fan-out is deliberately non-blocking: a device context that processes a power event (and might, for example, call back into another service) can never deadlock the power server, because the power server does not wait for any reply before moving on.
 
@@ -54,7 +54,7 @@ Signals a global power-state transition and fans a `pwr-g` message to every devi
 
 - **Request:** `(event-g <class-bits> <gstate> <pstate>)`
   - `class-bits` — bitmask of affected device classes; only devices with an overlapping class receive the event.
-  - `gstate` — global power state (opaque; convention from the original C server; no enumeration is enforced in Lisp).
+  - `gstate` — global power state (opaque; no enumeration is enforced).
   - `pstate` — performance state (opaque).
 - **Reply:** none (to the sender).
 - **Fan-out message delivered to each matching device:** `(pwr-g <gstate> <pstate>)`
@@ -71,7 +71,7 @@ Signals a device-local power-state transition and fans a `pwr-d` message to ever
 
 - **Request:** `(event-d <class-bits> <dstate>)`
   - `class-bits` — bitmask of affected device classes.
-  - `dstate` — device power state (opaque; D0–D3 convention from the C server; not enforced).
+  - `dstate` — device power state (opaque; D0–D3 by convention; not enforced).
 - **Reply:** none (to the sender).
 - **Fan-out message delivered to each matching device:** `(pwr-d <dstate>)`
 
@@ -87,7 +87,7 @@ Any message whose `car` is not `register`, `event-g`, or `event-d` is silently i
 
 ## Exported constants
 
-These integer bitmasks mirror the `device_pwr_class` flags from the former C header `servers/inc/CorePower/power.h`. Combine them with `bitwise-or` to register a device for multiple classes.
+These integer bitmasks are the device power-class flags. Combine them with `bitwise-or` to register a device for multiple classes.
 
 | Constant | Value | Meaning |
 |---|---|---|

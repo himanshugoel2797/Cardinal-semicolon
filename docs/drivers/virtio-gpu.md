@@ -41,7 +41,7 @@ Steps, in order:
 1. `(pci-find VIRTIO-GPU-VID VIRTIO-GPU-DID)` — aborts with `#f` if the device is absent.
 2. `(virtio-bringup ecam 0 (arithmetic-shift 1 VIRTIO-F-VERSION-1-BIT))` — walks PCI capabilities, maps COMMON/NOTIFY/DEVICE regions, drives the ACK→DRIVER→FEATURES_OK→DRIVER_OK status machine, negotiates `VERSION_1` only.
 3. `(virtio-setup-queue common GPU-CTRLQ)` (queue 0) — allocates descriptor/avail/used rings via `dma-alloc` and hands the device their physical addresses.
-4. `(virtio-setup-queue common GPU-CURSORQ)` (queue 1) — allocated for parity with the C driver; **not used** by the Lisp driver.
+4. `(virtio-setup-queue common GPU-CURSORQ)` (queue 1) — allocated but **not used**; no cursor commands are ever issued.
 5. Sets `VIRTIO_STATUS_DRIVER_OK`.
 6. Issues `GET_DISPLAY_INFO` and iterates the 16 possible scanouts. For each enabled scanout, calls `init-scanout`.
 
@@ -198,7 +198,7 @@ The compositing path writes to the WB-cached framebuffer and then sends a `(flus
 `ctrlq-cmd!` (from `lisp/lib/virtio.clp`) posts a fixed descriptor pair (0, 1) and waits for the used ring to advance before returning. Issuing a second command while one is in-flight is not supported. The driver's recv loop processes one message at a time, so concurrent senders are serialised by the message queue, not by the driver explicitly.
 
 **Cursor queue is allocated but unused.**
-`GPU-CURSORQ` (queue 1) is set up during bring-up for parity with the C driver. No cursor commands are ever issued.
+`GPU-CURSORQ` (queue 1) is set up during bring-up, but no cursor commands are ever issued.
 
 **Scatter-gather backing is not implemented.**
 `make-attach-backing` always sends `nr_entries = 1`. For modes where `w * h * 4` exceeds a single contiguous DMA allocation's practical limit, chunked attach-backing is needed but is currently a TODO.
@@ -207,7 +207,7 @@ The compositing path writes to the WB-cached framebuffer and then sends a `(flus
 The `(display-info)` message does nothing. Hotplug/resize events from the host are silently ignored.
 
 **Format is always `X8R8G8B8` (value 4).**
-Byte layout in memory (little-endian): byte 0 = B, byte 1 = G, byte 2 = R, byte 3 = X (ignored). When interpreting pixel values numerically as a 32-bit little-endian word: R occupies bits 8–15, G bits 16–23, B bits 24–31 (i.e., `0x00RRGGBB` in memory order becomes `color = R<<8 | G<<16 | B<<24`). This differs from the more common `ARGB` or `RGBA` conventions used in higher-level graphics code — consult `init.clp`'s `gpu-bench` comment for the channel-offset table.
+Memory byte order is `[X, R, G, B]`: byte 0 = X (ignored), byte 1 = R, byte 2 = G, byte 3 = B. Read as a 32-bit little-endian word, the channels land at R = bits 8–15, G = bits 16–23, B = bits 24–31 — i.e. `color = (R << 8) | (G << 16) | (B << 24)`. This is **not** the std-vga `0xRRGGBB` packing (R = 16, G = 8, B = 0); pixel-fill code must use the channel offsets above. `init.clp`'s `gpu-bench` carries the same channel-offset note.
 
 **Command timeout is 1 second.**
 `GPU-CMD-TIMEOUT-NS` is 1 000 000 000 ns. A timeout causes `gpu-cmd!` to return `#f`; `gpu-cmd-ok!` logs a warning and the bring-up continues. A timeout during `create-2d` is treated as fatal for that scanout (the resource was never created, so subsequent commands would reference an invalid resource-id and NACK continuously).
