@@ -578,40 +578,46 @@
               ((>= tries 80) 0)                ; ~8s: single-core / no shards
               (else (sleep 100000000) (loop (+ tries 1)))))))
 
-  ;; The phase-4 compositor demo client: connect, create one window-sized surface,
-  ;; map its grant (zero-copy), draw a titled window into it (using the screen pixel
-  ;; format the compositor advertised at connect, since gfx-blit! is a raw copy),
-  ;; place it on the desktop and commit -- so a real window appears on the real
-  ;; display via the compositor's flush path. Restricted to '(sys-shm): it can map
-  ;; only granted memory (the window-client posture). Leaves a stable frame.
-  (define (start-compositor-demo-client comp)
+  ;; A parameterised compositor demo client (phase 5). Each call spawns an
+  ;; INDEPENDENT '(sys-shm) client context that connects on its own, creates one
+  ;; surface, draws a distinct titled window into its granted backing (using the
+  ;; screen pixel format the compositor advertised at connect, since gfx-blit! is a
+  ;; raw copy), places it on the desktop and commits -- so a real window appears on
+  ;; the real display via the compositor's flush path. Restricted to '(sys-shm): it
+  ;; can map only granted memory (the window-client posture). `body`/`bar`/`rect`/
+  ;; `circ` are (r g b) accent colours; `delay-ns` staggers a client's connect so a
+  ;; later window lands at a higher z and the cross-client occlusion is deterministic
+  ;; for the screenshot. Two of these (below) prove multi-client compositing: two
+  ;; isolated contexts, two per-client handlers, one painter's pass over both.
+  (define (start-compositor-demo-client comp delay-ns x y w h title body bar rect circ)
     (let ((ttfbytes (initrd-file TTF-FONT-PATH)))
       (spawn-restricted '(sys-shm)
         (lambda ()
           (import sys-shm)
+          (if (> delay-ns 0) (sleep delay-ns))
           (let ((tf (if ttfbytes (make-ttf-font ttfbytes) #f)))
             (send comp (list 'connect #f (self)))
             (let ((r (recv)))                            ; (connected handler fmt)
               (if (not (eq? (car r) 'connected))
                   (begin (display "[compositor-demo] FAIL no connected reply") (newline))
-                  (let* ((h (cadr r)) (fmt (caddr r))
-                         (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
-                         (sw 360) (sh 240))
-                    (send h (list 'create-surface sw sh))
+                  (let* ((handler (cadr r)) (fmt (caddr r))
+                         (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt)))
+                    (send handler (list 'create-surface w h))
                     (let ((s (recv)))                    ; (surface id g0 g1 stride)
                       (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
-                             (surf (make-surface* (map-grant g0) sw sh stride ro go bo '())))
-                        (clear surf (rgb surf 245 246 250))               ; window body
-                        (fill-rect surf 0 0 sw 28 (rgb surf 54 92 168))   ; title bar
-                        (if tf (ttf-draw-text surf tf 10 5 "Compositor window"
+                             (surf (make-surface* (map-grant g0) w h stride ro go bo '()))
+                             (col (lambda (c) (rgb surf (car c) (cadr c) (caddr c)))))
+                        (clear surf (col body))                          ; window body
+                        (fill-rect surf 0 0 w 28 (col bar))              ; title bar
+                        (if tf (ttf-draw-text surf tf 10 5 title
                                               (rgb surf 255 255 255) 18))
-                        (draw-rect surf 0 0 sw sh 1 (rgb surf 30 40 60))  ; border
-                        (fill-rect surf 28 70 110 90 (rgb surf 230 90 70))
-                        (fill-circle surf 250 120 50 (rgb surf 70 170 110))
-                        (send h (list 'configure id 140 110 #t))
-                        (send h (list 'commit id 0 '()))
-                        (display "[compositor-demo] window presented on the real scanout")
-                        (newline)))))))))))
+                        (draw-rect surf 0 0 w h 1 (rgb surf 30 40 60))   ; border
+                        (fill-rect surf 28 70 110 90 (col rect))
+                        (fill-circle surf (- w 110) 120 50 (col circ))
+                        (send handler (list 'configure id x y #t))
+                        (send handler (list 'commit id 0 '()))
+                        (display "[compositor-demo] window '") (display title)
+                        (display "' presented") (newline)))))))))))
 
   ;; The system entry point: called once on the BSP after the scheduler is live.
   ;; Each Core* service is a long-lived context; bring up the ones that exist
@@ -831,8 +837,20 @@
             (if (and compdemo? (not target))
                 (begin (display "[compositor-demo] no display present; nothing to show")
                        (newline)))
-            ;; phase-4 demo: a client draws a real window onto the owned scanout.
-            (if (and compdemo? target) (start-compositor-demo-client comp))
+            ;; phase-5 demo: TWO independent client contexts each draw their own
+            ;; window onto the owned scanout. They overlap (Window Two is staggered
+            ;; 400ms so it reliably connects second -> higher z -> on top in the
+            ;; overlap; the gap dwarfs a connect/create round-trip but is a timing
+            ;; margin, not a protocol guarantee), demonstrating cross-client
+            ;; occlusion via the root's single painter's pass.
+            (if (and compdemo? target)
+                (begin
+                  (start-compositor-demo-client comp 0 110 90 360 240 "Window One"
+                                                '(245 246 250) '(54 92 168)
+                                                '(230 90 70) '(70 170 110))
+                  (start-compositor-demo-client comp 400000000 330 250 320 210 "Window Two"
+                                                '(250 248 240) '(150 70 140)
+                                                '(240 200 70) '(120 110 220))))
             ;; cardinal.compositorinput: exercise phase-6 input routing end to end.
             ;; One client draws a window with a known title-bar colour and places it,
             ;; then INJECTS synthetic events through the input service (QEMU delivers

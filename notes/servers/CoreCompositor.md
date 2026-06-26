@@ -1,9 +1,12 @@
 # CoreCompositor — multi-client window compositor
 
-Status: **phases 1–4 + phase 6 implemented** (grant substrate + IPC root + surface
-protocol & compositing + the driver seam — the compositor owns the real scanout and a
-window appears on the display — plus phase-6 input routing/focus/drag-move and
-zero-page revoke hardening). Phase 5 (two-client demo) lands in a parallel PR.
+Status: **phases 1–7 implemented** (grant substrate + IPC root + surface protocol
+& compositing + the driver seam — the compositor owns the real scanout and a window
+appears on the display — plus phase-5 two-client compositing (two independent client
+contexts draw two overlapping windows with correct cross-client occlusion), phase-6
+input routing/focus/drag-move + zero-page revoke hardening, and phase-7 cross-core
+sharded instances with a two-level layer merge, global z authority, and damage
+bounding).
 
 A new `Core*` Lisp server that owns the screen and composites off-screen
 surfaces owned by independent client contexts, using **zero-copy shared-memory
@@ -513,8 +516,19 @@ after `coredisplay` + the display driver bind (it needs the driver's
      `ISO=build/ISO/os-compositordemo.iso GPU=virtio-vga SCREENSHOT=out.ppm ./scripts/run-qemu.sh`
      (`virtio-vga`, not `virtio`, so the virtio-gpu scanout is the *primary* display
      the monitor `screendump` captures).
-5. **Two-client demo** — generalize `init.clp`'s proto-compositor into two client
-   contexts (two handlers) drawing independent windows; screenshot validation.
+5. **Two-client demo** — ✅ **DONE.** `init.clp`'s single phase-4 demo client is now
+   the parameterised `start-compositor-demo-client comp delay-ns x y w h title body
+   bar rect circ`, and the `cardinal.compositordemo` bring-up spawns it **twice** as
+   two independent `'(sys-shm)` client contexts (two separate per-client handlers)
+   drawing two distinct overlapping windows. Window Two is staggered 400 ms so it
+   connects second → higher z → on top in the overlap region, so the screenshot
+   exercises **cross-client occlusion through the root's single painter's pass** (not
+   a within-client z choice). Validated: `os-compositordemo.iso` on `GPU=virtio-vga`
+   (1280×800 scanout) shows "Window One" (blue title, red rect, green circle) under
+   "Window Two" (purple title, yellow rect, indigo circle) where they overlap, with
+   correct per-window colours (the X8R8G8B8 format advertisement holding across both
+   clients). The stagger is a timing margin (it dwarfs a connect/create round-trip),
+   not a protocol ordering guarantee — there is no cross-client sync primitive in v1.
 6. **input routing + drag-move + revoke hardening** — ✅ **DONE** (revoke in its own
    PR; input routing + move here). `coreinput` gained a **`subscribe`** verb (a
    consumer registers and receives every `(input <payload>)`; the service stays pure
