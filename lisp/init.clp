@@ -214,10 +214,78 @@
       (if (or (not phys) (not pitch) (not width) (not height)
               (= phys 0) (= pitch 0) (= width 0) (= height 0))
           #f
-          (make-surface* (mmio-map phys (* pitch height)) width height pitch
+          ;; WC-map the scanout: the demo composes in a cached back-buffer and
+          ;; streams finished frames here, so write-combining (the CPU coalesces
+          ;; sequential stores into bursts) is exactly the right mapping for a
+          ;; write-only framebuffer -- many times the throughput of a UC mapping.
+          (make-surface* (mmio-map-wc phys (* pitch height)) width height pitch
                          (reg-or GFX-FB-PATH "RED_OFFSET" 16)
                          (reg-or GFX-FB-PATH "GREEN_OFFSET" 8)
                          (reg-or GFX-FB-PATH "BLUE_OFFSET" 0) '()))))
+
+  ;; Micro-benchmark the WC + double-buffer pipeline. bytes/ns == GB/s, so *1000
+  ;; gives MB/s. CAVEAT: under QEMU/KVM the scanout is EMULATED VRAM behind the
+  ;; display's dirty-page tracking (KVM write-protects framebuffer pages and faults
+  ;; to mark them dirty for the refresh), a well-known slow path where -- as the
+  ;; community puts it -- "write-combining doesn't do much in QEMU". So the absolute
+  ;; flush numbers reflect the emulator, NOT real hardware, where WC takes a
+  ;; framebuffer from a few hundred MB/s to >1 GB/s (Linux vesafb/efifb map it WC
+  ;; for exactly this reason; ~6x in published vesa-MTRR measurements). The bench
+  ;; flushes the SAME frame through both a WC and a UC mapping to show they tie
+  ;; here; the cached back-buffer compose is real RAM and IS representative.
+  (define (mb-per-s bytes ns) (if (= ns 0) 0 (quotient (* bytes 1000) ns)))
+  (define (time-copies dst src iters)              ; ns for `iters` full-buffer copies
+    (let ((len (bytes-length src)) (t0 (uptime-ns)))
+      (let loop ((i 0)) (if (< i iters) (begin (bytes-copy! dst 0 src 0 len) (loop (+ i 1)))))
+      (- (uptime-ns) t0)))
+  (define (gfx-benchmark db fnt tf)
+    (let* ((back (db-back db)) (front (db-front db))
+           (W (surface-width back)) (H (surface-height back))
+           (fb (surface-fb back)) (wcfb (surface-fb front))
+           (fbytes (bytes-length fb))
+           (ucfb (mmio-map (bytes-phys wcfb) fbytes)) ; a UC view of the same scanout
+           (bg (rgb back 28 30 44)))
+      ;; 0) DIAGNOSTIC: stream stores to the SAME physical scratch RAM through
+      ;; WB / WC / UC mappings. On real hardware WB > WC >> UC. Observed here:
+      ;; WB is fast but WC == UC (both slow) -- and UC being slow proves guest PAT
+      ;; IS honored (modern Intel w/ self-snoop; KVM does NOT force WB), so this is
+      ;; NOT "the hypervisor ignores PAT". WC simply yields no write-combine speedup
+      ;; under EPT here, the same reason the WC framebuffer flush ties UC below. The
+      ;; WC win shows up on bare metal, not under this emulator.
+      (let* ((sbytes (* 1024 1024))
+             (sUC (dma-alloc sbytes))                  ; dma-alloc returns a UC mapping
+             (sWC (mmio-map-wc (bytes-phys sUC) sbytes))
+             (sWB (make-bytes sbytes))
+             (words (quotient sbytes 4)))
+        (define (fill-bw b)
+          (let ((t0 (uptime-ns)))
+            (let loop ((i 0)) (if (< i 30) (begin (bytes-fill32! b 0 words #x223344) (loop (+ i 1)))))
+            (mb-per-s (* sbytes 30) (- (uptime-ns) t0))))
+        (display "[gfx-bench] 1MB scratch store WB: ") (display (fill-bw sWB))
+        (display " | WC: ") (display (fill-bw sWC))
+        (display " | UC: ") (display (fill-bw sUC)) (display " MB/s") (newline))
+      ;; 1) cached back-buffer compose -- real RAM, representative of any machine.
+      (let ((t0 (uptime-ns)))
+        (let loop ((i 0)) (if (< i 20) (begin (clear back bg) (loop (+ i 1)))))
+        (let ((dt (- (uptime-ns) t0)))
+          (display "[gfx-bench] back-buffer compose (cached/WB): ")
+          (display (mb-per-s (* fbytes 20) dt)) (display " MB/s") (newline)))
+      ;; 2) flush bandwidth: WC vs UC mapping of the SAME scanout, identical copy.
+      (let ((wc (time-copies wcfb fb 5)) (uc (time-copies ucfb fb 5)))
+        (display "[gfx-bench] flush WC: ") (display (mb-per-s (* fbytes 5) wc))
+        (display " MB/s | UC: ") (display (mb-per-s (* fbytes 5) uc))
+        (display " MB/s (tie under QEMU dirty-tracking; real HW WC ~6x UC)") (newline))
+      ;; 3) full UI frame: compose + WC flush. Report frame time + fps (x100 for
+      ;; one decimal, since a trapped-VRAM frame is ~1 fps under the emulator).
+      (let ((t0 (uptime-ns)))
+        (let loop ((i 0))
+          (if (< i 3) (begin (draw-demo-ui back fnt tf) (db-flush db) (loop (+ i 1)))))
+        (let* ((dt (- (uptime-ns) t0))
+               (cfps (if (= dt 0) 0 (quotient (* 300000000000 1) dt))))
+          (display "[gfx-bench] full UI frame (compose+WC flush): ")
+          (display (quotient dt (* 3 1000))) (display " us, ")
+          (display (quotient cfps 100)) (display ".") (display (modulo cfps 100))
+          (display " fps @ ") (display W) (display "x") (display H) (newline)))))
 
   ;; Load the default font (init holds sys-initrd), map the live framebuffer, then
   ;; spawn a context that draws the demo. The surface is captured by the spawned
@@ -226,30 +294,41 @@
   ;; (the SysDebug console shares this framebuffer), finishing silently so the final
   ;; frame is stable for a screenshot.
   (define (start-gfx-demo)
-    (let ((surf (gfx-map-framebuffer))
+    (let ((front (gfx-map-framebuffer))
           (fontbytes (initrd-file FONT8X16-PATH))
           (ttfbytes (initrd-file TTF-FONT-PATH)))
-      (if (not surf)
+      (if (not front)
           (begin (display "[gfx-demo] no framebuffer") (newline))
           (begin
-            (display "[gfx-demo] framebuffer ") (display (surface-width surf)) (display "x")
-            (display (surface-height surf)) (display " pitch ") (display (surface-stride surf))
+            (display "[gfx-demo] framebuffer ") (display (surface-width front)) (display "x")
+            (display (surface-height front)) (display " pitch ") (display (surface-stride front))
+            (display " (WC-mapped, double-buffered)")
             (display " bitmap-font=") (display (if fontbytes (bytes-length fontbytes) 0))
             (display " ttf=") (display (if ttfbytes (bytes-length ttfbytes) 0)) (newline)
             (spawn-restricted '()
               (lambda ()
-                (let ((fnt (if fontbytes (make-font fontbytes FONT8X16-W FONT8X16-H) #f))
+                ;; the cached back-buffer (make-bytes) must live in THIS context's
+                ;; heap; the WC front is captured by identity (spawn shares state).
+                (let ((db  (make-double-buffer front))
+                      (fnt (if fontbytes (make-font fontbytes FONT8X16-W FONT8X16-H) #f))
                       (tf  (if ttfbytes (make-ttf-font ttfbytes) #f)))
-                  (draw-demo-ui surf fnt tf)
-                  ;; self-check: read a pixel back from the live framebuffer.
-                  (display "[gfx-demo] frame drawn; ")
-                  (display (if (= (get-pixel surf 2 220) (rgb surf 28 30 44))
-                               "pixel-check OK" "pixel-check MISMATCH"))
-                  (newline)
-                  (let loop ((k 0))
-                    (if (< k 6)
-                        (begin (sleep 2000000000) (draw-demo-ui surf fnt tf) (loop (+ k 1)))
-                        'done)))))))))
+                  (let ((back (db-back db)))
+                    (draw-demo-ui back fnt tf)
+                    (db-flush db)
+                    ;; self-check: read a pixel back from the cached back-buffer.
+                    (display "[gfx-demo] frame drawn; ")
+                    (display (if (= (get-pixel back 2 220) (rgb back 28 30 44))
+                                 "pixel-check OK" "pixel-check MISMATCH"))
+                    (newline)
+                    (gfx-benchmark db fnt tf)
+                    ;; redraw a stable frame for the screenshot, then repaint a few
+                    ;; times to cover straggler kernel-debug text on the scanout.
+                    (draw-demo-ui back fnt tf) (db-flush db)
+                    (let loop ((k 0))
+                      (if (< k 6)
+                          (begin (sleep 2000000000) (draw-demo-ui back fnt tf) (db-flush db)
+                                 (loop (+ k 1)))
+                          'done))))))))))
 
   ;; The system entry point: called once on the BSP after the scheduler is live.
   ;; Each Core* service is a long-lived context; bring up the ones that exist

@@ -1553,6 +1553,20 @@ static lisp_value prim_bytes_copy(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// (sfence) -> retire the CPU's store / write-combining buffers so every prior
+// store is globally visible before any later one. Required after streaming a
+// frame to a WRITE-COMBINING framebuffer (mmio-map-wc): WC stores accumulate in
+// the write-combine buffer and drain lazily (when it fills, on a fence, or on a
+// serializing instruction), so without a fence the tail of a flushed frame can
+// still be buffered when the scanout reads VRAM -> tearing at the bottom edge.
+static lisp_value prim_sfence(lisp_value *a, int n, const char **e) {
+    (void)a;
+    if (n != 0)
+        return prim_err(e, "sfence: expects no arguments");
+    __asm__ volatile("sfence" ::: "memory");
+    return LISP_UNDEF;
+}
+
 // --- 2D graphics blitters ----------------------------------------------------
 // The per-pixel inner loops a UI needs that the interpreted layer can't run fast
 // (a per-element Lisp loop is the ~200-650x trap bytes-fill32!/bytes-copy! exist to
@@ -1820,6 +1834,7 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "bytes-u64-set!", prim_b_u64_set);
     def(env, "bytes-fill32!", prim_bytes_fill32);
     def(env, "bytes-copy!", prim_bytes_copy);
+    def(env, "sfence", prim_sfence);
     def(env, "gfx-fill-rect!", prim_gfx_fill_rect);
     def(env, "gfx-blit!", prim_gfx_blit);
     def(env, "gfx-blend!", prim_gfx_blend);
