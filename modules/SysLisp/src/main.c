@@ -403,14 +403,15 @@ static lisp_value prim_dma_alloc_32(lisp_value *a, int n, const char **e) {
 // (grant-mint buffer [perms]) -> a grant over `buffer`'s physical region. `buffer`
 // must be a DMA/MMIO region (phys != 0) the minter already holds (it came from a
 // gated dma-alloc*/mmio-map), so the grant re-exposes only THAT region. `perms` is
-// the symbol 'rw (default) or 'ro. Gated as sys-shm-mint.
+// the symbol 'ro (DEFAULT -- least privilege) or 'rw; a writable grant must be
+// asked for explicitly. Gated as sys-shm-mint.
 static lisp_value prim_grant_mint(lisp_value *a, int n, const char **e) {
     if (n < 1 || n > 2 || !lisp_is_bytes(a[0]))
         return (*e = "grant-mint: expects (buffer [perms])"), LISP_UNDEF;
     uint64_t phys = lisp_bytes_phys(a[0]);
     if (phys == 0)
         return (*e = "grant-mint: buffer has no physical address (not a DMA/MMIO region)"), LISP_UNDEF;
-    uint32_t perms = 1;  // read-write by default
+    uint32_t perms = 0;  // read-only by default (least privilege; ask for 'rw to write)
     if (n == 2) {
         // Strict: only 'rw or 'ro. A typo'd/unknown symbol is an ERROR, never a
         // silent fall-through to read-write -- a hidden writable grant is exactly
@@ -446,19 +447,19 @@ static lisp_value prim_map_grant(lisp_value *a, int n, const char **e) {
     if (lisp_grant_resolve(a[0], &phys, &len, &perms) != 0)
         return LISP_FALSE;  // revoked or stale
     // Map write-back to match the dma-alloc-wb backing (no UC/WB aliasing of the
-    // same pages). CAVEAT: read-only grants are NOT page-table-enforced on this
-    // platform -- vmem_phystovirt returns a prebuilt physmap window that is always
-    // mapped RW and ignores write-permission bits, so the perms bit below is a
-    // no-op today. perms is therefore ADVISORY (recorded in the grant, surfaced by
-    // resolve); 'ro is not yet an access boundary. See notes/AUDIT.md; making it
-    // structural needs a dedicated read-only physmap window.
-    vmem_flags_t f = vmem_flags_cachewriteback | vmem_flags_kernel;
-    if (perms)
-        f |= vmem_flags_rw;
-    intptr_t virt = vmem_phystovirt((intptr_t)phys, len, f);
+    // same pages). The page table cannot enforce read-only here -- vmem_phystovirt
+    // returns a prebuilt physmap window that is always mapped RW and ignores
+    // write-permission bits -- so read-only is enforced IN SOFTWARE instead: a
+    // 'ro grant's view is marked read-only and every bytes mutator refuses to
+    // write it. That is airtight in the Lisp sandbox (a grantee touches the region
+    // only through those prims, and without sys-mmio cannot re-map it writable),
+    // which is the right enforcement layer for this system. See notes/AUDIT.md.
+    intptr_t virt = vmem_phystovirt((intptr_t)phys, len, vmem_flags_cachewriteback | vmem_flags_kernel);
     lisp_value b = lisp_make_bytes_foreign((void *)virt, len, phys);
     if (b == LISP_UNDEF)
         return (*e = "map-grant: out of memory"), LISP_UNDEF;
+    if (!perms)
+        lisp_bytes_mark_readonly(b);  // 'ro grant: writes through this view are refused
     return b;
 }
 
@@ -1324,12 +1325,24 @@ static void check_capabilities(lisp_value env) {
         "(define mint-bad"
         "  (spawn-restricted '(sys-mmio sys-shm-mint)"
         "    (lambda () (import sys-mmio sys-shm-mint)"
-        "               (grant-mint (dma-alloc-wb 4096) 'bogus))))",
+        "               (grant-mint (dma-alloc-wb 4096) 'bogus))))"
+        // Read-only ENFORCEMENT (not advisory): a 'ro grant's mapped view refuses
+        // writes through the bytes mutators. The context writes through the view
+        // and must error.
+        "(define ro-write"
+        "  (spawn-restricted '(sys-mmio sys-shm sys-shm-mint)"
+        "    (lambda () (import sys-mmio sys-shm sys-shm-mint)"
+        "               (let* ((buf (dma-alloc-wb 4096))"
+        "                      (g   (grant-mint buf 'ro))"
+        "                      (v   (map-grant g)))"
+        "                 (bytes-u32-set! v 0 1)"     // write to a read-only view -> error
+        "                 'leaked))))",
         env, &err);
     lisp_value ok = lisp_eval_string("cap-ok", env, &err);
     lisp_value deny = lisp_eval_string("cap-deny", env, &err);
     lisp_value shm_deny = lisp_eval_string("shm-deny", env, &err);
     lisp_value mint_bad = lisp_eval_string("mint-bad", env, &err);
+    lisp_value ro_write = lisp_eval_string("ro-write", env, &err);
     lisp_sched_run(&s, 0);
 
     char buf[64];
@@ -1339,13 +1352,15 @@ static void check_capabilities(lisp_value env) {
     bool deny_pass = lisp_ctx_state(deny) == LISP_CTX_ERROR;
     bool shm_split = lisp_ctx_state(shm_deny) == LISP_CTX_ERROR;
     bool mint_strict = lisp_ctx_state(mint_bad) == LISP_CTX_ERROR;
-    if (shm_split && mint_strict) {
-        print_str("[SysLisp]  ok  grant capability split + strict perms (sys-shm cannot mint; bad perms rejected)\r\n");
+    bool ro_enforced = lisp_ctx_state(ro_write) == LISP_CTX_ERROR;
+    if (shm_split && mint_strict && ro_enforced) {
+        print_str("[SysLisp]  ok  grant split + strict perms + RO enforced (sys-shm can't mint; bad perms rejected; 'ro view refuses writes)\r\n");
         g_pass++;
     } else {
-        print_str("[SysLisp] FAIL grant capability split/perms ");
+        print_str("[SysLisp] FAIL grant split/perms/RO ");
         print_str(shm_split ? "" : " sys-shm-only-context-MINTED");
         print_str(mint_strict ? "" : " bad-perms-ACCEPTED");
+        print_str(ro_enforced ? "" : " RO-VIEW-WROTE");
         print_str("\r\n");
         g_fail++;
     }

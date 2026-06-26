@@ -620,16 +620,24 @@ The grant substrate (`libs/lisp/src/grant.c`, `sys-shm`/`sys-shm-mint` in
 `modules/SysLisp/src/main.c`) backs the compositor's zero-copy surfaces; design
 in `notes/servers/CoreCompositor.md`. Two known limitations are tracked here:
 
-### [INCOMPLETE] Read-only grants are not page-table-enforced
-`modules/SysLisp/src/main.c` `prim_map_grant`
+### Read-only grants are enforced in software, not by the page table
+`modules/SysLisp/src/main.c` `prim_map_grant`; `libs/lisp/src/prims.c` (bytes mutators)
 
-A grant records a perms bit (`'rw`/`'ro`) and `map-grant` constructs vmem flags
-from it, but `vmem_phystovirt` (`modules/SysVirtualMemory/.../vmem.c:748`) selects
-a prebuilt physmap window purely by cache type and ignores write-permission bits;
-all physmap windows are mapped RW at init. So a `'ro` grant still maps writable —
-the perms bit is **advisory** (recorded, surfaced by `lisp_grant_resolve`), not an
-access boundary. Making it structural needs a dedicated read-only physmap window
-(or per-mapping page-table entries). Do not rely on `'ro` for isolation until then.
+The page table cannot enforce read-only here: `vmem_phystovirt`
+(`modules/SysVirtualMemory/.../vmem.c:748`) selects a prebuilt physmap window
+purely by cache type and ignores write-permission bits, so every physmap window is
+RW. Read-only is therefore enforced **in software**: `map-grant` marks a `'ro`
+grant's `bytes` view read-only (`lisp_bytes_mark_readonly`), and every bytes
+mutator (`bytes-*-set!`/`bytes-fill32!`/`bytes-copy!`, `gfx-*`) refuses to write a
+read-only destination. This is **airtight in the Lisp sandbox** — a grantee can
+reach the region only through those prims (no pointer arithmetic; without
+`sys-mmio` it cannot re-map the phys writable), which is the correct enforcement
+layer for this system (the VM/capability boundary, not the page table). `'ro` is
+the default; a writable grant must be minted `'rw`.
+**Caveat for non-Lisp paths:** the flag is a VM-accessor check, so a *C-level* or
+*device-DMA* writer with the raw phys would bypass it. No such path can be reached
+by a `sys-shm`-only grantee today; if one is added, it must honor the flag (or a
+real read-only physmap window is then warranted).
 
 ### [INCOMPLETE] Use-after-revoke is a contract, not enforced
 `grant-revoke` flips the table slot so future `map-grant` returns `#f`, but it does

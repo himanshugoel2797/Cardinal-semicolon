@@ -99,7 +99,35 @@ int main(void) {
             strcmp(render(lisp_ctx_value(consumer), buf, sizeof buf), "#t") == 0);
     }
 
-    // 7. table exhaustion is a hard error, not a silent overwrite. Done last
+    // 7. read-only enforcement: a bytes view marked read-only (as map-grant marks
+    //    a 'ro grant) refuses writes through every mutator but still reads. Here we
+    //    mark a heap-backed foreign view directly, since map-grant itself is
+    //    kernel-only. The guard fires before touching memory.
+    {
+        static uint8_t backing[64];
+        lisp_value ro = lisp_make_bytes_foreign(backing, sizeof backing, 0x9000);
+        lisp_bytes_mark_readonly(ro);
+        chk("readonly flag is observable", lisp_bytes_readonly(ro));
+
+        lisp_value env = lisp_default_env();
+        lisp_install_sched(env);  // env may host scheduler prims; harmless here
+        lisp_env_define(env, lisp_make_symbol("ro", 2), ro);
+        const char *err = NULL;
+
+        lisp_eval_string("(bytes-u32-set! ro 0 5)", env, &err);
+        chk("RO refuses bytes-u32-set!", err != NULL);
+        err = NULL;
+        lisp_eval_string("(bytes-fill32! ro 0 1 5)", env, &err);
+        chk("RO refuses bytes-fill32!", err != NULL);
+        err = NULL;
+        lisp_eval_string("(gfx-fill-rect! ro 4 1 1 0 0 1 1 255)", env, &err);
+        chk("RO refuses gfx-fill-rect!", err != NULL);
+        err = NULL;
+        lisp_eval_string("(bytes-u8-ref ro 0)", env, &err);  // reads stay allowed
+        chk("RO still allows reads", err == NULL);
+    }
+
+    // 8. table exhaustion is a hard error, not a silent overwrite. Done last
     //    because it consumes the rest of the table for this process.
     int minted = 0;
     while (lisp_grant_mint(0x500000, 4096, 1) != LISP_UNDEF)

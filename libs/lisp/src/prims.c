@@ -1441,6 +1441,25 @@ size_t lisp_bytes_len(lisp_value v) { return as_bytes(v)->len; }
 void *lisp_bytes_data(lisp_value v) { return as_bytes(v)->data; }
 uint64_t lisp_bytes_phys(lisp_value v) { return as_bytes(v)->phys; }
 
+// Read-only foreign views. map-grant marks a 'ro grant's mapping read-only; the
+// bytes MUTATORS below then refuse to write it. In the Lisp sandbox a grantee can
+// only reach the region through these prims (no pointer arithmetic, and without
+// sys-mmio it cannot re-map the phys writable), so this software flag is a
+// COMPLETE read-only boundary -- not the bypassable kind a flag would be in C.
+// The bit lives in the header aux word (bytes does not otherwise use it), so it
+// costs no struct space. Reads (bytes-*-ref) are always allowed.
+#define LISP_BYTES_RO_AUX 0x1u
+void lisp_bytes_mark_readonly(lisp_value v) {
+    lisp_obj(v)->header |= ((uint64_t)LISP_BYTES_RO_AUX << 16);
+}
+bool lisp_bytes_readonly(lisp_value v) {
+    return lisp_is_bytes(v) && (LISP_HDR_AUX(lisp_obj(v)) & LISP_BYTES_RO_AUX) != 0;
+}
+// Every bytes mutator takes its destination as arg 0; refuse a write to a
+// read-only granted view there. One guard covers them all.
+#define BYTES_WR_GUARD(v, e, who) \
+    do { if (lisp_bytes_readonly(v)) return prim_err((e), who ": destination is a read-only grant"); } while (0)
+
 // (make-bytes n) -> a fresh zeroed mutable buffer of n bytes.
 static lisp_value prim_make_bytes(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_fixnum(a[0]) || lisp_fixnum_val(a[0]) < 0)
@@ -1491,6 +1510,7 @@ static lisp_value bytes_set(lisp_value *a, int n, const char **e, int w) {
     if (n != 3 || !lisp_is_bytes(a[0]) || !lisp_is_fixnum(a[1]) || !lisp_is_fixnum(a[2]))
         return prim_err(e, "bytes-set! expects (bytes index value)");
     lisp_bytes *b = as_bytes(a[0]);
+    BYTES_WR_GUARD(a[0], e, "bytes-set!");
     int64_t i = lisp_fixnum_val(a[1]);
     if (i < 0 || (size_t)i + (size_t)w > b->len)
         return prim_err(e, "bytes-set!: index out of range");
@@ -1525,6 +1545,7 @@ static lisp_value prim_bytes_fill32(lisp_value *a, int n, const char **e) {
         !lisp_is_fixnum(a[2]) || !lisp_is_fixnum(a[3]))
         return prim_err(e, "bytes-fill32! expects (bytes byte-offset count color)");
     lisp_bytes *b = as_bytes(a[0]);
+    BYTES_WR_GUARD(a[0], e, "bytes-fill32!");
     int64_t off = lisp_fixnum_val(a[1]), count = lisp_fixnum_val(a[2]);
     // The 32-bit store needs a 4-aligned address, so check the actual data pointer,
     // not just `off` (a foreign bytes object can wrap a non-4-aligned base).
@@ -1547,6 +1568,7 @@ static lisp_value prim_bytes_copy(lisp_value *a, int n, const char **e) {
         !lisp_is_bytes(a[2]) || !lisp_is_fixnum(a[3]) || !lisp_is_fixnum(a[4]))
         return prim_err(e, "bytes-copy! expects (dst doff src soff len)");
     lisp_bytes *d = as_bytes(a[0]), *s = as_bytes(a[2]);
+    BYTES_WR_GUARD(a[0], e, "bytes-copy!");
     int64_t doff = lisp_fixnum_val(a[1]), soff = lisp_fixnum_val(a[3]),
             len = lisp_fixnum_val(a[4]);
     if (doff < 0 || soff < 0 || len < 0 ||
@@ -1621,6 +1643,7 @@ static lisp_value prim_gfx_fill_rect(lisp_value *a, int n, const char **e) {
     for (int i = 1; i < 9; i++)
         if (!lisp_is_fixnum(a[i])) return prim_err(e, "gfx-fill-rect!: non-fixnum arg");
     lisp_bytes *d = as_bytes(a[0]);
+    BYTES_WR_GUARD(a[0], e, "gfx-fill-rect!");
     int64_t stride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
     uint32_t color = (uint32_t)lisp_fixnum_val(a[8]);
     int64_t cx, cy, cw, ch, sx, sy;
@@ -1649,6 +1672,7 @@ static lisp_value prim_gfx_blit(lisp_value *a, int n, const char **e) {
         !lisp_is_fixnum(a[8]) || !lisp_is_fixnum(a[9]))
         return prim_err(e, "gfx-blit!: non-fixnum arg");
     lisp_bytes *d = as_bytes(a[0]), *s = as_bytes(a[6]);
+    BYTES_WR_GUARD(a[0], e, "gfx-blit!");
     int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
     int64_t sstride = lisp_fixnum_val(a[7]), sw = lisp_fixnum_val(a[8]), sh = lisp_fixnum_val(a[9]);
     int64_t cx, cy, cw, ch, sx, sy;
@@ -1677,6 +1701,7 @@ static lisp_value prim_gfx_blend(lisp_value *a, int n, const char **e) {
         !lisp_is_fixnum(a[8]) || !lisp_is_fixnum(a[9]))
         return prim_err(e, "gfx-blend!: non-fixnum arg");
     lisp_bytes *d = as_bytes(a[0]), *s = as_bytes(a[6]);
+    BYTES_WR_GUARD(a[0], e, "gfx-blend!");
     int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
     int64_t sstride = lisp_fixnum_val(a[7]), sw = lisp_fixnum_val(a[8]), sh = lisp_fixnum_val(a[9]);
     int64_t cx, cy, cw, ch, sx, sy;
@@ -1714,6 +1739,7 @@ static lisp_value prim_gfx_glyph(lisp_value *a, int n, const char **e) {
     for (int i = 1; i < 14; i++)
         if (i != 6 && !lisp_is_fixnum(a[i])) return prim_err(e, "gfx-glyph!: non-fixnum arg");
     lisp_bytes *d = as_bytes(a[0]), *bm = as_bytes(a[6]);
+    BYTES_WR_GUARD(a[0], e, "gfx-glyph!");
     int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
     int64_t dx = lisp_fixnum_val(a[4]), dy = lisp_fixnum_val(a[5]);
     int64_t boff = lisp_fixnum_val(a[7]), gw = lisp_fixnum_val(a[8]), gh = lisp_fixnum_val(a[9]);
@@ -1761,6 +1787,7 @@ static lisp_value prim_gfx_cover(lisp_value *a, int n, const char **e) {
     for (int i = 1; i < 11; i++)
         if (i != 6 && !lisp_is_fixnum(a[i])) return prim_err(e, "gfx-cover!: non-fixnum arg");
     lisp_bytes *d = as_bytes(a[0]), *c = as_bytes(a[6]);
+    BYTES_WR_GUARD(a[0], e, "gfx-cover!");
     int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
     int64_t cstride = lisp_fixnum_val(a[7]), cw = lisp_fixnum_val(a[8]), ch0 = lisp_fixnum_val(a[9]);
     uint32_t fg = (uint32_t)lisp_fixnum_val(a[10]);

@@ -333,10 +333,13 @@ after `coredisplay` + the display driver bind (it needs the driver's
    (`grant.c`: mint/resolve/revoke + generation invalidation), kernel prims
    `grant-mint`/`map-grant`/`grant-revoke`, split capabilities `sys-shm-mint`
    (owner) vs `sys-shm` (grantee). Host test (`test_grant.c`, 13 checks) + in-OS
-   self-test (full vmem round-trip + capability-split + strict-perms). Two tracked
-   limitations in `notes/AUDIT.md`: `'ro` is advisory (not page-table-enforced on
-   this platform) and use-after-revoke is a contract (revoke doesn't tear down
-   existing maps).
+   self-test (full vmem round-trip + capability-split + strict-perms + RO-write
+   refused). `'ro` is the least-privilege **default** and is **enforced in
+   software**: `map-grant` marks a `'ro` view read-only and every bytes/`gfx-*`
+   mutator refuses to write it — airtight in the sandbox (a grantee reaches the
+   region only through those prims). One tracked contract in `notes/AUDIT.md`:
+   use-after-revoke (revoke invalidates future maps but doesn't tear down an
+   existing mapping).
 2. **corecompositor.clp root** — the primary mailbox + `connect` handshake that
    spawns a **per-client handler context**; the handler holds that client's
    window list, grants, and damage. Single client first.

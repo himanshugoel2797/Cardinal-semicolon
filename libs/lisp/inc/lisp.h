@@ -282,6 +282,12 @@ lisp_value lisp_make_bytes_foreign(void *ptr, size_t len, uint64_t phys);
 size_t lisp_bytes_len(lisp_value v);
 void *lisp_bytes_data(lisp_value v);
 uint64_t lisp_bytes_phys(lisp_value v);
+// Read-only foreign views: map-grant marks a 'ro grant's mapping read-only, and
+// every bytes mutator (bytes-*-set!/fill32!/copy!, gfx-*) then refuses to write
+// it. Airtight in the sandbox: a grantee reaches the region only through those
+// prims. Reads are unaffected.
+void lisp_bytes_mark_readonly(lisp_value v);
+bool lisp_bytes_readonly(lisp_value v);
 
 // Shared-memory grants (the compositor's zero-copy surfaces; see lisp_grant). A
 // grant is an unforgeable, revocable capability to map a specific physical region
