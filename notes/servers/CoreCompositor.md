@@ -171,15 +171,16 @@ surface RAM.
 
 | message | reply | meaning |
 |---|---|---|
-| `(connect reply)` *(primary)* | `(connected handler)` | spawn per-client handler, return its handle |
+| `(connect transparency? reply)` *(primary)* | `(connected handler)` | route by `transparency?` (→ owner if set, else a shard), return the assigned instance's handle |
 | `(create-surface w h reply)` | `(surface id grant stride)` | alloc 2 backings, mint grant over both |
-| `(configure id x y z visible)` | — | placement + z-order |
+| `(configure id x y z visible)` | — | placement + z-order (z via the owner's authority) |
 | `(commit id buf rects)` | — | `buf` (0/1) is ready; these rects changed → recomposite |
 | `(destroy-surface id reply)` | `'ok` | revoke grant, free backings, repaint exposed area |
 | `(input …)` *(v2, server→client)* | — | tagged input event delivered on the secondary mailbox |
+| `(layer-update shard rects)` *(shard→owner, multi-core)* | — | shard's layer dirtied these rects → owner bounds its merge+flush |
 
-Client flow: `connect` (once, on primary) → `create-surface` → `map-grant` →
-draw with `graphics.clp` into the back buffer → `commit`. Wayland-ish
+Client flow: `connect` *(declares transparency)* → `create-surface` → `map-grant`
+→ draw with `graphics.clp` into the back buffer → `commit`. Wayland-ish
 `wl_surface.commit` shape.
 
 ## Compositing
@@ -244,37 +245,62 @@ already running on that core*: the AP proof-of-life spawn (`main.c:3033`) become
 far smaller than general migration / `spawn-on-core`. The scanout-owning instance
 (core 0) additionally runs the screen setup in `(system-init)`.
 
-### Client sharding
+### Client sharding & transparency routing
 
-A client `connect`s to the well-known **owner**; the owner assigns it to the
-least-loaded instance and replies with that instance's handle (the per-client
-secondary channel, now possibly on another core). That instance owns the client's
-mailbox, surfaces, grants, and damage, and composites the client's windows into
-**its own layer**. This is the per-connection-handler model above, promoted to
-per-core.
+A client `connect`s to the well-known **owner** and declares in that initial
+negotiation **whether it will use transparency** (`transparency?`). The owner
+makes the routing decision from that flag:
+
+- **Opaque clients → sharded** across instances (least-loaded). Reply carries the
+  assigned instance's handle (the per-client secondary channel, possibly on
+  another core).
+- **Translucent clients → the owner itself.** All translucency is hosted on one
+  instance; the reply hands back the owner's own handle.
+
+The owner owns each assigned client's mailbox, surfaces, grants, and damage, and
+composites that client's windows into **its instance's layer**. This is the
+per-connection-handler model above, promoted to per-core. Per-client granularity
+keeps the secondary channel simple (a client lives on exactly one instance); a
+client that wants transparency on any window declares it and is owner-hosted.
 
 ### Layers + the merge
 
 - Each instance composites its clients' windows into a **layer**: a grant-shared
   buffer carrying per pixel `(color, z)` — `z` is the window's global z-key
-  (empty where the layer has no content). Damage-bounded.
+  (empty where the layer has no content). Because translucent clients are routed
+  to the owner, **every shard layer is pure-opaque**.
+- A shard tells the owner what changed with **`(layer-update shard rects)`** — the
+  rects of its layer dirtied since the last update. The owner **unions these
+  across shards** (plus its own translucent-window damage) to bound the merge +
+  flush to actual damage; without it the owner would re-merge the whole screen
+  each frame.
 - The **owner** maps all N layers (read, WB, via grant — the same substrate as
-  client surfaces) and merges them into the scanout by **per-pixel topmost-z
-  pick** (a z-buffer composite), over the union of the layers' damaged rects, then
-  flushes those rects through the driver.
-- Cost: N layer buffers + a z-plane each; merge is O(damaged-area · N) on one
+  client surfaces) and produces the scanout in two passes over the union-damage
+  region (next section).
+- Cost: N opaque layer buffers + a z-plane each; merge is O(damage · N) on one
   core, not O(clients · screen).
 
-### The z-correctness constraint (honest tradeoff)
+### The merge is correct by construction (transparency centralised)
 
-A flat "alpha-over the layers in order" merge is **wrong** when windows from two
-shards overlap with interleaved z. The z-buffer pick fixes this **for opaque
-windows** (pick the max-z contributor per pixel — correct regardless of
-cross-shard z interleaving). It does **not** generalize to translucency, because
-alpha-over is order-dependent, not a pick. So the rule: **translucent windows
-that overlap a window owned by another shard must be co-assigned to the same
-shard** (or accept artifacts). Most windows are opaque; translucency is the
-menu/shadow edge case, and co-assignment is a cheap assignment constraint.
+Routing all translucency to the owner removes the cross-shard ordering problem
+entirely — there is no interleaved-alpha case across shards because shards never
+hold alpha. The owner's per-frame merge, over the union-damage rects:
+
+1. **Opaque pass — z-buffer pick.** Merge the N opaque shard layers (plus the
+   owner's own opaque windows, if any) by taking the **max-z contributor per
+   pixel**, yielding a flattened opaque image and a per-pixel topmost-opaque z
+   `Zop`. Correct regardless of how opaque windows are sharded or how their z
+   interleaves — a pick has no ordering dependence.
+2. **Translucent pass — ordered alpha-over.** For each pixel, alpha-over the
+   owner's translucent windows that cover it **with z > `Zop`** (those below the
+   nearest opaque surface are occluded and skipped), back-to-front by z, onto the
+   pass-1 color.
+
+The owner holds *every* translucent window, so the one place ordering matters has
+full z information in a single serial pass — the result is exactly correct. Cost
+note: the owner carries all translucent windows + the merge + flush; translucent
+windows are few on a normal desktop (menus, notifications, shadows), so this is
+acceptable; rebalancing if the owner saturates is future work.
 
 ### Global z authority
 
@@ -318,8 +344,10 @@ after `coredisplay` + the display driver bind (it needs the driver's
 6. **(v2)** input routing (tagged `(input …)` on the secondary mailbox; compositor
    as `coreinput`→focused-window router), move/resize, zero-page revoke hardening.
 7. **(scaling, separable) Sharded per-core instances** — a per-core bring-up hook
-   spawning one instance per core; client assignment + global z authority on the
-   owner; grant-shared `(color,z)` layer buffers; z-buffer merge on the owner over
+   spawning one instance per core; `connect`-time transparency routing (opaque →
+   shard, translucent → owner) + global z authority on the owner; grant-shared
+   opaque `(color,z)` layer buffers with `layer-update` damage reports; two-pass
+   merge on the owner (opaque z-buffer pick, then ordered alpha-over) bounded to
    union damage. v1's single instance is the N=1 case of this code.
 
 ## Open / deferred
@@ -330,9 +358,12 @@ after `coredisplay` + the display driver bind (it needs the driver's
 - Multi-core scaling uses **per-core-born instances + two-level layer merge**
   (phase 7) — no scheduler migration. v1 is the single-instance N=1 case and does
   not depend on parallelism.
-- Translucent windows overlapping another shard's window must be co-assigned to
-  one shard (z-buffer merge is opaque-correct only); pure-opaque overlap is
-  always correct.
+- Transparency is declared at `connect`; translucent clients are hosted on the
+  owner so every shard layer is pure-opaque and the z-buffer merge is correct by
+  construction (the owner alpha-overs its translucent windows above the merged
+  opaque z in a final pass). No cross-shard alpha case exists.
+- Shards report their dirtied rects to the owner (`layer-update`) so the merge +
+  flush stay bounded to actual damage rather than re-merging the whole screen.
 - No vsync on virtio-gpu (explicit flush) — fine; pacing is per-commit.
 - QEMU can't show the WC win (trapped-VRAM dirty-tracking, see
   `notes/AUDIT.md` / the gfx bench in `init.clp`); virtio-gpu path is the
