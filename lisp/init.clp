@@ -19,7 +19,7 @@
   (import coreinput coreaudio corepower corestorage coredisplay corenetwork
           corenetdebug coreusb ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci
           cardfs hdaudio uhci xhci ehci usb-hid usb-hub usb-storage usb-audio
-          graphics font sys-pci sys-cmdline sys-initrd sys-mmio sys-reg)
+          graphics font ttf sys-pci sys-cmdline sys-initrd sys-mmio sys-reg)
 
   ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
   ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
@@ -136,31 +136,40 @@
   ;; An off-screen ARGB image surface (for the alpha-blit demo).
   (define (gfx-image w h) (make-surface (make-bytes (* w h 4)) w h (* w 4)))
 
-  (define (draw-demo-ui surf fnt)
+  (define (draw-demo-ui surf fnt tf)
     (let ((W (surface-width surf)) (H (surface-height surf))
           (white (rgb surf 240 240 245)))
       (clear surf (rgb surf 28 30 44))                 ; desktop background
-      ;; top bar + title
+      ;; top bar + title (antialiased TrueType when available, else the bitmap font)
       (fill-rect surf 0 0 W 46 (rgb surf 46 50 72))
-      (if fnt (draw-text surf fnt 14 7 "Cardinal;  graphics demo" white 0 #f 2))
-      ;; a "window" with a title bar + body text at a few scales
+      (if tf (ttf-draw-text surf tf 16 9 "Cardinal  -  TrueType text rendering" white 26)
+          (if fnt (draw-text surf fnt 14 7 "Cardinal;  graphics demo" white 0 #f 2)))
+      ;; a "window" with a title bar + a TrueType showcase + the bitmap font
       (let ((wx 64) (wy 92) (ww 540) (wh 372) (ink (rgb surf 38 40 52)))
         (fill-rect surf wx wy ww wh (rgb surf 244 245 250))
         (draw-rect surf wx wy ww wh 2 (rgb surf 78 90 132))
         (fill-rect surf (+ wx 2) (+ wy 2) (- ww 4) 30 (rgb surf 58 120 200))
+        (if tf (ttf-draw-text surf tf (+ wx 10) (+ wy 7) "Hello, Cardinal" white 18))
+        ;; antialiased TrueType at several point sizes (one stb_truetype font, cached)
+        (if tf
+            (begin
+              (ttf-draw-text surf tf (+ wx 14) (+ wy 40)
+                             "Antialiased TrueType via stb_truetype" ink 22)
+              (ttf-draw-text surf tf (+ wx 14) (+ wy 74)
+                             "The quick brown fox jumps over 12,345 dogs." ink 16)
+              (ttf-draw-text surf tf (+ wx 14) (+ wy 100) "Sizes:" (rgb surf 120 120 140) 14)
+              (ttf-draw-text surf tf (+ wx 90) (+ wy 96) "14" ink 14)
+              (ttf-draw-text surf tf (+ wx 130) (+ wy 92) "20" ink 20)
+              (ttf-draw-text surf tf (+ wx 185) (+ wy 86) "28" ink 28)
+              (ttf-draw-text surf tf (+ wx 255) (+ wy 76) "40" (rgb surf 180 70 70) 40)))
+        ;; the bitmap font, for comparison
         (if fnt
             (begin
-              (draw-text surf fnt (+ wx 10) (+ wy 9) "Hello, Cardinal" white 0 #f 1)
-              (draw-text surf fnt (+ wx 14) (+ wy 46)
-                         "Bitmap font via gfx-glyph!" ink 0 #f 1)
-              (draw-text surf fnt (+ wx 14) (+ wy 64)
+              (draw-text surf fnt (+ wx 14) (+ wy 168)
+                         "Bitmap font (gfx-glyph!), 1x / 2x:" ink 0 #f 1)
+              (draw-text surf fnt (+ wx 14) (+ wy 188)
                          "ABCDEFG abcdefg 0123456789" ink 0 #f 1)
-              (draw-text surf fnt (+ wx 14) (+ wy 82)
-                         "!@#$%^&*()_+-=[]{};:',.<>/?" ink 0 #f 1)
-              (draw-text surf fnt (+ wx 14) (+ wy 112) "scaled 2x" (rgb surf 180 70 70) 0 #f 2)
-              (draw-text surf fnt (+ wx 14) (+ wy 150) "3x" (rgb surf 70 130 70) 0 #f 3)
-              (draw-text surf fnt (+ wx 14) (+ wy 210)
-                         "fills - lines - circles - blits" ink 0 #f 1))))
+              (draw-text surf fnt (+ wx 14) (+ wy 210) "scaled" (rgb surf 70 130 70) 0 #f 2))))
       ;; shapes panel on the right
       (let ((px 650) (py 110))
         (fill-circle surf (+ px 64) (+ py 64) 54 (rgb surf 232 124 80))
@@ -180,10 +189,13 @@
                 (begin (fill-rect surf (+ px (* i 26)) (+ py 360) 24 24 (nth sw i))
                        (loop (+ i 1)))))))
       ;; a translucent panel over the desktop, showing alpha compositing
-      (let ((img (gfx-image 420 86)))
+      (let ((img (gfx-image 460 92)))
         (clear img (argb img 165 54 92 168))           ; ~65% opaque blue
-        (if fnt (draw-text img fnt 14 12 "alpha-blended panel (blit-alpha)" white 0 #f 1))
-        (if fnt (draw-text img fnt 14 44 "drawn over the live desktop" white 0 #f 1))
+        (if tf
+            (begin
+              (ttf-draw-text img tf 14 10 "Alpha-blended panel (blit-alpha)" white 20)
+              (ttf-draw-text img tf 14 48 "antialiased text over a translucent surface" white 15))
+            (if fnt (draw-text img fnt 14 12 "alpha-blended panel (blit-alpha)" white 0 #f 1)))
         (blit-alpha surf img 64 486))
       'done))
 
@@ -215,17 +227,20 @@
   ;; frame is stable for a screenshot.
   (define (start-gfx-demo)
     (let ((surf (gfx-map-framebuffer))
-          (fontbytes (initrd-file FONT8X16-PATH)))
+          (fontbytes (initrd-file FONT8X16-PATH))
+          (ttfbytes (initrd-file TTF-FONT-PATH)))
       (if (not surf)
           (begin (display "[gfx-demo] no framebuffer") (newline))
           (begin
             (display "[gfx-demo] framebuffer ") (display (surface-width surf)) (display "x")
             (display (surface-height surf)) (display " pitch ") (display (surface-stride surf))
-            (display " font=") (display (if fontbytes (bytes-length fontbytes) 0)) (newline)
+            (display " bitmap-font=") (display (if fontbytes (bytes-length fontbytes) 0))
+            (display " ttf=") (display (if ttfbytes (bytes-length ttfbytes) 0)) (newline)
             (spawn-restricted '()
               (lambda ()
-                (let ((fnt (if fontbytes (make-font fontbytes FONT8X16-W FONT8X16-H) #f)))
-                  (draw-demo-ui surf fnt)
+                (let ((fnt (if fontbytes (make-font fontbytes FONT8X16-W FONT8X16-H) #f))
+                      (tf  (if ttfbytes (make-ttf-font ttfbytes) #f)))
+                  (draw-demo-ui surf fnt tf)
                   ;; self-check: read a pixel back from the live framebuffer.
                   (display "[gfx-demo] frame drawn; ")
                   (display (if (= (get-pixel surf 2 220) (rgb surf 28 30 44))
@@ -233,7 +248,7 @@
                   (newline)
                   (let loop ((k 0))
                     (if (< k 6)
-                        (begin (sleep 2000000000) (draw-demo-ui surf fnt) (loop (+ k 1)))
+                        (begin (sleep 2000000000) (draw-demo-ui surf fnt tf) (loop (+ k 1)))
                         'done)))))))))
 
   ;; The system entry point: called once on the BSP after the scheduler is live.

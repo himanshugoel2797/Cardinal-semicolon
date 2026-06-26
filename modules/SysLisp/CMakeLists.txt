@@ -16,9 +16,10 @@ ADD_CUSTOM_TARGET(${CELF_NAME}.celf ALL
 )
 
 SET_TARGET_PROPERTIES(${CELF_NAME}.elf PROPERTIES COMPILE_OPTIONS "-fno-pic")
-TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf PRIVATE "inc" "../inc" "../../kernel/inc" "${LIBS_DIR}/lisp/inc" "${LIBS_DIR}/syscalls" "${LIBS_DIR}")
+TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf PRIVATE "inc" "../inc" "../../kernel/inc" "${LIBS_DIR}/lisp/inc" "${LIBS_DIR}/syscalls" "${LIBS_DIR}/ttf" "${LIBS_DIR}")
 TARGET_INCLUDE_DIRECTORIES(${CELF_NAME}.elf SYSTEM PUBLIC "${KERN_STDLIB_INCLUDE_DIR}")
 # Links the kernel-resident Scheme runtime (built freestanding with SSE re-enabled
-# for its hardware-double flonums) plus the UBSan handlers used across modules.
-TARGET_LINK_LIBRARIES(${CELF_NAME}.elf PRIVATE lisp ubsan_handlers)
+# for its hardware-double flonums) plus the UBSan handlers used across modules and
+# `ttf` (stb_truetype, likewise SSE-enabled) for runtime TrueType glyph rasterization.
+TARGET_LINK_LIBRARIES(${CELF_NAME}.elf PRIVATE lisp ttf ubsan_handlers)
 SET_TARGET_PROPERTIES(${CELF_NAME}.elf PROPERTIES LINK_FLAGS "-r ${ISA_LINKER_FLAGS} ${PLATFORM_LINKER_FLAGS}")
