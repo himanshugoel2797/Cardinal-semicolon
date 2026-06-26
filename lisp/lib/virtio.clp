@@ -206,6 +206,8 @@
     (desc-set! desc 1 (bytes-phys resp) resp-len VIRTQ-DESC-F-WRITE 0)
     (avail-push! avail qsize 0)
     (notify-queue! notify mult q)
-    (if (wait-until (lambda () (used-advanced? q last)) timeout-ns)
+    ;; busy-spin first (~500us): a controlq command completes in microseconds, and
+    ;; a pure sleep-poll would pay a scheduler quantum of latency per command.
+    (if (wait-until-spin (lambda () (used-advanced? q last)) timeout-ns 500000)
         resp
         #f))))

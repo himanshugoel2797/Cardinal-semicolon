@@ -289,14 +289,16 @@
 
   ;; Benchmark rendering through the virtio-gpu driver -- the MODERN path that
   ;; sidesteps the trapped-framebuffer problem entirely. The driver's scanout
-  ;; backing is guest RAM (dma-alloc, uncached); but the device reads it coherently,
-  ;; so we map the SAME physical pages WRITE-BACK (mmio-map-wb) and compose into
-  ;; that fast cached view. A virtqueue `(flush)` (TRANSFER_TO_HOST_2D +
+  ;; backing is guest RAM (allocated WRITE-BACK via dma-alloc-wb); the device reads
+  ;; it coherently, so we map the SAME physical pages WB (mmio-map-wb) and compose
+  ;; into that fast cached view. A virtqueue `(flush)` (TRANSFER_TO_HOST_2D +
   ;; RESOURCE_FLUSH) then pushes the frame device-side -- no MMIO framebuffer
-  ;; writes, no per-page dirty-tracking fault. The flush is a synchronous controlq
-  ;; round-trip in the driver; we time it by following each (flush) with a
-  ;; (get-framebuffer) barrier (the driver answers its mailbox serially, so the
-  ;; reply lands only after the flush's used-ring completion).
+  ;; writes, no per-page dirty-tracking fault.
+  ;;
+  ;; gpu-frame! is one synchronous frame: fence the composed stores, then send a
+  ;; flush WITH a reply target and block on the ack -- the driver acks only after
+  ;; the flush's controlq round-trip completes, so this both pushes the frame and
+  ;; times it (a fire-and-forget (flush) without the reply would not let us pace).
   (define (gpu-frame! gpu)              ; one fenced, synchronous flush (waits for ack)
     (sfence)
     (send gpu (list 'flush (self)))
@@ -382,9 +384,13 @@
                 (display " fps") (newline)))))))
 
   ;; The virtio-gpu demo: compose into the WB-mapped scanout backing, benchmark the
-  ;; render path, then redraw a stable frame. Gated by the caller on a virtio-gpu
-  ;; device being present, so the (get-framebuffer) recv can't block forever on a
-  ;; driver that never finished bring-up.
+  ;; render path, then redraw a stable frame. The caller gates this on a virtio-gpu
+  ;; PCI device being present; we then sleep to let bring-up finish before the
+  ;; (get-framebuffer) handshake. NOTE: if the device is present but bring-up fails
+  ;; to enable a scanout (the driver context then exits), the get-framebuffer recv
+  ;; blocks forever -- acceptable for this demo (QEMU always enables a scanout); a
+  ;; production consumer would discover the GPU via the display service's
+  ;; registration (which only fires on success) rather than a bare handle + recv.
   (define (start-gpu-demo gpu)
     (let ((fontbytes (initrd-file FONT8X16-PATH))
           (ttfbytes (initrd-file TTF-FONT-PATH)))

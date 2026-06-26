@@ -11,7 +11,7 @@
   (export nth make-cell cell-ref cell-set!
           put-be16! get-be16 put-be32! get-be32
           copy-bytes bytes-copy-into! put-list!
-          wait-until serve
+          wait-until wait-until-spin serve
           PCI-COMMAND bar-base pci-enable-mem-bus-master!)
 
   (define (nth lst k) (if (= k 0) (car lst) (nth (cdr lst) (- k 1))))
@@ -38,30 +38,32 @@
     (bytes-u16-set! cfg PCI-COMMAND
                     (bitwise-or (bytes-u16-ref cfg PCI-COMMAND) #x6)))
 
-  ;; Poll `pred` until it is true, or `timeout-ns` elapses; #t if it became true,
-  ;; #f on timeout. The device-bring-up analogue of the C drivers' timer_timeout
-  ;; loops (reset/link settle polls). It YIELDS between polls via (sleep): under
-  ;; the scheduler the core runs other contexts while we wait; only a boot-time
-  ;; direct eval (no context to yield to) falls back to a counter wait. The poll
-  ;; interval bounds how often pred is checked -- ~200us, fine for ms-scale waits.
-  (define (wait-until pred timeout-ns)
-    (let ((deadline (+ (uptime-ns) timeout-ns)))
-      ;; Fast path: a paravirt command (a virtio controlq transfer/flush) completes
-      ;; in microseconds -- far below a scheduler quantum. (sleep 200000) asks for
-      ;; 200us but actually deschedules for at least a quantum, so a pure sleep-poll
-      ;; pays a chunk of latency PER command. Busy-polling a short budget first cut
-      ;; a virtio-gpu flush (two controlq commands) from ~1560us to ~450us. Only
-      ;; fall back to the yielding wait for genuinely ms-scale waits (resets, link
-      ;; settle), where burning the CPU would be wasteful.
-      (let ((spin-deadline (+ (uptime-ns) 500000)))   ; ~500us busy budget
-        (let spin ()
-          (cond ((pred) #t)
-                ((> (uptime-ns) spin-deadline)
-                 (let loop ()
-                   (cond ((pred) #t)
-                         ((> (uptime-ns) deadline) #f)
-                         (else (sleep 200000) (loop)))))
-                (else (spin)))))))
+  ;; Poll `pred` until it is true, or `timeout-ns` elapses, busy-spinning for the
+  ;; first `spin-ns` before falling back to a yielding (sleep) poll; #t if it became
+  ;; true, #f on timeout. The spin catches sub-quantum operations -- a paravirt
+  ;; virtio controlq command completes in microseconds, and (sleep 200000) actually
+  ;; deschedules for at least a quantum, so a pure sleep-poll pays a chunk of latency
+  ;; PER command (busy-polling ~500us first cut a virtio-gpu flush from ~1560us to
+  ;; ~450us). After the spin budget it YIELDS (the core runs other contexts; a
+  ;; boot-time direct eval with nothing to yield to spins via the counter fallback),
+  ;; so genuine ms-scale waits (resets, link settle) don't burn the CPU.
+  (define (wait-until-spin pred timeout-ns spin-ns)
+    (let ((deadline (+ (uptime-ns) timeout-ns))
+          (spin-deadline (+ (uptime-ns) spin-ns)))
+      (let spin ()
+        (cond ((pred) #t)
+              ((> (uptime-ns) spin-deadline)
+               (let loop ()
+                 (cond ((pred) #t)
+                       ((> (uptime-ns) deadline) #f)
+                       (else (sleep 200000) (loop)))))
+              (else (spin))))))
+
+  ;; The plain device-bring-up wait: NO busy-spin (spin budget 0). Callers are
+  ;; ms-scale reset / link-settle polls (hdaudio, rtl8139/69, ahci) that take the
+  ;; full timeout to resolve, so a spin would only burn CPU before yielding. A
+  ;; latency-sensitive sub-quantum path (the virtio controlq) calls wait-until-spin.
+  (define (wait-until pred timeout-ns) (wait-until-spin pred timeout-ns 0))
 
   ;; Copy `len` bytes out of `src` starting at `off` into a fresh owned buffer.
   ;; The NIC RX path needs this: the device's receive buffer is recycled, so a

@@ -321,12 +321,13 @@ static lisp_value prim_mmio_map_wc(lisp_value *a, int n, const char **e) {
 }
 
 // (mmio-map-wb phys size) -> a WRITE-BACK (cached) view of a physical range.
-// Use it to compose into a device's DMA backing that was allocated uncached
-// (dma-alloc) but is read coherently by the device: x86 DMA is cache-coherent,
-// so the CPU can write the backing through this fast cached view and the device
-// still sees the data (an sfence before the device is told to read enforces
-// store ordering). This is the virtio-gpu render path -- compose into the WB
-// backing, then a virtqueue flush does the device-side transfer.
+// Use it to compose into a device's DMA backing that the device reads coherently
+// (x86 DMA is cache-coherent, so the CPU's cached writes are seen; issue an sfence
+// before signalling the device). This is how a consumer reaches a virtio-gpu
+// scanout backing it only got the phys of (the fb bytes are copy-on-send): the
+// backing is itself allocated WB (dma-alloc-wb), so this maps the SAME cache type
+// -- no UC/WB aliasing of one physical page. Compose into it, then a virtqueue
+// flush does the device-side transfer.
 static lisp_value prim_mmio_map_wb(lisp_value *a, int n, const char **e) {
     if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]) ||
         lisp_fixnum_val(a[0]) <= 0 || lisp_fixnum_val(a[1]) <= 0)
@@ -344,7 +345,8 @@ static lisp_value prim_mmio_map_wb(lisp_value *a, int n, const char **e) {
 // device DMA. (bytes-phys b) gives the physical address to program into the
 // device; the accessors read/write the CPU-side view.
 static lisp_value dma_alloc_impl(lisp_value *a, int n, const char **e,
-                                 physmem_alloc_flags_t extra, const char *who) {
+                                 physmem_alloc_flags_t extra, vmem_flags_t cache,
+                                 const char *who) {
     if (n != 1 || !lisp_is_fixnum(a[0]) || lisp_fixnum_val(a[0]) <= 0)
         return (*e = "dma-alloc: expects a positive size"), LISP_UNDEF;
     size_t size = (size_t)lisp_fixnum_val(a[0]);
@@ -352,7 +354,7 @@ static lisp_value dma_alloc_impl(lisp_value *a, int n, const char **e,
         physmem_alloc(0, 0, physmem_alloc_flags_data | physmem_alloc_flags_zero | extra, size);
     if (phys == PHYSMEM_NO_ALLOC)
         return (*e = who), LISP_UNDEF;
-    intptr_t virt = vmem_phystovirt((intptr_t)phys, size, vmem_flags_uncached | vmem_flags_kernel | vmem_flags_rw);
+    intptr_t virt = vmem_phystovirt((intptr_t)phys, size, cache | vmem_flags_kernel | vmem_flags_rw);
     // physmem_alloc ignores its flags (incl. _zero), so the pages are NOT zeroed;
     // a DMA descriptor ring needs clean memory, so zero the mapping ourselves.
     memset((void *)virt, 0, size);
@@ -365,14 +367,27 @@ static lisp_value dma_alloc_impl(lisp_value *a, int n, const char **e,
 }
 
 static lisp_value prim_dma_alloc(lisp_value *a, int n, const char **e) {
-    return dma_alloc_impl(a, n, e, 0, "dma-alloc: out of physical memory");
+    return dma_alloc_impl(a, n, e, 0, vmem_flags_uncached, "dma-alloc: out of physical memory");
+}
+
+// (dma-alloc-wb size) -> a physically-contiguous, zeroed, WRITE-BACK (cached) DMA
+// buffer. For a buffer the CPU writes a lot and the device only reads (a
+// framebuffer backing): x86 DMA is cache-coherent, so the device sees the cached
+// writes (issue an sfence before signalling the device). Unlike dma-alloc's UC
+// mapping there is no separate cached alias to keep coherent -- this IS the only
+// mapping -- so it avoids the architecturally-undefined UC/WB aliasing of the same
+// pages. Do NOT use for a buffer the device WRITES that the CPU then polls (a
+// virtqueue used ring): that wants the uncached dma-alloc so the poll sees updates.
+static lisp_value prim_dma_alloc_wb(lisp_value *a, int n, const char **e) {
+    return dma_alloc_impl(a, n, e, 0, vmem_flags_cachewriteback,
+                          "dma-alloc-wb: out of physical memory");
 }
 
 // (dma-alloc-32 size) -> a DMA buffer guaranteed to have a physical address below
 // 4 GiB, for a device that DMAs 32-bit addresses (rtl8139/8169, the USB host
 // controllers). Same as dma-alloc otherwise; (bytes-phys b) fits in 32 bits.
 static lisp_value prim_dma_alloc_32(lisp_value *a, int n, const char **e) {
-    return dma_alloc_impl(a, n, e, physmem_alloc_flags_32bit,
+    return dma_alloc_impl(a, n, e, physmem_alloc_flags_32bit, vmem_flags_uncached,
                           "dma-alloc-32: out of 32-bit physical memory");
 }
 
@@ -915,7 +930,7 @@ static const lisp_builtin_export sys_io_exports[] = {
 static const lisp_builtin_export sys_mmio_exports[] = {
     {"mmio-map", prim_mmio_map}, {"mmio-map-wc", prim_mmio_map_wc},
     {"mmio-map-wb", prim_mmio_map_wb},
-    {"dma-alloc", prim_dma_alloc},
+    {"dma-alloc", prim_dma_alloc}, {"dma-alloc-wb", prim_dma_alloc_wb},
     {"dma-alloc-32", prim_dma_alloc_32},
 };
 static const lisp_builtin_export sys_pci_exports[] = {
