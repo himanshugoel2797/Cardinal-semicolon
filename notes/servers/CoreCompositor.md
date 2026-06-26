@@ -1,7 +1,7 @@
 # CoreCompositor — multi-client window compositor
 
-Status: **phases 1–2 implemented** (grant substrate + IPC root). Branch
-`claude/corecompositor-design`.
+Status: **phases 1–3 implemented** (grant substrate + IPC root + surface protocol
+& compositing). Branch `claude/corecompositor-design`.
 
 A new `Core*` Lisp server that owns the screen and composites off-screen
 surfaces owned by independent client contexts, using **zero-copy shared-memory
@@ -165,24 +165,54 @@ client already drives.
 
 ## Surface protocol (on the secondary channel)
 
-Per-surface **double-buffered** (chosen): the grant covers *two* backing buffers;
-`commit` names the ready one, the compositor reads only the committed-front, so a
-client drawing into the back buffer never produces a torn frame. Costs 2×
+Per-surface **double-buffered** (chosen): a surface has *two* backings; `commit`
+names the ready one (`buf` 0/1), the compositor reads only the committed-front, so
+a client drawing into the back buffer never produces a torn frame. Costs 2×
 surface RAM.
 
-| message | reply | meaning |
+**Implemented as two grants (`grant0`/`grant1`), one per backing**, rather than one
+grant over a contiguous 2× region. The latter would need the compositor and the
+client to make a `graphics.clp` surface over the *back half* of a buffer, i.e. a
+`bytes` sub-view at an offset — and no such slice primitive exists. Two separate
+`dma-alloc-wb` backings are each a whole `bytes` that is directly a surface, so
+double-buffering needs **no interpreter change**. The client maps both and draws
+into the one it will commit.
+
+Replies go to the client's **authenticated identity** (the context it `connect`ed
+with, which the handler stamps on every relayed op), never to a reply field in the
+message — so a client can't make the compositor `send` to an arbitrary or
+non-context target. The `connect` `reply` is the one bootstrap handle, and it is
+`ctx?`-validated before use.
+
+| message | reply (→ connecting client) | meaning |
 |---|---|---|
-| `(connect transparency? reply)` *(primary)* | `(connected handler)` | route by `transparency?` (→ owner if set, else a shard), return the assigned instance's handle |
-| `(create-surface w h reply)` | `(surface id grant stride)` | alloc 2 backings, mint grant over both |
-| `(configure id x y z visible)` | — | placement + z-order (z via the owner's authority) |
-| `(commit id buf rects)` | — | `buf` (0/1) is ready; these rects changed → recomposite |
-| `(destroy-surface id reply)` | `'ok` | revoke grant, free backings, repaint exposed area |
+| `(connect transparency? reply)` *(primary)* | `(connected handler)` | `reply` must be `ctx?`; route by `transparency?` (→ owner if set, else a shard), return the assigned instance's handle |
+| `(create-surface w h)` *(via handler)* | `(surface id grant0 grant1 stride)` / `(surface-error …)` | validate `w,h ∈ [1,MAX-DIM]`, alloc 2 backings, mint a grant over each |
+| `(configure id x y visible)` *(via handler)* | — | placement + show/hide → recomposite. (z is list-order; `raise` re-stacks — see below) |
+| `(commit id buf rects)` *(via handler)* | — | `buf` (0/1) is the ready front → recomposite. Fire-and-forget |
+| `(raise id)` *(via handler)* | — | move to top of the z-stack → recomposite |
+| `(destroy-surface id)` *(via handler)* | `'ok` / `(destroy-error …)` | revoke both grants, drop, repaint exposed area |
 | `(input …)` *(v2, server→client)* | — | tagged input event delivered on the secondary mailbox |
 | `(layer-update shard rects)` *(shard→owner, multi-core)* | — | shard's layer dirtied these rects → owner bounds its merge+flush |
 
+Every id-bearing op (`configure`/`commit`/`raise`/`destroy-surface`) acts **only on
+a surface owned by the requesting client** (ownership is the stamped identity, since
+ids are sequential and guessable); a foreign/unknown id is refused, not actioned.
+
 Client flow: `connect` *(declares transparency)* → `create-surface` → `map-grant`
-→ draw with `graphics.clp` into the back buffer → `commit`. Wayland-ish
-`wl_surface.commit` shape.
+(both) → draw with `graphics.clp` into the back buffer → `commit`. Wayland-ish
+`wl_surface.commit` shape. **All per-surface ops go via the client's handler**, so
+they are FIFO-ordered on one channel (e.g. a `commit` is always processed before a
+later op from the same client — a direct-to-root message could overtake it).
+
+v1 deviations from the headline protocol, noted for honesty:
+- **z** is implicit (surface-table order, newest on top) with an explicit `raise`,
+  rather than an absolute `z` field in `configure`. The owner-authority z-stamp
+  arrives with the sharded model (phase 7).
+- **`commit` recomposites the whole screen** (clear + painter's pass over all
+  visible surfaces), ignoring `rects`. Simplest and obviously correct; `rects`
+  will bound the flush (phase 4) and later the recomposite. The QEMU framebuffer
+  path dominates cost regardless (see Open/deferred).
 
 ## Compositing
 
@@ -357,9 +387,42 @@ after `coredisplay` + the display driver bind (it needs the driver's
    inert until a client connects). Host test (`test_compositor.c`: connect → distinct
    handler, ping/pong, two clients isolated on independent handlers) + in-OS smoke
    (`cardinal.compositortest`).
-3. **Surface ops + composite loop** — create/configure/commit/destroy on the
-   secondary channel, the composite-on-commit loop over `graphics.clp`, screen
-   owner serialising the scanout.
+3. **Surface ops + composite loop** — ✅ **DONE.** create-surface (2 backings + 2
+   grants) / configure / commit / destroy-surface / raise on the secondary channel,
+   recompositing into a screen back-buffer over `graphics.clp`'s `blit`/`blit-alpha`
+   (a `paint-windows` painter's pass — back-to-front, so opaque occlusion is correct
+   by construction). Two design decisions, both to avoid an interpreter change and
+   keep the module host-testable:
+   - **The root owns the global surface table + screen + compositing** (the single
+     serialiser; cross-client occlusion is one painter's pass over one z-ordered
+     list); the **per-client handler is a thin relay + isolation boundary** (its
+     mailbox, its client identity for cleanup, the phase-6 input home). Phase 7
+     moves the surface table onto each per-core instance — the protocol is unchanged.
+   - **Capabilities are injected, not imported.** `corecompositor` imports only
+     `driver-util graphics`; `init` (which holds the authority) passes
+     `dma-alloc-wb` / `grant-mint` / `grant-revoke` into `start-compositor-service`
+     by closure. This *is* Cardinal capability delegation and keeps the whole module
+     loadable in the host harness. The injected prims survive the
+     `spawn-restricted '()` root because they are captured lexically, not imported.
+
+   Hardening (clients are semi-trusted from phase 5 on, and the VM has no
+   try/catch, so an unvalidated message can permanently kill the root serve loop):
+   create-surface bounds `w,h ∈ [1,MAX-DIM]` (a non-integer or huge value would
+   else crash via `*`/`dma-alloc-wb`); id-bearing ops enforce per-client ownership;
+   replies target the authenticated client, not a message field; and `connect`'s
+   reply is `ctx?`-validated. The one new VM primitive — **`ctx?`** (`sched.c`, a
+   type predicate like `pair?`) — lets a server validate a reply handle before
+   `send`, since a send to a non-context aborts the caller. The residual
+   valid-bounds OOM that still kills a serve loop is a *systemic* property of every
+   `serve` service (no try/catch), not specific to the compositor.
+
+   Tests: host `test_compositor` (paint-windows occlusion/position/background; the
+   full create/configure/commit/destroy/raise protocol mechanics under fake caps;
+   bad-dimension rejection; cross-client-authorization refusal via a separate
+   attacker context; `ctx?` + non-context connect rejected while the service
+   survives); in-OS `cardinal.compositortest` (the *real* grant path — a
+   `sys-shm`-restricted client maps a granted backing, draws, commits, and the
+   composited pixel is probed: `OK surface created, drawn, composited`).
 4. **Driver seam** — own the scanout via `get-framebuffer`, drive `flush-rects`.
 5. **Two-client demo** — generalize `init.clp`'s proto-compositor into two client
    contexts (two handlers) drawing independent windows; screenshot validation.

@@ -20,7 +20,8 @@
           corenetwork
           corenetdebug coreusb ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci
           cardfs hdaudio uhci xhci ehci usb-hid usb-hub usb-storage usb-audio
-          graphics font ttf sys-pci sys-cmdline sys-initrd sys-mmio sys-reg)
+          graphics font ttf sys-pci sys-cmdline sys-initrd sys-mmio sys-reg
+          sys-shm-mint)
 
   ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
   ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
@@ -554,30 +555,47 @@
       (if demo?
           (if (pci-find #x1af4 #x1050) (start-gpu-demo gpu) (start-gfx-demo)))
       ;; Stand up the multi-client window compositor (notes/servers/CoreCompositor.md).
-      ;; Phase 2 is the IPC root only: the primary mailbox + the connect handshake
-      ;; that spawns a per-client handler. It owns no scanout yet (phase 4 takes the
-      ;; framebuffer via the driver), so it is harmless to start unconditionally --
-      ;; nothing connects unless asked. cardinal.compositortest runs a one-shot
-      ;; smoke (connect -> ping a handler -> expect pong) to prove the handshake
-      ;; under the real kernel scheduler; the host test_compositor covers it
-      ;; deterministically.
-      (let ((comp (start-compositor-service)))
+      ;; Phase 3: the IPC root + the surface protocol (create/configure/commit/
+      ;; destroy) compositing into a screen back-buffer. The kernel authority the
+      ;; root needs is INJECTED here (init holds it): dma-alloc-wb for surface
+      ;; backings + grant-mint/grant-revoke for the zero-copy grants. The screen is
+      ;; a RAM back-buffer for now -- phase 4 swaps it for the real scanout and adds
+      ;; the flush-rects path; until then nothing is displayed, so the bring-up is
+      ;; inert unless a client connects.
+      (let* ((cw 256) (ch 256)
+             (screen (make-surface (make-bytes (* cw ch 4)) cw ch (* cw 4)))
+             (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke))
+             (comp (start-compositor-service screen caps)))
+        ;; cardinal.compositortest: a real end-to-end surface round-trip under the
+        ;; kernel scheduler -- connect, create a surface, map its grant (zero-copy),
+        ;; draw a known colour, commit, then probe the composited screen. The client
+        ;; is spawn-restricted to '(sys-shm) so it can map ONLY granted memory (the
+        ;; window-client posture), proving map-grant works from a restricted ctx.
+        ;; The host test_compositor covers paint-windows + the protocol mechanics.
         (if (cmdline-has? "cardinal.compositortest")
-            (spawn-restricted '()
+            (spawn-restricted '(sys-shm)
               (lambda ()
+                (import sys-shm)
                 (send comp (list 'connect #f (self)))
-                (let ((r (recv)))               ; expect (connected handler)
-                  (if (eq? (car r) 'connected)
-                      (begin
-                        (send (cadr r) (list 'ping (self)))
-                        (let ((p (recv)))       ; expect (pong)
-                          (display "[compositor-test] ")
-                          (display (if (eq? (car p) 'pong)
-                                       "OK ping/pong over secondary channel"
-                                       "FAIL no pong"))
-                          (newline)))
-                      (begin (display "[compositor-test] FAIL no connected reply")
-                             (newline)))))))))
+                (let ((r (recv)))                       ; (connected handler)
+                  (if (not (eq? (car r) 'connected))
+                      (begin (display "[compositor-test] FAIL no connected reply") (newline))
+                      (let ((h (cadr r)))
+                        (send h (list 'create-surface 4 4))   ; reply comes to us
+                        (let ((s (recv)))               ; (surface id g0 g1 stride)
+                          (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                                 (surf (make-surface (map-grant g0) 4 4 stride))
+                                 (red (rgb surf 255 0 0)))
+                            (fill-rect surf 0 0 4 4 red)  ; draw into back buffer (front=0=g0)
+                            (send h (list 'configure id 10 10 #t))
+                            (send h (list 'commit id 0 '()))
+                            ;; probe via the handler so it is ordered after commit.
+                            (send h (list 'probe-pixel 10 10))
+                            (let ((px (recv)))
+                              (display "[compositor-test] ")
+                              (display (if (= px red) "OK surface created, drawn, composited"
+                                           "FAIL composited pixel mismatch"))
+                              (newline))))))))))))
     ;; Bring up the network stack, then a NIC, which registers itself with the
     ;; stack and forwards frames to it. Prefer the proven virtio-net when present;
     ;; otherwise fall back to the rtl8139 (the `-device rtl8139` boot, where no

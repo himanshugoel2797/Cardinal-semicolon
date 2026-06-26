@@ -471,6 +471,16 @@ static lisp_value prim_self(lisp_value *a, int n, const char **e) {
     return self == LISP_EMPTY ? LISP_FALSE : self;
 }
 
+// (ctx? v) -> #t iff v is a context handle (what spawn/self return, and what
+// `send` accepts). A server that receives a reply address in a client message can
+// use this to validate it before `send`, since the VM has no try/catch and a send
+// to a non-context aborts the calling context.
+static lisp_value prim_ctxp(lisp_value *a, int n, const char **e) {
+    if (n != 1)
+        return prim_err(e, "ctx? expects one argument");
+    return lisp_is_objtype(a[0], LISP_OBJ_CTX) ? LISP_TRUE : LISP_FALSE;
+}
+
 // --- Installation -----------------------------------------------------------
 
 static void def(lisp_value env, const char *name, lisp_primitive_fn fn) {
@@ -486,6 +496,7 @@ void lisp_install_sched(lisp_value env) {
     def(env, "yield", prim_yield);
     def(env, "send", prim_send);
     def(env, "self", prim_self);
+    def(env, "ctx?", prim_ctxp);
     def(env, "%mailbox-empty?", prim_mailbox_empty);
     def(env, "%mailbox-pop", prim_mailbox_pop);
     def(env, "%block", prim_block);
