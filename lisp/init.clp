@@ -778,6 +778,52 @@
                                                  "OK title-bar drag moved the window"
                                                  "FAIL window did not move"))
                                     (newline)))))))))))
+            ;; cardinal.compositorlayers: validate the phase-7 layer/merge pipeline's
+            ;; z-buffer occlusion + z authority. One opaque client creates two
+            ;; OVERLAPPING windows with distinct solid colours; the later-created one
+            ;; has the higher z and must win the overlap (a z-buffer pick, not painter's
+            ;; list order). Then `raise` the first -> a fresh top z -> it now wins.
+            ;; All ops go through the one handler channel (FIFO), so each probe is
+            ;; ordered after the commit/raise before it; probed on the RAM screen.
+            (if (cmdline-has? "cardinal.compositorlayers")
+                (spawn-restricted '(sys-shm)
+                  (lambda ()
+                    (import sys-shm)
+                    (send comp (list 'connect #f (self)))
+                    (let ((r (recv)))
+                      (if (not (eq? (car r) 'connected))
+                          (begin (display "[compositorlayers] FAIL no connected reply") (newline))
+                          (let* ((h (cadr r)) (fmt (caddr r))
+                                 (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
+                                 (cs (make-surface* (make-bytes 4) 1 1 4 ro go bo '())) ; rgb in screen fmt
+                                 (red (rgb cs 255 0 0)) (green (rgb cs 0 255 0))
+                                 (mkwin (lambda (w hh x y col)
+                                          (send h (list 'create-surface w hh))
+                                          (let ((s (recv)))
+                                            (if (not (and (pair? s) (eq? (car s) 'surface)))
+                                                (begin (display "[compositorlayers] FAIL create-surface") (newline) #f)
+                                                (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                                                       (surf (make-surface* (map-grant g0) w hh stride ro go bo '())))
+                                                  (clear surf col)
+                                                  (send h (list 'configure id x y #t))
+                                                  (send h (list 'commit id 0 '()))
+                                                  id)))))
+                                 (probe (lambda (x y) (send h (list 'probe-pixel x y)) (recv))))
+                            (let ((ida (mkwin 40 40 20 20 red))     ; z=1, [20,60)x[20,60)
+                                  (idb (mkwin 40 40 40 40 green)))  ; z=2, [40,80)x[40,80) -> on top
+                              (display "[compositorlayers] zorder ")
+                              (display (if (and (= (probe 45 45) green)  ; overlap -> higher z
+                                                (= (probe 25 25) red)    ; A only
+                                                (= (probe 70 70) green)) ; B only
+                                           "OK higher-z window wins the overlap"
+                                           "FAIL z-buffer occlusion wrong"))
+                              (newline)
+                              (send h (list 'raise ida))             ; A gets a fresh top z
+                              (display "[compositorlayers] raise ")
+                              (display (if (= (probe 45 45) red)
+                                           "OK raise lifts the window above in z"
+                                           "FAIL raise did not change occlusion"))
+                              (newline))))))))
             ;; cardinal.compositortest: a real end-to-end surface round-trip under the
             ;; kernel scheduler -- connect, create a surface, map its grant (zero-copy),
             ;; draw a known colour, commit, then probe the composited screen. The client

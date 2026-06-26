@@ -535,11 +535,22 @@ after `coredisplay` + the display driver bind (it needs the driver's
      construction (a max pick is commutative/associative) — host-tested
      (`test_merge.c`: same windows merged in two different shard orders give an
      identical result; the z-gate occludes below `Zop`).
-   - **7B wiring — TODO.** `connect`-time transparency routing (opaque → shard,
-     translucent → owner) + global z authority on the owner; grant-shared opaque
-     `(color,z)` layer buffers with `layer-update` damage reports; the owner mapping
-     all N layers and driving the two merge passes above over union damage; instances
-     born per core via the 7A hook. v1's single instance is the N=1 case of this code.
+   - **7B wiring (N=1) — ✅ DONE.** `corecompositor.clp`'s `recomposite` now runs the
+     two-pass merge instead of a painter's blit: opaque windows build a `(color,z)`
+     LAYER (colour blit + z-plane `fill-rect`, back-to-front), the merge `gfx-zpick!`s
+     the layer into the scanout (yielding Zop), and translucent windows `gfx-blend-z!`
+     over it gated on Zop. Occlusion is now a **z-buffer** (opaque) + **z-test**
+     (translucent), driven by a **global z authority** (`fresh-z`: a monotonic counter
+     stamping a fresh top z on create / raise / focus-click). This is the N=1 instance
+     of the sharded model (owner = the only shard, one-layer merge); the planes share
+     the screen stride so the flat z-pick matches the 2D fill/blit addressing. Tested:
+     `cardinal.compositorlayers` (two overlapping opaque windows — higher-z wins the
+     overlap, `raise` flips it), `compositortest`/`compositorinput` still green, and a
+     screenshot of the demo renders correctly through the new pipeline.
+   - **7B wiring (cross-core) — TODO.** `connect`-time transparency routing (opaque →
+     shard, translucent → owner); grant-shared per-shard layer buffers the owner maps;
+     `layer-update` damage; the owner folding the z-pick over **N** shard layers;
+     instances born per core via the 7A hook. The N=1 merge above is reused unchanged.
 
 ## Open / deferred
 

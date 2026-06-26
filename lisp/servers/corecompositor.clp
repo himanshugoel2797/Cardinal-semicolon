@@ -60,12 +60,17 @@
   ;; Two backings (double-buffered): the client draws into the buffer it is NOT
   ;; presenting, then `commit` flips `front`, so the compositor never reads a
   ;; half-drawn frame. g0/g1 are the grants handed to the client for those buffers.
+  ;; SF-Z is the surface's GLOBAL z-key (phase 7): a monotonic stamp the z authority
+  ;; assigns on create and bumps on raise. It is what the layer's z-plane is stamped
+  ;; with and what the two-pass merge picks/gates on -- so occlusion is by z-buffer
+  ;; (opaque) and z-test (translucent), not list order. z==0 is reserved for "empty"
+  ;; in the layer planes, so real z starts at 1 (see fresh-z).
   (define SF-ID 0) (define SF-CLIENT 1) (define SF-G0 2) (define SF-G1 3)
   (define SF-B0 4) (define SF-B1 5) (define SF-W 6) (define SF-H 7)
   (define SF-STRIDE 8) (define SF-X 9) (define SF-Y 10) (define SF-VIS 11)
-  (define SF-FRONT 12) (define SF-ALPHA 13)
+  (define SF-FRONT 12) (define SF-ALPHA 13) (define SF-Z 14)
   (define (make-surf id client g0 g1 b0 b1 w h stride alpha?)
-    (let ((v (make-vector 14 0)))
+    (let ((v (make-vector 15 0)))
       (vector-set! v SF-ID id)       (vector-set! v SF-CLIENT client)
       (vector-set! v SF-G0 g0)       (vector-set! v SF-G1 g1)
       (vector-set! v SF-B0 b0)       (vector-set! v SF-B1 b1)
@@ -73,7 +78,7 @@
       (vector-set! v SF-STRIDE stride)
       (vector-set! v SF-X 0)         (vector-set! v SF-Y 0)
       (vector-set! v SF-VIS #f)      (vector-set! v SF-FRONT 0)
-      (vector-set! v SF-ALPHA alpha?)
+      (vector-set! v SF-ALPHA alpha?) (vector-set! v SF-Z 0)
       v))
   (define (sf r i) (vector-ref r i))
   ;; The committed-front backing as a source surface for blitting. The screen's
@@ -105,14 +110,72 @@
                   (if a? (blit-alpha screen src x y) (blit screen src x y))))
               windows))
 
-  ;; Recomposite the whole screen from the surface table. `surfaces` is stored
-  ;; top-first (newest on top), so reverse it to paint back-to-front, drop the
-  ;; hidden ones, and project each record to a painter spec.
-  (define (recomposite screen bg surfaces)
-    (let ((ro (surface-r-off screen)) (go (surface-g-off screen)) (bo (surface-b-off screen)))
-      (paint-windows screen bg
-        (map (lambda (r) (list (surf-src r ro go bo) (sf r SF-X) (sf r SF-Y) (sf r SF-ALPHA)))
-             (filter (lambda (r) (sf r SF-VIS)) (reverse surfaces))))))
+  ;; --- the merge buffers + z authority (phase 7) ------------------------------
+  ;; `mrg` bundles this instance's compositing scratch: the opaque LAYER (a colour
+  ;; plane + a z plane, both screen-sized), the owner's Zop plane, and the monotonic
+  ;; z counter. All planes share the screen's stride so the z-pick can run flat over
+  ;; the whole buffer (padding columns stay z==0 and are skipped). This is the N=1
+  ;; case of the sharded model: one instance owns one layer and merges it (a 1-layer
+  ;; z-pick) into the scanout -- phase 7B-wiring promotes the layer to a grant-shared
+  ;; per-core buffer the owner maps, with the same merge.
+  (define (make-mrg lc lz zop zctr) (vector lc lz zop zctr))
+  (define (mrg-lc m)   (vector-ref m 0))   ; layer colour plane (a surface)
+  (define (mrg-lz m)   (vector-ref m 1))   ; layer z plane (a surface; fill-rect stamps z)
+  (define (mrg-zop m)  (vector-ref m 2))   ; the merged per-pixel topmost-opaque z (raw bytes)
+  (define (mrg-zctr m) (vector-ref m 3))   ; monotonic z counter (1-slot vector)
+  ;; The z authority: a fresh top z-stamp. Real z starts at 1 (z==0 = empty layer px).
+  (define (fresh-z mrg)
+    (let ((c (mrg-zctr mrg)))
+      (vector-set! c 0 (+ (vector-ref c 0) 1))
+      (vector-ref c 0)))
+
+  ;; Recomposite the whole scanout from the surface table via the phase-7 two-pass
+  ;; merge. `surfaces` is stored top-first; reverse for back-to-front. Opaque windows
+  ;; build the layer (colour + z); the merge z-picks the layer into the scanout
+  ;; (yielding Zop); translucent windows alpha-over only where they are in front of
+  ;; Zop. At N=1 the layer is this instance's own; the structure is identical for N
+  ;; shards (fold the z-pick over each shard's layer).
+  (define (recomposite screen bg surfaces mrg)
+    (let* ((lc (mrg-lc mrg)) (lz (mrg-lz mrg)) (zop (mrg-zop mrg))
+           (sw (surface-width screen)) (sh (surface-height screen))
+           ;; np = pixels in the WHOLE plane incl. any row padding, so the flat
+           ;; gfx-zpick! addressing (i -> byte i*4) agrees with fill-rect/blit's 2D
+           ;; addressing (y*stride + x*4). This requires stride to be a multiple of 4
+           ;; -- always true for a 32-bpp surface (a row is N*4 bytes, padding too) and
+           ;; the same precondition gfx-blit!/-zpick! already assume. Padding columns
+           ;; stay layer-z==0 (fill-rect only touches window rects within `sw`), so the
+           ;; z-pick skips them and the scanout padding is left untouched.
+           (stride (surface-stride screen)) (np (* (quotient stride 4) sh))
+           (ro (surface-r-off screen)) (go (surface-g-off screen)) (bo (surface-b-off screen))
+           (vis (filter (lambda (r) (sf r SF-VIS)) (reverse surfaces)))   ; back-to-front
+           (opaque (filter (lambda (r) (not (sf r SF-ALPHA))) vis))
+           (translu (filter (lambda (r) (sf r SF-ALPHA)) vis)))
+      ;; 1. opaque layer: clear the z plane (z==0 = empty), then composite the opaque
+      ;; windows back-to-front -- blit colour AND stamp the window's z over its rect;
+      ;; the topmost opaque window wins both colour and z at each covered pixel. The
+      ;; colour plane `lc` is intentionally NOT cleared: gfx-zpick! reads lc[i] only
+      ;; where lz[i] > 0, which is freshly stamped this frame, so stale colour under a
+      ;; z==0 pixel is never read (clearing it would be wasted work).
+      (bytes-fill32! (surface-fb lz) 0 np 0)
+      (for-each (lambda (r)
+                  (blit lc (surf-src r ro go bo) (sf r SF-X) (sf r SF-Y))
+                  (fill-rect lz (sf r SF-X) (sf r SF-Y) (sf r SF-W) (sf r SF-H) (sf r SF-Z)))
+                opaque)
+      ;; 2. merge: clear the scanout to the desktop bg and Zop to 0, then z-pick the
+      ;; opaque layer in -- the scanout gets the layer colour and Zop the layer z
+      ;; wherever a window covers (z>0); empty pixels keep the bg / Zop 0.
+      (clear screen bg)
+      (bytes-fill32! zop 0 np 0)
+      (gfx-zpick! (surface-fb screen) zop (surface-fb lc) (surface-fb lz) np)
+      ;; 3. translucent pass: alpha-over each translucent window onto the scanout, but
+      ;; only where its z is above Zop (in front of the nearest opaque surface there).
+      (for-each (lambda (r)
+                  (let ((src (surf-src r ro go bo)))
+                    (gfx-blend-z! (surface-fb screen) stride sw sh (sf r SF-X) (sf r SF-Y)
+                                  (surface-fb src) (surface-stride src)
+                                  (surface-width src) (surface-height src)
+                                  zop (sf r SF-Z))))
+                translu)))
 
   ;; --- surface-table helpers --------------------------------------------------
   ;; Does proper list `lst` have at least `n` elements? Walks safely (checks pair?
@@ -190,7 +253,7 @@
   ;; reply field in the message, so a client cannot make the root `send` to an
   ;; arbitrary (or non-context) target. Every op validates arity AND ownership and
   ;; falls through harmlessly rather than killing the serve context.
-  (define (handle-op st client transparency? m screen bg caps drag-state)
+  (define (handle-op st client transparency? m screen bg caps drag-state mrg)
     (let ((next-id (car st)) (surfaces (cdr st))
           (verb (if (pair? m) (car m) #f)))
       ;; A surface this client is allowed to act on, or #f. Ownership is by the
@@ -220,6 +283,7 @@
                     (b0 ((caps-alloc caps) sz)) (b1 ((caps-alloc caps) sz))
                     (g0 ((caps-mint caps) b0 'rw)) (g1 ((caps-mint caps) b1 'rw))
                     (r (make-surf next-id client g0 g1 b0 b1 w h stride transparency?)))
+               (vector-set! r SF-Z (fresh-z mrg))   ; a fresh top z-stamp (z authority)
                (send client (list 'surface next-id g0 g1 stride))
                (cons (+ next-id 1) (cons r surfaces)))))   ; prepend = top of stack
         ;; (configure id x y visible): place + show/hide, then recomposite. Fire-
@@ -235,7 +299,7 @@
                    (vector-set! r SF-X (caddr m))
                    (vector-set! r SF-Y (cadddr m))
                    (vector-set! r SF-VIS (nth m 4))
-                   (recomposite screen bg surfaces)
+                   (recomposite screen bg surfaces mrg)
                    (present! (if (sf r SF-VIS) (list old (surf-rect r)) (list old))))))
          st)
         ;; (commit id buf rects): flip the presented buffer, recomposite, flush the
@@ -247,19 +311,20 @@
         ((and (eq? verb 'commit) (len>= m 4) (integer? (cadr m)) (integer? (caddr m)))
          (let ((r (owned (cadr m))))
            (if r (begin (vector-set! r SF-FRONT (caddr m))
-                        (recomposite screen bg surfaces)
+                        (recomposite screen bg surfaces mrg)
                         (if (sf r SF-VIS) (present! (list (surf-rect r)))))))
          st)
         ;; (raise id): move the owner's surface to the top of the z-stack, then flush
         ;; its rect (occlusion within it changed). Only recomposite if it owns the id.
         ((and (eq? verb 'raise) (pair? (cdr m)) (integer? (cadr m)))
-         (if (owned (cadr m))
+         (let ((r0 (owned (cadr m))))
+           (if r0
              (let ((s2 (raise-surf (cadr m) surfaces)))
-               (recomposite screen bg s2)
-               (let ((r (find-surf (cadr m) s2)))
-                 (if (and r (sf r SF-VIS)) (present! (list (surf-rect r)))))
+               (vector-set! r0 SF-Z (fresh-z mrg))   ; fresh top z so the z-buffer lifts it
+               (recomposite screen bg s2 mrg)
+               (if (sf r0 SF-VIS) (present! (list (surf-rect r0))))
                (cons next-id s2))
-             st))
+             st)))
         ;; (destroy-surface id): revoke both grants, drop, recomposite, flush the
         ;; vacated rect, ack. Only the owner can destroy; a bad/foreign id gets an
         ;; error, not a spurious ok.
@@ -275,7 +340,7 @@
                  (let ((d (vector-ref drag-state 0)))
                    (if (and d (= (car d) (cadr m))) (vector-set! drag-state 0 #f)))
                  (let ((s2 (drop-surf (cadr m) surfaces)))
-                   (recomposite screen bg s2)
+                   (recomposite screen bg s2 mrg)
                    (if was-vis (present! (list old)))
                    (send client 'ok)
                    (cons next-id s2))))))
@@ -305,7 +370,7 @@
   ;;   (pointer x y down?)   -> title-bar press = MOVE; body press = route to client
   ;; Resize is deferred: the surface backing is a fixed-size DMA buffer, so a true
   ;; resize needs a client-cooperative realloc (re-create-surface) -- move only here.
-  (define (handle-input st ev screen bg caps drag-state)
+  (define (handle-input st ev screen bg caps drag-state mrg)
     (let ((next-id (car st)) (surfaces (cdr st))
           (tag (if (pair? ev) (car ev) #f)))
       (define (present! rects) (let ((p (caps-present caps))) (if p (p rects))))
@@ -336,7 +401,7 @@
                     (if r (let ((old (surf-rect r)))
                             (vector-set! r SF-X (- x (cadr d)))
                             (vector-set! r SF-Y (- y (caddr d)))
-                            (recomposite screen bg surfaces)
+                            (recomposite screen bg surfaces mrg)
                             (present! (list old (surf-rect r))))
                         (vector-set! drag-state 0 #f)))
                   (vector-set! drag-state 0 #f))
@@ -347,8 +412,11 @@
              (down?
               (let ((r (surf-at surfaces x y)))
                 (if (not r) st
+                    ;; raise-surf re-lists the SAME surface vector `r` (no copy), so
+                    ;; mutating r's z here is seen by the recomposite over s2.
                     (let ((s2 (raise-surf (sf r SF-ID) surfaces)))
-                      (recomposite screen bg s2)
+                      (vector-set! r SF-Z (fresh-z mrg))   ; focus-follows-click lifts it in z
+                      (recomposite screen bg s2 mrg)
                       (present! (list (surf-rect r)))
                       (if (< (- y (sf r SF-Y)) TITLE-H)
                           (vector-set! drag-state 0
@@ -374,6 +442,17 @@
           ;; captured 1-slot cell rather than threaded `st` -- it is interaction
           ;; state, not part of the surface table, and the root is single-threaded.
           (drag-state (make-vector 1 #f)))
+      ;; Phase 7: this instance's compositing buffers. The opaque layer (colour + z
+      ;; planes) and the Zop plane are screen-sized and share the screen's stride, so
+      ;; the z-pick can run flat over the whole buffer. Allocated once and reused each
+      ;; recomposite (cleared, rebuilt). The z counter starts at 0 (fresh-z -> 1..).
+      (let* ((sw (surface-width screen)) (sh (surface-height screen))
+             (stride (surface-stride screen)) (plane (* stride sh))
+             (lc (make-surface* (make-bytes plane) sw sh stride
+                                (surface-r-off screen) (surface-g-off screen)
+                                (surface-b-off screen) '()))
+             (lz (make-surface (make-bytes plane) sw sh stride))
+             (mrg (make-mrg lc lz (make-bytes plane) (make-vector 1 0))))
       ;; Phase 4: paint the desktop background and push the whole screen once, so the
       ;; display shows the compositor's backdrop immediately (before any client) and
       ;; every later op only needs to flush its own damage rect.
@@ -398,13 +477,13 @@
             ;; test-only probe-pixel; see handle-op for why it goes via the handler).
             ;; Sent only by a (trusted) handler, but length-guarded all the same.
             ((and (eq? (car m) 'op) (len>= m 4))
-             (handle-op st (cadr m) (caddr m) (cadddr m) screen bg caps drag-state))
+             (handle-op st (cadr m) (caddr m) (cadddr m) screen bg caps drag-state mrg))
             ;; (input ev) -> a coreinput event (the compositor is subscribed to the
             ;; input service in init); route it by focus/hit-test. ev is validated
             ;; inside handle-input, so a malformed event can't crash the root.
             ((and (eq? (car m) 'input) (pair? (cdr m)))
-             (handle-input st (cadr m) screen bg caps drag-state))
+             (handle-input st (cadr m) screen bg caps drag-state mrg))
             (else
              (display "[corecompositor] primary: ignoring malformed ")
              (display (car m)) (newline)
-             st)))))))
+             st))))))))
