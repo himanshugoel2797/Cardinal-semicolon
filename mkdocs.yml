@@ -50,9 +50,10 @@ markdown_extensions:
 plugins:
   - search
 
-# The authoring template is a contributor reference, not a published page.
+# The authoring templates are contributor references, not published pages.
 exclude_docs: |
   _authoring-template.md
+  _narrative-template.md
 
 # Lisp/Scheme isn't a default Pygments-highlit lexer name everyone agrees on;
 # `scheme` and `lisp` both work in fenced blocks (```scheme / ```lisp).

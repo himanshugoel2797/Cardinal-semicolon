@@ -6,7 +6,19 @@ and relocates signed ELF modules. Everything above the tiny `Sys*` core —
 physical/virtual memory aside — is written in **Lisp**, run by the kernel-resident
 bytecode VM.
 
-This site is the **API reference** for that Lisp layer:
+## New here? Start with the tutorials
+
+- **[Tutorials](tutorials/index.md)** — build & boot the OS, drive it from the serial
+  REPL, and write your first driver, step by step.
+- **[How-to guides](guides/index.md)** — focused recipes: add a PCI driver, build a
+  `Core*` server, debug the running system.
+- **[Concepts & architecture](concepts/index.md)** — the mental models: the
+  microkernel + module design, the capability sandbox, and the message-passing
+  concurrency model.
+
+## API reference
+
+The reference documents the concrete Lisp layer:
 
 - **[Servers](servers/index.md)** — the `Core*` OS services (input, audio, power,
   storage, display, network, USB, compositor). Each is a Lisp context that speaks a
