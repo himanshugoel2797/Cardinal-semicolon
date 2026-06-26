@@ -298,6 +298,28 @@ static lisp_value prim_mmio_map(lisp_value *a, int n, const char **e) {
     return b;
 }
 
+// (mmio-map-wc phys size) -> like mmio-map but the region is mapped
+// write-combining (PAT3) instead of uncached. Sequential stores are coalesced
+// into burst writes, so this is the mapping to use for a framebuffer that is
+// written by the CPU and never read back: WC delivers ~10-50x the streaming
+// store bandwidth of a UC mapping. Reads from WC memory are slow and unordered,
+// so only use it for write-mostly buffers (a double-buffer FRONT/scanout).
+static lisp_value prim_mmio_map_wc(lisp_value *a, int n, const char **e) {
+    // Reject phys==0 (unlike mmio-map): this prim targets framebuffers, and the
+    // easy mistake is passing (bytes-phys b) of a plain heap buffer, whose phys is
+    // 0 -- that would WC-map the real-mode IVT/BDA at physical 0 and silently succeed.
+    if (n != 2 || !lisp_is_fixnum(a[0]) || !lisp_is_fixnum(a[1]) ||
+        lisp_fixnum_val(a[0]) <= 0 || lisp_fixnum_val(a[1]) <= 0)
+        return (*e = "mmio-map-wc: expects (phys-addr size), phys > 0"), LISP_UNDEF;
+    intptr_t phys = (intptr_t)lisp_fixnum_val(a[0]);
+    size_t size = (size_t)lisp_fixnum_val(a[1]);
+    intptr_t virt = vmem_phystovirt(phys, size, vmem_flags_cachewritecomplete | vmem_flags_kernel | vmem_flags_rw);
+    lisp_value b = lisp_make_bytes_foreign((void *)virt, size, (uint64_t)phys);
+    if (b == LISP_UNDEF)
+        return (*e = "mmio-map-wc: out of memory"), LISP_UNDEF;
+    return b;
+}
+
 // (dma-alloc size) -> a physically-contiguous, zeroed, uncached byte buffer for
 // device DMA. (bytes-phys b) gives the physical address to program into the
 // device; the accessors read/write the CPU-side view.
@@ -871,7 +893,8 @@ static const lisp_builtin_export sys_io_exports[] = {
     {"out-u8", prim_out_u8}, {"out-u16", prim_out_u16}, {"out-u32", prim_out_u32},
 };
 static const lisp_builtin_export sys_mmio_exports[] = {
-    {"mmio-map", prim_mmio_map}, {"dma-alloc", prim_dma_alloc},
+    {"mmio-map", prim_mmio_map}, {"mmio-map-wc", prim_mmio_map_wc},
+    {"dma-alloc", prim_dma_alloc},
     {"dma-alloc-32", prim_dma_alloc_32},
 };
 static const lisp_builtin_export sys_pci_exports[] = {

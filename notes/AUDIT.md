@@ -566,7 +566,7 @@ downgrade, and cross-core user unmap).
 would not reach already-created address spaces, since each process PML4 copies the
 kernel half once at `vmem_create`. Nothing creates one today — the only runtime-growing
 kernel region is `vmem_vmalloc`, which has 512 GiB under its single pre-created entry
-(258) and currently has zero callers. Closed up front anyway: `vmem_init` now reserves
+(259, after the WB/UC/WC physmap windows at 256/257/258) and currently has zero callers. Closed up front anyway: `vmem_init` now reserves
 **every** kernel-half PML4 entry (256..511) by installing a zeroed PDPT for each absent
 one before any AP boots or any task is created, so all 256 are present and shared and any
 future kernel region can grow across a 512 GiB PML4 boundary with no per-address-space

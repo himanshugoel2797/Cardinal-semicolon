@@ -30,7 +30,8 @@
           rgb argb
           clear fill-rect draw-rect draw-hline draw-vline draw-line
           put-pixel get-pixel draw-circle fill-circle
-          blit blit-alpha draw-glyph)
+          blit blit-alpha draw-glyph
+          make-double-buffer db-back db-front db-flush db-flush-rect)
   (import driver-util)
 
   ;; --- the surface record -----------------------------------------------------
@@ -177,4 +178,59 @@
     (let ((op (backend-op s 'draw-glyph)))
       (if op (op s x y bitmap boff gw gh fg bg draw-bg? scale)
           (gfx-glyph! (surface-fb s) (surface-stride s) (surface-width s) (surface-height s)
-                      x y bitmap boff gw gh fg bg (if draw-bg? 1 0) scale)))))
+                      x y bitmap boff gw gh fg bg (if draw-bg? 1 0) scale))))
+
+  ;; --- double buffering -------------------------------------------------------
+  ;; A linear framebuffer is best mapped write-combining (mmio-map-wc): the CPU
+  ;; coalesces sequential stores into bursts. But WC reads are slow and stores are
+  ;; weakly ordered, so it is a poor surface to COMPOSE on (every blend/glyph op
+  ;; reads back the destination). The fix is a double buffer: draw into a normal
+  ;; cached (WB) back-buffer at full CPU/cache bandwidth, then stream the finished
+  ;; frame to the WC front in one bulk copy.
+  ;;
+  ;; `front` is the scanout surface (ideally WC-mapped). make-double-buffer
+  ;; allocates a cached back-buffer of identical geometry; draw on (db-back db),
+  ;; then (db-flush db) (whole frame) or (db-flush-rect db x y w h) (one dirty
+  ;; region). Channel offsets are inherited so colours match the scanout.
+  (define (make-double-buffer front)
+    (let* ((h      (surface-height front))
+           (stride (surface-stride front))
+           (back   (make-surface* (make-bytes (* stride h))
+                                  (surface-width front) h stride
+                                  (surface-r-off front) (surface-g-off front)
+                                  (surface-b-off front) '())))
+      (cons back front)))
+
+  (define (db-back db)  (car db))
+  (define (db-front db) (cdr db))
+
+  ;; Whole-frame flush: one bulk store stream into the (WC) front buffer, then a
+  ;; fence so the write-combine buffer drains before the scanout reads VRAM (else
+  ;; the frame's tail edge can tear).
+  (define (db-flush db)
+    (let ((b (surface-fb (car db))))
+      (bytes-copy! (surface-fb (cdr db)) 0 b 0 (bytes-length b))
+      (sfence)))
+
+  ;; Dirty-rect flush: copy only rows [y, y+h) of the [x, x+w) span. Each row is a
+  ;; contiguous run; clipped to the buffer bounds so an oversized rect is safe.
+  ;; Relies on back and front sharing a stride (make-double-buffer guarantees it,
+  ;; copying front's stride into the back); the row offset is computed once and
+  ;; used for both. A trailing sfence drains the WC buffer (see db-flush).
+  (define (db-flush-rect db x y w h)
+    (let* ((back   (car db)) (front (cdr db))
+           (sw     (surface-width back)) (sh (surface-height back))
+           (stride (surface-stride back))
+           (x0 (if (< x 0) 0 x)) (y0 (if (< y 0) 0 y))
+           (x1 (let ((e (+ x w))) (if (> e sw) sw e)))
+           (y1 (let ((e (+ y h))) (if (> e sh) sh e)))
+           (bf (surface-fb back)) (ff (surface-fb front)))
+      (if (and (< x0 x1) (< y0 y1))
+          (let ((rowbytes (* (- x1 x0) 4)))
+            (let loop ((row y0))
+              (if (< row y1)
+                  (let ((off (+ (* row stride) (* x0 4))))
+                    (bytes-copy! ff off bf off rowbytes)
+                    (loop (+ row 1)))
+                  (sfence))))
+          'done))))

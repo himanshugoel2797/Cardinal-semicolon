@@ -27,6 +27,7 @@
 #define KERN_TOP_BASE (0xffffffff80000000)
 #define KERN_PHYSMAP_BASE (0xFFFF800000000000)
 #define KERN_PHYSMAP_BASE_UC (KERN_PHYSMAP_BASE + GiB(512))
+#define KERN_PHYSMAP_BASE_WC (KERN_PHYSMAP_BASE_UC + GiB(512))
 
 struct vmem
 {
@@ -74,7 +75,7 @@ static TLS struct lcl_data *lcl;
 static vmem_t kmem;
 static size_t phys_map_sz;
 
-static uint64_t kernel_vmalloc = (KERN_PHYSMAP_BASE_UC + GiB(512));
+static uint64_t kernel_vmalloc = (KERN_PHYSMAP_BASE_WC + GiB(512));
 static int kernel_vmalloc_lock = 0;
 
 intptr_t vmem_vmalloc(size_t sz)
@@ -216,6 +217,10 @@ cs_error vmem_init()
 
     vmem_map(NULL, KERN_PHYSMAP_BASE, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_cachewriteback, 0);
     vmem_map(NULL, KERN_PHYSMAP_BASE_UC, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_uncached, 0);
+    // Write-combining window: same identity layout, PAT3 (WC) page bits. Lets a
+    // framebuffer be mapped WC so the CPU coalesces sequential stores into burst
+    // writes -- ~10-50x the throughput of the UC window for streaming pixel data.
+    vmem_map(NULL, KERN_PHYSMAP_BASE_WC, 0x0, phys_map_sz, vmem_flags_kernel | vmem_flags_rw | vmem_flags_cachewritecomplete, 0);
 
     //Pre-create the top-level (PML4) entry covering the kernel vmalloc region.
     //The shared-kernel-PML4 model requires every kernel PML4 *entry* to exist
@@ -240,7 +245,7 @@ cs_error vmem_init()
     //a kernel mapping added afterwards under an *existing* entry propagates via
     //the shared lower-level tables, but a brand-new top-level entry created
     //after an address space was cloned would be invisible to it. The maps above
-    //only populate entries 256/257 (physmap WB/UC), 258 (vmalloc) and 511
+    //only populate entries 256/257/258 (physmap WB/UC/WC), 259 (vmalloc) and 511
     //(kernel image); installing an empty (zeroed) PDPT for the remaining
     //kernel-half entries makes all 256 present and shared before any AP boots or
     //any task is created, so vmalloc (or any future kernel region) can grow
@@ -755,6 +760,11 @@ intptr_t vmem_phystovirt(intptr_t phys, size_t sz, vmem_flags_t flags)
     {
         if (phys < (intptr_t)phys_map_sz && (phys + sz) < phys_map_sz)
             return (phys + KERN_PHYSMAP_BASE_UC);
+    }
+    else if (flags & vmem_flags_cachewritecomplete)
+    {
+        if (phys < (intptr_t)phys_map_sz && (phys + sz) < phys_map_sz)
+            return (phys + KERN_PHYSMAP_BASE_WC);
     }
 
     char tmp[20];
