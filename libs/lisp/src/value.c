@@ -51,6 +51,8 @@ lisp_value lisp_make_bytes(size_t len) {
     b->len = len;
     b->phys = 0;
     b->owned = 1;
+    b->grant_index = 0;
+    b->grant_generation = 0;  // not grant-backed
     memset(b->data, 0, len);
     return lisp_from_obj(b);
 }
@@ -64,6 +66,8 @@ lisp_value lisp_make_bytes_foreign(void *ptr, size_t len, uint64_t phys) {
     b->len = len;
     b->phys = phys;
     b->owned = 0;
+    b->grant_index = 0;
+    b->grant_generation = 0;  // map-grant stamps these via lisp_bytes_set_grant
     return lisp_from_obj(b);
 }
 

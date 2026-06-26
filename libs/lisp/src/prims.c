@@ -329,6 +329,11 @@ static bool deep_equal(lisp_value a, lisp_value b) {
                    memcmp(lisp_string_data(a), lisp_string_data(b), n) == 0;
         }
         if (lisp_is_bytes(a) && lisp_is_bytes(b)) {
+            // A revoked grant view reads as a zero page: never memcmp its backing
+            // (that would be an equality oracle over the reused RAM). A dead view is
+            // simply not equal to anything -- including another dead view.
+            if (lisp_bytes_grant_dead(a) || lisp_bytes_grant_dead(b))
+                return false;
             size_t n = lisp_bytes_len(a);
             return n == lisp_bytes_len(b) &&
                    memcmp(lisp_bytes_data(a), lisp_bytes_data(b), n) == 0;
@@ -671,6 +676,13 @@ static uint64_t equal_hash(lisp_value v, int depth) {
             return hash_mem((const uint8_t *)lisp_string_data(v), lisp_string_len(v),
                             FNV64_OFFSET ^ 0x05u);
         case LISP_OBJ_BYTES:
+            // A revoked grant view reads as a zero page: never hash its backing (that
+            // would be a hash oracle over the reused RAM). It is not equal? to
+            // anything (see deep_equal), so any self-consistent constant hash is fine.
+            // Distinct dead views thus share one bucket -- benign (O(n) only if many
+            // dead views are used as keys, and equal? still separates them on lookup).
+            if (lisp_bytes_grant_dead(v))
+                return FNV64_OFFSET ^ 0x07u;
             return hash_mem((const uint8_t *)lisp_bytes_data(v), lisp_bytes_len(v),
                             FNV64_OFFSET ^ 0x07u);
         case LISP_OBJ_FLONUM: {
@@ -1455,10 +1467,35 @@ void lisp_bytes_mark_readonly(lisp_value v) {
 bool lisp_bytes_readonly(lisp_value v) {
     return lisp_is_bytes(v) && (LISP_HDR_AUX(lisp_obj(v)) & LISP_BYTES_RO_AUX) != 0;
 }
-// Every bytes mutator takes its destination as arg 0; refuse a write to a
-// read-only granted view there. One guard covers them all.
+
+// Grant-backed views re-validate against the grant table on every access: a view
+// minted from a now-REVOKED grant must behave as a ZERO PAGE -- reads return 0,
+// writes are refused -- rather than touch the (possibly reused) physical RAM the
+// grant used to name. map-grant stamps the grant's (index, generation) here;
+// generation 0 means "not grant-backed" (a live grant's generation is always >= 1),
+// so an ordinary buffer costs only the cheap `!= 0` test. The page table can't do
+// this (map-grant returns the shared physmap window, not a private mapping), and the
+// sandbox makes the software check airtight -- a grantee reaches the region only
+// through these prims. This is the use-after-revoke hardening; see notes/AUDIT.md.
+void lisp_bytes_set_grant(lisp_value v, uint32_t index, uint32_t generation) {
+    as_bytes(v)->grant_index = index;
+    as_bytes(v)->grant_generation = generation;
+}
+bool lisp_bytes_grant_dead(lisp_value v) {
+    if (!lisp_is_bytes(v))
+        return false;
+    lisp_bytes *b = as_bytes(v);
+    return b->grant_generation != 0 && !lisp_grant_is_live(b->grant_index, b->grant_generation);
+}
+
+// Every bytes mutator takes its destination as arg 0; refuse a write to a read-only
+// granted view OR a revoked granted view (a late write must not corrupt the reused
+// RAM the grant used to back). One guard covers them all.
 #define BYTES_WR_GUARD(v, e, who) \
-    do { if (lisp_bytes_readonly(v)) return prim_err((e), who ": destination is a read-only grant"); } while (0)
+    do { \
+        if (lisp_bytes_readonly(v)) return prim_err((e), who ": destination is a read-only grant"); \
+        if (lisp_bytes_grant_dead(v)) return prim_err((e), who ": destination grant was revoked"); \
+    } while (0)
 
 // (make-bytes n) -> a fresh zeroed mutable buffer of n bytes.
 static lisp_value prim_make_bytes(lisp_value *a, int n, const char **e) {
@@ -1482,6 +1519,8 @@ static lisp_value prim_bytes_length(lisp_value *a, int n, const char **e) {
 static lisp_value prim_bytes_phys(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_bytes(a[0]))
         return prim_err(e, "bytes-phys expects a byte buffer");
+    if (lisp_bytes_grant_dead(a[0]))
+        return lisp_fixnum(0);  // revoked grant: don't disclose the (freed) region's phys
     return lisp_fixnum((int64_t)as_bytes(a[0])->phys);
 }
 
@@ -1493,7 +1532,13 @@ static lisp_value bytes_ref(lisp_value *a, int n, const char **e, int w) {
         return prim_err(e, "bytes-ref expects (bytes index)");
     lisp_bytes *b = as_bytes(a[0]);
     int64_t i = lisp_fixnum_val(a[1]);
-    if (i < 0 || (size_t)i + (size_t)w > b->len)
+    // Revoked grant reads as a zero page (before the bounds check, so a dead view
+    // uniformly reads 0 at any index rather than leaking liveness via an error).
+    if (i < 0)
+        return prim_err(e, "bytes-ref: index out of range");
+    if (lisp_bytes_grant_dead(a[0]))
+        return lisp_fixnum(0);
+    if ((size_t)i + (size_t)w > b->len)
         return prim_err(e, "bytes-ref: index out of range");
     volatile uint8_t *p = b->data + i;
     uint64_t v = 0;
@@ -1575,6 +1620,10 @@ static lisp_value prim_bytes_copy(lisp_value *a, int n, const char **e) {
         (size_t)doff + (size_t)len > d->len ||
         (size_t)soff + (size_t)len > s->len)
         return prim_err(e, "bytes-copy!: range out of bounds");
+    if (lisp_bytes_grant_dead(a[2])) {       // revoked source reads as a zero page
+        memset(d->data + doff, 0, (size_t)len);
+        return LISP_UNDEF;
+    }
     memmove(d->data + doff, s->data + soff, (size_t)len);
     return LISP_UNDEF;
 }
@@ -1673,6 +1722,7 @@ static lisp_value prim_gfx_blit(lisp_value *a, int n, const char **e) {
         return prim_err(e, "gfx-blit!: non-fixnum arg");
     lisp_bytes *d = as_bytes(a[0]), *s = as_bytes(a[6]);
     BYTES_WR_GUARD(a[0], e, "gfx-blit!");
+    if (lisp_bytes_grant_dead(a[6])) return LISP_UNDEF;  // revoked source = zero page: draw nothing
     int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
     int64_t sstride = lisp_fixnum_val(a[7]), sw = lisp_fixnum_val(a[8]), sh = lisp_fixnum_val(a[9]);
     int64_t cx, cy, cw, ch, sx, sy;
@@ -1702,6 +1752,7 @@ static lisp_value prim_gfx_blend(lisp_value *a, int n, const char **e) {
         return prim_err(e, "gfx-blend!: non-fixnum arg");
     lisp_bytes *d = as_bytes(a[0]), *s = as_bytes(a[6]);
     BYTES_WR_GUARD(a[0], e, "gfx-blend!");
+    if (lisp_bytes_grant_dead(a[6])) return LISP_UNDEF;  // revoked source = zero page: draw nothing
     int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
     int64_t sstride = lisp_fixnum_val(a[7]), sw = lisp_fixnum_val(a[8]), sh = lisp_fixnum_val(a[9]);
     int64_t cx, cy, cw, ch, sx, sy;
@@ -1740,6 +1791,7 @@ static lisp_value prim_gfx_glyph(lisp_value *a, int n, const char **e) {
         if (i != 6 && !lisp_is_fixnum(a[i])) return prim_err(e, "gfx-glyph!: non-fixnum arg");
     lisp_bytes *d = as_bytes(a[0]), *bm = as_bytes(a[6]);
     BYTES_WR_GUARD(a[0], e, "gfx-glyph!");
+    if (lisp_bytes_grant_dead(a[6])) return LISP_UNDEF;  // revoked glyph bitmap = zero page: draw nothing
     int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
     int64_t dx = lisp_fixnum_val(a[4]), dy = lisp_fixnum_val(a[5]);
     int64_t boff = lisp_fixnum_val(a[7]), gw = lisp_fixnum_val(a[8]), gh = lisp_fixnum_val(a[9]);
@@ -1788,6 +1840,7 @@ static lisp_value prim_gfx_cover(lisp_value *a, int n, const char **e) {
         if (i != 6 && !lisp_is_fixnum(a[i])) return prim_err(e, "gfx-cover!: non-fixnum arg");
     lisp_bytes *d = as_bytes(a[0]), *c = as_bytes(a[6]);
     BYTES_WR_GUARD(a[0], e, "gfx-cover!");
+    if (lisp_bytes_grant_dead(a[6])) return LISP_UNDEF;  // revoked coverage mask = zero page: draw nothing
     int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
     int64_t cstride = lisp_fixnum_val(a[7]), cw = lisp_fixnum_val(a[8]), ch0 = lisp_fixnum_val(a[9]);
     uint32_t fg = (uint32_t)lisp_fixnum_val(a[10]);

@@ -126,12 +126,20 @@ typedef struct {
 // a DMA buffer (owned == 0, never freed by the GC; `phys` is its physical address,
 // 0 for a non-DMA region). Accessors are volatile so MMIO reads/writes are not
 // elided or reordered. Raw bytes have no Lisp children, so it is a GC leaf.
+//
+// `grant_generation != 0` marks a GRANT-BACKED view (returned by map-grant over a
+// revocable grant); `grant_index`/`grant_generation` name its grant-table slot, so
+// every access re-validates against the table (lisp_grant_is_live) and a revoked
+// grant's view reads as a zero page / refuses writes -- the use-after-revoke
+// hardening (notes/AUDIT.md). 0 for an ordinary (non-granted) buffer.
 typedef struct {
     lisp_header h;
     uint8_t *data;
     size_t len;
     uint64_t phys;
     uint32_t owned;
+    uint32_t grant_index;
+    uint32_t grant_generation;
 } lisp_bytes;
 
 typedef struct {
@@ -288,6 +296,15 @@ uint64_t lisp_bytes_phys(lisp_value v);
 // prims. Reads are unaffected.
 void lisp_bytes_mark_readonly(lisp_value v);
 bool lisp_bytes_readonly(lisp_value v);
+// Grant-backed views: map-grant stamps the grant's (index, generation) on the view
+// so it re-validates against the grant table on access. A view whose grant has been
+// revoked behaves as a ZERO PAGE -- reads return 0, writes are refused -- so a
+// use-after-revoke can neither read the (reused) RAM nor corrupt it. The page table
+// can't enforce this (map-grant hands back the shared physmap window, not a private
+// mapping), so like read-only it is enforced in software at the bytes layer --
+// airtight in the sandbox. lisp_bytes_grant_dead is the per-access check.
+void lisp_bytes_set_grant(lisp_value v, uint32_t index, uint32_t generation);
+bool lisp_bytes_grant_dead(lisp_value v);
 
 // Shared-memory grants (the compositor's zero-copy surfaces; see lisp_grant). A
 // grant is an unforgeable, revocable capability to map a specific physical region
@@ -300,6 +317,8 @@ bool lisp_bytes_readonly(lisp_value v);
 lisp_value lisp_grant_mint(uint64_t phys, size_t len, uint32_t perms);  // grant, or LISP_UNDEF if the table is full / OOM
 int lisp_grant_revoke(lisp_value g);   // 0 = revoked, -1 = not a live grant (idempotent)
 int lisp_grant_resolve(lisp_value g, uint64_t *phys, size_t *len, uint32_t *perms);  // 0 = live, -1 = revoked/stale
+int lisp_grant_is_live(uint32_t index, uint32_t generation);            // 1 = slot live + generation matches (grant-backed bytes re-check)
+int lisp_grant_handle(lisp_value g, uint32_t *index, uint32_t *generation);  // read a grant's (index, generation); -1 if not a grant
 
 const char *lisp_named_name(lisp_value v);  // symbol/keyword name (NUL-terminated)
 size_t lisp_named_len(lisp_value v);

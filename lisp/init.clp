@@ -698,7 +698,24 @@
                                   (display "[compositor-test] ")
                                   (display (if (= px red) "OK surface created, drawn, composited"
                                                "FAIL composited pixel mismatch"))
-                                  (newline))))))))))))))
+                                  (newline))
+                                ;; Use-after-revoke (the zero-page hardening): the
+                                ;; client still holds `surf` (its mapped g0 view). Read
+                                ;; it live (red), then destroy the surface -- which
+                                ;; revokes g0/g1 -- and read the SAME view again. A
+                                ;; revoked grant reads as a zero page, so the late read
+                                ;; returns 0, never the (reused) backing RAM. This drives
+                                ;; the real map-grant token-stamp wiring end to end (the
+                                ;; host test stubs that step).
+                                (let ((live-px (get-pixel surf 0 0)))
+                                  (send h (list 'destroy-surface id))
+                                  (recv)                ; 'ok ack, sent after revoke
+                                  (let ((dead-px (get-pixel surf 0 0)))
+                                    (display "[compositor-test] revoke ")
+                                    (display (if (and (= live-px red) (= dead-px 0))
+                                                 "OK use-after-revoke reads zero"
+                                                 "FAIL revoked view did not zero"))
+                                    (newline)))))))))))))))
     ;; Bring up the network stack, then a NIC, which registers itself with the
     ;; stack and forwards frames to it. Prefer the proven virtio-net when present;
     ;; otherwise fall back to the rtl8139 (the `-device rtl8139` boot, where no

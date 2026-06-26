@@ -639,13 +639,29 @@ the default; a writable grant must be minted `'rw`.
 by a `sys-shm`-only grantee today; if one is added, it must honor the flag (or a
 real read-only physmap window is then warranted).
 
-### [INCOMPLETE] Use-after-revoke is a contract, not enforced
-`grant-revoke` flips the table slot so future `map-grant` returns `#f`, but it does
-**not** tear down a grantee's existing mapping. The v1 contract is that a grantee
-stops touching a surface once it acks `destroy-surface`; a late write after the
-owner frees the backing is a UAF into reused RAM. Hardening (remap revoked views
-onto a shared zero page so a late access faults harmlessly) is a follow-up — see
-the sharp-edge note in `notes/servers/CoreCompositor.md`.
+### [DONE] Use-after-revoke neutralized in software (zero-page semantics)
+`grant-revoke` flips the table slot so future `map-grant` returns `#f`, AND a
+grantee's existing mapped view is now neutralized: `map-grant` stamps the grant's
+`(index, generation)` onto the `bytes` view (`lisp_bytes_set_grant`), and every
+bytes accessor re-validates it against the grant table (`lisp_grant_is_live`) — once
+revoked, the view **reads as a zero page and refuses writes**, so a late
+use-after-revoke can neither read the (reused) RAM nor corrupt it. The page table
+can't enforce this here (`map-grant` hands back the shared physmap window from
+`vmem_phystovirt`, not a private mapping), so like read-only it is enforced **in
+software at the bytes layer** — airtight in the sandbox, where a grantee reaches the
+region only through these prims. Coverage is EVERY path that touches a granted
+view's backing, not just the obvious mutators: writes via one guard
+(`BYTES_WR_GUARD` — `bytes-*-set!/fill32!/copy!` + every `gfx-*`); and reads, which
+must not leak the reused RAM either — `bytes-ref` returns 0, a revoked
+`gfx-*`/`bytes-copy!` SOURCE draws/copies nothing, **`send` (`deep_copy`) snapshots
+zeros not the backing**, **`equal?` (`deep_equal`) returns not-equal without a
+memcmp oracle**, a hash-table key (`equal_hash`) hashes a constant, `bytes-phys`
+returns 0 (no address disclosure), and `ttf-rasterize`/`ttf-vmetrics` (a client can
+pass a view as a "font") skip it. Tested: `test_grant.c` (live read/write → revoke →
+read-0 / write-refused / dead-source no-op / send-zeroed / equal?-#f / phys-0) + the
+in-OS `cardinal.compositortest` (real `map-grant`: after `destroy-surface` revokes,
+the client's still-held view reads 0 — "revoke OK use-after-revoke reads zero").
+`grant.c`/`prims.c`/`value.c`/`sched.c`/`modules/SysLisp/src/main.c`.
 
 ### [INCOMPLETE] Phase-4 present blocks the root serve loop on the flush ack
 `lisp/init.clp` (`compositor-gpu-target` present closure); `lisp/servers/corecompositor.clp` (`present!`)

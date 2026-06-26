@@ -105,6 +105,39 @@ lisp_value lisp_grant_mint(uint64_t phys, size_t len, uint32_t perms) {
     return g;
 }
 
+// Liveness probe for a (index, generation) pair. A grant-backed bytes VIEW stamps
+// the grant's index+generation on itself (lisp_grant_handle below) and re-checks
+// liveness here on every access: a view minted from a now-revoked grant must behave
+// as a ZERO PAGE -- reads see 0, writes are refused -- rather than touch the
+// (possibly reused) physical RAM the grant used to name. The table is the single
+// authority for "is this grant live", so the check belongs here. Cheap: one locked
+// slot read. generation 0 is never live (it marks a non-grant-backed view).
+int lisp_grant_is_live(uint32_t index, uint32_t generation) {
+    if (index >= LISP_GRANT_MAX || generation == 0)
+        return 0;
+    lisp_rt_lock();
+    grant_slot *s = &g_grants[index];
+    int live = (s->live && s->generation == generation);
+    lisp_rt_unlock();
+    return live;
+}
+
+// Read a grant handle's (index, generation) so map-grant can stamp them onto the
+// bytes view it returns; the view then re-validates against the table on access
+// (lisp_grant_is_live). -1 if `g` is not a grant. No lock: index/generation are
+// written once at make_grant_obj and never mutated, so the read is race-free
+// (unlike the table slot, which lisp_grant_is_live reads under the lock).
+int lisp_grant_handle(lisp_value g, uint32_t *index, uint32_t *generation) {
+    if (!lisp_is_grant(g))
+        return -1;
+    lisp_grant *h = as_grant(g);
+    if (index)
+        *index = h->index;
+    if (generation)
+        *generation = h->generation;
+    return 0;
+}
+
 int lisp_grant_resolve(lisp_value g, uint64_t *phys, size_t *len, uint32_t *perms) {
     if (!lisp_is_grant(g))
         return -1;

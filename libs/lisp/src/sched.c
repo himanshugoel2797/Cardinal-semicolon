@@ -137,7 +137,11 @@ static lisp_value deep_copy(lisp_value v, int depth, const char **err) {
             lisp_value out = lisp_make_bytes(bn);
             if (out == LISP_UNDEF)
                 return prim_err(err, "send: out of memory");
-            memcpy(lisp_bytes_data(out), lisp_bytes_data(v), bn);
+            // A REVOKED grant view reads as a zero page (use-after-revoke hardening):
+            // sending it must not snapshot the (reused) backing RAM into another
+            // context. lisp_make_bytes already zeroed `out`, so just skip the copy.
+            if (!lisp_bytes_grant_dead(v))
+                memcpy(lisp_bytes_data(out), lisp_bytes_data(v), bn);
             return out;
         }
         case LISP_OBJ_PAIR: {

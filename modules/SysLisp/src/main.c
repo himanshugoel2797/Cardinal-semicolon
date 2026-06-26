@@ -460,14 +460,25 @@ static lisp_value prim_map_grant(lisp_value *a, int n, const char **e) {
         return (*e = "map-grant: out of memory"), LISP_UNDEF;
     if (!perms)
         lisp_bytes_mark_readonly(b);  // 'ro grant: writes through this view are refused
+    // Stamp the grant's (index, generation) on the view so it re-validates against
+    // the grant table on every access: once the grant is revoked, this view reads as
+    // a zero page and refuses writes (the use-after-revoke hardening) -- the page
+    // table can't enforce it here (virt is the shared physmap window, not a private
+    // mapping), so it is enforced in software at the bytes layer, like read-only.
+    uint32_t gi = 0, gg = 0;
+    lisp_grant_handle(a[0], &gi, &gg);
+    lisp_bytes_set_grant(b, gi, gg);
     return b;
 }
 
-// (grant-revoke g) -> #t. Invalidates the grant: future map-grant returns #f.
-// Existing mappings are NOT torn down -- the v1 contract is that a grantee stops
-// touching a surface once it acks destroy (the use-after-revoke sharp edge + the
-// zero-page hardening follow-up are documented in notes/servers/CoreCompositor.md).
-// Idempotent. Gated as sys-shm-mint.
+// (grant-revoke g) -> #t. Invalidates the grant: future map-grant returns #f, and
+// any EXISTING granted view is neutralized in software -- it re-validates against
+// the grant table on every access (the view carries the grant's index+generation),
+// so after revoke it reads as a zero page and refuses writes. A late use-after-
+// revoke therefore can neither read the (reused) RAM nor corrupt it. The page table
+// can't tear the mapping down (it is the shared physmap window, not a private
+// mapping), so the enforcement is at the bytes layer, like read-only -- airtight in
+// the sandbox. Idempotent. Gated as sys-shm-mint. See notes/AUDIT.md.
 static lisp_value prim_grant_revoke(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_grant(a[0]))
         return (*e = "grant-revoke: expects (grant)"), LISP_UNDEF;
@@ -964,6 +975,8 @@ static lisp_value prim_initrd_file(lisp_value *a, int n, const char **e) {
 static lisp_value prim_ttf_rasterize(lisp_value *a, int n, const char **e) {
     if (n != 3 || !lisp_is_bytes(a[0]) || !lisp_is_fixnum(a[1]) || !lisp_is_fixnum(a[2]))
         return (*e = "ttf-rasterize: expects (font-bytes codepoint px)", LISP_UNDEF);
+    if (lisp_bytes_grant_dead(a[0]))
+        return LISP_FALSE;  // revoked grant view as a "font": read nothing (zero page)
     int w = 0, h = 0, xo = 0, yo = 0, adv = 0;
     uint8_t *bmp = ttf_rasterize((const uint8_t *)lisp_bytes_data(a[0]), lisp_bytes_len(a[0]),
                                  (int)lisp_fixnum_val(a[1]), (int)lisp_fixnum_val(a[2]),
@@ -993,8 +1006,11 @@ static lisp_value prim_ttf_vmetrics(lisp_value *a, int n, const char **e) {
     if (n != 2 || !lisp_is_bytes(a[0]) || !lisp_is_fixnum(a[1]))
         return (*e = "ttf-vmetrics: expects (font-bytes px)", LISP_UNDEF);
     int asc = 0, desc = 0, lg = 0;
-    ttf_vmetrics((const uint8_t *)lisp_bytes_data(a[0]), lisp_bytes_len(a[0]),
-                 (int)lisp_fixnum_val(a[1]), &asc, &desc, &lg);
+    // A revoked grant view as a "font" reads as a zero page: skip ttf (which would
+    // read the reused RAM) and report zero metrics.
+    if (!lisp_bytes_grant_dead(a[0]))
+        ttf_vmetrics((const uint8_t *)lisp_bytes_data(a[0]), lisp_bytes_len(a[0]),
+                     (int)lisp_fixnum_val(a[1]), &asc, &desc, &lg);
     lisp_value lst = lisp_cons(lisp_fixnum(lg), LISP_EMPTY);
     lst = lisp_cons(lisp_fixnum(desc), lst);
     return lisp_cons(lisp_fixnum(asc), lst);

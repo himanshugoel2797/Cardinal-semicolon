@@ -63,14 +63,18 @@ client's mapped view is a foreign `bytes` (never GC-frees the backing). The gran
 table holds a reference that keeps the backing alive while `refcount > 0`
 (compositor + each mapper).
 
-**Sharp edge — use-after-revoke.** On `destroy-surface` the compositor calls
-`grant-revoke` (future maps fail) but a client that already mapped the view still
-has a raw pointer into that RAM. If the backing is freed, a late client write is
-a UAF into reused RAM. v1 contract: **client must not touch a surface after it
-acks `destroy`**, and the compositor frees the backing only after the client acks
-(or after a bounded grace quantum). A hardening follow-up can remap revoked
-client views onto a shared zero page so a late access faults harmlessly. Track in
-`notes/AUDIT.md` when implemented.
+**Sharp edge — use-after-revoke (HARDENED, phase 6).** On `destroy-surface` the
+compositor calls `grant-revoke`. A client that already mapped the view still holds
+the `bytes` object, but it is now neutralized: `map-grant` stamps the grant's
+`(index, generation)` onto the view, and every bytes/`gfx-*` accessor re-validates
+it against the grant table on use, so a revoked view **reads as a zero page and
+refuses writes**. A late use-after-revoke therefore can neither read the (reused)
+RAM nor corrupt it — the actual UAF danger is closed in software (the page table
+can't do it: `map-grant` returns the shared physmap window, not a private mapping,
+which is also why read-only is software-enforced). The v1 ordering contract
+(*client should stop touching a surface after it acks `destroy`*) still holds as
+hygiene, but is no longer load-bearing for safety. See `notes/AUDIT.md`
+("[DONE] Use-after-revoke neutralized in software").
 
 ## Architecture
 
