@@ -1732,6 +1732,49 @@ static lisp_value prim_gfx_glyph(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
+// (gfx-cover! dst dstride dw dh dx dy cover cstride cw ch fg) -> composite a solid
+// colour `fg` over the dst through an 8-bit COVERAGE mask (`cover`, 1 byte/pixel,
+// 0..255 alpha), clipped. The antialiased-text path: stb_truetype rasterizes a glyph
+// to a coverage bitmap (libs/ttf) and this paints it as `fg` in one C call. Blends
+// the dst's low 3 bytes (layout-agnostic, like gfx-blend!); the top byte is left.
+static lisp_value prim_gfx_cover(lisp_value *a, int n, const char **e) {
+    if (n != 11 || !lisp_is_bytes(a[0]) || !lisp_is_bytes(a[6]))
+        return prim_err(e, "gfx-cover! expects (dst dstride dw dh dx dy cover cstride cw ch fg)");
+    for (int i = 1; i < 11; i++)
+        if (i != 6 && !lisp_is_fixnum(a[i])) return prim_err(e, "gfx-cover!: non-fixnum arg");
+    lisp_bytes *d = as_bytes(a[0]), *c = as_bytes(a[6]);
+    int64_t dstride = lisp_fixnum_val(a[1]), dw = lisp_fixnum_val(a[2]), dh = lisp_fixnum_val(a[3]);
+    int64_t cstride = lisp_fixnum_val(a[7]), cw = lisp_fixnum_val(a[8]), ch0 = lisp_fixnum_val(a[9]);
+    uint32_t fg = (uint32_t)lisp_fixnum_val(a[10]);
+    uint32_t f0 = fg & 0xFF, f1 = (fg >> 8) & 0xFF, f2 = (fg >> 16) & 0xFF;   // dst byte layout
+    int64_t cx, cy, ccw, cch, sx, sy;
+    if (dstride <= 0 || cstride <= 0 || dw < 0 || dh < 0) return prim_err(e, "gfx-cover!: bad geometry");
+    if (!gfx_clip(lisp_fixnum_val(a[4]), lisp_fixnum_val(a[5]), cw, ch0, dw, dh, &cx, &cy, &ccw, &cch, &sx, &sy))
+        return LISP_UNDEF;
+    if (!gfx_fits(cx, cy, ccw, cch, dstride, d->len))
+        return prim_err(e, "gfx-cover!: out of bounds");
+    // coverage source bound (1 byte/pixel), overflow-safe.
+    { size_t srow = (size_t)cstride, last = (size_t)sy + (size_t)cch - 1;
+      if (last != 0 && srow > ((size_t)-1) / last) return prim_err(e, "gfx-cover!: coverage out of bounds");
+      size_t roff = last * srow;
+      if (roff > c->len || (size_t)sx + (size_t)ccw > c->len - roff)
+          return prim_err(e, "gfx-cover!: coverage out of bounds"); }
+    for (int64_t r = 0; r < cch; r++) {
+        uint8_t *dp = d->data + (cy + r) * dstride + cx * 4;
+        const uint8_t *cp = c->data + (sy + r) * cstride + sx;
+        for (int64_t i = 0; i < ccw; i++, dp += 4) {
+            uint32_t al = cp[i];
+            if (al == 0) continue;
+            if (al == 255) { dp[0] = (uint8_t)f0; dp[1] = (uint8_t)f1; dp[2] = (uint8_t)f2; continue; }
+            uint32_t ia = 255 - al;
+            dp[0] = (uint8_t)((f0 * al + dp[0] * ia + 127) / 255);
+            dp[1] = (uint8_t)((f1 * al + dp[1] * ia + 127) / 255);
+            dp[2] = (uint8_t)((f2 * al + dp[2] * ia + 127) / 255);
+        }
+    }
+    return LISP_UNDEF;
+}
+
 static lisp_value prim_b_u8_ref(lisp_value *a, int n, const char **e) { return bytes_ref(a, n, e, 1); }
 static lisp_value prim_b_u16_ref(lisp_value *a, int n, const char **e) { return bytes_ref(a, n, e, 2); }
 static lisp_value prim_b_u32_ref(lisp_value *a, int n, const char **e) { return bytes_ref(a, n, e, 4); }
@@ -1781,6 +1824,7 @@ void lisp_install_primitives(lisp_value env) {
     def(env, "gfx-blit!", prim_gfx_blit);
     def(env, "gfx-blend!", prim_gfx_blend);
     def(env, "gfx-glyph!", prim_gfx_glyph);
+    def(env, "gfx-cover!", prim_gfx_cover);
     def(env, "=", prim_numeq);
     def(env, "<", prim_lt);
     def(env, ">", prim_gt);

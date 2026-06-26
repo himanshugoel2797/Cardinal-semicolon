@@ -47,6 +47,7 @@
 #include "pci/pci_irq.h"
 #include "pci/pci_alloc.h"  // pci_assign_bars (BARs for firmware-unconfigured devices)
 #include <stdlib.h>  // itoa
+#include "ttf.h"     // libs/ttf: stb_truetype glyph rasterization (sys-ttf module)
 
 // Kernel services resolved at module-load time (this module is already verified).
 // SysLisp no longer depends on the native task API (task_create/yield/monitor):
@@ -809,6 +810,55 @@ static lisp_value prim_initrd_file(lisp_value *a, int n, const char **e) {
     return b;
 }
 
+// --- sys-ttf: runtime TrueType glyph rasterization (libs/ttf / stb_truetype) ----
+//
+// Pure transforms over font bytes -- no hardware -- but grouped as a capability
+// module (a text-rendering setup imports it alongside sys-initrd for the font). The
+// float rasterizer lives in libs/ttf; these wrappers only marshal integers + bytes.
+
+// (ttf-rasterize font-bytes codepoint px) -> (coverage w h xoff yoff advance), or #f
+// if the font can't be parsed. coverage is a fresh w*h 8-bit alpha bitmap, or #f for
+// an empty glyph (e.g. space -- advance is still meaningful). The Lisp glyph cache
+// (lisp/lib/ttf) memoizes this so each (codepoint,px) is rasterized once.
+static lisp_value prim_ttf_rasterize(lisp_value *a, int n, const char **e) {
+    if (n != 3 || !lisp_is_bytes(a[0]) || !lisp_is_fixnum(a[1]) || !lisp_is_fixnum(a[2]))
+        return (*e = "ttf-rasterize: expects (font-bytes codepoint px)", LISP_UNDEF);
+    int w = 0, h = 0, xo = 0, yo = 0, adv = 0;
+    uint8_t *bmp = ttf_rasterize((const uint8_t *)lisp_bytes_data(a[0]), lisp_bytes_len(a[0]),
+                                 (int)lisp_fixnum_val(a[1]), (int)lisp_fixnum_val(a[2]),
+                                 &w, &h, &xo, &yo, &adv);
+    lisp_value cov = LISP_FALSE;
+    if (bmp) {
+        if (w > 0 && h > 0) {
+            cov = lisp_make_bytes((size_t)w * (size_t)h);
+            if (cov == LISP_UNDEF) { ttf_free_bitmap(bmp); return (*e = "ttf-rasterize: out of memory", LISP_UNDEF); }
+            memcpy(lisp_bytes_data(cov), bmp, (size_t)w * (size_t)h);
+        }
+        ttf_free_bitmap(bmp);
+    }
+    // Build (cov w h xoff yoff advance). Locals are conservatively stack-scanned, so
+    // an intervening GC in lisp_cons cannot collect cov / the partial list.
+    lisp_value lst = lisp_cons(lisp_fixnum(adv), LISP_EMPTY);
+    lst = lisp_cons(lisp_fixnum(yo), lst);
+    lst = lisp_cons(lisp_fixnum(xo), lst);
+    lst = lisp_cons(lisp_fixnum(h), lst);
+    lst = lisp_cons(lisp_fixnum(w), lst);
+    return lisp_cons(cov, lst);
+}
+
+// (ttf-vmetrics font-bytes px) -> (ascent descent linegap) in pixels (descent < 0);
+// the line pitch is ascent - descent + linegap.
+static lisp_value prim_ttf_vmetrics(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_bytes(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "ttf-vmetrics: expects (font-bytes px)", LISP_UNDEF);
+    int asc = 0, desc = 0, lg = 0;
+    ttf_vmetrics((const uint8_t *)lisp_bytes_data(a[0]), lisp_bytes_len(a[0]),
+                 (int)lisp_fixnum_val(a[1]), &asc, &desc, &lg);
+    lisp_value lst = lisp_cons(lisp_fixnum(lg), LISP_EMPTY);
+    lst = lisp_cons(lisp_fixnum(desc), lst);
+    return lisp_cons(lisp_fixnum(asc), lst);
+}
+
 // The capability-bearing driver primitives, grouped into named modules instead
 // of dumped into the global env. A Lisp driver gains an authority only by
 // importing its module -- (import sys-mmio) to map device memory, (import sys-io)
@@ -845,6 +895,9 @@ static const lisp_builtin_export sys_reg_exports[] = {
 static const lisp_builtin_export sys_initrd_exports[] = {
     {"initrd-file", prim_initrd_file},
 };
+static const lisp_builtin_export sys_ttf_exports[] = {
+    {"ttf-rasterize", prim_ttf_rasterize}, {"ttf-vmetrics", prim_ttf_vmetrics},
+};
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -861,6 +914,7 @@ static void register_driver_modules(lisp_value env) {
         {"sys-cmdline", sys_cmdline_exports, ARRAY_LEN(sys_cmdline_exports)},
         {"sys-reg", sys_reg_exports, ARRAY_LEN(sys_reg_exports)},
         {"sys-initrd", sys_initrd_exports, ARRAY_LEN(sys_initrd_exports)},
+        {"sys-ttf", sys_ttf_exports, ARRAY_LEN(sys_ttf_exports)},
     };
     for (size_t i = 0; i < ARRAY_LEN(mods); i++)
         // Only OOM can fail this, and only at boot with a fresh heap -- but a

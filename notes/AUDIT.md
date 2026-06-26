@@ -90,6 +90,38 @@ Two gotchas a real UI must handle (the demo works around both):
   debug text. Also: a 24bpp boot mode mis-strides (lib + lfb assume 4-byte pixels);
   the demo forces `gfxmode=...x32`.
 
+### TrueType text (stb_truetype) (added)
+`libs/ttf/` wraps **stb_truetype** (`libs/stb/stb_truetype.h`, public domain) as a
+runtime glyph rasterizer; `lisp/lib/ttf.clp` adds antialiased text over graphics.clp
+with a hash-table glyph cache, and `lisp/data/DejaVuSans-subset.ttf` (DejaVu Sans,
+Latin subset, ~26 KiB, regen `scripts/gen-ttf.py`) is the default font. New prims:
+`ttf-rasterize`/`ttf-vmetrics` (`sys-ttf`, into libs/ttf) and the ambient `gfx-cover!`
+(8-bit coverage → solid colour, alpha-composited). Validated by a C host test
+(`libs/ttf/test_ttf.c`), the `gfx-cover!` host pixel-asserts, and the in-OS demo
+(antialiased text at 14–40 px, over the alpha panel).
+
+Hard-won notes for FP-in-a-kernel-module (the rasterizer is float-based; SSE is on,
+per SysFP):
+- `libs/ttf` re-enables SSE like libs/lisp (`-msse2 -mstackrealign -fno-vectorize`)
+  and **must stay scalar** until the loader aligns section data — see the
+  `[INCOMPLETE]` loader-alignment item below. Only integer/pointer values cross the
+  ttf ABI, so the `-mno-sse` callers that link it are unaffected.
+- stb's many small per-glyph `malloc`/`free` calls **hang the kernel heap** when
+  driven from the Lisp-eval context; ttf gives stb a per-call **bump arena** instead
+  (1 MiB static; the prim serialises it).
+- `sqrt` is inline `sqrtsd` asm, NOT `__builtin_sqrt`: at `-O0` the builtin lowers to
+  a *call* to `sqrt`, and the freestanding `sqrt` we define would then recurse.
+
+### [INCOMPLETE] Relocatable-module loader doesn't align section data
+`kernel/src/elf.c` places PROGBITS sections at `hdr + sh_offset` without honouring
+`sh_addralign`, so a module's `.rodata`/constant data is only as aligned as the ELF
+blob base. That forces every SSE-using module (`libs/lisp`, `libs/ttf`) to build
+`-fno-vectorize` — vectorized code emits 16-byte **aligned** packed loads
+(`movapd`/`vmovaps`) that `#GP` on under-aligned section data. Aligning ALLOC
+sections to `sh_addralign` (≥16, and 32 for AVX) at load would let those modules
+vectorize (a real speed win for the rasterizer and the flonum runtime). AVX itself is
+available at that point; alignment is the only blocker.
+
 ---
 
 ## Kernel core + system modules

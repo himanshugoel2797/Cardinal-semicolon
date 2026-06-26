@@ -206,6 +206,21 @@ int main(int argc, char **argv) {
     chk("(get-pixel s2 3 1)", "16711680");                 // clear bit -> bg
     chk("(get-pixel s2 0 0)", "255");                      // set bit -> fg
 
+    // --- gfx-cover!: 8-bit coverage mask -> solid fg, alpha-composited ---
+    // A 2x2 coverage [255 0 / 128 255] painted red (0xFF0000) over black.
+    run("(define cov (make-bytes 4))");
+    run("(bytes-u8-set! cov 0 255) (bytes-u8-set! cov 1 0)");
+    run("(bytes-u8-set! cov 2 128) (bytes-u8-set! cov 3 255)");
+    run("(clear s 0)");
+    run("(gfx-cover! buf STRIDE W H 3 4 cov 2 2 2 16711680)");
+    chk("(get-pixel s 3 4)", "16711680");                  // cover 255 -> full red
+    chk("(get-pixel s 4 4)", "0");                          // cover 0 -> unchanged
+    chk("(get-pixel s 3 5)", "8388608");                    // cover 128 -> 0x800000 (red*128/255)
+    chk("(get-pixel s 4 5)", "16711680");                  // cover 255 -> full red
+    // clips off-surface without crashing.
+    run("(gfx-cover! buf STRIDE W H 15 11 cov 2 2 2 65280)");
+    chk("(get-pixel s 15 11)", "65280");                   // on-surface corner painted
+
     // --- glyph scaling (2x): each source pixel -> 2x2 block ---
     run("(clear s2 0)");
     run("(draw-char s2 fnt 0 0 (integer->char 65) 255 0 #f 2)");
