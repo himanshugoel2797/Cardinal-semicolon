@@ -1,6 +1,7 @@
 # CoreCompositor — multi-client window compositor
 
-Status: **design** (no code yet). Branch `claude/corecompositor-design`.
+Status: **phases 1–2 implemented** (grant substrate + IPC root). Branch
+`claude/corecompositor-design`.
 
 A new `Core*` Lisp server that owns the screen and composites off-screen
 surfaces owned by independent client contexts, using **zero-copy shared-memory
@@ -340,9 +341,22 @@ after `coredisplay` + the display driver bind (it needs the driver's
    region only through those prims). One tracked contract in `notes/AUDIT.md`:
    use-after-revoke (revoke invalidates future maps but doesn't tear down an
    existing mapping).
-2. **corecompositor.clp root** — the primary mailbox + `connect` handshake that
-   spawns a **per-client handler context**; the handler holds that client's
-   window list, grants, and damage. Single client first.
+2. **corecompositor.clp root** — ✅ **DONE.** `lisp/servers/corecompositor.clp`:
+   the well-known primary mailbox (`start-compositor-service`) + the `connect`
+   handshake that spawns a **per-client handler context** (the secondary channel),
+   replying `(connected handler)`. The handler threads per-client state
+   (surfaces alist + next-id, empty in phase 2) over a FIFO loop and answers a
+   liveness `(ping reply)` → `(pong)`; surface verbs are stubbed for phase 3. The
+   handler is `spawn-restricted '()` yet closes over the module's lexical imports;
+   phase 3 will add `(import sys-shm-mint sys-mmio)` to the module clause so the
+   handler captures the minting authority (those imports are absent in phase 2 — it
+   mints nothing yet, and adding them would break the host test, since
+   `sys-shm-mint` is kernel-only). Both `connect` and `ping` arity-guard their
+   payload so a malformed message can't crash the serve/handler context. Brought
+   up unconditionally in `init.clp`'s display block (owns no scanout yet, so it is
+   inert until a client connects). Host test (`test_compositor.c`: connect → distinct
+   handler, ping/pong, two clients isolated on independent handlers) + in-OS smoke
+   (`cardinal.compositortest`).
 3. **Surface ops + composite loop** — create/configure/commit/destroy on the
    secondary channel, the composite-on-commit loop over `graphics.clp`, screen
    owner serialising the scanout.

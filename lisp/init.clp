@@ -16,7 +16,8 @@
 
 (define-module init
   (export system-init start-repl play-tone set-vol)
-  (import coreinput coreaudio corepower corestorage coredisplay corenetwork
+  (import coreinput coreaudio corepower corestorage coredisplay corecompositor
+          corenetwork
           corenetdebug coreusb ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci
           cardfs hdaudio uhci xhci ehci usb-hid usb-hub usb-storage usb-audio
           graphics font ttf sys-pci sys-cmdline sys-initrd sys-mmio sys-reg)
@@ -551,7 +552,32 @@
       ;; otherwise draw into the WC-mapped boot framebuffer (std-vga) with a
       ;; double-buffer. Same 2D API either way.
       (if demo?
-          (if (pci-find #x1af4 #x1050) (start-gpu-demo gpu) (start-gfx-demo))))
+          (if (pci-find #x1af4 #x1050) (start-gpu-demo gpu) (start-gfx-demo)))
+      ;; Stand up the multi-client window compositor (notes/servers/CoreCompositor.md).
+      ;; Phase 2 is the IPC root only: the primary mailbox + the connect handshake
+      ;; that spawns a per-client handler. It owns no scanout yet (phase 4 takes the
+      ;; framebuffer via the driver), so it is harmless to start unconditionally --
+      ;; nothing connects unless asked. cardinal.compositortest runs a one-shot
+      ;; smoke (connect -> ping a handler -> expect pong) to prove the handshake
+      ;; under the real kernel scheduler; the host test_compositor covers it
+      ;; deterministically.
+      (let ((comp (start-compositor-service)))
+        (if (cmdline-has? "cardinal.compositortest")
+            (spawn-restricted '()
+              (lambda ()
+                (send comp (list 'connect #f (self)))
+                (let ((r (recv)))               ; expect (connected handler)
+                  (if (eq? (car r) 'connected)
+                      (begin
+                        (send (cadr r) (list 'ping (self)))
+                        (let ((p (recv)))       ; expect (pong)
+                          (display "[compositor-test] ")
+                          (display (if (eq? (car p) 'pong)
+                                       "OK ping/pong over secondary channel"
+                                       "FAIL no pong"))
+                          (newline)))
+                      (begin (display "[compositor-test] FAIL no connected reply")
+                             (newline)))))))))
     ;; Bring up the network stack, then a NIC, which registers itself with the
     ;; stack and forwards frames to it. Prefer the proven virtio-net when present;
     ;; otherwise fall back to the rtl8139 (the `-device rtl8139` boot, where no
