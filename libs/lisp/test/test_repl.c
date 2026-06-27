@@ -4,7 +4,7 @@
 // https://opensource.org/licenses/MIT
 
 // Host test for the REPL engine (repl.c): the read-eval-print core that the
-// serial shell wires to a CSMUX channel. Exercises value transcripts, a
+// serial shell wires to the raw serial line. Exercises value transcripts, a
 // persistent environment across calls, located reader errors, and eval errors --
 // no serial hardware involved.
 
