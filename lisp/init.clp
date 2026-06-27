@@ -523,8 +523,10 @@
                                 (db-flush-rect db (nth r 0) (nth r 1) (nth r 2) (nth r 3)))
                               rects)))))))
 
-  ;; A per-core compositor SHARD (cardinal.compositorshards). Born on an AP by the
-  ;; set-per-core-init hook, it is a FULL compositor instance (start-compositor-service
+  ;; A per-core compositor SHARD. Born on every AP by the set-per-core-init hook
+  ;; (always on -- one compositor instance per core is the production model; the
+  ;; cross-shard tests just consume the shards they already get). It is a FULL
+  ;; compositor instance (start-compositor-service
   ;; in shard role) that hosts the opaque clients the owner routes to it -- so those
   ;; clients' windows composite on THIS core, into a grant-shared (colour,z) LAYER the
   ;; owner maps and folds into its scanout. Bring-up: rendezvous for the owner handle,
@@ -667,17 +669,13 @@
                 (begin
                   (if collector
                       (spawn-restricted '() (lambda () (send collector (list 'core-hello id)))))
-                  ;; spawn this core's compositor shard for ANY test that needs real
-                  ;; per-core shards -- the rendering test (compositorshards) AND the
-                  ;; cross-shard input tests, which must route a client to a shard (not
-                  ;; the owner) to exercise the cross-core path.
-                  (if (or (cmdline-has? "cardinal.compositorshards")
-                          (cmdline-has? "cardinal.compositorshardinput")
-                          (cmdline-has? "cardinal.compositorshardpointer")
-                          (cmdline-has? "cardinal.compositorsharddrag")
-                          (cmdline-has? "cardinal.compositorglobalz")
-                          (cmdline-has? "cardinal.compositordamage"))
-                      (spawn-restricted '() (lambda () (start-compositor-shard id))))))))))
+                  ;; Spawn this core's compositor SHARD. One compositor instance per
+                  ;; core is the production model: the owner (core 0) routes opaque
+                  ;; clients here so their windows composite on this core, into a
+                  ;; grant-shared layer the owner folds into the scanout. Always on --
+                  ;; SMP=1 simply has no APs and runs the owner-only N=1 path; the
+                  ;; cross-shard tests still get their shards for free.
+                  (spawn-restricted '() (lambda () (start-compositor-shard id)))))))))
     ;; Audio: start the service, capture its handle (formerly dropped), and bring
     ;; up the HD Audio controller feeding it. hdaudio-init is gated on pci-find, so
     ;; a default boot with no HDA controller just logs "no device" and returns.
