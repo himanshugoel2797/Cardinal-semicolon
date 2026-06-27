@@ -6,25 +6,22 @@
 #
 # Host-side terminal for the Cardinal; interactive serial Lisp REPL.
 #
-# The kernel, booted with "cardinal.repl", switches its one serial link into
-# framed CSMUX -- the debug log rides channel 0 and the REPL rides channel 2 -- so
-# a raw terminal sees byte-stuffed garbage. This tool demultiplexes that stream:
-# it prints the log + REPL output to your terminal and frames whatever you type
-# onto channel 2 (the REPL's input). Type Lisp, press Enter; e.g. (+ 1 2) -> 3.
+# The kernel, booted with "cardinal.repl", streams the boot log raw to COM1 and
+# then -- once the Lisp REPL starts -- hands COM1 to the REPL (component logs move
+# to the in-memory log store, read back with the log-* prims). There is no framing:
+# the wire is a plain serial line, so this tool just relays bytes both ways. Type
+# Lisp, press Enter; e.g. (+ 1 2) -> 3, or (log-dump "nvme") to read a source's log.
 #
 # Two transports:
-#   - QEMU (default): launches qemu booting build/ISO/os-repl.iso, the mux over a
-#     unix-socket COM1 (or an emulated FTDI with --link ftdi).
+#   - QEMU (default): launches qemu booting build/ISO/os-repl.iso over a unix-socket
+#     COM1 (or an emulated USB-serial adapter with --link ftdi).
 #   - Real hardware: --serial-device /dev/ttyUSB0 talks to an actual adapter.
 #
 # Two modes:
 #   - interactive (default): relay your terminal <-> the REPL.
-#   - --exec "<lisp>" (repeatable) / --script FILE: wait for the REPL-ready
-#     banner, send each line, print the output, exit after it goes quiet. Used to
-#     drive the REPL non-interactively (tests).
-#
-# Frame format mirrors modules/SysDebug/src/csmux.c:
-#   0x7E | chan(1) | len(2 LE) | payload | crc16-ccitt(2 LE) | 0x7E  (byte-stuffed)
+#   - --exec "<lisp>" (repeatable) / --script FILE: wait for the REPL-ready banner,
+#     send each line, print the output, exit after it goes quiet. Drives the REPL
+#     non-interactively (tests).
 
 import argparse
 import os
@@ -36,95 +33,7 @@ import sys
 import tempfile
 import time
 
-CH_LOG = 0
-CH_CTRL = 1
-CH_REPL = 2
-
-CSMUX_MAX_PAYLOAD = 1024
-SOF = 0x7E
-ESC = 0x7D
-ESC_XOR = 0x20
-
 READY_BANNER = b"serial REPL ready"  # printed by start-repl once it is parked
-
-
-def crc16_ccitt(data):
-    crc = 0xFFFF
-    for b in data:
-        crc ^= b << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else ((crc << 1) & 0xFFFF)
-    return crc
-
-
-def frame(chan, payload):
-    body = bytes([chan, len(payload) & 0xFF, (len(payload) >> 8) & 0xFF]) + payload
-    crc = crc16_ccitt(body)
-    body += bytes([crc & 0xFF, (crc >> 8) & 0xFF])
-    out = bytearray([SOF])
-    for b in body:
-        if b in (SOF, ESC):
-            out.append(ESC)
-            out.append(b ^ ESC_XOR)
-        else:
-            out.append(b)
-    out.append(SOF)
-    return bytes(out)
-
-
-class Deframer:
-    """Feed raw bytes; yields ('raw', bytes) for inter-frame bytes (the pre-CSMUX
-    boot log) and ('frame', chan, payload) for complete, CRC-valid frames."""
-
-    def __init__(self):
-        self.inframe = False
-        self.escape = False
-        self.buf = bytearray()
-        self.raw = bytearray()
-
-    def feed(self, data):
-        events = []
-        for b in data:
-            if b == SOF:
-                if self.raw:
-                    events.append(("raw", bytes(self.raw)))
-                    self.raw = bytearray()
-                if self.inframe and len(self.buf) >= 5:
-                    ev = self._finish()
-                    if ev:
-                        events.append(ev)
-                self.inframe = True
-                self.escape = False
-                self.buf = bytearray()
-                continue
-            if not self.inframe:
-                self.raw.append(b)
-                continue
-            if b == ESC:
-                self.escape = True
-                continue
-            if self.escape:
-                b ^= ESC_XOR
-                self.escape = False
-            self.buf.append(b)
-        # Stream any inter-frame (raw) bytes as they arrive -- the pre-CSMUX boot
-        # log has no frame boundary to flush on, so emit it per feed() call.
-        if self.raw:
-            events.append(("raw", bytes(self.raw)))
-            self.raw = bytearray()
-        return events
-
-    def _finish(self):
-        n = len(self.buf)
-        if n < 5:
-            return None
-        chan = self.buf[0]
-        ln = self.buf[1] | (self.buf[2] << 8)
-        if ln != n - 5:
-            return None
-        if crc16_ccitt(self.buf[: 3 + ln]) != (self.buf[3 + ln] | (self.buf[3 + ln + 1] << 8)):
-            return None
-        return ("frame", chan, bytes(self.buf[3: 3 + ln]))
 
 
 # Adapter so a real serial tty looks like the unix socket the loop expects.
@@ -176,10 +85,10 @@ def out(data):
 
 def connect_qemu(args):
     if not os.path.exists(args.iso):
-        sys.stderr.write("csmux-repl: ISO not found: %s "
+        sys.stderr.write("serial-repl: ISO not found: %s "
                          "(build the 'repl-image' target)\n" % args.iso)
         sys.exit(2)
-    tmp = tempfile.mkdtemp(prefix="csmux-repl-")
+    tmp = tempfile.mkdtemp(prefix="serial-repl-")
     serial_path = os.path.join(tmp, "serial.sock")
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(serial_path)
@@ -193,7 +102,7 @@ def connect_qemu(args):
         cmd += ["-serial", "file:%s" % com1_log,
                 "-device", "qemu-xhci,id=xhci",
                 "-device", "usb-serial,chardev=mux,bus=xhci.0"]
-        sys.stderr.write("csmux-repl: FTDI link; pre-mux boot log -> %s\n" % com1_log)
+        sys.stderr.write("serial-repl: USB-serial link; boot log -> %s\n" % com1_log)
     else:
         cmd += ["-serial", "chardev:mux"]
     # QEMU_EXTRA: extra qemu args (shell-split), e.g. attaching an HD Audio
@@ -201,13 +110,13 @@ def connect_qemu(args):
     extra = os.environ.get("QEMU_EXTRA")
     if extra:
         cmd += shlex.split(extra)
-    sys.stderr.write("csmux-repl: launching: %s\n" % " ".join(cmd))
+    sys.stderr.write("serial-repl: launching: %s\n" % " ".join(cmd))
     qemu = subprocess.Popen(cmd)
     srv.settimeout(20)
     try:
         ser, _ = srv.accept()
     except socket.timeout:
-        sys.stderr.write("csmux-repl: QEMU did not connect to the serial socket\n")
+        sys.stderr.write("serial-repl: QEMU did not connect to the serial socket\n")
         qemu.kill()
         sys.exit(2)
     return ser, qemu
@@ -244,14 +153,14 @@ def main():
     if args.serial_device:
         ser = SerialTTY(args.serial_device, args.baud)
         qemu = None
-        sys.stderr.write("csmux-repl: on real serial %s @ %d\n"
+        sys.stderr.write("serial-repl: on real serial %s @ %d\n"
                          % (args.serial_device, args.baud))
     else:
         ser, qemu = connect_qemu(args)
     ser.setblocking(False)
 
-    deframer = Deframer()
     ready = False
+    seen = bytearray()          # rolling tail to spot the ready banner
     pending = b"".join((s + "\n").encode() for s in sends)
     last_out = time.time()
     deadline = time.time() + args.timeout
@@ -259,14 +168,14 @@ def main():
     inputs = [ser] if scripted else [ser, stdin_fd]
 
     if not scripted:
-        out(b"[csmux-repl] connected; type Lisp at the REPL, Ctrl-C to quit.\n")
+        out(b"[serial-repl] connected; type Lisp at the REPL, Ctrl-C to quit.\n")
 
     try:
         while True:
             if qemu is not None and qemu.poll() is not None:
                 break
             if scripted and time.time() > deadline:
-                sys.stderr.write("csmux-repl: timeout\n")
+                sys.stderr.write("serial-repl: timeout\n")
                 break
             if scripted and ready and not pending and time.time() - last_out > args.idle:
                 break  # REPL went quiet after our input -> done
@@ -274,23 +183,21 @@ def main():
             if ser in r:
                 data = ser.recv(4096)
                 if data:
-                    for ev in deframer.feed(data):
-                        if ev[0] == "raw":
-                            out(ev[1])
-                        else:
-                            _, chan, payload = ev
-                            out(payload)  # log (ch0), ctrl (ch1), and REPL (ch2)
-                        last_out = time.time()
-                        if not ready and READY_BANNER in (ev[1] if ev[0] == "raw" else ev[2]):
+                    out(data)  # raw relay: boot log, then REPL transcript
+                    last_out = time.time()
+                    if not ready:
+                        seen += data
+                        del seen[:-256]  # keep only a short tail
+                        if READY_BANNER in seen:
                             ready = True
             if not scripted and stdin_fd in r:
                 line = os.read(stdin_fd, 4096)
                 if not line:
                     break  # Ctrl-D
-                ser.sendall(frame(CH_REPL, line))
+                ser.sendall(line)
             # In scripted mode, send queued input once the REPL announces ready.
             if scripted and ready and pending:
-                ser.sendall(frame(CH_REPL, pending))
+                ser.sendall(pending)
                 pending = b""
                 last_out = time.time()
     except KeyboardInterrupt:
