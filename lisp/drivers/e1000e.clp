@@ -94,6 +94,12 @@
 ;; frame for descriptor i is at offset i*PKT-SIZE in the direction's buffer.
 (define NRX 32)
 (define NTX 32)
+;; RX-pump poll interval. The pump sweeps the ring at least this often regardless
+;; of interrupts -- e1000 variants differ (82540 is INTx-only with no MSI cap;
+;; 82574 routes RX via MSI-X + IVAR, which we don't program), so a pure
+;; interrupt-driven pump can sleep forever. A short poll makes RX work everywhere;
+;; an MSI handle, when present, still wakes us immediately (msi-wait's timeout).
+(define RX-POLL-NS 2000000)   ; 2 ms
 (define PKT-SIZE 2048)
 (define DESC-SIZE 16)              ; each ring descriptor is 16 bytes
 
@@ -309,43 +315,46 @@
                                   (bytes-u32-set! regs TIPG TIPG-VALUE)
                                   (bytes-u32-set! regs TCTL
                                     (bitwise-or TCTL-EN TCTL-PSP TCTL-CT TCTL-COLD))
-                                  ;; Set up MSI now (after reset clears any prior config).
+                                  ;; MSI is OPTIONAL: pci-setup-msi returns #f on a
+                                  ;; device with no MSI cap (QEMU e1000/82540 is
+                                  ;; INTx-only). We poll either way, so a missing
+                                  ;; MSI is not fatal -- it just removes the early
+                                  ;; wake.
                                   (let ((msi (pci-setup-msi ecam)))
-                                    (if (not msi)
-                                        (begin (display "[e1000e] MSI setup failed") (newline) #f)
-                                        (let ((free-cell (make-cell 0)))
-                                          ;; TX context: (tx frame len reply?) -> copy + post.
-                                          (let ((tx-ctx
-                                                  (spawn-restricted '() (lambda ()
-                                                    (let loop ()
-                                                      (let ((m (recv)))
-                                                        (if (eq? (car m) 'tx)
-                                                            (begin
-                                                              (tx-send! regs txring txbuf free-cell (cadr m) (caddr m))
-                                                              (if (> (length m) 3) (send (nth m 3) (list 'tx-done)))))
-                                                        (loop)))))))
-                                            ;; RX pump: park on the MSI; on each wake read
-                                            ;; ICR (read-to-clear), sweep the ring forwarding
-                                            ;; each snapshotted frame. The pump is the sole
-                                            ;; writer of ring/RDT state and holds NOTHING
-                                            ;; across (send net ...) (corenetwork re-enters
-                                            ;; our TX path for ARP/ICMP replies).
-                                            (spawn-restricted '() (lambda ()
-                                              (let loop ((seen (msi-count msi)))
-                                                (bytes-u32-ref regs ICR)   ; ack (read-to-clear)
-                                                (rx-sweep! regs rxring rxbuf
-                                                  (lambda (off len)
-                                                    (send net (list 'rx (copy-bytes rxbuf off len) len))))
-                                                (if (> (msi-count msi) seen)
-                                                    (loop (msi-count msi))
-                                                    (begin (msi-wait msi seen) (loop (msi-count msi)))))))
-                                            ;; Announce to the stack: MAC + the TX context.
-                                            (send net (list 'register-nic mac tx-ctx))
-                                            ;; Enable the NIC's interrupt generation LAST --
-                                            ;; the MSI cap is on and the pump exists, so an
-                                            ;; edge MSI for an already-pending RX is not lost.
-                                            (bytes-u32-ref regs ICR)            ; clear stale causes
-                                            (bytes-u32-set! regs IMS IMS-VALUE) ; RXT0|RXO|LSC
-                                            (display "[e1000e] registered with network stack, mac=")
-                                            (display mac) (newline)
-                                            'ok)))))))))))))))))) ; closes (define-module e1000e ...)
+                                    (let ((free-cell (make-cell 0)))
+                                      ;; TX context: (tx frame len reply?) -> copy + post.
+                                      (let ((tx-ctx
+                                              (spawn-restricted '() (lambda ()
+                                                (let loop ()
+                                                  (let ((m (recv)))
+                                                    (if (eq? (car m) 'tx)
+                                                        (begin
+                                                          (tx-send! regs txring txbuf free-cell (cadr m) (caddr m))
+                                                          (if (> (length m) 3) (send (nth m 3) (list 'tx-done)))))
+                                                    (loop)))))))
+                                        ;; RX pump: POLL the ring (sweep, then wait).
+                                        ;; With an MSI handle we park on it with a poll
+                                        ;; timeout so a real interrupt wakes us at once
+                                        ;; but an unrouted one is still swept within
+                                        ;; RX-POLL-NS; with no MSI we sleep-poll. The pump
+                                        ;; is the sole writer of ring/RDT state and holds
+                                        ;; NOTHING across (send net ...) (corenetwork
+                                        ;; re-enters our TX path for ARP/ICMP replies).
+                                        (spawn-restricted '() (lambda ()
+                                          (let loop ()
+                                            (bytes-u32-ref regs ICR)   ; ack (read-to-clear)
+                                            (rx-sweep! regs rxring rxbuf
+                                              (lambda (off len)
+                                                (send net (list 'rx (copy-bytes rxbuf off len) len))))
+                                            (if msi (msi-wait msi (msi-count msi) RX-POLL-NS) (sleep RX-POLL-NS))
+                                            (loop))))
+                                        ;; Announce to the stack: MAC + the TX context.
+                                        (send net (list 'register-nic mac tx-ctx))
+                                        ;; Enable RX interrupt generation only when MSI is
+                                        ;; wired (an unhandled INTx on the no-MSI path could
+                                        ;; storm); the poll covers delivery either way.
+                                        (bytes-u32-ref regs ICR)            ; clear stale causes
+                                        (if msi (bytes-u32-set! regs IMS IMS-VALUE)) ; RXT0|RXO|LSC
+                                        (display "[e1000e] registered with network stack, mac=")
+                                        (display mac) (newline)
+                                        'ok))))))))))))))))) ; closes (define-module e1000e ...)
