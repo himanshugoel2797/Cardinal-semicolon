@@ -133,7 +133,7 @@
   ;; MANIFEST the owner uses to route input to a window hosted on another core.
   ;; Each shard reports its visible windows' geometry+client with every
   ;; layer-update; the owner keeps an alist (shard-handle . window-list) where each
-  ;; window is (client x y w h z). From this + its own surface table the owner
+  ;; window is (client x y w h z id). From this + its own surface table the owner
   ;; builds one GLOBAL window list (global-windows) and routes keyboard to the
   ;; max-z window's client and pointer to the window under the cursor -- the owner
   ;; is the input/focus authority, as for z. Owner instance only.
@@ -214,14 +214,14 @@
       ;; every shard layer into the scanout. (Shards host only opaque clients --
       ;; translucent is routed to the owner -- so there is nothing else to do.) The
       ;; caller's present! is a no-op for a shard (its present cap is #f). It also
-      ;; reports its WINDOW MANIFEST -- its visible windows' (client x y w h z) -- so
+      ;; reports its WINDOW MANIFEST -- its visible windows' (client x y w h z id) -- so
       ;; the owner can hit-test/focus/route input to a window hosted on this core
       ;; (`(self)` is this shard's serve handle = the one it registered).
       (if (mrg-owner mrg)
           (send (mrg-owner mrg)
                 (list 'layer-update (self)
                       (map (lambda (r) (list (sf r SF-CLIENT) (sf r SF-X) (sf r SF-Y)
-                                             (sf r SF-W) (sf r SF-H) (sf r SF-Z)))
+                                             (sf r SF-W) (sf r SF-H) (sf r SF-Z) (sf r SF-ID)))
                            (filter (lambda (r) (sf r SF-VIS)) surfaces))))
           (begin
       ;; 2. merge (OWNER): clear the scanout to the desktop bg and Zop to 0, z-pick the
@@ -293,14 +293,15 @@
           (else (surf-at (cdr surfaces) x y))))
 
   ;; --- cross-shard input: the global window manifest (phase 7) ----------------
-  ;; A global window ENTRY is (client x y w h z surf): surf is the owner SURFACE
-  ;; record for an owner-hosted window (so a press can drag it locally) or #f for a
-  ;; shard-hosted one (input is just routed to its client). Accessors:
+  ;; A global window ENTRY is (client x y w h z surf shard id): surf is the owner
+  ;; SURFACE record for an owner-hosted window (so a press can drag it locally), or
+  ;; #f for a shard-hosted one -- in which case `shard` is the hosting shard's handle
+  ;; and `id` its surface id there, so the owner can RELAY a drag-move to it. Accessors:
   (define (we-client e) (nth e 0)) (define (we-x e) (nth e 1)) (define (we-y e) (nth e 2))
   (define (we-w e) (nth e 3))      (define (we-h e) (nth e 4)) (define (we-z e) (nth e 5))
-  (define (we-surf e)   (nth e 6))
+  (define (we-surf e)   (nth e 6)) (define (we-shard e) (nth e 7)) (define (we-id e) (nth e 8))
   ;; Record a shard's reported window manifest (its visible windows, each
-  ;; (client x y w h z)): replace this shard's prior entry. The list is cross-core
+  ;; (client x y w h z id)): replace this shard's prior entry. The list is cross-core
   ;; MESSAGE DATA the owner later does arithmetic on (hit-test), and the serve loop
   ;; has no try/catch, so SANITIZE it on the way in: walk safely (pair? before cdr),
   ;; keep only well-formed entries (a ctx client + integer geometry), drop the rest.
@@ -308,12 +309,13 @@
   (define (sanitize-wins wins acc)
     (cond ((not (pair? wins)) (reverse acc))
           ((let ((w (car wins)))
-             (and (len>= w 6) (ctx? (nth w 0))
+             (and (len>= w 7) (ctx? (nth w 0))
                   (integer? (nth w 1)) (integer? (nth w 2)) (integer? (nth w 3))
                   (integer? (nth w 4))
                   ;; z must be a POSITIVE integer: z==0 is "empty" and would also beat
                   ;; top-window's -1 sentinel, letting a z=0 entry steal focus/hit.
-                  (integer? (nth w 5)) (> (nth w 5) 0)))
+                  (integer? (nth w 5)) (> (nth w 5) 0)
+                  (integer? (nth w 6))))   ; the shard's window id (for move relay)
            (sanitize-wins (cdr wins) (cons (car wins) acc)))
           (else (sanitize-wins (cdr wins) acc))))
   (define (update-windows mrg shard-handle wins)
@@ -328,12 +330,13 @@
   (define (global-windows surfaces mrg)
     (append
       (map (lambda (r) (list (sf r SF-CLIENT) (sf r SF-X) (sf r SF-Y)
-                             (sf r SF-W) (sf r SF-H) (sf r SF-Z) r))
+                             (sf r SF-W) (sf r SF-H) (sf r SF-Z) r #f (sf r SF-ID)))
            (filter (lambda (r) (sf r SF-VIS)) surfaces))
       (apply append
         (map (lambda (se)               ; se = (shard-handle . window-list)
-               (map (lambda (w)         ; w  = (client x y w h z)
-                      (list (nth w 0) (nth w 1) (nth w 2) (nth w 3) (nth w 4) (nth w 5) #f))
+               (map (lambda (w)         ; w  = (client x y w h z id)
+                      (list (nth w 0) (nth w 1) (nth w 2) (nth w 3) (nth w 4) (nth w 5)
+                            #f (car se) (nth w 6)))
                     (cdr se)))
              (vector-ref (mrg-windows mrg) 0)))))
   ;; The max-z entry of `wins` for which (pick? e) holds, or #f. The single hit/focus
@@ -493,7 +496,7 @@
   ;; --- input routing + drag-move (phase 6) ------------------------------------
   ;; The compositor is `coreinput`'s subscriber and the focus owner: every input
   ;; event arrives here as `(input ev)` on the PRIMARY mailbox and is routed by
-  ;; policy. `drag-state` is a 1-slot mutable cell holding #f or `(id offx offy)`
+  ;; policy. `drag-state` is a 1-slot mutable cell holding #f or `(id offx offy shard)`
   ;; while a title-bar drag is in progress (offx/offy = grab point relative to the
   ;; window origin, so the window tracks the pointer without jumping). Threaded
   ;; `st` is `(next-id . surfaces)`, returned (possibly re-stacked by a focus
@@ -532,21 +535,28 @@
              ;; (any path that drops a surface) must not pin drag-state forever.
              (d
               (if down?
-                  (let ((r (find-surf (car d) surfaces)))
-                    (if r (let ((old (surf-rect r)))
-                            (vector-set! r SF-X (- x (cadr d)))
-                            (vector-set! r SF-Y (- y (caddr d)))
-                            (recomposite screen bg surfaces mrg)
-                            (present! (list old (surf-rect r))))
-                        (vector-set! drag-state 0 #f)))
+                  ;; d is (id offx offy shard): shard #f -> the window is the owner's,
+                  ;; move it locally; otherwise relay the new position to the hosting
+                  ;; shard, which repositions it and re-merges (no local move).
+                  (let ((shard (cadddr d)))
+                    (if shard
+                        (send shard (list 'move-window (car d) (- x (cadr d)) (- y (caddr d))))
+                        (let ((r (find-surf (car d) surfaces)))
+                          (if r (let ((old (surf-rect r)))
+                                  (vector-set! r SF-X (- x (cadr d)))
+                                  (vector-set! r SF-Y (- y (caddr d)))
+                                  (recomposite screen bg surfaces mrg)
+                                  (present! (list old (surf-rect r))))
+                              (vector-set! drag-state 0 #f)))))
                   (vector-set! drag-state 0 #f))
               st)
              ;; a fresh press: hit-test the GLOBAL window list (owner + shards). On an
-             ;; OWNER window, focus-follows-click (raise) then title-bar = drag /
-             ;; body = route to the client in window-local coords (as before). On a
-             ;; SHARD window, route the press to its client in window-local coords --
-             ;; owner-side drag-move of a shard window is a follow-up (the client gets
-             ;; all its pointer input and can self-manage). No window -> ignored.
+             ;; OWNER window, focus-follows-click (raise) then title-bar = local drag /
+             ;; body = route to the client. On a SHARD window, a title-bar press starts
+             ;; a CROSS-SHARD drag (the owner relays each move to the hosting shard) and
+             ;; a body press routes to the client -- both in window-local coords. No
+             ;; window -> ignored. (drag-state is (id offx offy shard): shard #f for an
+             ;; owner-local drag, the shard handle for a relayed one.)
              (down?
               (let ((e (window-at surfaces mrg x y)))
                 (cond
@@ -561,14 +571,17 @@
                        (present! (list (surf-rect r)))
                        (if (< (- y (sf r SF-Y)) TITLE-H)
                            (vector-set! drag-state 0
-                             (list (sf r SF-ID) (- x (sf r SF-X)) (- y (sf r SF-Y))))
+                             (list (sf r SF-ID) (- x (sf r SF-X)) (- y (sf r SF-Y)) #f))
                            (send (sf r SF-CLIENT)
                                  (list 'input (list 'pointer (- x (sf r SF-X))
                                                     (- y (sf r SF-Y)) #t))))
                        (cons next-id s2))))
                   (else
-                   (send (we-client e)
-                         (list 'input (list 'pointer (- x (we-x e)) (- y (we-y e)) #t)))
+                   (if (< (- y (we-y e)) TITLE-H)
+                       (vector-set! drag-state 0
+                         (list (we-id e) (- x (we-x e)) (- y (we-y e)) (we-shard e)))
+                       (send (we-client e)
+                             (list 'input (list 'pointer (- x (we-x e)) (- y (we-y e)) #t))))
                    st))))
              ;; pointer motion with no button and no drag: no hover routing in v1.
              (else st))))
@@ -587,7 +600,7 @@
           ;; their granted backing with the SAME channel layout the screen uses
           ;; (gfx-blit! is a raw copy -- see surf-src). (r-off g-off b-off).
           (fmt (list (surface-r-off screen) (surface-g-off screen) (surface-b-off screen)))
-          ;; ephemeral title-bar-drag state: #f, or (id offx offy) mid-drag. A
+          ;; ephemeral title-bar-drag state: #f, or (id offx offy shard) mid-drag. A
           ;; captured 1-slot cell rather than threaded `st` -- it is interaction
           ;; state, not part of the surface table, and the root is single-threaded.
           (drag-state (make-vector 1 #f))
@@ -649,6 +662,17 @@
             ;; Sent only by a (trusted) handler, but length-guarded all the same.
             ((and (eq? (car m) 'op) (len>= m 4))
              (handle-op st (cadr m) (caddr m) (cadddr m) screen bg caps drag-state mrg))
+            ;; (move-window id x y) -> the OWNER relays a cross-shard drag to this
+            ;; SHARD: reposition the window and re-merge (recomposite -> layer-update,
+            ;; so the owner re-merges + sees the new geometry). Owner-initiated only
+            ;; (the shard handle is known only to the owner), so trusted; type-guarded.
+            ((and (eq? (car m) 'move-window) (len>= m 4)
+                  (integer? (cadr m)) (integer? (caddr m)) (integer? (cadddr m)))
+             (let ((r (find-surf (cadr m) (cdr st))))
+               (if r (begin (vector-set! r SF-X (caddr m))
+                            (vector-set! r SF-Y (cadddr m))
+                            (recomposite screen bg (cdr st) mrg))))
+             st)
             ;; (input ev) -> a coreinput event (the compositor is subscribed to the
             ;; input service in init); route it by focus/hit-test. ev is validated
             ;; inside handle-input, so a malformed event can't crash the root.
@@ -658,6 +682,14 @@
             ;; fresh top z-stamp so its windows order correctly against everyone's.
             ((and (eq? (car m) 'alloc-z) (len>= m 2) (ctx? (cadr m)))
              (send (cadr m) (list 'z (fresh-z mrg)))
+             st)
+            ;; (shard-count reply) -> how many shards have registered. A client uses
+            ;; this to wait until shards exist before connecting, so an opaque client
+            ;; is deterministically ROUTED to a shard rather than racing the per-core
+            ;; bring-up; the cross-shard tests rely on it (else they could silently
+            ;; run owner-hosted). 0 on the single-instance (no-AP) owner.
+            ((and (eq? (car m) 'shard-count) (len>= m 2) (ctx? (cadr m)))
+             (send (cadr m) (length (vector-ref (mrg-shards mrg) 0)))
              st)
             ;; (shard-geom reply) -> a per-core shard asks the screen geometry so it
             ;; can allocate a layer matching the scanout (same stride/np). ctx?-guard

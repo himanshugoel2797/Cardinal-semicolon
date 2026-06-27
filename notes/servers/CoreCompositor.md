@@ -595,10 +595,21 @@ after `coredisplay` + the display driver bind (it needs the driver's
      window-local coords (an owner window also focus-raises + title-bar-drags as
      before; a shard window's press is routed to its client). Validated
      `cardinal.compositorshardpointer`: an injected body-click reaches a shard-hosted
-     client across cores. **Remaining follow-ups:** cross-shard **drag-move** (owner
-     relays moves to the shard — owner-window drag already works); a true global **z
-     authority** (replace the per-shard z-bands); `layer-update` **damage bounding**;
-     shard **de-register** (a dead shard leaves stale manifest/layer state).
+     client across cores.
+   - **7B wiring (cross-shard drag-move) — ✅ DONE.** A title-bar press on a shard
+     window starts a drag the owner RELAYS: drag-state is `(id offx offy shard)` (shard
+     #f = owner-local; a handle = relayed), and each motion sends the shard
+     `(move-window id nx ny)`, which repositions the window and re-merges. The manifest
+     window entry gained the shard handle + window id so the owner can address the
+     relay. Validated `cardinal.compositorsharddrag`: an injected title-bar drag moves
+     a shard-hosted window across the scanout (SMP=4 cross-core; SMP=1 owner-local).
+     **Test-validity fix (important):** the cross-shard input tests' clients previously
+     connected *before* the per-core shards registered, so they were owner-hosted and
+     never exercised the cross-shard path — they now sleep until shards register (and
+     the per-core hook spawns shards for the input gates), so keyboard/pointer/drag are
+     all genuinely validated routed-to-a-shard. **Remaining follow-ups:** a true global
+     **z authority** (replace the per-shard z-bands); `layer-update` **damage
+     bounding**; shard **de-register** (a dead shard leaves stale manifest/layer).
 
 ## Open / deferred
 

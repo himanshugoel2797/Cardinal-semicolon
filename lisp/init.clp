@@ -560,6 +560,19 @@
                     (display "[compositorshards] core ") (display id)
                     (display " shard instance up + registered") (newline))))))))
 
+  ;; Wait until the compositor owner has at least one shard registered (so an opaque
+  ;; client connecting after this is deterministically ROUTED to a shard), or a
+  ;; bounded deadline passes (no APs / SMP=1 -> fall through to owner-hosted). The
+  ;; cross-shard input tests call this before connecting so they actually exercise
+  ;; the cross-shard path when shards exist, instead of racing the per-core bring-up.
+  (define (wait-for-shards comp)
+    (let loop ((tries 0))
+      (send comp (list 'shard-count (self)))
+      (let ((n (recv)))
+        (cond ((and (integer? n) (> n 0)) n)
+              ((>= tries 80) 0)                ; ~8s: single-core / no shards
+              (else (sleep 100000000) (loop (+ tries 1)))))))
+
   ;; The phase-4 compositor demo client: connect, create one window-sized surface,
   ;; map its grant (zero-copy), draw a titled window into it (using the screen pixel
   ;; format the compositor advertised at connect, since gfx-blit! is a raw copy),
@@ -643,7 +656,14 @@
                 (begin
                   (if collector
                       (spawn-restricted '() (lambda () (send collector (list 'core-hello id)))))
-                  (if (cmdline-has? "cardinal.compositorshards")
+                  ;; spawn this core's compositor shard for ANY test that needs real
+                  ;; per-core shards -- the rendering test (compositorshards) AND the
+                  ;; cross-shard input tests, which must route a client to a shard (not
+                  ;; the owner) to exercise the cross-core path.
+                  (if (or (cmdline-has? "cardinal.compositorshards")
+                          (cmdline-has? "cardinal.compositorshardinput")
+                          (cmdline-has? "cardinal.compositorshardpointer")
+                          (cmdline-has? "cardinal.compositorsharddrag"))
                       (spawn-restricted '() (lambda () (start-compositor-shard id))))))))))
     ;; Audio: start the service, capture its handle (formerly dropped), and bring
     ;; up the HD Audio controller feeding it. hdaudio-init is gated on pci-find, so
@@ -924,6 +944,7 @@
                   (spawn-restricted '(sys-shm)
                     (lambda ()
                       (import sys-shm)
+                      (wait-for-shards comp)   ; route to a shard deterministically
                       (send comp (list 'connect #f (self)))
                       (let ((r (recv)))
                         (if (and (pair? r) (eq? (car r) 'connected))
@@ -973,6 +994,7 @@
                   (spawn-restricted '(sys-shm)
                     (lambda ()
                       (import sys-shm)
+                      (wait-for-shards comp)   ; route to a shard deterministically
                       (send comp (list 'connect #f (self)))
                       (let ((r (recv)))
                         (if (and (pair? r) (eq? (car r) 'connected))
@@ -1005,6 +1027,63 @@
                             (begin (sleep 600000000)
                                    (send input (list 'event (list 'pointer 75 92 #t)))
                                    (loop (+ n 1)))))))))
+            ;; cardinal.compositorsharddrag: validate CROSS-SHARD DRAG-MOVE. A routed
+            ;; shard-hosted window is dragged by its title bar; the owner detects the
+            ;; press over the shard window, then relays each motion to the hosting
+            ;; shard (move-window), which repositions it and re-merges. An injector
+            ;; feeds a title-bar drag (press 70,65 -> motion 120,115 -> release) that
+            ;; should move the 40x40 window from (60,60) to (110,110); a translucent
+            ;; verifier polls the scanout at the NEW window centre (130,130) for the
+            ;; window colour. The drag is injected a few times so an early attempt
+            ;; (manifest not yet reported) is retried; once moved, later presses miss.
+            (if (cmdline-has? "cardinal.compositorsharddrag")
+                (begin
+                  (spawn-restricted '(sys-shm)
+                    (lambda ()
+                      (import sys-shm)
+                      (wait-for-shards comp)   ; route to a shard deterministically (not a race)
+                      (send comp (list 'connect #f (self)))
+                      (let ((r (recv)))
+                        (if (and (pair? r) (eq? (car r) 'connected))
+                            (let* ((h (cadr r)) (fmt (caddr r))
+                                   (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt)))
+                              (send h (list 'create-surface 40 40))
+                              (let ((s (recv)))
+                                (if (and (pair? s) (eq? (car s) 'surface))
+                                    (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                                           (surf (make-surface* (map-grant g0) 40 40 stride ro go bo '())))
+                                      (clear surf (rgb surf 220 60 60))
+                                      (send h (list 'configure id 60 60 #t))
+                                      (send h (list 'commit id 0 '()))
+                                      (let loop () (recv) (loop))))))))))   ; park to keep the window alive
+                  (spawn-restricted '()
+                    (lambda ()
+                      ;; inject the title-bar drag a few times (retry until the manifest is up).
+                      (let loop ((n 0))
+                        (if (< n 5)
+                            (begin (sleep 3000000000)
+                                   (send input (list 'event (list 'pointer 70 65 #t)))    ; press in title
+                                   (send input (list 'event (list 'pointer 120 115 #t)))  ; drag -> (110,110)
+                                   (send input (list 'event (list 'pointer 120 115 #f)))  ; release
+                                   (loop (+ n 1)))))))
+                  (spawn-restricted '()
+                    (lambda ()
+                      (send comp (list 'connect #t (self)))   ; translucent -> owner; probe the scanout
+                      (let ((r (recv)))
+                        (if (and (pair? r) (eq? (car r) 'connected))
+                            (let* ((h (cadr r)) (fmt (caddr r))
+                                   (cs (make-surface* (make-bytes 4) 1 1 4 (car fmt) (cadr fmt) (caddr fmt) '()))
+                                   (red (rgb cs 220 60 60)))
+                              (let poll ((tries 0))
+                                (send h (list 'probe-pixel 130 130))   ; the moved window's centre
+                                (let ((got (recv)))
+                                  (cond ((and (integer? got) (= got red))
+                                         (display "[compositorsharddrag] OK shard window dragged across the scanout")
+                                         (newline))
+                                        ((>= tries 200)
+                                         (display "[compositorsharddrag] FAIL window did not move (timeout)")
+                                         (newline))
+                                        (else (sleep 100000000) (poll (+ tries 1)))))))))))))
             (if (cmdline-has? "cardinal.compositorlayers")
                 (spawn-restricted '(sys-shm)
                   (lambda ()
