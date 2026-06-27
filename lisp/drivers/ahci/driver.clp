@@ -59,7 +59,7 @@
 (define (ahci-init storage)
   (let ((ecam (pci-find AHCI-VID AHCI-DID)))
     (if (not ecam)
-        (begin (display "[ahci] no device present") (newline) #f)
+        (begin (lg "no device present") #f)
         (let ((cfg (mmio-map ecam 4096)))
           (pci-enable-mem-bus-master! cfg)
           ;; ABAR = BAR5. If firmware never configured it (base 0), self-assign and
@@ -71,7 +71,7 @@
                                  (begin (pci-assign-bars ecam) (bar-base cfg ABAR-BAR))
                                  b))))
             (if (or (not abar-phys) (= abar-phys 0))
-                (begin (display "[ahci] no ABAR") (newline) #f)
+                (begin (lg "no ABAR") #f)
                 (let ((abar (mmio-map abar-phys #x1100)))   ; HBA regs + 32 ports
                   ;; Run discovery + bring-up + IDENTIFY in a spawned context so the
                   ;; reset / spin-up / completion waits actually YIELD. This is
@@ -110,18 +110,17 @@
   (let ((s64a? (hba-s64a? abar)))
     (hba-handoff! abar)
     (if (not (hba-reset! abar))
-        (begin (display "[ahci] HBA reset timeout") (newline) 'fail)
+        (begin (lg "HBA reset timeout") 'fail)
         (let ((ports (hba-ports abar)))
           (if (null? ports)
-              (begin (display "[ahci] no ports implemented") (newline) 'fail)
+              (begin (lg "no ports implemented") 'fail)
               ;; Find the first IMPLEMENTED port whose link comes up + device is
               ;; ready. A controller may carry its disk on any port (the QEMU q35
               ;; built-in AHCI exposes several empty ports), so scan rather than
               ;; assume port 0 -- an empty port's link wait just fails and we move on.
               (let ((live (find-live-port abar ports s64a?)))
                 (if (not live)
-                    (begin (display "[ahci] no port came up (no device/link)")
-                           (newline) 'fail)
+                    (begin (lg "no port came up (no device/link)") 'fail)
                     (let ((port    (car live))
                           (regions (cadr live)))
                     ;; Port is up. IDENTIFY with a poll-only ctx (MSI added after).
@@ -129,14 +128,13 @@
                            (poll-ctx (list abar port regions s64a? #f))
                            (idst (identify poll-ctx (bytes-phys idbuf))))
                       (if (not (= idst 0))
-                          (begin (display "[ahci] IDENTIFY failed") (newline) 'fail)
+                          (begin (lg "IDENTIFY failed") 'fail)
                           (let ((sectors (id-sector-count idbuf))
                                 (model   (id-model idbuf)))
-                            (display "[ahci] up: model=") (display model)
-                            (display " sectors=") (display sectors) (newline)
+                            (lg "up: model=" model " sectors=" sectors)
                             ;; --- P2/P3: MSI + driver context + registration ---
                             (let ((msi (pci-setup-msi ecam)))
-                              (display "[ahci] msi=") (display msi) (newline)
+                              (lg "msi=" msi)
                               (let* ((io-ctx (list abar port regions s64a? msi))
                                      (dbuf (if s64a? (dma-alloc (* DATA-SECTORS 512))
                                                (dma-alloc-32 (* DATA-SECTORS 512))))
@@ -157,8 +155,7 @@
                                 (ahci-smoke io-ctx msi sectors dbuf (bytes-phys dbuf))
                                 (send storage (list 'register-blockdev 'ahci0 512
                                                     sectors driver-ctx))
-                                (display "[ahci] registered ahci0 with corestorage")
-                                (newline)
+                                (lg "registered ahci0 with corestorage")
                                 'up)))))))))))))
 
 ;; Live read/write smoke against a real device, run once at bring-up.
@@ -171,20 +168,19 @@
   ;; P2: read sector 0.
   (let ((before (if msi (msi-count msi) 0)))
     (if (not (= 0 (read-sectors ctx 0 1 dbuf-phys)))
-        (begin (display "[ahci] P2 read sector 0 FAILED") (newline))
+        (begin (lg "P2 read sector 0 FAILED"))
         (begin
-          (display "[ahci] P2 sector0[0..3]=")
-          (display (bytes-u8-ref dbuf 0)) (display " ")
-          (display (bytes-u8-ref dbuf 1)) (display " ")
-          (display (bytes-u8-ref dbuf 2)) (display " ")
-          (display (bytes-u8-ref dbuf 3))
-          (display " mbr-sig=")
-          (display (bytes-u8-ref dbuf 510)) (display ",")
-          (display (bytes-u8-ref dbuf 511))
-          (display (if (and (= (bytes-u8-ref dbuf 510) #x55)
-                            (= (bytes-u8-ref dbuf 511) #xAA))
-                       " (0x55AA seen)" " (no 0x55AA)"))
-          (newline)
+          (lg "P2 sector0[0..3]="
+              (bytes-u8-ref dbuf 0) " "
+              (bytes-u8-ref dbuf 1) " "
+              (bytes-u8-ref dbuf 2) " "
+              (bytes-u8-ref dbuf 3)
+              " mbr-sig="
+              (bytes-u8-ref dbuf 510) ","
+              (bytes-u8-ref dbuf 511)
+              (if (and (= (bytes-u8-ref dbuf 510) #x55)
+                       (= (bytes-u8-ref dbuf 511) #xAA))
+                  " (0x55AA seen)" " (no 0x55AA)"))
           ;; The MSI fires and is serviced here: the device raises its interrupt
           ;; (PxIS/HBA-IS set, GHC.IE on) and the CPU runs the handler, advancing
           ;; msi-count. This works because the live scheduler runs interrupts-ON
@@ -194,10 +190,9 @@
           ;; poll as the authoritative completion signal and uses msi-wait only to
           ;; yield the core, so a missed/coalesced MSI can never wedge a request;
           ;; msi-count reports whether the MSI actually carried this one.
-          (display (if (and msi (> (msi-count msi) before))
-                       "[ahci] MSI fired (msi-count advanced)"
-                       "[ahci] completion via PxCI-poll (no MSI delivered -- see header)"))
-          (newline))))
+          (lg (if (and msi (> (msi-count msi) before))
+                  "MSI fired (msi-count advanced)"
+                  "completion via PxCI-poll (no MSI delivered -- see header)")))))
   ;; P3: write a known pattern at a scratch high LBA, read it back, compare.
   (let ((scratch (- sectors 8)))
     ;; Stamp a recognisable pattern into dbuf (512 bytes).
@@ -205,16 +200,15 @@
                           (begin (bytes-u8-set! dbuf i (bitwise-and (+ i #xA5) #xFF))
                                  (loop (+ i 1))) 'z))
     (if (not (= 0 (write-sectors ctx scratch 1 dbuf-phys)))
-        (begin (display "[ahci] P3 write FAILED") (newline))
+        (begin (lg "P3 write FAILED"))
         (begin
           ;; Clobber dbuf, then read it back and verify every byte matches.
           (let loop ((i 0)) (if (< i 512) (begin (bytes-u8-set! dbuf i 0) (loop (+ i 1))) 'z))
           (if (not (= 0 (read-sectors ctx scratch 1 dbuf-phys)))
-              (begin (display "[ahci] P3 readback FAILED") (newline))
+              (begin (lg "P3 readback FAILED"))
               (let ((ok (let loop ((i 0))
                           (cond ((= i 512) #t)
                                 ((= (bytes-u8-ref dbuf i) (bitwise-and (+ i #xA5) #xFF))
                                  (loop (+ i 1)))
                                 (else #f)))))
-                (display (if ok "[ahci] writeback OK" "[ahci] writeback MISMATCH"))
-                (newline)))))))
+                (lg (if ok "writeback OK" "writeback MISMATCH"))))))))

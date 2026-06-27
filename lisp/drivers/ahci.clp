@@ -39,4 +39,5 @@
           ATA-IDENTIFY ATA-READ-EXT ATA-WRITE-EXT
           PRDT-OFF FIS-OFF)
   (import sys-mmio sys-pci driver-util)
+  (define lg (make-logger 'ahci))
   (include hba port ata driver))

@@ -16,4 +16,5 @@
 (define-module xhci
   (export xhci-init)
   (import sys-mmio sys-pci driver-util coreusb)
+  (define lg (make-logger 'xhci))
   (include regs driver))

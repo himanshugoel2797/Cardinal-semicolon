@@ -16,6 +16,7 @@
 (define-module usb-storage
   (export usb-storage-init)
   (import coreusb driver-util)
+  (define lg (make-logger 'usb-storage))
 
   (define CBW-SIG #x43425355)   ; "USBC"
   (define CSW-SIG #x53425355)   ; "USBS"
@@ -115,9 +116,8 @@
             (let ((s (scsi-request-sense)))
               (if (and s (>= (bytes-length s) 14))
                   (let ((key (bitwise-and (bytes-u8-ref s 2) #xF)))
-                    (display "[usb-storage] ") (display where) (display ": sense key=")
-                    (display key) (display " asc=") (display (bytes-u8-ref s 12))
-                    (display " ascq=") (display (bytes-u8-ref s 13)) (newline) key)
+                    (lg where ": sense key=" key " asc=" (bytes-u8-ref s 12)
+                        " ascq=" (bytes-u8-ref s 13)) key)
                   -1)))
           ;; MODE SENSE(6), all pages -> write-protected? (#t/#f), or #f if it failed.
           ;; The WP bit is bit 7 of the device-specific byte (byte 2) of the header.
@@ -172,12 +172,11 @@
           ;; READ CAPACITY (size) -> MODE SENSE (write-protect), then register ---
           (let ((inq (let ((c (make-bytes 6))) (bytes-u8-set! c 0 #x12) (bytes-u8-set! c 4 36)
                        (bbb c 6 #f 36 #t))))
-            (if (= (car inq) 0) (begin (display "[usb-storage] INQUIRY ok") (newline))
-                (begin (display "[usb-storage] INQUIRY failed") (newline))))
+            (if (= (car inq) 0) (begin (lg "INQUIRY ok"))
+                (begin (lg "INQUIRY failed"))))
           (if (not (wait-ready 10))
-              (display "[usb-storage] unit not ready (no medium?)")   ; capacity read below will fail
-              (display "[usb-storage] unit ready"))
-          (newline)
+              (lg "unit not ready (no medium?)")   ; capacity read below will fail
+              (lg "unit ready"))
           (let ((cap (cmd-retry (lambda ()
                        (let ((c (make-bytes 10))) (bytes-u8-set! c 0 #x25) (bbb c 10 #f 8 #t)))
                        "read-capacity")))
@@ -185,19 +184,17 @@
                 (begin
                   (set! bcount (+ (get-be32 (cdr cap) 0) 1))
                   (set! bsize (let ((b (get-be32 (cdr cap) 4))) (if (= b 0) 512 b)))
-                  (display "[usb-storage] capacity blocks=") (display bcount)
-                  (display " bsize=") (display bsize) (newline)
+                  (lg "capacity blocks=" bcount " bsize=" bsize)
                   (let ((wp (scsi-mode-sense6)))
-                    (display "[usb-storage] write-protected=") (display (if (eq? wp #t) "yes" "no"))
-                    (newline)))
-                (begin (display "[usb-storage] READ CAPACITY failed") (newline) (set! bcount 0))))
+                    (lg "write-protected=" (if (eq? wp #t) "yes" "no"))))
+                (begin (lg "READ CAPACITY failed") (set! bcount 0))))
           (if (= bcount 0)
-              (begin (display "[usb-storage] no usable capacity; not registering") (newline)
+              (begin (lg "no usable capacity; not registering")
                      ;; stay alive until remove sends (stop), then exit cleanly.
                      (let park () (if (eq? (car (recv)) 'stop) 'stopped (park))))
               (begin
                 (send storage (list 'register-blockdev 'usb0 bsize bcount (self)))
-                (display "[usb-storage] registered usb0 with corestorage") (newline)
+                (lg "registered usb0 with corestorage")
                 ;; serve block requests, draining the stash (FIFO) before fresh recv.
                 ;; A (stop) from remove exits the loop so the context ends cleanly;
                 ;; every message here is a list, so (car req) is always valid.
@@ -215,9 +212,9 @@
     (let ((inep (usb-find-endpoint dev USB-XFER-BULK #t))
           (outep (usb-find-endpoint dev USB-XFER-BULK #f)))
       (if (or (not inep) (not outep))
-          (begin (display "[usb-storage] missing bulk endpoints; not claiming") (newline) devs)
+          (begin (lg "missing bulk endpoints; not claiming") devs)
           (begin
-            (display "[usb-storage] claimed mass-storage device") (newline)
+            (lg "claimed mass-storage device")
             (let ((srv (start-block-server dev (car inep) (car outep)
                                            (let ((m (cadr inep))) (if (> m 0) m 64))
                                            (let ((m (cadr outep))) (if (> m 0) m 64))
@@ -228,7 +225,7 @@
     (let loop ((ds devs) (keep '()))
       (cond ((null? ds) keep)
             ((= (caar ds) addr) (send (cdar ds) (list 'stop))   ; a list, so the server's (car req) is valid
-                                (display "[usb-storage] device removed") (newline)
+                                (lg "device removed")
                                 (loop (cdr ds) keep))
             (else (loop (cdr ds) (cons (car ds) keep))))))
 
