@@ -64,6 +64,37 @@
   ;; REPL env). #f until the audio service is up.
   (define audio-service #f)
 
+  ;; Cross-core rendezvous for the compositor owner handle. The owner (core 0) comes
+  ;; up async inside a spawned context, but per-core SHARD instances (born on APs by
+  ;; the set-per-core-init hook) need its handle to register their grant-shared layer.
+  ;; A spawned context CANNOT `set!` a module global (only the root eval can), so the
+  ;; handoff is by message-passing, not a shared binding: a small rendezvous context
+  ;; holds the owner and answers `(get-owner reply)`, QUEUING the request until the
+  ;; bring-up sends `(set-owner comp)`. The rendezvous handle itself is set! by the
+  ;; ROOT (system-init) BEFORE the APs go live, so reading it on an AP is safe (a
+  ;; read of a module global works from any context; only set! is root-only) and the
+  ;; per-core barrier publishes it. #f until system-init creates it.
+  (define compositor-rendezvous #f)
+
+  ;; Spawn the owner rendezvous (see compositor-rendezvous). It parks holding the
+  ;; owner once known, replying to every queued/late `get-owner` -- so a shard that
+  ;; asks before the owner is up simply blocks on recv until it arrives.
+  (define (make-owner-rendezvous)
+    (spawn-restricted '()
+      (lambda ()
+        (let loop ((owner #f) (waiters '()))
+          (let ((m (recv)))
+            (cond ;; first valid set-owner wins (idempotent bring-up); the owner must
+                  ;; be a context, else a stray (set-owner #f) would poison every shard.
+                  ((and (not owner) (pair? m) (eq? (car m) 'set-owner) (ctx? (cadr m)))
+                   (for-each (lambda (w) (send w (list 'owner (cadr m)))) waiters)
+                   (loop (cadr m) '()))
+                  ((and (pair? m) (eq? (car m) 'get-owner) (ctx? (cadr m)))
+                   (if owner
+                       (begin (send (cadr m) (list 'owner owner)) (loop owner waiters))
+                       (loop owner (cons (cadr m) waiters))))
+                  (else (loop owner waiters))))))))
+
   ;; REPL command: play a tone through the audio stack. Routes through the live
   ;; coreaudio service to the registered card 'hda0 -- the exact path a real client
   ;; uses -- so it doubles as an end-to-end check of the hdaudio playback path.
@@ -492,6 +523,58 @@
                                 (db-flush-rect db (nth r 0) (nth r 1) (nth r 2) (nth r 3)))
                               rects)))))))
 
+  ;; A per-core SHARD's test colour (phase-7 cross-core). Distinct per core so the
+  ;; verifier can tell whose content landed on the scanout; computed in the screen's
+  ;; pixel format so the drawn pixel and the expected value agree. Cores 1/2/3 ->
+  ;; red/green/blue; others a dim grey (fine for typical SMP<=4 smoke tests).
+  (define (shard-test-color surf id)
+    (rgb surf (if (= id 1) 240 40) (if (= id 2) 240 40) (if (= id 3) 240 40)))
+
+  ;; A per-core compositor SHARD (cardinal.compositorshards). Born on an AP by the
+  ;; set-per-core-init hook, it proves the cross-core merge substrate end to end:
+  ;; wait for the owner to be published, ask it the scanout geometry, allocate a
+  ;; matching (colour,z) LAYER, mint grants over it, draw this core's test rect into
+  ;; the layer, register the grants with the owner, and notify it. The owner maps the
+  ;; grants and folds them into its z-pick -- so a window composited on THIS core
+  ;; appears on the scanout the owner (core 0) drives. No client routing yet: the
+  ;; rect stands in for "this shard's clients' windows" (the next step). It holds no
+  ;; caps -- dma-alloc-wb / grant-mint are captured prims that work in any context.
+  (define (start-compositor-shard id)
+    ;; ask the rendezvous for the owner handle; it replies once the bring-up has
+    ;; published it (recv blocks until then -- no polling needed).
+    (send compositor-rendezvous (list 'get-owner (self)))
+    (let ((om (recv)))
+      (if (not (and (pair? om) (eq? (car om) 'owner) (ctx? (cadr om))))
+          (begin (display "[compositorshards] core ") (display id)
+                 (display " FAIL no owner from rendezvous") (newline))
+          (let ((owner (cadr om)))
+            (begin
+               (send owner (list 'shard-geom (self)))
+               (let ((g (recv)))                       ; (geom w h stride fmt)
+                 (if (not (and (pair? g) (eq? (car g) 'geom)))
+                     (begin (display "[compositorshards] core ") (display id)
+                            (display " FAIL no geom") (newline))
+                     (let* ((w (nth g 1)) (hh (nth g 2)) (stride (nth g 3)) (fmt (nth g 4))
+                            (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
+                            (plane (* stride hh))
+                            (lcb (dma-alloc-wb plane)) (lzb (dma-alloc-wb plane))
+                            (gc (grant-mint lcb 'rw)) (gz (grant-mint lzb 'rw))
+                            (lc (make-surface* lcb w hh stride ro go bo '()))
+                            (lz (make-surface lzb w hh stride)))
+                       ;; a fresh GLOBAL z from the owner (the z authority), so the
+                       ;; merge orders this shard's content correctly vs. the others.
+                       (send owner (list 'alloc-z (self)))
+                       (let* ((zr (recv))
+                              (z (if (and (pair? zr) (eq? (car zr) 'z)) (cadr zr) 1))
+                              (col (shard-test-color lc id))
+                              (x (* id 50)) (y 120))
+                         (fill-rect lc x y 30 30 col)   ; colour into the colour plane
+                         (fill-rect lz x y 30 30 z)     ; stamp z over its coverage
+                         (send owner (list 'register-shard gc gz))
+                         (send owner (list 'layer-update))
+                         (display "[compositorshards] core ") (display id)
+                         (display " registered layer rect at x=") (display x) (newline))))))))))
+
   ;; The phase-4 compositor demo client: connect, create one window-sized surface,
   ;; map its grant (zero-copy), draw a titled window into it (using the screen pixel
   ;; format the compositor advertised at connect, since gfx-blit! is a raw copy),
@@ -536,42 +619,47 @@
     ;; `input` is bound here because the USB-HID class driver feeds the same
     ;; coreinput service the ps2 keyboard does; the whole bring-up runs in its scope.
     (let ((input (setup-input)))
-    ;; Phase-7 substrate proof (cardinal.percoretest): the per-core bring-up hook +
-    ;; cross-core messaging the sharded compositor (phase 7B) will stand on. A
-    ;; `collector` context lives on the BSP (core 0). The hook -- run on EVERY core
-    ;; as it goes live (set-per-core-init) -- spawns, on each AP, a context that
-    ;; sends a (core-hello id) to the collector. A message crossing from an AP's
-    ;; context to the BSP's collector proves cross-core send works end to end (the
-    ;; receiver's heap-lock deposit + blocked-flag wake + the owner core's
-    ;; periodic-tick reschedule). The hook reads (core-id) to pick its role; core 0
-    ;; only hosts the collector (it doesn't message itself).
-    (if (cmdline-has? "cardinal.percoretest")
-        (let* ((expected (- (core-count) 1))   ; APs that should report (BSP excluded)
-               (collector
-                (spawn-restricted '()
-                  (lambda ()
-                    (if (<= expected 0)
-                        (begin (display "[percoretest] single core; no APs to report")
-                               (newline))
-                        ;; receive exactly one (core-hello id) per AP, then finish
-                        ;; (the context terminates and leaves the BSP run queue --
-                        ;; no permanently-parked collector).
-                        (let loop ((got 0))
-                          (let ((m (recv)))
-                            (cond ((and (pair? m) (eq? (car m) 'core-hello))
-                                   (display "[percoretest] cross-core send OK: core ")
-                                   (display (cadr m)) (display " -> BSP collector") (newline)
-                                   (if (>= (+ got 1) expected)
-                                       (begin (display "[percoretest] all ") (display expected)
-                                              (display " AP(s) reported in") (newline))
-                                       (loop (+ got 1))))
-                                  (else (loop got))))))))))
-          (set-per-core-init
-            (lambda ()
-              (let ((id (core-id)))            ; this core's index, read once
-                (if (> id 0)
-                    (spawn-restricted '()
-                      (lambda () (send collector (list 'core-hello id))))))))))
+    ;; Create the compositor owner rendezvous in the ROOT (only the root eval may
+    ;; set! a module global) and BEFORE the APs go live, so the per-core shard hook
+    ;; can reach it. The bring-up later sends it the owner handle. (set! from here is
+    ;; the boot/root context, unlike the bring-up spawn -- see compositor-rendezvous.)
+    (set! compositor-rendezvous (make-owner-rendezvous))
+    ;; Phase-7 per-core bring-up hook. The single set-per-core-init runs on EVERY
+    ;; core as it goes live; it reads (core-id) and, on an AP, brings up that core's
+    ;; work. Two gated consumers today: cardinal.percoretest (the cross-core-send
+    ;; proof -- an AP messages a BSP `collector`) and cardinal.compositorshards (a
+    ;; per-core compositor SHARD that grant-shares a layer the owner merges -- see
+    ;; start-compositor-shard). Core 0 hosts the collector / the owner; it spawns no
+    ;; AP work for itself. `collector` is #f unless percoretest is on.
+    (let ((collector
+           (if (cmdline-has? "cardinal.percoretest")
+               (let ((expected (- (core-count) 1)))   ; APs that should report (BSP excluded)
+                 (spawn-restricted '()
+                   (lambda ()
+                     (if (<= expected 0)
+                         (begin (display "[percoretest] single core; no APs to report") (newline))
+                         ;; receive exactly one (core-hello id) per AP, then finish
+                         ;; (the context terminates and leaves the BSP run queue).
+                         (let loop ((got 0))
+                           (let ((m (recv)))
+                             (cond ((and (pair? m) (eq? (car m) 'core-hello))
+                                    (display "[percoretest] cross-core send OK: core ")
+                                    (display (cadr m)) (display " -> BSP collector") (newline)
+                                    (if (>= (+ got 1) expected)
+                                        (begin (display "[percoretest] all ") (display expected)
+                                               (display " AP(s) reported in") (newline))
+                                        (loop (+ got 1))))
+                                   (else (loop got)))))))) )
+               #f)))
+      (set-per-core-init
+        (lambda ()
+          (let ((id (core-id)))                 ; this core's index, read once
+            (if (> id 0)
+                (begin
+                  (if collector
+                      (spawn-restricted '() (lambda () (send collector (list 'core-hello id)))))
+                  (if (cmdline-has? "cardinal.compositorshards")
+                      (spawn-restricted '() (lambda () (start-compositor-shard id))))))))))
     ;; Audio: start the service, capture its handle (formerly dropped), and bring
     ;; up the HD Audio controller feeding it. hdaudio-init is gated on pci-find, so
     ;; a default boot with no HDA controller just logs "no device" and returns.
@@ -683,6 +771,7 @@
       ;; spawn-restricted refuses to grant a capability the spawner lacks.
       (spawn-restricted '(sys-shm)
         (lambda ()
+          (import sys-shm)   ; map-grant: the owner maps per-core shards' layer grants
           (let* ((compdemo? (cmdline-has? "cardinal.compositordemo"))
                  ;; phase 4: own the real scanout for the demo. Otherwise an
                  ;; off-screen RAM screen (the phase-3 posture: composites but
@@ -698,8 +787,9 @@
                  (screen (if target (car target)
                              (make-surface (make-bytes (* cw ch 4)) cw ch (* cw 4))))
                  (present (if target (cdr target) #f))
-                 (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke present))
+                 (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke present map-grant))
                  (comp (start-compositor-service screen caps)))
+            (send compositor-rendezvous (list 'set-owner comp))   ; publish to per-core shards
             ;; phase 6: the compositor owns focus, so it subscribes to the input
             ;; service -- coreinput now forwards every (input ev) here, and the
             ;; compositor routes each to the focused window's client (keyboard) or
@@ -785,6 +875,49 @@
             ;; list order). Then `raise` the first -> a fresh top z -> it now wins.
             ;; All ops go through the one handler channel (FIFO), so each probe is
             ;; ordered after the commit/raise before it; probed on the RAM screen.
+            ;; cardinal.compositorshards: validate the CROSS-CORE merge. The
+            ;; set-per-core-init hook spawns a shard on each AP; each grant-shares a
+            ;; (colour,z) layer with a distinct test rect (start-compositor-shard).
+            ;; This verifier (on the BSP) connects to the owner and POLLS the scanout
+            ;; at each shard's rect position until its colour appears -- proving a
+            ;; window composited on another core reaches the owner's scanout via the
+            ;; mapped-grant z-pick. Polling absorbs the cross-core wake latency
+            ;; (registration + layer-update cross the cores at up to one tick each).
+            (if (cmdline-has? "cardinal.compositorshards")
+                (spawn-restricted '()
+                  (lambda ()
+                    (send comp (list 'connect #f (self)))
+                    (let ((r (recv)))
+                      (if (not (and (pair? r) (eq? (car r) 'connected)))
+                          (begin (display "[compositorshards] FAIL no connected reply") (newline))
+                          (let* ((h (cadr r)) (fmt (caddr r))
+                                 (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
+                                 (cs (make-surface* (make-bytes 4) 1 1 4 ro go bo '()))
+                                 (nshards (- (core-count) 1)))
+                            (if (<= nshards 0)
+                                (begin (display "[compositorshards] single core; no shards to merge")
+                                       (newline))
+                                (let loop ((i 1) (ok 0))
+                                  (if (> i nshards)
+                                      (begin (display "[compositorshards] ")
+                                             (display (if (= ok nshards)
+                                                          "OK all shards composited cross-core"
+                                                          "FAIL some shard content missing"))
+                                             (display " (") (display ok) (display "/")
+                                             (display nshards) (display ")") (newline))
+                                      (let ((want (shard-test-color cs i)) (px (* i 50)))
+                                        (let poll ((tries 0))
+                                          (send h (list 'probe-pixel (+ px 15) 135))
+                                          (let ((got (recv)))
+                                            (cond ((and (integer? got) (= got want))
+                                                   (display "[compositorshards] core ") (display i)
+                                                   (display " content present on scanout") (newline)
+                                                   (loop (+ i 1) (+ ok 1)))
+                                                  ((>= tries 80)
+                                                   (display "[compositorshards] core ") (display i)
+                                                   (display " content MISSING (timeout)") (newline)
+                                                   (loop (+ i 1) ok))
+                                                  (else (sleep 100000000) (poll (+ tries 1))))))))))))))))
             (if (cmdline-has? "cardinal.compositorlayers")
                 (spawn-restricted '(sys-shm)
                   (lambda ()

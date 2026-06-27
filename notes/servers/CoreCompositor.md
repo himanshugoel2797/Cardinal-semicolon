@@ -547,10 +547,24 @@ after `coredisplay` + the display driver bind (it needs the driver's
      `cardinal.compositorlayers` (two overlapping opaque windows — higher-z wins the
      overlap, `raise` flips it), `compositortest`/`compositorinput` still green, and a
      screenshot of the demo renders correctly through the new pipeline.
-   - **7B wiring (cross-core) — TODO.** `connect`-time transparency routing (opaque →
-     shard, translucent → owner); grant-shared per-shard layer buffers the owner maps;
-     `layer-update` damage; the owner folding the z-pick over **N** shard layers;
-     instances born per core via the 7A hook. The N=1 merge above is reused unchanged.
+   - **7B wiring (cross-core mechanism) — ✅ DONE.** Per-core SHARD instances (born on
+     each AP by the 7A `set-per-core-init` hook) each `dma-alloc-wb` a `(color,z)`
+     LAYER matching the scanout, mint `rw` grants over it, and **register with the
+     OWNER** (core 0) — which `map-grant`s both planes and **folds `gfx-zpick!` over
+     every shard layer** plus its own. So a window composited on another core appears
+     on the scanout the owner drives. The owner is the **z authority** (`alloc-z`).
+     Cross-core handoff of the owner handle is a **rendezvous context** (a spawned
+     context can't `set!` a module global — only the root can; so the bring-up `send`s
+     the owner to a root-created rendezvous and shards `get-owner` it). New injected
+     cap `map` (map-grant) + a `grant?` VM predicate (so `register-shard` validates
+     message-supplied grants before mapping — the serve loop has no try/catch).
+     Validated `cardinal.compositorshards`: SMP=4 → "all shards composited cross-core
+     (3/3)", SMP=1 → "single core; no shards"; single-instance tests unchanged (the
+     shards list is empty without the gate, so the merge is the N=1 path).
+   - **7B wiring (client routing) — TODO.** `connect`-time transparency routing
+     (opaque → a shard, least-loaded; translucent → the owner) so real client windows
+     land on shards (today a shard draws a test rect standing in for its clients);
+     `layer-update` damage rects bounding the merge/flush; shard liveness/de-register.
 
 ## Open / deferred
 

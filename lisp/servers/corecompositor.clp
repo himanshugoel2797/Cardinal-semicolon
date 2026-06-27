@@ -49,12 +49,17 @@
   ;;   (phase 4: virtio-gpu flush-rects, or a WC-framebuffer back->front copy), or
   ;;   #f for an off-screen RAM screen (the compositor composites but displays
   ;;   nothing -- the phase-3 posture, kept for the headless self-test).
-  (define (make-compositor-caps alloc mint revoke present)
-    (list alloc mint revoke present))
+  ;; (map grant) -> map a grant the OWNER was handed (init: map-grant) to a `bytes`
+  ;;   view of its physical region. Used to map a per-core shard's grant-shared layer
+  ;;   so the merge can read it. Injected (not imported) for the same host-loadable
+  ;;   reason as the rest; #f on an instance that maps nothing (a pure shard).
+  (define (make-compositor-caps alloc mint revoke present map)
+    (list alloc mint revoke present map))
   (define (caps-alloc c)   (nth c 0))
   (define (caps-mint c)    (nth c 1))
   (define (caps-revoke c)  (nth c 2))
   (define (caps-present c) (nth c 3))
+  (define (caps-map c)     (nth c 4))
 
   ;; --- the surface record (a mutable vector; lives only in the root) ----------
   ;; Two backings (double-buffered): the client draws into the buffer it is NOT
@@ -118,11 +123,20 @@
   ;; case of the sharded model: one instance owns one layer and merges it (a 1-layer
   ;; z-pick) into the scanout -- phase 7B-wiring promotes the layer to a grant-shared
   ;; per-core buffer the owner maps, with the same merge.
-  (define (make-mrg lc lz zop zctr) (vector lc lz zop zctr))
-  (define (mrg-lc m)   (vector-ref m 0))   ; layer colour plane (a surface)
-  (define (mrg-lz m)   (vector-ref m 1))   ; layer z plane (a surface; fill-rect stamps z)
-  (define (mrg-zop m)  (vector-ref m 2))   ; the merged per-pixel topmost-opaque z (raw bytes)
-  (define (mrg-zctr m) (vector-ref m 3))   ; monotonic z counter (1-slot vector)
+  (define (make-mrg lc lz zop zctr shards) (vector lc lz zop zctr shards))
+  (define (mrg-lc m)     (vector-ref m 0))   ; layer colour plane (a surface)
+  (define (mrg-lz m)     (vector-ref m 1))   ; layer z plane (a surface; fill-rect stamps z)
+  (define (mrg-zop m)    (vector-ref m 2))   ; the merged per-pixel topmost-opaque z (raw bytes)
+  (define (mrg-zctr m)   (vector-ref m 3))   ; monotonic z counter (1-slot vector)
+  ;; Phase 7 cross-core: a 1-slot cell holding the list of REMOTE shard layers this
+  ;; owner merges in. Each entry is (colour-view . z-view) -- the owner's mapped
+  ;; views of a per-core shard's grant-shared (colour,z) layer planes (same
+  ;; stride/np as the scanout). The opaque merge folds the z-pick over the owner's
+  ;; own layer plus every shard layer; an empty list is the single-instance (N=1)
+  ;; case (the SMP=1 / no-AP boot), so the owner-only path is unchanged.
+  (define (mrg-shards m) (vector-ref m 4))   ; 1-slot cell: list of (colour-view . z-view)
+  (define (shard-color s) (car s))
+  (define (shard-z s)     (cdr s))
   ;; The z authority: a fresh top z-stamp. Real z starts at 1 (z==0 = empty layer px).
   (define (fresh-z mrg)
     (let ((c (mrg-zctr mrg)))
@@ -162,11 +176,17 @@
                   (fill-rect lz (sf r SF-X) (sf r SF-Y) (sf r SF-W) (sf r SF-H) (sf r SF-Z)))
                 opaque)
       ;; 2. merge: clear the scanout to the desktop bg and Zop to 0, then z-pick the
-      ;; opaque layer in -- the scanout gets the layer colour and Zop the layer z
-      ;; wherever a window covers (z>0); empty pixels keep the bg / Zop 0.
+      ;; owner's opaque layer in, followed by every REMOTE shard's layer. A z-pick is
+      ;; max-z per pixel and order-independent, so folding it over (own + shard0 +
+      ;; shard1 + ...) yields the correct global opaque image + Zop regardless of how
+      ;; windows are sharded across cores. Shard layers are the owner's mapped views
+      ;; of grant-shared buffers (a revoked one reads as a zero page -> contributes
+      ;; nothing). With no shards this is exactly the single-layer N=1 merge.
       (clear screen bg)
       (bytes-fill32! zop 0 np 0)
       (gfx-zpick! (surface-fb screen) zop (surface-fb lc) (surface-fb lz) np)
+      (for-each (lambda (s) (gfx-zpick! (surface-fb screen) zop (shard-color s) (shard-z s) np))
+                (vector-ref (mrg-shards mrg) 0))
       ;; 3. translucent pass: alpha-over each translucent window onto the scanout, but
       ;; only where its z is above Zop (in front of the nearest opaque surface there).
       (for-each (lambda (r)
@@ -452,7 +472,7 @@
                                 (surface-r-off screen) (surface-g-off screen)
                                 (surface-b-off screen) '()))
              (lz (make-surface (make-bytes plane) sw sh stride))
-             (mrg (make-mrg lc lz (make-bytes plane) (make-vector 1 0))))
+             (mrg (make-mrg lc lz (make-bytes plane) (make-vector 1 0) (make-vector 1 '()))))
       ;; Phase 4: paint the desktop background and push the whole screen once, so the
       ;; display shows the compositor's backdrop immediately (before any client) and
       ;; every later op only needs to flush its own damage rect.
@@ -483,6 +503,44 @@
             ;; inside handle-input, so a malformed event can't crash the root.
             ((and (eq? (car m) 'input) (pair? (cdr m)))
              (handle-input st (cadr m) screen bg caps drag-state mrg))
+            ;; (alloc-z reply) -> the owner is the global z authority; hand a shard a
+            ;; fresh top z-stamp so its windows order correctly against everyone's.
+            ((and (eq? (car m) 'alloc-z) (len>= m 2) (ctx? (cadr m)))
+             (send (cadr m) (list 'z (fresh-z mrg)))
+             st)
+            ;; (shard-geom reply) -> a per-core shard asks the screen geometry so it
+            ;; can allocate a layer matching the scanout (same stride/np). ctx?-guard
+            ;; the reply (an unguarded send would abort the loop). Cross-core safe.
+            ((and (eq? (car m) 'shard-geom) (len>= m 2) (ctx? (cadr m)))
+             (send (cadr m) (list 'geom (surface-width screen) (surface-height screen)
+                                  (surface-stride screen) fmt))
+             st)
+            ;; (register-shard colour-grant z-grant) -> map this shard's grant-shared
+            ;; layer planes and add them to the merge set. The grants come from
+            ;; another core and are message data, so BOTH must be validated as real
+            ;; grants (grant?) before map-grant -- map-grant errors on a non-grant,
+            ;; which would kill this try/catch-less serve loop. A live grant maps to a
+            ;; view; a revoked one maps to #f -> skip it (no merge contribution). No
+            ;; recomposite here: the shard sends `layer-update` right after, which
+            ;; does the merge+flush once with the layer already populated.
+            ((and (eq? (car m) 'register-shard) (len>= m 3) (caps-map caps)
+                  (grant? (cadr m)) (grant? (caddr m)))
+             (let ((cv ((caps-map caps) (cadr m))) (zv ((caps-map caps) (caddr m))))
+               (if (and cv zv)
+                   (vector-set! (mrg-shards mrg) 0
+                                (cons (cons cv zv) (vector-ref (mrg-shards mrg) 0)))))
+             st)
+            ;; (layer-update . rects) -> a registered shard repainted its layer; re-
+            ;; merge and flush. v1 flushes the whole screen (bounding the merge/flush
+            ;; to the shard's reported rects is a later refinement). Sent cross-core.
+            ;; v1 trust: every holder of `comp` is a boot-time-trusted context, so the
+            ;; sender is not authenticated here (a future widely-shared `comp` would
+            ;; check the sender against the registered shards before recompositing).
+            ((eq? (car m) 'layer-update)
+             (recomposite screen bg (cdr st) mrg)
+             (let ((p (caps-present caps)))
+               (if p (p (list (list 0 0 (surface-width screen) (surface-height screen))))))
+             st)
             (else
              (display "[corecompositor] primary: ignoring malformed ")
              (display (car m)) (newline)

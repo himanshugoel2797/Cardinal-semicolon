@@ -485,6 +485,15 @@ static lisp_value prim_ctxp(lisp_value *a, int n, const char **e) {
     return lisp_is_objtype(a[0], LISP_OBJ_CTX) ? LISP_TRUE : LISP_FALSE;
 }
 
+// (grant? x) -> #t iff x is a grant object. A type predicate like ctx?/pair?, so a
+// server can validate a message field is a real grant before handing it to
+// map-grant (which errors on a non-grant, killing a try/catch-less serve loop).
+static lisp_value prim_grantp(lisp_value *a, int n, const char **e) {
+    if (n != 1)
+        return prim_err(e, "grant? expects one argument");
+    return lisp_is_grant(a[0]) ? LISP_TRUE : LISP_FALSE;
+}
+
 // --- Installation -----------------------------------------------------------
 
 static void def(lisp_value env, const char *name, lisp_primitive_fn fn) {
@@ -501,6 +510,7 @@ void lisp_install_sched(lisp_value env) {
     def(env, "send", prim_send);
     def(env, "self", prim_self);
     def(env, "ctx?", prim_ctxp);
+    def(env, "grant?", prim_grantp);
     def(env, "%mailbox-empty?", prim_mailbox_empty);
     def(env, "%mailbox-pop", prim_mailbox_pop);
     def(env, "%block", prim_block);
