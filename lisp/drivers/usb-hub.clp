@@ -11,6 +11,7 @@
 (define-module usb-hub
   (export usb-hub-init)
   (import coreusb driver-util)
+  (define lg (make-logger 'usb-hub))
 
   (define HUB-DESC-TYPE #x29)
   (define HUB-MAX-PORTS 15)
@@ -55,7 +56,7 @@
                                 (was (not (= 0 (bytes-u8-ref enumed port)))))
                             (cond
                               ((and conn (not was))
-                               (display "[usb-hub] downstream connect, port ") (display port) (newline)
+                               (lg "downstream connect, port " port)
                                (bytes-u8-set! enumed port 1)
                                (hub-clear-feature dev port C-PORT-CONNECTION)
                                (hub-set-feature dev port PORT-RESET)
@@ -68,7 +69,7 @@
                                        (if (not (= 0 (bitwise-and st2 PS-LOW-SPEED)))
                                            USB-SPEED-LOW USB-SPEED-FULL)))))
                               ((and (not conn) was)
-                               (display "[usb-hub] downstream disconnect, port ") (display port) (newline)
+                               (lg "downstream disconnect, port " port)
                                (bytes-u8-set! enumed port 0)
                                (usb-disconnect-downstream usb dev port)))))
                       (ploop (+ port 1)))))
@@ -79,10 +80,10 @@
     (let ((desc (usb-control-in dev REQ-CLASS-DEVICE USB-REQ-GET-DESCRIPTOR
                                 (arithmetic-shift HUB-DESC-TYPE 8) 0 8)))
       (if (or (not desc) (< (bytes-length desc) 3))
-          (begin (display "[usb-hub] hub descriptor read failed; not claiming") (newline) devs)
+          (begin (lg "hub descriptor read failed; not claiming") devs)
           (let ((nports (let ((n (bytes-u8-ref desc 2))) (if (> n HUB-MAX-PORTS) HUB-MAX-PORTS n)))
                 (addr (usb-dev-address dev)))
-            (display "[usb-hub] claimed hub with ") (display nports) (display " ports") (newline)
+            (lg "claimed hub with " nports " ports")
             (usb-mark-hub dev nports)
             (let pp ((port 1)) (if (<= port nports) (begin (hub-set-feature dev port PORT-POWER) (pp (+ port 1)))))
             (sleep 100000000)                      ; port power-good settle
@@ -94,7 +95,7 @@
       (cond ((null? ds) keep)
             ((= (caar ds) addr)
              (send (cdar ds) 'stop)
-             (display "[usb-hub] hub removed") (newline)
+             (lg "hub removed")
              (loop (cdr ds) keep))
             (else (loop (cdr ds) (cons (car ds) keep))))))
 

@@ -16,4 +16,5 @@
 (define-module uhci
   (export uhci-init)
   (import sys-io sys-mmio sys-pci driver-util coreusb)
+  (define lg (make-logger 'uhci))
   (include regs xfer driver))

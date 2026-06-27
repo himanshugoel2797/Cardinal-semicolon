@@ -25,6 +25,7 @@
 (define-module rtl8169
   (export rtl8169-init read-mac tx-desc-build! rx-desc-init! rx-desc-consume)
   (import sys-mmio sys-pci driver-util)
+  (define lg (make-logger 'rtl8169))
 
 ;; --- register map (MMIO BAR2, mapped over a #x100 window) --------------------
 
@@ -245,7 +246,7 @@
             (let ((pmcsr (bytes-u16-ref cfg (+ ptr 4))))
               (if (not (= 0 (bitwise-and pmcsr 3)))
                   (begin
-                    (display "[rtl8169] waking device D3->D0") (newline)
+                    (lg "waking device D3->D0")
                     (bytes-u16-set! cfg (+ ptr 4) (bitwise-and pmcsr (bitwise-not 3)))
                     (sleep 10000000)))   ; 10ms settle
               'done)
@@ -290,7 +291,7 @@
 (define (rtl8169-init net dev-ecam)
   (let ((ecam dev-ecam))
     (if (not ecam)
-        (begin (display "[rtl8169] no device present") (newline) #f)
+        (begin (lg "no device present") #f)
         (let ((cfg (mmio-map ecam #x1000)))
           ;; Enable memory-space decode + bus-mastering BEFORE any BAR/MMIO
           ;; access -- with mem-decode off every register reads back 0xFF and the
@@ -305,14 +306,14 @@
                            (begin (pci-assign-bars ecam) (bar-base cfg 2))
                            b0)))
             (if (= base 0)
-                (begin (display "[rtl8169] no BAR2 register window") (newline) #f)
+                (begin (lg "no BAR2 register window") #f)
                 (let ((regs (mmio-map base #x100)))
                   ;; Software reset, bounded so a wedged/absent NIC can't hang boot.
                   (bytes-u8-set! regs CMD-REG CMD-RST)
                   (if (not (wait-until
                              (lambda () (= 0 (bitwise-and (bytes-u8-ref regs CMD-REG) CMD-RST)))
                              100000000))
-                      (begin (display "[rtl8169] reset timed out") (newline) #f)
+                      (begin (lg "reset timed out") #f)
                       (begin
                         ;; hwrev (TX-CFG high bits) is informational; this driver
                         ;; targets the 8168G/8111G path. Wake the PHY so link comes up.
@@ -324,7 +325,7 @@
                               (rxbuf  (dma-alloc (* NRX PKT-SIZE)))
                               (txbuf  (dma-alloc (* NTX PKT-SIZE))))
                           (if (or (not rxring) (not txring) (not rxbuf) (not txbuf))
-                              (begin (display "[rtl8169] DMA buffer alloc failed") (newline) #f)
+                              (begin (lg "DMA buffer alloc failed") #f)
                               (begin
                                 (rx-ring-init! rxring rxbuf)
                                 (tx-ring-init! txring txbuf)
@@ -362,7 +363,7 @@
                                   ;; the MSI-X table, which lives in the NIC's memory).
                                   (let ((msi (pci-setup-msi ecam)))
                                     (if (not msi)
-                                        (begin (display "[rtl8169] MSI-X setup failed") (newline) #f)
+                                        (begin (lg "MSI-X setup failed") #f)
                                         (begin
                                           ;; Undocumented 8168G chip-poke the C
                                           ;; driver applies just before enabling
@@ -409,5 +410,5 @@
                                               ;; is not lost.
                                               (bytes-u16-set! regs ISR-REG #xFFFF)   ; clear stale causes
                                               (bytes-u16-set! regs IMR (bitwise-or INTR-ROK INTR-TOK))
-                                              (display "[rtl8169] registered with network stack") (newline)
+                                              (lg "registered with network stack")
                                               'ok))))))))))))))))))) ; last ) closes (define-module rtl8169 ...)

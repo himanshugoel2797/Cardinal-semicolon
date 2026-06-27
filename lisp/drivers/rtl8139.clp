@@ -24,6 +24,7 @@
 (define-module rtl8139
   (export rtl8139-init rx-parse-one tx-fill! rx-extract!)
   (import sys-mmio sys-pci driver-util)
+  (define lg (make-logger 'rtl8139))
 
 ;; --- register map (MMIO BAR1, mapped over a #x100 window) --------------------
 
@@ -162,7 +163,7 @@
 (define (rtl8139-init net dev-ecam)
   (let ((ecam dev-ecam))
     (if (not ecam)
-        (begin (display "[rtl8139] no device present") (newline) #f)
+        (begin (lg "no device present") #f)
         (let ((cfg (mmio-map ecam #x1000)))
           (pci-enable-mem-bus-master! cfg)
           ;; BAR1 holds the MMIO registers. Firmware usually assigns it; if not,
@@ -170,7 +171,7 @@
           (let* ((b0 (bar-base cfg 1))
                  (base (if (= b0 0) (begin (pci-assign-bars ecam) (bar-base cfg 1)) b0)))
             (if (= base 0)
-                (begin (display "[rtl8139] no BAR1 register window") (newline) #f)
+                (begin (lg "no BAR1 register window") #f)
                 (let ((regs (mmio-map base #x100)))
                   ;; Power on, then software-reset and wait for the RST bit to
                   ;; self-clear (bounded -- a wedged/absent NIC must not hang boot).
@@ -179,12 +180,12 @@
                   (if (not (wait-until
                              (lambda () (= 0 (bitwise-and (bytes-u8-ref regs TX-CMD) CMD-RST)))
                              100000000))
-                      (begin (display "[rtl8139] reset timed out") (newline) #f)
+                      (begin (lg "reset timed out") #f)
                       (let ((mac    (read-mac regs))
                             (rxbuf  (dma-alloc-32 RX-BUF-SIZE))
                             (txbufs (alloc-tx-bufs)))
                         (if (or (not rxbuf) (>= (bytes-phys rxbuf) #x100000000) (not txbufs))
-                            (begin (display "[rtl8139] DMA buffer alloc failed (need <4GB)") (newline) #f)
+                            (begin (lg "DMA buffer alloc failed (need <4GB)") #f)
                             (begin
                               ;; Program the ring + TX-slot physical addresses.
                               (bytes-u32-set! regs RBSTART (bytes-phys rxbuf))
@@ -225,5 +226,5 @@
                                       (sleep RX-POLL-NS)
                                       (loop))))
                                   (send net (list 'register-nic mac tx-ctx))
-                                  (display "[rtl8139] registered with network stack") (newline)
+                                  (lg "registered with network stack")
                                   'ok)))))))))))))) ; last ) closes (define-module rtl8139 ...)

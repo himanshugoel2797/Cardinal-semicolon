@@ -18,6 +18,7 @@
 (define-module virtio-net
   (export virtio-net-init)
   (import sys-mmio sys-pci driver-util virtio)
+  (define lg (make-logger 'virtio-net))
 
 ;; --- RX -------------------------------------------------------------------
 ;; One contiguous RX buffer holds NRX slots of RXSLOT bytes; descriptor i points
@@ -85,13 +86,13 @@
 (define (virtio-net-init net dev-ecam)
   (let ((ecam dev-ecam))
     (if (not ecam)
-        (begin (display "[virtio-net] no device present") (newline) #f)
+        (begin (lg "no device present") #f)
         ;; Common transport bring-up: accept F_MAC (lo) + VERSION_1 (hi).
         (let ((dev (virtio-bringup ecam
                      (arithmetic-shift 1 VIRTIO-NET-F-MAC-BIT)
                      (arithmetic-shift 1 VIRTIO-F-VERSION-1-BIT))))
           (if (not dev)
-              (begin (display "[virtio-net] device rejected FEATURES_OK") (newline) #f)
+              (begin (lg "device rejected FEATURES_OK") #f)
               (let ((common (nth dev 0)) (devcfg (nth dev 1))
                     (notify (nth dev 2)) (mult (nth dev 3)))
                 ;; Set up the queues first -- virtio-setup-queue programs each
@@ -104,11 +105,10 @@
                   (bytes-u16-set! common VIRTIO-MSIX-CONFIG 0)    ; config events -> entry 0
                   (let ((msi (pci-setup-msi ecam)))    ; -> a per-device MSI handle
                     (if (not msi)
-                        (begin (display "[virtio-net] MSI-X setup failed") (newline) #f)
+                        (begin (lg "MSI-X setup failed") #f)
                         (begin
                           (virtio-status-set! common VIRTIO-STATUS-DRIVER-OK)
-                          (display "[virtio-net] up: mac=") (display mac)
-                          (display " msi=") (display msi) (newline)
+                          (lg "up: mac=" mac " msi=" msi)
                           (let ((rxbuf (dma-alloc (* NRX RXSLOT)))
                                 (txbuf (dma-alloc RXSLOT))
                                 (last  (make-cell 0)))
@@ -146,5 +146,5 @@
                                       (begin (msi-wait msi seen) (loop (msi-count msi)))))))
                               ;; Announce ourselves to the stack: MAC + the TX context.
                               (send net (list 'register-nic mac tx-ctx))
-                              (display "[virtio-net] registered with network stack") (newline)
+                              (lg "registered with network stack")
                               'ok))))))))))))) ; last ) closes (define-module virtio-net ...)

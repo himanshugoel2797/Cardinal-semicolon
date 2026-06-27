@@ -94,15 +94,15 @@
     (lambda ()
       (let ((dev (gpu-bringup)))
         (if (not dev)
-            (begin (display "[virtio-gpu] bring-up failed; not registering") (newline) #f)
+            (begin (lg "bring-up failed; not registering") #f)
             (let ((ctrlq (nth dev 0)) (notify (nth dev 1))
                   (mult (nth dev 2)) (scanouts (nth dev 3)))
               (if (null? scanouts)
-                  (begin (display "[virtio-gpu] no enabled scanout; not registering") (newline) #f)
+                  (begin (lg "no enabled scanout; not registering") #f)
                   (begin
                     ;; scanout-info carries the geometry + framebuffer for each
                     ;; scanout; coredisplay stores it verbatim for consumers.
                     (send display-svc (list 'register "Virtio GPU Display" 'unknown
                                             (self) scanouts))
-                    (display "[virtio-gpu] registered with display service") (newline)
+                    (lg "registered with display service")
                     (gpu-driver-loop ctrlq notify mult scanouts)))))))))

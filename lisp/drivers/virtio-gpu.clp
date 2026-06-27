@@ -33,4 +33,5 @@
           gpu-resp-type resp-display-enabled? resp-display-width resp-display-height
           GPU-RESP-MAX GPU-RESP-OK-NODATA GPU-RESP-OK-DISPLAY-INFO)
   (import sys-mmio sys-pci driver-util virtio)
+  (define lg (make-logger 'virtio-gpu))
   (include cmds bringup driver))
