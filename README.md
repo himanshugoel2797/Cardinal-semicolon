@@ -54,39 +54,61 @@ Possible values for PLATFORM:
 
 ## Device Support Status
 
-### AHCI
-Port from Cardinal, on-hold until object model is fully fleshed out.
+Every actively-bound driver is Lisp under `lisp/drivers/`, bound to hardware by
+`lisp/init.clp` (gated on `pci-find`). Status legend: **✅ working**,
+**🟡 partial / real-hardware-only**, **⬜ not implemented**.
 
-### Intel HD Graphics
-Studying PRMs and testing display initialization and mode set for Haswell.
+### Storage (register block devices with CoreStorage)
 
-### Intel HD Audio
-Node enumeration working, path-finding and CoreAudio development to go.
+| Device | Status | Notes |
+|--------|--------|-------|
+| AHCI / SATA | ✅ | Reset, IDENTIFY, read/write; registers disks with CoreStorage. |
+| NVMe | ✅ | Admin + I/O queue pair, IDENTIFY, read/write (phase-bit polling); binds by PCI class 01h/08h. |
+| virtio-blk | ✅ | Single request queue; registers with CoreStorage. |
 
-### Intel WiFi
-No driver code yet, studying FreeBSD iwm driver and 802.11 specification. Expecting to start work after Network stack is minimally functional.
+### Networking (register NICs with CoreNetwork — DHCP/ARP/IPv4/UDP/TCP)
 
-### Linear Framebuffer
-Driver implemented, acts as fallback display driver.
+| Device | Status | Notes |
+|--------|--------|-------|
+| virtio-net | ✅ | Full stack; gets a DHCP lease. Coexists with virtio-gpu (the old "one at a time" bug is fixed). |
+| Intel e1000 / e1000e | ✅ | 82540EM + 82574L; full DHCP (RX+TX) on both via a poll-based RX pump (82540 has no MSI; 82574 needs MSI-X IVAR). igb deferred. |
+| RTL8168/8111 (`rtl8169`) | 🟡 | Real hardware only — QEMU emulates no 8168. TX works; RX physically flaky. |
+| RTL8139 | 🟡 | Brings up but has no working RX path — prefer virtio-net. |
+| Intel WiFi | ⬜ | No driver yet; studying the FreeBSD `iwm` driver + 802.11. |
 
-### PS/2
-Keyboard support working, Mouse support bugged. Does not register to CoreInput yet.
+### Display / GPU (register with CoreDisplay)
 
-### RTL8169
-WIP, Minimum required functionality for all RTL8169 based NICs.
+| Device | Status | Notes |
+|--------|--------|-------|
+| virtio-gpu | ✅ | Registers a scanout and backs the compositor; coexists with virtio-net. No 3D acceleration yet. |
+| Linear framebuffer (`lfb`) | ✅ | Fallback display over the firmware framebuffer; WC-mapped, double-buffered compose. |
+| Intel HD Graphics | ⬜ | Studied (Haswell/Cherrytrail mode-set) but no driver is bound; no bare-metal mode-set. |
 
-### RTL8139
-Development dropped due to lack of MSI support.
+### Input (feed CoreInput)
 
-### VirtioGpu
-Works; registers a scanout with CoreDisplay and backs the compositor. Coexists
-with VirtioNet — both bring up and run concurrently (verified under QEMU q35: a
-virtio-net DHCP lease and a virtio-gpu scanout come up together). The earlier
-"only one at a time" limitation is gone (it was an interrupt-delivery bug, since
-fixed); virtio-gpu polls its completion ring and uses no MSI, while each NIC
-takes its own exclusive MSI vector, so they cannot contend. 3D acceleration not
-available yet.
+| Device | Status | Notes |
+|--------|--------|-------|
+| PS/2 | ✅ kbd / 🟡 mouse | Keyboard works and registers with CoreInput. Mouse: i8042 aux bring-up + packet decode done and host-unit-tested, but QEMU does not inject PS/2 mouse input, so the live pointer path is real-hardware-only. |
+| USB HID | ✅ | Keyboard/mouse over the USB stack. |
+| virtio-input | ✅ | Tablet (absolute pointer) + keyboard register with CoreInput. (Keyboard emits evdev keycodes — an evdev→set-1 mapping is a follow-up.) |
 
-### VirtioNet
-Works; registers with CoreNetwork (DHCP/ARP/IPv4/UDP/TCP functional). Coexists
-with VirtioGpu (see above).
+### Audio (register with CoreAudio)
+
+| Device | Status | Notes |
+|--------|--------|-------|
+| Intel HD Audio | ✅ | Full stack: endpoint model, multi-controller, per-endpoint volume/mute, capture, codec hotplug, jack-presence sense. |
+| USB Audio (UAC1) | ✅ | Streams tones over the iso OUT endpoint. |
+
+### USB
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Controllers: UHCI / xHCI / EHCI | ✅ | Enumerate over the Lisp USB stack (CoreUsb). |
+| Class drivers: HID / hub / mass-storage / audio | ✅ | Mass-storage registers disks with CoreStorage; HID feeds CoreInput. |
+
+### Misc
+
+| Device | Status | Notes |
+|--------|--------|-------|
+| virtio-rng | ✅ | Entropy service answering `(get-random n)`. |
+| virtio-console | ✅ | Single-port serial console (transmit; banner on bring-up). |
