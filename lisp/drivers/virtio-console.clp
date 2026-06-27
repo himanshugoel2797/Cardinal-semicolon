@@ -16,6 +16,7 @@
 (define-module virtio-console
   (export console-init console-pack)
   (import sys-mmio sys-pci driver-util virtio)
+  (define lg (make-logger 'virtio-console))
 
 ;; --- pure: string/bytes -> a fresh owned byte buffer -----------------------
 ;; The transmit path needs the message payload as a contiguous byte buffer. A
@@ -114,23 +115,22 @@
 ;; tx wait happens under the scheduler, never in init.
 (define (console-init ecam)
   (if (not ecam)
-      (begin (display "[virtio-console] no device present") (newline) #f)
+      (begin (lg "no device present") #f)
       ;; Single-port: negotiate only VERSION_1 (no MULTIPORT).
       (let ((dev (virtio-bringup ecam 0 (arithmetic-shift 1 VIRTIO-F-VERSION-1-BIT))))
         (if (not dev)
-            (begin (display "[virtio-console] device rejected FEATURES_OK") (newline) #f)
+            (begin (lg "device rejected FEATURES_OK") #f)
             (let ((common (nth dev 0)) (devcfg (nth dev 1))
                   (notify (nth dev 2)) (mult (nth dev 3)))
               (let ((rxq (virtio-setup-queue common 0))
                     (txq (virtio-setup-queue common 1)))
                 (if (or (not rxq) (not txq))
-                    (begin (display "[virtio-console] queue setup failed") (newline) #f)
+                    (begin (lg "queue setup failed") #f)
                     (begin
                       (virtio-status-set! common VIRTIO-STATUS-DRIVER-OK)
                       (let ((cols (bytes-u16-ref devcfg 0))
                             (rows (bytes-u16-ref devcfg 2)))
-                        (display "[virtio-console] up: cols=") (display cols)
-                        (display " rows=") (display rows) (newline))
+                        (lg "up: cols=" cols " rows=" rows))
                       (let ((rxbuf (dma-alloc (* NRX RXSLOT)))
                             (txbuf (dma-alloc TXBUF))
                             (last  (make-cell 0))

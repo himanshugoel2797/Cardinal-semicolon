@@ -19,6 +19,7 @@
           blk-build-header! blk-status-ok?
           VIRTIO-BLK-T-IN VIRTIO-BLK-T-OUT)
   (import sys-mmio sys-pci driver-util virtio)
+  (define lg (make-logger 'virtio-blk))
 
 ;; --- virtio-blk request layout ---------------------------------------------
 ;; A request is a 3-descriptor chain:
@@ -129,15 +130,15 @@
 (define (virtio-blk-bringup storage ecam name)
   (let ((dev (virtio-bringup ecam 0 (arithmetic-shift 1 VIRTIO-F-VERSION-1-BIT))))
     (if (not dev)
-        (begin (display "[virtio-blk] device rejected FEATURES_OK") (newline) 'fail)
+        (begin (lg "device rejected FEATURES_OK") 'fail)
         (let ((common (nth dev 0)) (devcfg (nth dev 1))
               (notify (nth dev 2)) (mult (nth dev 3)))
           (let ((q (virtio-setup-queue common 0)))    ; the single request queue
             (if (not q)
-                (begin (display "[virtio-blk] no request queue") (newline) 'fail)
+                (begin (lg "no request queue") 'fail)
                 (let ((capacity (blk-capacity devcfg)))
                   (virtio-status-set! common VIRTIO-STATUS-DRIVER-OK)
-                  (display "[virtio-blk] up: sectors=") (display capacity) (newline)
+                  (lg "up: sectors=" capacity)
                   ;; DMA: one header, one DATA-SECTORS data buffer, one status byte.
                   (let* ((hdr  (dma-alloc BLK-HDR-LEN))
                          (data (dma-alloc (* DATA-SECTORS SECTOR-SIZE)))
@@ -148,8 +149,7 @@
                                                 stat (bytes-phys stat))))
                     ;; bsize = 512 (sector size); lba maps directly to sector.
                     (send storage (list 'register-blockdev name 512 capacity drv))
-                    (display "[virtio-blk] registered ") (display name)
-                    (display " with corestorage") (newline)
+                    (lg "registered " name " with corestorage")
                     'up))))))))
 
 ;; virtio-blk-init: the entry point init.clp calls (per matching device). It
@@ -158,7 +158,7 @@
 ;; `name` defaults to 'vblk0; init may pass a distinct symbol per device.
 (define (virtio-blk-init storage ecam)
   (if (not ecam)
-      (begin (display "[virtio-blk] no device present") (newline) #f)
+      (begin (lg "no device present") #f)
       (begin
         (spawn-restricted '()
           (lambda () (virtio-blk-bringup storage ecam 'vblk0)))

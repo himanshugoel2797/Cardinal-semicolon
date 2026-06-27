@@ -26,6 +26,7 @@
   (export e1000e-init read-mac
           tx-desc-build! tx-desc-done? rx-desc-status rx-desc-len rx-desc-eop?)
   (import sys-mmio sys-pci driver-util)
+  (define lg (make-logger 'e1000e))
 
 ;; --- register map (MMIO BAR0) ------------------------------------------------
 
@@ -257,7 +258,7 @@
 (define (e1000e-init net dev-ecam)
   (let ((ecam dev-ecam))
     (if (not ecam)
-        (begin (display "[e1000e] no device present") (newline) #f)
+        (begin (lg "no device present") #f)
         (let ((cfg (mmio-map ecam #x1000)))
           ;; Enable memory-space decode + bus-mastering BEFORE any MMIO access.
           (pci-enable-mem-bus-master! cfg)
@@ -268,7 +269,7 @@
                            (begin (pci-assign-bars ecam) (bar-base cfg 0))
                            b0)))
             (if (= base 0)
-                (begin (display "[e1000e] no BAR0 register window") (newline) #f)
+                (begin (lg "no BAR0 register window") #f)
                 (let ((regs (mmio-map base #x20000)))   ; 128KiB MMIO space
                   ;; Mask all interrupts, then software reset (bounded so a wedged
                   ;; NIC can't hang boot). The reset clears CTRL.RST itself.
@@ -279,7 +280,7 @@
                              (lambda ()
                                (= 0 (bitwise-and (bytes-u32-ref regs CTRL) CTRL-RST)))
                              1000000000))   ; up to 1s
-                      (begin (display "[e1000e] reset timed out") (newline) #f)
+                      (begin (lg "reset timed out") #f)
                       (begin
                         ;; Mask interrupts again (reset may re-arm some), then
                         ;; set link up + auto-speed-detect.
@@ -293,7 +294,7 @@
                                 (rxbuf  (dma-alloc-32 (* NRX PKT-SIZE)))
                                 (txbuf  (dma-alloc-32 (* NTX PKT-SIZE))))
                             (if (or (not rxring) (not txring) (not rxbuf) (not txbuf))
-                                (begin (display "[e1000e] DMA buffer alloc failed") (newline) #f)
+                                (begin (lg "DMA buffer alloc failed") #f)
                                 (begin
                                   (rx-ring-init! rxring rxbuf)
                                   (tx-ring-init! txring txbuf)
@@ -355,6 +356,5 @@
                                         ;; storm); the poll covers delivery either way.
                                         (bytes-u32-ref regs ICR)            ; clear stale causes
                                         (if msi (bytes-u32-set! regs IMS IMS-VALUE)) ; RXT0|RXO|LSC
-                                        (display "[e1000e] registered with network stack, mac=")
-                                        (display mac) (newline)
+                                        (lg "registered with network stack, mac=" mac)
                                         'ok))))))))))))))))) ; closes (define-module e1000e ...)

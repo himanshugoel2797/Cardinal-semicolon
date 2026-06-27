@@ -35,6 +35,7 @@
           ;; unit test can exercise the packet math without an i8042.
           ps2-mouse-decode ps2-mouse-accum)
   (import sys-io sys-irq)
+  (define lg (make-logger 'ps2))
 
 (define PS2-DATA #x60)
 (define PS2-CMD  #x64)          ; write: command; read: status
@@ -155,7 +156,7 @@
     (ps2-cmd #x60) (ps2-write cfg)         ; write config back
     (ps2-cmd #xAA)                          ; controller self-test
     (if (not (= (ps2-read) #x55))
-        (begin (display "[ps2] controller self-test failed; no PS/2 input") (newline) #f)
+        (begin (lg "controller self-test failed; no PS/2 input") #f)
         (begin
           (ps2-cmd #x60) (ps2-write cfg)    ; re-write (self-test can reset it)
           (ps2-cmd #xAE)                    ; enable port 1
@@ -175,10 +176,10 @@
                    (cfg2 (bitwise-or base (if mouse-up (bitwise-or 1 2) 1))))
               (ps2-cmd #x60) (ps2-write cfg2))
             (ps2-flush)
-            (display "[ps2] keyboard up") (newline)
+            (lg "keyboard up")
             (if mouse-up
-                (begin (display "[ps2] mouse up") (newline))
-                (begin (display "[ps2] no mouse (aux init failed); keyboard only") (newline)))
+                (begin (lg "mouse up"))
+                (begin (lg "no mouse (aux init failed); keyboard only")))
             #t)))))
 
 ;; --- mouse packet decode (pure, host-testable) ------------------------------
@@ -298,9 +299,9 @@
     (let scan ((tries 4))
       (let ((b (ps2-read)))
         (cond ((= b #xEE)
-               (display "[ps2] irq self-test ok (echo via IRQ 1)") (newline))
+               (lg "irq self-test ok (echo via IRQ 1)"))
               ((= tries 0)
-               (display "[ps2] irq self-test: no echo reply") (newline))
+               (lg "irq self-test: no echo reply"))
               (else (scan (- tries 1))))))
     (ps2-flush)))
 
@@ -326,7 +327,7 @@
         (mirq (irq-register 12))           ; mouse (aux): route + count the line
         (mstate (ps2-mouse-new-state)))
     (if (not irq)
-        (begin (display "[ps2] irq-register failed") (newline) #f)
+        (begin (lg "irq-register failed") #f)
         (begin
           (ps2-irq-selftest irq)
           ;; `seen` is captured BEFORE draining so a key landing during the drain
