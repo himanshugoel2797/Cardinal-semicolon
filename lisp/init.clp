@@ -801,6 +801,12 @@
                                              compositor-rendezvous))
                  (comp (start-compositor-service screen caps #f)))   ; #f -> owner role
             (send compositor-rendezvous (list 'set-owner comp))   ; publish to per-core shards
+            ;; The compositor now owns the real scanout, so stop the kernel from
+            ;; rendering its debug log into the framebuffer -- it would scribble over
+            ;; the composited image. (Only when `target` is a live display; an
+            ;; off-screen RAM screen leaves the boot console alone.) The log still
+            ;; streams to serial / the in-memory store.
+            (if target (fb-log-off))
             ;; phase 6: the compositor owns focus, so it subscribes to the input
             ;; service -- coreinput now forwards every (input ev) here, and the
             ;; compositor routes each to the focused window's client (keyboard) or

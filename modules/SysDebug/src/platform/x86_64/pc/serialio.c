@@ -80,6 +80,7 @@ static inline char serial_input()
 
 static int g_serial_lock = 0;          // serialises raw writes across cores
 static volatile bool g_serial_log = true;  // stream the log to COM1 until the REPL takes over
+static volatile bool g_fb_log = true;  // render the log to the boot framebuffer until the compositor owns it
 
 // Non-blocking: next COM1 byte, or -1 if the RX FIFO is empty.
 int serial_raw_getb(void)
@@ -105,6 +106,13 @@ void serial_raw_write(const void *buf, uint32_t len)
 // in-memory stores, read back via the REPL's log-* prims).
 void serial_repl_takeover(void) { g_serial_log = false; }
 int serial_log_enabled(void) { return g_serial_log ? 1 : 0; }
+
+// The compositor now owns the scanout: stop rendering the debug log into the boot
+// framebuffer so kernel text can't scribble over the composited image. (The log
+// still goes to the serial line / the in-memory store; only the on-screen render
+// stops.) One-way for the normal path -- the panic shell renders directly and is
+// unaffected, so a post-takeover panic still shows on screen.
+void sysdebug_fb_log_off(void) { g_fb_log = false; }
 
 // Enable COM1's "received-data-available" interrupt (IER bit 0), so a byte
 // arriving on COM1 raises ISA IRQ 4. The Lisp REPL claims that line via the
@@ -183,7 +191,10 @@ int WEAK print_str(const char *s)
 {
     int state = cli();
     log(s);
-    if (fbuf != NULL)
+    // Render to the boot framebuffer only until the compositor owns the scanout
+    // (sysdebug_fb_log_off): after that, kernel text would scribble over the
+    // composited image.
+    if (fbuf != NULL && g_fb_log)
         for (const char *r = s; *r != 0; r++)
             render_char(*r);
     // Stream the log raw to COM1 until the REPL claims the line (cardinal.repl).
@@ -192,7 +203,7 @@ int WEAK print_str(const char *s)
     if (g_serial_log)
         serial_raw_write(s, (uint32_t)strlen(s));
 
-    if (fbuf != NULL)
+    if (fbuf != NULL && g_fb_log)
     {
 
         while (*s != 0)
