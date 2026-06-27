@@ -79,7 +79,14 @@ WIP, Minimum required functionality for all RTL8169 based NICs.
 Development dropped due to lack of MSI support.
 
 ### VirtioGpu
-Works if not used in conjunction with VirtioNet, registers properly with CoreDisplay. 3d Acceleration not available yet.
+Works; registers a scanout with CoreDisplay and backs the compositor. Coexists
+with VirtioNet — both bring up and run concurrently (verified under QEMU q35: a
+virtio-net DHCP lease and a virtio-gpu scanout come up together). The earlier
+"only one at a time" limitation is gone (it was an interrupt-delivery bug, since
+fixed); virtio-gpu polls its completion ring and uses no MSI, while each NIC
+takes its own exclusive MSI vector, so they cannot contend. 3D acceleration not
+available yet.
 
 ### VirtioNet
-Works if not used in conjunction with VirtioGpu, registers with CoreNetwork.
+Works; registers with CoreNetwork (DHCP/ARP/IPv4/UDP/TCP functional). Coexists
+with VirtioGpu (see above).
