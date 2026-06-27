@@ -449,220 +449,6 @@
   ;; condition (and a shared limitation of every `serve` loop, not specific here).
   (define MAX-DIM 4096)
 
-  ;; --- the root: surface ops over the global table ----------------------------
-  ;; Threaded state is (next-id . surfaces). screen/bg/caps are captured constants.
-  ;; `client` is the SENDER identity the handler stamped on (trusted: captured at
-  ;; connect, unforgeable by message content). Replies go to `client`, never to a
-  ;; reply field in the message, so a client cannot make the root `send` to an
-  ;; arbitrary (or non-context) target. Every op validates arity AND ownership and
-  ;; falls through harmlessly rather than killing the serve context.
-  (define (handle-op st client transparency? m screen bg caps drag-state mrg)
-    (let ((next-id (car st)) (surfaces (cdr st))
-          (verb (if (pair? m) (car m) #f)))
-      ;; A surface this client is allowed to act on, or #f. Ownership is by the
-      ;; sender identity, not just the id -- ids are sequential and guessable, so
-      ;; without this a client could configure/commit/destroy another's window.
-      (define (owned id)
-        (let ((r (find-surf id surfaces)))
-          (if (and r (eq? (sf r SF-CLIENT) client)) r #f)))
-      ;; Phase 4 driver seam: after recompositing into the screen back-buffer, push
-      ;; the changed `rects` to the real display via the injected present cap. The
-      ;; whole back-buffer is repainted (v1), but only the damaged rects are flushed
-      ;; -- everything else on the display is already correct (nothing else moved),
-      ;; so a bounded flush is correct and cheap. present is #f for a RAM screen.
-      (define (present! rects) (present-rects caps rects))
-      (cond
-        ;; (create-surface w h): validate dims, alloc 2 backings, mint 2 grants,
-        ;; record (invisible until configured), reply with the grants. stride = w*4.
-        ((eq? verb 'create-surface)
-         (if (not (and (pair? (cdr m)) (pair? (cddr m))
-                       (integer? (cadr m)) (integer? (caddr m))
-                       (> (cadr m) 0) (> (caddr m) 0)
-                       (<= (cadr m) MAX-DIM) (<= (caddr m) MAX-DIM)))
-             (begin (send client (list 'surface-error 'bad-dimensions)) st)
-             (let* ((w (cadr m)) (h (caddr m))
-                    (stride (* w 4)) (sz (* stride h))
-                    (b0 ((caps-alloc caps) sz)) (b1 ((caps-alloc caps) sz))
-                    (g0 ((caps-mint caps) b0 'rw)) (g1 ((caps-mint caps) b1 'rw))
-                    (r (make-surf next-id client g0 g1 b0 b1 w h stride transparency?)))
-               (stamp-z r mrg)   ; a fresh GLOBAL top z (sync on owner, async on a shard)
-               (send client (list 'surface next-id g0 g1 stride))
-               (cons (+ next-id 1) (cons r surfaces)))))   ; prepend = top of stack
-        ;; (configure id x y visible): place + show/hide, then recomposite. Fire-
-        ;; and-forget; only the owner's surface is touched. Damage = the old rect
-        ;; (vacated -> repaint to whatever is now under it) plus, when the surface is
-        ;; now visible, the new rect (where it landed) -- so a moved/shown window
-        ;; flushes both; a hide flushes only the vacated rect. id/x/y must be integers
-        ;; (a non-integer would reach `=`/`gfx-blit!` and kill the root).
-        ((and (eq? verb 'configure) (len>= m 5)
-              (integer? (cadr m)) (integer? (caddr m)) (integer? (cadddr m)))
-         (let ((r (owned (cadr m))))
-           (if r (let ((was-vis (sf r SF-VIS)) (old (surf-rect r)))
-                   (vector-set! r SF-X (caddr m))
-                   (vector-set! r SF-Y (cadddr m))
-                   (vector-set! r SF-VIS (nth m 4))
-                   (recomposite screen bg surfaces mrg)
-                   ;; flush the OLD rect only if the surface was actually showing
-                   ;; there before (else it covered nothing -- e.g. a first show,
-                   ;; whose pre-configure rect is a spurious (0,0,w,h)), and the NEW
-                   ;; rect only if it is visible now. So a first show flushes just the
-                   ;; new rect, a move flushes old + new, a hide just the old.
-                   (let ((dmg (append (if was-vis (list old) '())
-                                      (if (sf r SF-VIS) (list (surf-rect r)) '()))))
-                     (if (pair? dmg) (present! dmg))))))
-         st)
-        ;; (commit id buf rects): flip the presented buffer, recomposite, flush the
-        ;; surface's rect (its content changed in place). Fire-and-forget -- a client
-        ;; never blocks presenting a frame. id/buf must be integers (buf reaches `=`
-        ;; in surf-src); a non-integer would kill the root. `rects` (position 3) is
-        ;; required present (v1 flushes the whole surface rect; bounding to the
-        ;; client's `rects` is a later refinement).
-        ((and (eq? verb 'commit) (len>= m 4) (integer? (cadr m)) (integer? (caddr m)))
-         (let ((r (owned (cadr m))))
-           (if r (begin (vector-set! r SF-FRONT (caddr m))
-                        (recomposite screen bg surfaces mrg)
-                        (if (sf r SF-VIS) (present! (list (surf-rect r)))))))
-         st)
-        ;; (raise id): move the owner's surface to the top of the z-stack, then flush
-        ;; its rect (occlusion within it changed). Only recomposite if it owns the id.
-        ((and (eq? verb 'raise) (pair? (cdr m)) (integer? (cadr m)))
-         (let ((r0 (owned (cadr m))))
-           (if r0
-             (let ((s2 (raise-surf (cadr m) surfaces)))
-               (stamp-z r0 mrg)   ; a fresh GLOBAL top z so the z-buffer lifts it (cross-shard)
-               (recomposite screen bg s2 mrg)
-               (if (sf r0 SF-VIS) (present! (list (surf-rect r0))))
-               (cons next-id s2))
-             st)))
-        ;; (destroy-surface id): revoke both grants, drop, recomposite, flush the
-        ;; vacated rect, ack. Only the owner can destroy; a bad/foreign id gets an
-        ;; error, not a spurious ok.
-        ((and (eq? verb 'destroy-surface) (pair? (cdr m)) (integer? (cadr m)))
-         (let ((r (owned (cadr m))))
-           (if (not r)
-               (begin (send client (list 'destroy-error 'no-such-surface)) st)
-               (let ((old (surf-rect r)) (was-vis (sf r SF-VIS)))
-                 ((caps-revoke caps) (sf r SF-G0))
-                 ((caps-revoke caps) (sf r SF-G1))
-                 ;; if this surface is the one being dragged, abandon the drag --
-                 ;; its id is about to be invalid, and a pointer-up may never come.
-                 (let ((d (vector-ref drag-state 0)))
-                   (if (and d (= (car d) (cadr m))) (vector-set! drag-state 0 #f)))
-                 (let ((s2 (drop-surf (cadr m) surfaces)))
-                   (recomposite screen bg s2 mrg)
-                   (if was-vis (present! (list old)))
-                   (send client 'ok)
-                   (cons next-id s2))))))
-        ;; (probe-pixel x y): the composited screen pixel. A test/debug hook,
-        ;; relayed through the handler (not sent to the root directly) so it is
-        ;; FIFO-ordered AFTER the client's preceding commit on the same channel --
-        ;; a direct-to-root probe could overtake the relayed commit and read the
-        ;; screen before compositing.
-        ((and (eq? verb 'probe-pixel) (len>= m 3)
-              (integer? (cadr m)) (integer? (caddr m)))
-         (send client (get-pixel screen (cadr m) (caddr m)))
-         st)
-        (else
-         (display "[corecompositor] handler op ignored: ") (display verb) (newline)
-         st))))
-
-  ;; --- input routing + drag-move (phase 6) ------------------------------------
-  ;; The compositor is `coreinput`'s subscriber and the focus owner: every input
-  ;; event arrives here as `(input ev)` on the PRIMARY mailbox and is routed by
-  ;; policy. `drag-state` is a 1-slot mutable cell holding #f or `(id offx offy shard)`
-  ;; while a title-bar drag is in progress (offx/offy = grab point relative to the
-  ;; window origin, so the window tracks the pointer without jumping). Threaded
-  ;; `st` is `(next-id . surfaces)`, returned (possibly re-stacked by a focus
-  ;; raise) like handle-op. Two event shapes, both arity/type-guarded so a
-  ;; malformed event falls through rather than killing the root:
-  ;;   (key code pressed?)   -> the focused (top-most visible) window's client
-  ;;   (pointer x y down?)   -> title-bar press = MOVE; body press = route to client
-  ;; Resize is deferred: the surface backing is a fixed-size DMA buffer, so a true
-  ;; resize needs a client-cooperative realloc (re-create-surface) -- move only here.
-  (define (handle-input st ev screen bg caps drag-state mrg)
-    (let ((next-id (car st)) (surfaces (cdr st))
-          (tag (if (pair? ev) (car ev) #f)))
-      (define (present! rects) (present-rects caps rects))
-      (cond
-        ;; keyboard -> the GLOBALLY focused window's client, wherever it is hosted:
-        ;; the max-z visible window across the owner's own surfaces AND every shard's
-        ;; reported focus candidate. So a window on another core still receives keys.
-        ;; No focused window anywhere -> dropped.
-        ((and (eq? tag 'key) (len>= ev 3))
-         (let ((target (global-focus-client surfaces mrg)))
-           (if target (send target (list 'input ev))))
-         st)
-        ;; pointer: drag in progress -> move/end; else a press hit-tests the stack.
-        ;; `down?` MUST be a boolean: Scheme treats integer 0 as TRUE, so a driver
-        ;; that mirrored ps2's 1/0 key convention for the button would read a release
-        ;; (0) as a press. Require #t/#f so the button state is unambiguous.
-        ((and (eq? tag 'pointer) (len>= ev 4)
-              (integer? (cadr ev)) (integer? (caddr ev)) (boolean? (cadddr ev)))
-         (let ((x (cadr ev)) (y (caddr ev)) (down? (cadddr ev))
-               (d (vector-ref drag-state 0)))
-           ;; A press in a window's title strip begins a drag (owner-local if the
-           ;; entry's shard is #f, else relayed to the hosting shard); a body press is
-           ;; routed to the client in window-local coords. Read via the `we-*`
-           ;; manifest accessors so it works identically for an owner or a shard
-           ;; window (an owner entry carries shard=#f and its own client/geometry).
-           (define (title-drag-or-route e)
-             (if (< (- y (we-y e)) TITLE-H)
-                 (vector-set! drag-state 0
-                   (list (we-id e) (- x (we-x e)) (- y (we-y e)) (we-shard e)))
-                 (send (we-client e)
-                       (list 'input (list 'pointer (- x (we-x e)) (- y (we-y e)) #t)))))
-           (cond
-             ;; an active drag: a button-down event moves the window to follow the
-             ;; pointer (recomposite + flush old∪new); a button-up ends the drag. If
-             ;; the dragged surface has vanished (destroyed mid-drag), abandon the
-             ;; drag -- destroy-surface clears it proactively, but a stale id here
-             ;; (any path that drops a surface) must not pin drag-state forever.
-             (d
-              (if down?
-                  ;; d is (id offx offy shard): shard #f -> the window is the owner's,
-                  ;; move it locally; otherwise relay the new position to the hosting
-                  ;; shard, which repositions it and re-merges (no local move).
-                  (let ((shard (cadddr d)))
-                    (if shard
-                        (send shard (list 'move-window (mrg-key mrg) (car d) (- x (cadr d)) (- y (caddr d))))
-                        (let ((r (find-surf (car d) surfaces)))
-                          (if r (let ((old (surf-rect r)))
-                                  (vector-set! r SF-X (- x (cadr d)))
-                                  (vector-set! r SF-Y (- y (caddr d)))
-                                  (recomposite screen bg surfaces mrg)
-                                  (present! (list old (surf-rect r))))
-                              (vector-set! drag-state 0 #f)))))
-                  (vector-set! drag-state 0 #f))
-              st)
-             ;; a fresh press: hit-test the GLOBAL window list (owner + shards). On an
-             ;; OWNER window, focus-follows-click (raise) then title-bar = local drag /
-             ;; body = route to the client. On a SHARD window, a title-bar press starts
-             ;; a CROSS-SHARD drag (the owner relays each move to the hosting shard) and
-             ;; a body press routes to the client -- both in window-local coords. No
-             ;; window -> ignored. (drag-state is (id offx offy shard): shard #f for an
-             ;; owner-local drag, the shard handle for a relayed one.)
-             (down?
-              (let ((e (window-at surfaces mrg x y)))
-                (cond
-                  ((not e) st)
-                  ((we-surf e)
-                   ;; an OWNER window: focus-follows-click raises it (raise-surf
-                   ;; re-lists the SAME surface vector, so the z bump is seen by the
-                   ;; recomposite over s2), then title-bar drag / body route as usual.
-                   (let* ((r (we-surf e))
-                          (s2 (raise-surf (sf r SF-ID) surfaces)))
-                     (vector-set! r SF-Z (fresh-z mrg))   ; focus-follows-click lifts it
-                     (recomposite screen bg s2 mrg)
-                     (present! (list (surf-rect r)))
-                     (title-drag-or-route e)
-                     (cons next-id s2)))
-                  (else                       ; a SHARD window: route/relay, no local raise
-                   (title-drag-or-route e)
-                   st))))
-             ;; pointer motion with no button and no drag: no hover routing in v1.
-             (else st))))
-        (else st))))
-
   ;; The PRIMARY mailbox loop. Demuxes the connect handshake, the handler-relayed
   ;; surface ops (`op`), input events from coreinput (`input`), and a test/debug
   ;; `probe-pixel` (reads the composited screen so an end-to-end test can assert).
@@ -703,6 +489,220 @@
                             '()                                       ; windows
                             '()                                       ; prev-rects
                             (caps-key caps))))
+      ;; The flush helper shared by handle-op/handle-input (caps captured). The
+      ;; recomposite repaints the whole back-buffer (cheap cached RAM), but present!
+      ;; flushes only the op's damage `rects` -- everything else on the display is
+      ;; already correct (nothing else moved), so a bounded flush is correct and
+      ;; cheap. present is #f for a RAM/headless screen.
+      (define (present! rects) (present-rects caps rects))
+
+      ;; --- the root: surface ops over the global table ----------------------------
+      ;; Threaded state is (next-id . surfaces). screen/bg/caps are captured constants.
+      ;; `client` is the SENDER identity the handler stamped on (trusted: captured at
+      ;; connect, unforgeable by message content). Replies go to `client`, never to a
+      ;; reply field in the message, so a client cannot make the root `send` to an
+      ;; arbitrary (or non-context) target. Every op validates arity AND ownership and
+      ;; falls through harmlessly rather than killing the serve context.
+      (define (handle-op st client transparency? m)
+        (let ((next-id (car st)) (surfaces (cdr st))
+              (verb (if (pair? m) (car m) #f)))
+          ;; A surface this client is allowed to act on, or #f. Ownership is by the
+          ;; sender identity, not just the id -- ids are sequential and guessable, so
+          ;; without this a client could configure/commit/destroy another's window.
+          (define (owned id)
+            (let ((r (find-surf id surfaces)))
+              (if (and r (eq? (sf r SF-CLIENT) client)) r #f)))
+          (cond
+            ;; (create-surface w h): validate dims, alloc 2 backings, mint 2 grants,
+            ;; record (invisible until configured), reply with the grants. stride = w*4.
+            ((eq? verb 'create-surface)
+             (if (not (and (pair? (cdr m)) (pair? (cddr m))
+                           (integer? (cadr m)) (integer? (caddr m))
+                           (> (cadr m) 0) (> (caddr m) 0)
+                           (<= (cadr m) MAX-DIM) (<= (caddr m) MAX-DIM)))
+                 (begin (send client (list 'surface-error 'bad-dimensions)) st)
+                 (let* ((w (cadr m)) (h (caddr m))
+                        (stride (* w 4)) (sz (* stride h))
+                        (b0 ((caps-alloc caps) sz)) (b1 ((caps-alloc caps) sz))
+                        (g0 ((caps-mint caps) b0 'rw)) (g1 ((caps-mint caps) b1 'rw))
+                        (r (make-surf next-id client g0 g1 b0 b1 w h stride transparency?)))
+                   (stamp-z r mrg)   ; a fresh GLOBAL top z (sync on owner, async on a shard)
+                   (send client (list 'surface next-id g0 g1 stride))
+                   (cons (+ next-id 1) (cons r surfaces)))))   ; prepend = top of stack
+            ;; (configure id x y visible): place + show/hide, then recomposite. Fire-
+            ;; and-forget; only the owner's surface is touched. Damage = the old rect
+            ;; (vacated -> repaint to whatever is now under it) plus, when the surface is
+            ;; now visible, the new rect (where it landed) -- so a moved/shown window
+            ;; flushes both; a hide flushes only the vacated rect. id/x/y must be integers
+            ;; (a non-integer would reach `=`/`gfx-blit!` and kill the root).
+            ((and (eq? verb 'configure) (len>= m 5)
+                  (integer? (cadr m)) (integer? (caddr m)) (integer? (cadddr m)))
+             (let ((r (owned (cadr m))))
+               (if r (let ((was-vis (sf r SF-VIS)) (old (surf-rect r)))
+                       (vector-set! r SF-X (caddr m))
+                       (vector-set! r SF-Y (cadddr m))
+                       (vector-set! r SF-VIS (nth m 4))
+                       (recomposite screen bg surfaces mrg)
+                       ;; flush the OLD rect only if the surface was actually showing
+                       ;; there before (else it covered nothing -- e.g. a first show,
+                       ;; whose pre-configure rect is a spurious (0,0,w,h)), and the NEW
+                       ;; rect only if it is visible now. So a first show flushes just the
+                       ;; new rect, a move flushes old + new, a hide just the old.
+                       (let ((dmg (append (if was-vis (list old) '())
+                                          (if (sf r SF-VIS) (list (surf-rect r)) '()))))
+                         (if (pair? dmg) (present! dmg))))))
+             st)
+            ;; (commit id buf rects): flip the presented buffer, recomposite, flush the
+            ;; surface's rect (its content changed in place). Fire-and-forget -- a client
+            ;; never blocks presenting a frame. id/buf must be integers (buf reaches `=`
+            ;; in surf-src); a non-integer would kill the root. `rects` (position 3) is
+            ;; required present (v1 flushes the whole surface rect; bounding to the
+            ;; client's `rects` is a later refinement).
+            ((and (eq? verb 'commit) (len>= m 4) (integer? (cadr m)) (integer? (caddr m)))
+             (let ((r (owned (cadr m))))
+               (if r (begin (vector-set! r SF-FRONT (caddr m))
+                            (recomposite screen bg surfaces mrg)
+                            (if (sf r SF-VIS) (present! (list (surf-rect r)))))))
+             st)
+            ;; (raise id): move the owner's surface to the top of the z-stack, then flush
+            ;; its rect (occlusion within it changed). Only recomposite if it owns the id.
+            ((and (eq? verb 'raise) (pair? (cdr m)) (integer? (cadr m)))
+             (let ((r0 (owned (cadr m))))
+               (if r0
+                 (let ((s2 (raise-surf (cadr m) surfaces)))
+                   (stamp-z r0 mrg)   ; a fresh GLOBAL top z so the z-buffer lifts it (cross-shard)
+                   (recomposite screen bg s2 mrg)
+                   (if (sf r0 SF-VIS) (present! (list (surf-rect r0))))
+                   (cons next-id s2))
+                 st)))
+            ;; (destroy-surface id): revoke both grants, drop, recomposite, flush the
+            ;; vacated rect, ack. Only the owner can destroy; a bad/foreign id gets an
+            ;; error, not a spurious ok.
+            ((and (eq? verb 'destroy-surface) (pair? (cdr m)) (integer? (cadr m)))
+             (let ((r (owned (cadr m))))
+               (if (not r)
+                   (begin (send client (list 'destroy-error 'no-such-surface)) st)
+                   (let ((old (surf-rect r)) (was-vis (sf r SF-VIS)))
+                     ((caps-revoke caps) (sf r SF-G0))
+                     ((caps-revoke caps) (sf r SF-G1))
+                     ;; if this surface is the one being dragged, abandon the drag --
+                     ;; its id is about to be invalid, and a pointer-up may never come.
+                     (let ((d (vector-ref drag-state 0)))
+                       (if (and d (= (car d) (cadr m))) (vector-set! drag-state 0 #f)))
+                     (let ((s2 (drop-surf (cadr m) surfaces)))
+                       (recomposite screen bg s2 mrg)
+                       (if was-vis (present! (list old)))
+                       (send client 'ok)
+                       (cons next-id s2))))))
+            ;; (probe-pixel x y): the composited screen pixel. A test/debug hook,
+            ;; relayed through the handler (not sent to the root directly) so it is
+            ;; FIFO-ordered AFTER the client's preceding commit on the same channel --
+            ;; a direct-to-root probe could overtake the relayed commit and read the
+            ;; screen before compositing.
+            ((and (eq? verb 'probe-pixel) (len>= m 3)
+                  (integer? (cadr m)) (integer? (caddr m)))
+             (send client (get-pixel screen (cadr m) (caddr m)))
+             st)
+            (else
+             (display "[corecompositor] handler op ignored: ") (display verb) (newline)
+             st))))
+
+      ;; --- input routing + drag-move (phase 6) ------------------------------------
+      ;; The compositor is `coreinput`'s subscriber and the focus owner: every input
+      ;; event arrives here as `(input ev)` on the PRIMARY mailbox and is routed by
+      ;; policy. `drag-state` is a 1-slot mutable cell holding #f or `(id offx offy shard)`
+      ;; while a title-bar drag is in progress (offx/offy = grab point relative to the
+      ;; window origin, so the window tracks the pointer without jumping). Threaded
+      ;; `st` is `(next-id . surfaces)`, returned (possibly re-stacked by a focus
+      ;; raise) like handle-op. Two event shapes, both arity/type-guarded so a
+      ;; malformed event falls through rather than killing the root:
+      ;;   (key code pressed?)   -> the focused (top-most visible) window's client
+      ;;   (pointer x y down?)   -> title-bar press = MOVE; body press = route to client
+      ;; Resize is deferred: the surface backing is a fixed-size DMA buffer, so a true
+      ;; resize needs a client-cooperative realloc (re-create-surface) -- move only here.
+      (define (handle-input st ev)
+        (let ((next-id (car st)) (surfaces (cdr st))
+              (tag (if (pair? ev) (car ev) #f)))
+          (cond
+            ;; keyboard -> the GLOBALLY focused window's client, wherever it is hosted:
+            ;; the max-z visible window across the owner's own surfaces AND every shard's
+            ;; reported focus candidate. So a window on another core still receives keys.
+            ;; No focused window anywhere -> dropped.
+            ((and (eq? tag 'key) (len>= ev 3))
+             (let ((target (global-focus-client surfaces mrg)))
+               (if target (send target (list 'input ev))))
+             st)
+            ;; pointer: drag in progress -> move/end; else a press hit-tests the stack.
+            ;; `down?` MUST be a boolean: Scheme treats integer 0 as TRUE, so a driver
+            ;; that mirrored ps2's 1/0 key convention for the button would read a release
+            ;; (0) as a press. Require #t/#f so the button state is unambiguous.
+            ((and (eq? tag 'pointer) (len>= ev 4)
+                  (integer? (cadr ev)) (integer? (caddr ev)) (boolean? (cadddr ev)))
+             (let ((x (cadr ev)) (y (caddr ev)) (down? (cadddr ev))
+                   (d (vector-ref drag-state 0)))
+               ;; A press in a window's title strip begins a drag (owner-local if the
+               ;; entry's shard is #f, else relayed to the hosting shard); a body press is
+               ;; routed to the client in window-local coords. Read via the `we-*`
+               ;; manifest accessors so it works identically for an owner or a shard
+               ;; window (an owner entry carries shard=#f and its own client/geometry).
+               (define (title-drag-or-route e)
+                 (if (< (- y (we-y e)) TITLE-H)
+                     (vector-set! drag-state 0
+                       (list (we-id e) (- x (we-x e)) (- y (we-y e)) (we-shard e)))
+                     (send (we-client e)
+                           (list 'input (list 'pointer (- x (we-x e)) (- y (we-y e)) #t)))))
+               (cond
+                 ;; an active drag: a button-down event moves the window to follow the
+                 ;; pointer (recomposite + flush old∪new); a button-up ends the drag. If
+                 ;; the dragged surface has vanished (destroyed mid-drag), abandon the
+                 ;; drag -- destroy-surface clears it proactively, but a stale id here
+                 ;; (any path that drops a surface) must not pin drag-state forever.
+                 (d
+                  (if down?
+                      ;; d is (id offx offy shard): shard #f -> the window is the owner's,
+                      ;; move it locally; otherwise relay the new position to the hosting
+                      ;; shard, which repositions it and re-merges (no local move).
+                      (let ((shard (cadddr d)))
+                        (if shard
+                            (send shard (list 'move-window (mrg-key mrg) (car d) (- x (cadr d)) (- y (caddr d))))
+                            (let ((r (find-surf (car d) surfaces)))
+                              (if r (let ((old (surf-rect r)))
+                                      (vector-set! r SF-X (- x (cadr d)))
+                                      (vector-set! r SF-Y (- y (caddr d)))
+                                      (recomposite screen bg surfaces mrg)
+                                      (present! (list old (surf-rect r))))
+                                  (vector-set! drag-state 0 #f)))))
+                      (vector-set! drag-state 0 #f))
+                  st)
+                 ;; a fresh press: hit-test the GLOBAL window list (owner + shards). On an
+                 ;; OWNER window, focus-follows-click (raise) then title-bar = local drag /
+                 ;; body = route to the client. On a SHARD window, a title-bar press starts
+                 ;; a CROSS-SHARD drag (the owner relays each move to the hosting shard) and
+                 ;; a body press routes to the client -- both in window-local coords. No
+                 ;; window -> ignored. (drag-state is (id offx offy shard): shard #f for an
+                 ;; owner-local drag, the shard handle for a relayed one.)
+                 (down?
+                  (let ((e (window-at surfaces mrg x y)))
+                    (cond
+                      ((not e) st)
+                      ((we-surf e)
+                       ;; an OWNER window: focus-follows-click raises it (raise-surf
+                       ;; re-lists the SAME surface vector, so the z bump is seen by the
+                       ;; recomposite over s2), then title-bar drag / body route as usual.
+                       (let* ((r (we-surf e))
+                              (s2 (raise-surf (sf r SF-ID) surfaces)))
+                         (vector-set! r SF-Z (fresh-z mrg))   ; focus-follows-click lifts it
+                         (recomposite screen bg s2 mrg)
+                         (present! (list (surf-rect r)))
+                         (title-drag-or-route e)
+                         (cons next-id s2)))
+                      (else                       ; a SHARD window: route/relay, no local raise
+                       (title-drag-or-route e)
+                       st))))
+                 ;; pointer motion with no button and no drag: no hover routing in v1.
+                 (else st))))
+            (else st))))
+
       ;; Phase 4: paint the desktop background and push the whole screen once, so the
       ;; display shows the compositor's backdrop immediately (before any client) and
       ;; every later op only needs to flush its own damage rect.
@@ -738,7 +738,7 @@
             ;; test-only probe-pixel; see handle-op for why it goes via the handler).
             ;; Sent only by a (trusted) handler, but length-guarded all the same.
             ((and (eq? (car m) 'op) (len>= m 4))
-             (handle-op st (cadr m) (caddr m) (cadddr m) screen bg caps drag-state mrg))
+             (handle-op st (cadr m) (caddr m) (cadddr m)))
             ;; (move-window KEY id x y) -> the OWNER relays a cross-shard drag to this
             ;; SHARD: reposition the window and re-merge (recomposite -> layer-update,
             ;; so the owner re-merges + sees the new geometry). Gated TWO ways: the
@@ -757,7 +757,7 @@
             ;; input service in init); route it by focus/hit-test. ev is validated
             ;; inside handle-input, so a malformed event can't crash the root.
             ((and (eq? (car m) 'input) (pair? (cdr m)))
-             (handle-input st (cadr m) screen bg caps drag-state mrg))
+             (handle-input st (cadr m)))
             ;; (alloc-z KEY reply surf-id) -> the owner is the global z authority; hand a
             ;; shard a fresh global z for window `surf-id`, echoing the id back so the
             ;; shard applies it to the right surface (the request/reply is async, so the
