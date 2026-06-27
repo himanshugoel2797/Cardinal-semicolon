@@ -60,6 +60,7 @@ int serial_raw_getb(void);                              // SysDebug: non-blockin
 void serial_raw_write(const void *buf, uint32_t len);   // SysDebug: raw COM1 write
 void serial_repl_takeover(void);                        // SysDebug: REPL claims COM1
 int serial_log_enabled(void);                           // SysDebug: is the log still streaming?
+void sysdebug_fb_log_off(void);                         // SysDebug: stop rendering the log to the framebuffer
 
 // --- Runtime lock + shared environment ----------------------------------------
 
@@ -1369,6 +1370,17 @@ static lisp_value prim_log_clear(lisp_value *a, int n, const char **e) {
     char src[32];
     log_srcname(a[0], src, sizeof src);
     logstore_clear(src);
+    return LISP_UNDEF;
+}
+
+// (fb-log-off) -> stop rendering the debug log to the boot framebuffer. init
+// calls this once the compositor owns the scanout, so kernel log text can't
+// scribble over the composited image. The log still goes to serial / the store.
+static lisp_value prim_fb_log_off(lisp_value *a, int n, const char **e) {
+    (void)a;
+    if (n != 0)
+        return (*e = "fb-log-off: expects no arguments"), LISP_UNDEF;
+    sysdebug_fb_log_off();
     return LISP_UNDEF;
 }
 
@@ -3530,6 +3542,8 @@ int lisp_scheduler_enter() {
                     lisp_make_primitive(prim_log_tail, "log-tail"));
     lisp_env_define(g_env, lisp_make_symbol("log-clear", 9),
                     lisp_make_primitive(prim_log_clear, "log-clear"));
+    lisp_env_define(g_env, lisp_make_symbol("fb-log-off", 10),
+                    lisp_make_primitive(prim_fb_log_off, "fb-log-off"));
     // make-logger: a module does (define lg (make-logger 'foo)) then (lg "msg").
     // Defined in Lisp (over the `log` prim) so the symbol->string happens once.
     {
