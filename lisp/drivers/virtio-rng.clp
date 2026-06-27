@@ -17,6 +17,7 @@
 (define-module virtio-rng
   (export rng-init rng-take)
   (import sys-mmio sys-pci driver-util virtio)
+  (define lg (make-logger 'virtio-rng))
 
 ;; --- pure: assemble N bytes out of a buffered byte list --------------------
 ;; A "pool" is a (list <bytes> <fill-len> <consumed>): a chunk buffer, how many
@@ -86,18 +87,18 @@
 ;; it must not block; it spawns the service context and returns immediately.
 (define (rng-init ecam)
   (if (not ecam)
-      (begin (display "[virtio-rng] no device present") (newline) #f)
+      (begin (lg "no device present") #f)
       ;; Only VERSION_1 -- the rng device offers no other useful feature.
       (let ((dev (virtio-bringup ecam 0 (arithmetic-shift 1 VIRTIO-F-VERSION-1-BIT))))
         (if (not dev)
-            (begin (display "[virtio-rng] device rejected FEATURES_OK") (newline) #f)
+            (begin (lg "device rejected FEATURES_OK") #f)
             (let ((common (nth dev 0)) (notify (nth dev 2)) (mult (nth dev 3)))
               (let ((q (virtio-setup-queue common 0)))
                 (if (not q)
-                    (begin (display "[virtio-rng] no requestq") (newline) #f)
+                    (begin (lg "no requestq") #f)
                     (begin
                       (virtio-status-set! common VIRTIO-STATUS-DRIVER-OK)
-                      (display "[virtio-rng] up") (newline)
+                      (lg "up")
                       (let ((rngbuf (dma-alloc RNG-CHUNK))
                             (pool   (make-cell (list (make-bytes 0) 0 0))))
                         ;; The service answers (get-random N reply). It runs with

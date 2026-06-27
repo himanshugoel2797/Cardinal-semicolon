@@ -31,6 +31,7 @@
           parse-input-event pstate0 mk reduce-event reduce-events ps-out
           EV-SYN EV-KEY EV-REL EV-ABS REL-X REL-Y ABS-X ABS-Y BTN-LEFT)
   (import sys-mmio sys-pci driver-util virtio)
+  (define lg (make-logger 'virtio-input))
 
 ;; --- evdev event semantics (Linux input.h) ----------------------------------
 
@@ -208,12 +209,12 @@
 (define (virtio-input-init coreinput dev-ecam)
   (let ((ecam dev-ecam))
     (if (not ecam)
-        (begin (display "[virtio-input] no device present") (newline) #f)
+        (begin (lg "no device present") #f)
         ;; Only VERSION_1 wanted (lo-want=0).
         (let ((dev (virtio-bringup ecam 0
                      (arithmetic-shift 1 VIRTIO-F-VERSION-1-BIT))))
           (if (not dev)
-              (begin (display "[virtio-input] device rejected FEATURES_OK") (newline) #f)
+              (begin (lg "device rejected FEATURES_OK") #f)
               (let ((common (nth dev 0)) (devcfg (nth dev 1))
                     (notify (nth dev 2)) (mult (nth dev 3)))
                 ;; Classify by advertised event types (best-effort; the pump is
@@ -234,16 +235,15 @@
                   ;; MSI cap (pci-setup-msi) -- the virtio-mandated order.
                   (let ((evq (virtio-setup-queue common 0)))
                     (if (not evq)
-                        (begin (display "[virtio-input] eventq setup failed") (newline) #f)
+                        (begin (lg "eventq setup failed") #f)
                         (begin
                           (bytes-u16-set! common VIRTIO-MSIX-CONFIG 0)
                           (let ((msi (pci-setup-msi ecam)))
                             (if (not msi)
-                                (begin (display "[virtio-input] MSI-X setup failed") (newline) #f)
+                                (begin (lg "MSI-X setup failed") #f)
                                 (begin
                                   (virtio-status-set! common VIRTIO-STATUS-DRIVER-OK)
-                                  (display "[virtio-input] up: kind=") (display kind)
-                                  (display " msi=") (display msi) (newline)
+                                  (lg "up: kind=" kind " msi=" msi)
                                   (let ((evbuf (dma-alloc (* NEV EVSLOT)))
                                         (last  (make-cell 0))
                                         (pst   (make-cell (pstate0 x0 y0))))
@@ -281,5 +281,5 @@
                                             (pump (msi-count msi))
                                             (begin (msi-wait msi seen)
                                                    (pump (msi-count msi)))))))
-                                    (display "[virtio-input] registered with coreinput") (newline)
+                                    (lg "registered with coreinput")
                                     'ok))))))))))))))) ; close define-module

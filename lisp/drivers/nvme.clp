@@ -36,6 +36,7 @@
           NVME-OP-READ NVME-OP-WRITE
           NVME-AOP-IDENTIFY NVME-AOP-CREATE-CQ NVME-AOP-CREATE-SQ)
   (import sys-mmio sys-pci driver-util)
+  (define lg (make-logger 'nvme))
 
   ;; =========================================================================
   ;; Controller register layout (BAR0).
@@ -394,30 +395,27 @@
       ;; The ring trackers are initialised by make-ctrl (cid/tails/heads = 0,
       ;; expected phase = 1); no second init needed here.
       (if (not (ctrl-disable! bar))
-          (begin (display "[nvme] disable timeout") (newline) 'fail)
+          (begin (lg "disable timeout") 'fail)
           (begin
             (set-admin-queues! bar (c-asq c) (c-acq c) AQ-DEPTH)
             (if (not (ctrl-enable! bar))
-                (begin (display "[nvme] enable (RDY) timeout") (newline) 'fail)
+                (begin (lg "enable (RDY) timeout") 'fail)
                 ;; IDENTIFY NAMESPACE (CNS=0, nsid=1) -> NSZE + LBADS.
                 (let ((idbuf (dma-alloc-32 4096)))
                   (let ((idst (admin! c NVME-AOP-IDENTIFY 1 (bytes-phys idbuf) 0
                                       (list 0))))   ; cdw10 CNS=0 (namespace)
                     (if (not (= idst 0))
-                        (begin (display "[nvme] IDENTIFY NS failed st=")
-                               (display idst) (newline) 'fail)
+                        (begin (lg "IDENTIFY NS failed st=" idst) 'fail)
                         (let ((nsze  (id-ns-nsze idbuf))
                               (bsize (id-ns-bsize idbuf)))
-                          (display "[nvme] ns1 blocks=") (display nsze)
-                          (display " bsize=") (display bsize) (newline)
+                          (lg "ns1 blocks=" nsze " bsize=" bsize)
                           (if (= nsze 0)
-                              (begin (display "[nvme] empty namespace") (newline) 'fail)
+                              (begin (lg "empty namespace") 'fail)
                               ;; Create the I/O queue pair.
                               (let ((qst (create-io-queues! c 1 IO-DEPTH
                                                             (c-iosq c) (c-iocq c))))
                                 (if (not (= qst 0))
-                                    (begin (display "[nvme] create IO queues failed st=")
-                                           (display qst) (newline) 'fail)
+                                    (begin (lg "create IO queues failed st=" qst) 'fail)
                                     ;; Up. MSI for completeness (we still poll).
                                     (let* ((msi (pci-setup-msi ecam))
                                            ;; cap one request to 2 pages worth of blocks
@@ -428,15 +426,13 @@
                                       (nvme-smoke c bsize max-sec dbuf (bytes-phys dbuf) nsze)
                                       (send storage (list 'register-blockdev 'nvme0
                                                           bsize nsze drv))
-                                      (display "[nvme] nvme0 registered: ")
-                                      (display nsze) (display " x ") (display bsize)
-                                      (display " byte blocks") (newline)
+                                      (lg "nvme0 registered: " nsze " x " bsize " byte blocks")
                                       'up)))))))))))))
 
   ;; A read smoke against the live device (read block 0); log only on failure.
   (define (nvme-smoke c bsize max-sec dbuf dbuf-phys nsze)
     (if (not (= 0 (rw! c 1 NVME-OP-READ 0 1 dbuf-phys bsize)))
-        (begin (display "[nvme] smoke read block 0 FAILED") (newline))))
+        (begin (lg "smoke read block 0 FAILED"))))
 
   ;; nvme-init: bind to one NVMe controller. `ecam` is its ECAM config (passed by
   ;; init.clp per pci-find-class-all hit); `storage` is the corestorage handle.
@@ -445,7 +441,7 @@
   ;; never blocked on a recv under no scheduler.
   (define (nvme-init storage ecam)
     (if (not ecam)
-        (begin (display "[nvme] no device present") (newline) #f)
+        (begin (lg "no device present") #f)
         (let ((cfg (mmio-map ecam 4096)))
           (pci-enable-mem-bus-master! cfg)
           (let ((bar0 (let ((b (bar-base cfg BAR0)))
@@ -453,7 +449,7 @@
                             (begin (pci-assign-bars ecam) (bar-base cfg BAR0))
                             b))))
             (if (or (not bar0) (= bar0 0))
-                (begin (display "[nvme] no BAR0") (newline) #f)
+                (begin (lg "no BAR0") #f)
                 (let ((bar (mmio-map bar0 #x2000)))   ; regs + doorbells
                   (spawn-restricted '()
                     (lambda () (nvme-bringup bar ecam storage)))
