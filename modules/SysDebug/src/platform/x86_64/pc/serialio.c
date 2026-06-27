@@ -2,7 +2,6 @@
 #include "debug_log.h"
 #include "elf.h"
 #include "boot_information.h"
-#include "SysDebug/csmux.h"
 
 #include "font.h"
 //#include "wallpaper.h"
@@ -10,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <cardinal/local_spinlock.h>
 
 #define SERIAL_A ((uint16_t)0x3f8)
 #define SERIAL_A_STATUS (SERIAL_A + 5)
@@ -69,6 +69,42 @@ static inline char serial_input()
     c = inb(SERIAL_A);
     return c;
 }
+
+// --- raw COM1 byte transport (post-CSMUX) ------------------------------------
+// CSMUX is gone: the debug log and the interactive REPL never share the serial
+// line at once, so there is no need to frame it. Before the REPL starts, the log
+// streams raw to COM1 (so a normal/CI boot is exactly as before). When the REPL
+// claims the line (cardinal.repl), serial_repl_takeover() flips g_serial_log off
+// and from then on print_str / Lisp logs go only to the in-memory stores; the
+// REPL reads/writes COM1 raw via serial_raw_getb / serial_raw_write.
+
+static int g_serial_lock = 0;          // serialises raw writes across cores
+static volatile bool g_serial_log = true;  // stream the log to COM1 until the REPL takes over
+
+// Non-blocking: next COM1 byte, or -1 if the RX FIFO is empty.
+int serial_raw_getb(void)
+{
+    if ((inb(SERIAL_A_STATUS) & 0x01) == 0)
+        return -1;
+    return (int)(uint8_t)inb(SERIAL_A);
+}
+
+// Write `len` bytes to COM1, locked so two cores' output cannot interleave.
+void serial_raw_write(const void *buf, uint32_t len)
+{
+    const char *p = (const char *)buf;
+    int if_state = cli();
+    local_spinlock_lock(&g_serial_lock);
+    for (uint32_t i = 0; i < len; i++)
+        serial_output(p[i]);
+    local_spinlock_unlock(&g_serial_lock);
+    sti(if_state);
+}
+
+// The REPL claims the serial line: stop streaming the log to it (logs go to the
+// in-memory stores, read back via the REPL's log-* prims).
+void serial_repl_takeover(void) { g_serial_log = false; }
+int serial_log_enabled(void) { return g_serial_log ? 1 : 0; }
 
 // Enable COM1's "received-data-available" interrupt (IER bit 0), so a byte
 // arriving on COM1 raises ISA IRQ 4. The Lisp REPL claims that line via the
@@ -146,24 +182,15 @@ int WEAK debug_handle_trap()
 int WEAK print_str(const char *s)
 {
     int state = cli();
-    //print_stream(serial_output, SET_RED_BG SET_WHITE_FG);
     log(s);
     if (fbuf != NULL)
         for (const char *r = s; *r != 0; r++)
             render_char(*r);
-    // Once CSMUX is active, the debug log rides CSMUX_CH_LOG over whatever the one
-    // link is -- COM1 or a USB-serial adapter -- so a board whose only serial is a
-    // USB-to-serial dongle still gets the log, alongside control (ch1) and GDB
-    // (ch2), demuxed by the host. Before activation (or when CSMUX is off) it is
-    // raw bytes on COM1, as on a normal boot. csmux_send / csmux_raw_write share
-    // the TX lock so raw and framed output never interleave into a corrupt frame,
-    // and csmux_send drops a frame re-entered from inside the transport write
-    // (a log emitted mid-USB-transfer) rather than deadlocking.
-    if (csmux_active())
-        csmux_log_append(s, (uint32_t)strlen(s));
-    else
-        csmux_raw_write(s, (uint32_t)strlen(s));
-    //print_stream(serial_output, SET_BLACK_BG SET_WHITE_FG);
+    // Stream the log raw to COM1 until the REPL claims the line (cardinal.repl).
+    // After that, print_str output lives only in the in-memory log (the `log()`
+    // ring above + the per-source store) and is read back over the REPL.
+    if (g_serial_log)
+        serial_raw_write(s, (uint32_t)strlen(s));
 
     if (fbuf != NULL)
     {
