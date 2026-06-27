@@ -1,0 +1,30 @@
+# Demo input script for the offscreen backend (sim/backend_offscreen.c).
+# One event per line; one event is delivered per poll so the app repaints
+# between them. Scancodes are PS/2 set-1 (see sim/keymap.c); 'c is a char.
+
+# move the box right three times (0x4D = Right arrow)
+key 0x4D 1
+key 0x4D 0
+key 0x4D 1
+key 0x4D 0
+key 0x4D 1
+key 0x4D 0
+
+# move it down twice (0x50 = Down arrow)
+key 0x50 1
+key 0x50 0
+key 0x50 1
+key 0x50 0
+
+# cycle the box colour twice with space (0x39): index 0 -> 1 -> 2 (blue)
+key 0x39 1
+key 0x39 0
+key 0x39 1
+key 0x39 0
+
+# click to recentre the box on (500, 300)
+pointer 500 300 1
+pointer 500 300 0
+
+# stop
+quit
