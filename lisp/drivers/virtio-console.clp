@@ -79,8 +79,16 @@
 ;; (so the next write never overwrites a buffer still being read).
 
 (define TXBUF 256)
-(define TX-TIMEOUT 1000000)
+;; A paravirt console drains the transmitq in microseconds; this only bounds a
+;; genuinely wedged device. Keep it generous (100 ms) -- a 1 ms timeout would
+;; spuriously fire under TCG, and tx-write! must NOT return success on a timeout
+;; (the avail.idx is already advanced, so the next call would post descriptor 0 a
+;; second time against an entry the device never consumed -- a split-ring desync).
+(define TX-TIMEOUT 100000000)
 
+;; Transmit one buffer; single outstanding descriptor (slot 0). Returns the byte
+;; count on completion, or #f on timeout so the caller drops rather than treating
+;; a wedged device as a successful write.
 (define (tx-write! txq txbuf notify mult payload len)
   (let ((n (if (> len TXBUF) TXBUF len))
         (before (bytes-u16-ref (q-used txq) 2)))
@@ -88,9 +96,10 @@
     (desc-set! (q-desc txq) 0 (bytes-phys txbuf) n 0 0)
     (avail-push! (q-avail txq) (q-size txq) 0)
     (notify-queue! notify mult txq)
-    (wait-until-spin (lambda () (not (= (bytes-u16-ref (q-used txq) 2) before)))
-                     TX-TIMEOUT 500000)
-    n))
+    (if (wait-until-spin (lambda () (not (= (bytes-u16-ref (q-used txq) 2) before)))
+                         TX-TIMEOUT 500000)
+        n
+        #f)))
 
 ;; --- bring-up ---------------------------------------------------------------
 
