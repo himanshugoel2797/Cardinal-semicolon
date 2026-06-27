@@ -41,7 +41,7 @@
 #include "SysVirtualMemory/vmem.h"
 #include "SysPhysicalMemory/phys_mem.h"
 #include "SysReg/registry.h"
-#include "SysDebug/csmux.h"
+#include "SysDebug/logstore.h"  // per-source log store (the log-* prims read it)
 #include "boot_information.h"  // GetBootInfo()->Cmdline (the cardinal.repl flag)
 #include "pci/pci.h"
 #include "pci/pci_irq.h"
@@ -56,6 +56,10 @@ int print_str(const char *s);
 uint64_t timer_timestamp_ns(void);
 bool Initrd_GetFile(const char *file, void **loc, size_t *size);  // kernel: initrd reader
 void serial_enable_rx_irq(void);  // SysDebug: arm COM1 RX (IRQ 4) for the REPL
+int serial_raw_getb(void);                              // SysDebug: non-blocking COM1 read
+void serial_raw_write(const void *buf, uint32_t len);   // SysDebug: raw COM1 write
+void serial_repl_takeover(void);                        // SysDebug: REPL claims COM1
+int serial_log_enabled(void);                           // SysDebug: is the log still streaming?
 
 // --- Runtime lock + shared environment ----------------------------------------
 
@@ -1196,27 +1200,36 @@ static lisp_value prim_console_poll(lisp_value *a, int n, const char **e) {
     (void)a;
     if (n != 0)
         return (*e = "console-poll: expects no arguments"), LISP_UNDEF;
-    char buf[256];
-    int got = csmux_chan_read(CSMUX_CH_REPL, buf, sizeof buf);
-    if (got <= 0)
-        return LISP_FALSE;
-    return lisp_make_string(buf, (size_t)got);
+    // Raw serial delivers arbitrary byte chunks, but the REPL must eval COMPLETE
+    // input, so accumulate across polls and only return on a line boundary (or a
+    // full buffer). A complete line may carry several datums; repl-eval handles
+    // that. The trailing newline is kept so the reader sees the datum terminated.
+    static char line[1024];
+    static int len = 0;
+    int b;
+    while (len < (int)sizeof line && (b = serial_raw_getb()) >= 0) {
+        char c = (char)b;
+        line[len++] = c;
+        if (c == '\n' || c == '\r') {
+            lisp_value s = lisp_make_string(line, (size_t)len);
+            len = 0;
+            return s;
+        }
+    }
+    if (len >= (int)sizeof line) {  // overlong line w/o newline: flush to avoid wedging
+        lisp_value s = lisp_make_string(line, (size_t)len);
+        len = 0;
+        return s;
+    }
+    return LISP_FALSE;  // no complete line yet
 }
 
-// (console-write str) -> emit the string's bytes on the REPL channel. csmux_send
-// rejects a frame larger than CSMUX_MAX_PAYLOAD, so a long transcript is split
-// into payload-sized frames rather than silently dropped.
+// (console-write str) -> write the string's bytes to COM1 raw (the REPL owns the
+// line once it has started, so there is no framing to do).
 static lisp_value prim_console_write(lisp_value *a, int n, const char **e) {
     if (n != 1 || !lisp_is_string(a[0]))
         return (*e = "console-write: expects (string)"), LISP_UNDEF;
-    const char *p = lisp_string_data(a[0]);
-    size_t len = lisp_string_len(a[0]);
-    do {  // do/while so a zero-length write still emits one (empty) frame
-        uint32_t chunk = len > CSMUX_MAX_PAYLOAD ? CSMUX_MAX_PAYLOAD : (uint32_t)len;
-        csmux_send(CSMUX_CH_REPL, p, chunk);
-        p += chunk;
-        len -= chunk;
-    } while (len > 0);
+    serial_raw_write(lisp_string_data(a[0]), (uint32_t)lisp_string_len(a[0]));
     return LISP_UNDEF;
 }
 
@@ -1243,15 +1256,14 @@ static lisp_value prim_console_arm_rx(lisp_value *a, int n, const char **e) {
     return LISP_UNDEF;
 }
 
-// (console-flush) -> push out the coalesced debug-log buffer now. The log
-// (display/print_str -> CH_LOG) is batched for throughput; an interactive REPL
-// must flush it so output appears promptly and in order with the REPL transcript
-// (CH_REPL, which csmux_send delivers immediately).
+// (console-flush) -> no-op, kept for source compatibility. The log is no longer
+// batched/framed (CSMUX is gone): print_str writes COM1 synchronously while the
+// log still streams, and once the REPL owns the line the log goes to the in-memory
+// store instead, so there is nothing to flush.
 static lisp_value prim_console_flush(lisp_value *a, int n, const char **e) {
     (void)a;
     if (n != 0)
         return (*e = "console-flush: expects no arguments"), LISP_UNDEF;
-    csmux_log_flush();
     return LISP_UNDEF;
 }
 
@@ -1262,6 +1274,103 @@ static const lisp_builtin_export sys_console_exports[] = {
     {"console-flush", prim_console_flush},
     {"repl-eval", prim_repl_eval},
 };
+
+// --- per-source logging (the log-* prims; store is SysDebug/logstore) ---------
+// Each module logs under its own source name; the REPL reads them back by name.
+// These are GLOBAL prims (every context logs / the REPL queries) -- not a gated
+// capability, since debug text is not sensitive and `log` must be reachable from
+// any restricted server/driver context the same way `display` is.
+
+// Copy a string-or-symbol source argument into a NUL-terminated name buffer.
+static size_t log_srcname(lisp_value v, char *out, size_t cap) {
+    size_t slen = 0;
+    if (lisp_is_string(v)) {
+        slen = lisp_string_len(v);
+        if (slen > cap - 1) slen = cap - 1;
+        memcpy(out, lisp_string_data(v), slen);
+    }
+    out[slen] = '\0';
+    return slen;
+}
+
+// (log source arg...) -> render the args display-style (strings bare, other values
+// via the printer), concatenate, and append the line to source's ring. While the
+// log still streams to serial (no REPL yet) also emit "[source] <line>\n" so a
+// normal/CI boot shows the component log exactly as the old (display ...) did.
+static lisp_value prim_log(lisp_value *a, int n, const char **e) {
+    if (n < 1 || !lisp_is_string(a[0]))
+        return (*e = "log: expects (source-string arg...)"), LISP_UNDEF;
+    char src[32];
+    size_t slen = log_srcname(a[0], src, sizeof src);
+    char msg[1024];
+    size_t mlen = 0;
+    for (int i = 1; i < n && mlen < sizeof msg; i++) {
+        if (lisp_is_string(a[i])) {
+            const char *sd = lisp_string_data(a[i]);
+            size_t sl = lisp_string_len(a[i]);
+            for (size_t k = 0; k < sl && mlen < sizeof msg; k++)
+                msg[mlen++] = sd[k];
+        } else {  // numbers / symbols / lists render the same display- or write-style
+            char tmp[256];
+            lisp_print(a[i], tmp, sizeof tmp);
+            for (size_t k = 0; tmp[k] != '\0' && mlen < sizeof msg; k++)
+                msg[mlen++] = tmp[k];
+        }
+    }
+    logstore_emit(src, msg, (uint32_t)mlen);
+    logstore_emit(src, "\n", 1);
+    if (serial_log_enabled()) {
+        serial_raw_write("[", 1);
+        serial_raw_write(src, (uint32_t)slen);
+        serial_raw_write("] ", 2);
+        serial_raw_write(msg, (uint32_t)mlen);
+        serial_raw_write("\n", 1);
+    }
+    return LISP_UNDEF;
+}
+
+// (log-sources) -> a newline-separated string of known source names.
+static lisp_value prim_log_sources(lisp_value *a, int n, const char **e) {
+    (void)a;
+    if (n != 0) return (*e = "log-sources: expects no arguments"), LISP_UNDEF;
+    char buf[1024];
+    uint32_t k = logstore_sources(buf, sizeof buf);
+    return lisp_make_string(buf, k);
+}
+
+// (log-dump source) -> the source's buffered text (oldest-first) as a string.
+static lisp_value prim_log_dump(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_string(a[0]))
+        return (*e = "log-dump: expects (source-string)"), LISP_UNDEF;
+    char src[32];
+    log_srcname(a[0], src, sizeof src);
+    char buf[4096];
+    uint32_t k = logstore_dump(src, buf, sizeof buf);
+    return lisp_make_string(buf, k);
+}
+
+// (log-tail source n) -> the last n lines of source as a string.
+static lisp_value prim_log_tail(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_string(a[0]) || !lisp_is_fixnum(a[1]))
+        return (*e = "log-tail: expects (source-string n)"), LISP_UNDEF;
+    char src[32];
+    log_srcname(a[0], src, sizeof src);
+    int64_t nl = lisp_fixnum_val(a[1]);
+    if (nl < 0) nl = 0;
+    char buf[4096];
+    uint32_t k = logstore_tail(src, (uint32_t)nl, buf, sizeof buf);
+    return lisp_make_string(buf, k);
+}
+
+// (log-clear source) -> discard the source's buffer.
+static lisp_value prim_log_clear(lisp_value *a, int n, const char **e) {
+    if (n != 1 || !lisp_is_string(a[0]))
+        return (*e = "log-clear: expects (source-string)"), LISP_UNDEF;
+    char src[32];
+    log_srcname(a[0], src, sizeof src);
+    logstore_clear(src);
+    return LISP_UNDEF;
+}
 
 // Resolve a Lisp module NAME (as written in `import`/`define-module`) to its
 // source bytes in the initrd, by mapping it to ./lisp/<name>.clp. Installed via
@@ -3263,8 +3372,9 @@ static void NORETURN lisp_core_loop(void) {
         // arm-rx is done by the context AFTER irq-register so an early byte can't
         // hit an unrouted line -- so the BSP idles (hlt) until a keystroke arrives.
         if (g_repl_enabled) {
-            print_str("[SysLisp] cardinal.repl: starting serial REPL on CSMUX ch2\r\n");
-            csmux_activate();
+            print_str("[SysLisp] cardinal.repl: REPL taking COM1; component logs -> "
+                      "in-memory store (use the log-* prims)\r\n");
+            serial_repl_takeover();
             const char *rerr = NULL;
             lisp_eval_string("(start-repl)", g_env, &rerr);
             if (rerr != NULL) {
@@ -3408,6 +3518,33 @@ int lisp_scheduler_enter() {
                     lisp_make_primitive(prim_event_count, "%event-count"));
     lisp_env_define(g_env, lisp_make_symbol("%event-wait", 11),
                     lisp_make_primitive(prim_event_wait, "%event-wait"));
+    // Per-source logging: global so any module/server/driver can log for itself
+    // and the REPL can read each source back (see SysDebug/logstore).
+    lisp_env_define(g_env, lisp_make_symbol("log", 3),
+                    lisp_make_primitive(prim_log, "log"));
+    lisp_env_define(g_env, lisp_make_symbol("log-sources", 11),
+                    lisp_make_primitive(prim_log_sources, "log-sources"));
+    lisp_env_define(g_env, lisp_make_symbol("log-dump", 8),
+                    lisp_make_primitive(prim_log_dump, "log-dump"));
+    lisp_env_define(g_env, lisp_make_symbol("log-tail", 8),
+                    lisp_make_primitive(prim_log_tail, "log-tail"));
+    lisp_env_define(g_env, lisp_make_symbol("log-clear", 9),
+                    lisp_make_primitive(prim_log_clear, "log-clear"));
+    // make-logger: a module does (define lg (make-logger 'foo)) then (lg "msg").
+    // Defined in Lisp (over the `log` prim) so the symbol->string happens once.
+    {
+        const char *lerr = NULL;
+        lisp_eval_string(
+            "(define (make-logger src)"
+            "  (let ((s (if (symbol? src) (symbol->string src) src)))"
+            "    (lambda args (apply log s args))))",
+            g_env, &lerr);
+        if (lerr != NULL) {
+            print_str("[SysLisp] make-logger define error: ");
+            print_str(lerr);
+            print_str("\r\n");
+        }
+    }
     // Expose the capability-bearing primitives as importable modules (sys-io /
     // sys-mmio / sys-pci / sys-irq) rather than ambient globals.
     register_driver_modules(g_env);
