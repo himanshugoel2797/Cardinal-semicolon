@@ -561,10 +561,24 @@ after `coredisplay` + the display driver bind (it needs the driver's
      Validated `cardinal.compositorshards`: SMP=4 → "all shards composited cross-core
      (3/3)", SMP=1 → "single core; no shards"; single-instance tests unchanged (the
      shards list is empty without the gate, so the merge is the N=1 path).
-   - **7B wiring (client routing) — TODO.** `connect`-time transparency routing
-     (opaque → a shard, least-loaded; translucent → the owner) so real client windows
-     land on shards (today a shard draws a test rect standing in for its clients);
-     `layer-update` damage rects bounding the merge/flush; shard liveness/de-register.
+   - **7B wiring (client routing) — ✅ DONE.** `start-compositor-service` is now
+     dual-role (a `shard-cfg` makes it a SHARD; #f the OWNER) — the two share the whole
+     surface-table / handle-op / opaque-layer machinery and differ only in how
+     `recomposite` finalises (a shard builds its grant-shared layer then `layer-update`s
+     the owner; the owner folds + merges + flushes) and how `connect` routes. The
+     OWNER's `connect` **routes an opaque client to a shard** (round-robin) so its
+     windows composite on that shard's core; a translucent client (and any client when
+     there are no shards) stays on the owner. A shard is a full instance: it hosts its
+     routed clients (mint surface grants, composite into its layer) and registers its
+     **handle** + layer grants with the owner. z uses disjoint per-shard bands
+     (`Z-BAND`·core-id) — a deterministic cross-shard stacking without a per-window
+     round-trip (a true global z authority is the remaining refinement). Validated
+     `cardinal.compositorshards`: an opaque client routed to a shard draws a window that
+     reaches the scanout (SMP=4 cross-core; SMP=1 falls back to owner-hosted, still
+     passes). **Known limitation:** input routing is owner-side (the owner's focus only
+     sees its own surface table), so a window on a shard can't yet receive input —
+     cross-shard input routing + a true global z authority + `layer-update` damage
+     bounding are the follow-ups.
 
 ## Open / deferred
 

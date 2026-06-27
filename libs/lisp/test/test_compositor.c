@@ -66,7 +66,7 @@ static const char *PROG =
     // present is the phase-4 driver seam; a host has no display, so #f (off-screen
     // RAM screen). The compositor still composites; it just flushes nothing.
     "(define screen (make-surface (make-bytes (* 64 64 4)) 64 64 (* 64 4)))"
-    "(define comp (start-compositor-service screen (make-compositor-caps falloc fmint frevoke #f #f)))"
+    "(define comp (start-compositor-service screen (make-compositor-caps falloc fmint frevoke #f #f) #f))"
     "(define t (spawn (lambda ()"
     "  (define fails '())"
     "  (define (ck name got want)"

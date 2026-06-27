@@ -523,57 +523,42 @@
                                 (db-flush-rect db (nth r 0) (nth r 1) (nth r 2) (nth r 3)))
                               rects)))))))
 
-  ;; A per-core SHARD's test colour (phase-7 cross-core). Distinct per core so the
-  ;; verifier can tell whose content landed on the scanout; computed in the screen's
-  ;; pixel format so the drawn pixel and the expected value agree. Cores 1/2/3 ->
-  ;; red/green/blue; others a dim grey (fine for typical SMP<=4 smoke tests).
-  (define (shard-test-color surf id)
-    (rgb surf (if (= id 1) 240 40) (if (= id 2) 240 40) (if (= id 3) 240 40)))
-
   ;; A per-core compositor SHARD (cardinal.compositorshards). Born on an AP by the
-  ;; set-per-core-init hook, it proves the cross-core merge substrate end to end:
-  ;; wait for the owner to be published, ask it the scanout geometry, allocate a
-  ;; matching (colour,z) LAYER, mint grants over it, draw this core's test rect into
-  ;; the layer, register the grants with the owner, and notify it. The owner maps the
-  ;; grants and folds them into its z-pick -- so a window composited on THIS core
-  ;; appears on the scanout the owner (core 0) drives. No client routing yet: the
-  ;; rect stands in for "this shard's clients' windows" (the next step). It holds no
-  ;; caps -- dma-alloc-wb / grant-mint are captured prims that work in any context.
+  ;; set-per-core-init hook, it is a FULL compositor instance (start-compositor-service
+  ;; in shard role) that hosts the opaque clients the owner routes to it -- so those
+  ;; clients' windows composite on THIS core, into a grant-shared (colour,z) LAYER the
+  ;; owner maps and folds into its scanout. Bring-up: rendezvous for the owner handle,
+  ;; ask the scanout geometry, dma-alloc-wb a matching layer, mint rw grants, start the
+  ;; shard-role service over that layer (z-base = id*1e6 so shards occupy disjoint z
+  ;; bands), then register its handle + grants with the owner. It holds no caps --
+  ;; dma-alloc-wb / grant-mint are captured prims that work in any context.
   (define (start-compositor-shard id)
-    ;; ask the rendezvous for the owner handle; it replies once the bring-up has
-    ;; published it (recv blocks until then -- no polling needed).
     (send compositor-rendezvous (list 'get-owner (self)))
     (let ((om (recv)))
       (if (not (and (pair? om) (eq? (car om) 'owner) (ctx? (cadr om))))
           (begin (display "[compositorshards] core ") (display id)
                  (display " FAIL no owner from rendezvous") (newline))
           (let ((owner (cadr om)))
-            (begin
-               (send owner (list 'shard-geom (self)))
-               (let ((g (recv)))                       ; (geom w h stride fmt)
-                 (if (not (and (pair? g) (eq? (car g) 'geom)))
-                     (begin (display "[compositorshards] core ") (display id)
-                            (display " FAIL no geom") (newline))
-                     (let* ((w (nth g 1)) (hh (nth g 2)) (stride (nth g 3)) (fmt (nth g 4))
-                            (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
-                            (plane (* stride hh))
-                            (lcb (dma-alloc-wb plane)) (lzb (dma-alloc-wb plane))
-                            (gc (grant-mint lcb 'rw)) (gz (grant-mint lzb 'rw))
-                            (lc (make-surface* lcb w hh stride ro go bo '()))
-                            (lz (make-surface lzb w hh stride)))
-                       ;; a fresh GLOBAL z from the owner (the z authority), so the
-                       ;; merge orders this shard's content correctly vs. the others.
-                       (send owner (list 'alloc-z (self)))
-                       (let* ((zr (recv))
-                              (z (if (and (pair? zr) (eq? (car zr) 'z)) (cadr zr) 1))
-                              (col (shard-test-color lc id))
-                              (x (* id 50)) (y 120))
-                         (fill-rect lc x y 30 30 col)   ; colour into the colour plane
-                         (fill-rect lz x y 30 30 z)     ; stamp z over its coverage
-                         (send owner (list 'register-shard gc gz))
-                         (send owner (list 'layer-update))
-                         (display "[compositorshards] core ") (display id)
-                         (display " registered layer rect at x=") (display x) (newline))))))))))
+            (send owner (list 'shard-geom (self)))
+            (let ((g (recv)))                       ; (geom w h stride fmt)
+              (if (not (and (pair? g) (eq? (car g) 'geom)))
+                  (begin (display "[compositorshards] core ") (display id)
+                         (display " FAIL no geom") (newline))
+                  (let* ((w (nth g 1)) (hh (nth g 2)) (stride (nth g 3)) (fmt (nth g 4))
+                         (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
+                         (plane (* stride hh))
+                         (lcb (dma-alloc-wb plane)) (lzb (dma-alloc-wb plane))
+                         (gc (grant-mint lcb 'rw)) (gz (grant-mint lzb 'rw))
+                         (lc (make-surface* lcb w hh stride ro go bo '()))
+                         (lz (make-surface lzb w hh stride))
+                         (cfg (make-shard-cfg owner lc lz (* id Z-BAND)))   ; disjoint z band
+                         ;; shard caps: alloc/mint/revoke for client surface backings;
+                         ;; no present (the owner flushes), no map (the owner maps).
+                         (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke #f #f))
+                         (shard (start-compositor-service lc caps cfg)))
+                    (send owner (list 'register-shard shard gc gz))
+                    (display "[compositorshards] core ") (display id)
+                    (display " shard instance up + registered") (newline))))))))
 
   ;; The phase-4 compositor demo client: connect, create one window-sized surface,
   ;; map its grant (zero-copy), draw a titled window into it (using the screen pixel
@@ -788,7 +773,7 @@
                              (make-surface (make-bytes (* cw ch 4)) cw ch (* cw 4))))
                  (present (if target (cdr target) #f))
                  (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke present map-grant))
-                 (comp (start-compositor-service screen caps)))
+                 (comp (start-compositor-service screen caps #f)))   ; #f -> owner role
             (send compositor-rendezvous (list 'set-owner comp))   ; publish to per-core shards
             ;; phase 6: the compositor owns focus, so it subscribes to the input
             ;; service -- coreinput now forwards every (input ev) here, and the
@@ -875,49 +860,57 @@
             ;; list order). Then `raise` the first -> a fresh top z -> it now wins.
             ;; All ops go through the one handler channel (FIFO), so each probe is
             ;; ordered after the commit/raise before it; probed on the RAM screen.
-            ;; cardinal.compositorshards: validate the CROSS-CORE merge. The
-            ;; set-per-core-init hook spawns a shard on each AP; each grant-shares a
-            ;; (colour,z) layer with a distinct test rect (start-compositor-shard).
-            ;; This verifier (on the BSP) connects to the owner and POLLS the scanout
-            ;; at each shard's rect position until its colour appears -- proving a
-            ;; window composited on another core reaches the owner's scanout via the
-            ;; mapped-grant z-pick. Polling absorbs the cross-core wake latency
-            ;; (registration + layer-update cross the cores at up to one tick each).
+            ;; cardinal.compositorshards: validate CROSS-CORE CLIENT ROUTING end to
+            ;; end. An OPAQUE client connects to the owner; at SMP>1 the owner ROUTES
+            ;; it to a shard, so its window composites on that shard's core, into the
+            ;; shard's grant-shared layer the owner folds into the scanout. A separate
+            ;; TRANSLUCENT verifier connects (translucent stays on the owner) and POLLS
+            ;; the owner's scanout at the window position until the colour appears --
+            ;; proving the routed client's window crossed cores onto the scanout.
+            ;; Polling absorbs the cross-core wake latency. (At SMP=1 there are no
+            ;; shards: the opaque client stays on the owner and the test still passes,
+            ;; it just isn't exercising a remote shard.)
             (if (cmdline-has? "cardinal.compositorshards")
-                (spawn-restricted '()
-                  (lambda ()
-                    (send comp (list 'connect #f (self)))
-                    (let ((r (recv)))
-                      (if (not (and (pair? r) (eq? (car r) 'connected)))
-                          (begin (display "[compositorshards] FAIL no connected reply") (newline))
-                          (let* ((h (cadr r)) (fmt (caddr r))
-                                 (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
-                                 (cs (make-surface* (make-bytes 4) 1 1 4 ro go bo '()))
-                                 (nshards (- (core-count) 1)))
-                            (if (<= nshards 0)
-                                (begin (display "[compositorshards] single core; no shards to merge")
-                                       (newline))
-                                (let loop ((i 1) (ok 0))
-                                  (if (> i nshards)
-                                      (begin (display "[compositorshards] ")
-                                             (display (if (= ok nshards)
-                                                          "OK all shards composited cross-core"
-                                                          "FAIL some shard content missing"))
-                                             (display " (") (display ok) (display "/")
-                                             (display nshards) (display ")") (newline))
-                                      (let ((want (shard-test-color cs i)) (px (* i 50)))
-                                        (let poll ((tries 0))
-                                          (send h (list 'probe-pixel (+ px 15) 135))
-                                          (let ((got (recv)))
-                                            (cond ((and (integer? got) (= got want))
-                                                   (display "[compositorshards] core ") (display i)
-                                                   (display " content present on scanout") (newline)
-                                                   (loop (+ i 1) (+ ok 1)))
-                                                  ((>= tries 80)
-                                                   (display "[compositorshards] core ") (display i)
-                                                   (display " content MISSING (timeout)") (newline)
-                                                   (loop (+ i 1) ok))
-                                                  (else (sleep 100000000) (poll (+ tries 1))))))))))))))))
+                (begin
+                  ;; the opaque client (routed to a shard): a red 40x40 window at (60,60).
+                  (spawn-restricted '(sys-shm)
+                    (lambda ()
+                      (import sys-shm)
+                      (send comp (list 'connect #f (self)))
+                      (let ((r (recv)))
+                        (if (and (pair? r) (eq? (car r) 'connected))
+                            (let* ((h (cadr r)) (fmt (caddr r))
+                                   (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt)))
+                              (send h (list 'create-surface 40 40))
+                              (let ((s (recv)))
+                                (if (and (pair? s) (eq? (car s) 'surface))
+                                    (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                                           (surf (make-surface* (map-grant g0) 40 40 stride ro go bo '())))
+                                      (clear surf (rgb surf 220 60 60))
+                                      (send h (list 'configure id 60 60 #t))
+                                      (send h (list 'commit id 0 '()))
+                                      (display "[compositorshards] routed client committed a window")
+                                      (newline)))))))))
+                  ;; the translucent verifier (on the owner): poll the scanout for red.
+                  (spawn-restricted '()
+                    (lambda ()
+                      (send comp (list 'connect #t (self)))
+                      (let ((r (recv)))
+                        (if (not (and (pair? r) (eq? (car r) 'connected)))
+                            (begin (display "[compositorshards] FAIL verifier not connected") (newline))
+                            (let* ((h (cadr r)) (fmt (caddr r))
+                                   (cs (make-surface* (make-bytes 4) 1 1 4 (car fmt) (cadr fmt) (caddr fmt) '()))
+                                   (red (rgb cs 220 60 60)))
+                              (let poll ((tries 0))
+                                (send h (list 'probe-pixel 75 75))
+                                (let ((got (recv)))
+                                  (cond ((and (integer? got) (= got red))
+                                         (display "[compositorshards] OK routed client window reached the scanout")
+                                         (newline))
+                                        ((>= tries 120)
+                                         (display "[compositorshards] FAIL window never reached the scanout (timeout)")
+                                         (newline))
+                                        (else (sleep 100000000) (poll (+ tries 1)))))))))))))
             (if (cmdline-has? "cardinal.compositorlayers")
                 (spawn-restricted '(sys-shm)
                   (lambda ()

@@ -38,7 +38,7 @@
 ;; root context because they are captured lexically, not acquired by `import`.
 
 (define-module corecompositor
-  (export start-compositor-service make-compositor-caps paint-windows)
+  (export start-compositor-service make-compositor-caps paint-windows make-shard-cfg Z-BAND)
   (import driver-util graphics)
 
   ;; --- injected capabilities --------------------------------------------------
@@ -123,25 +123,49 @@
   ;; case of the sharded model: one instance owns one layer and merges it (a 1-layer
   ;; z-pick) into the scanout -- phase 7B-wiring promotes the layer to a grant-shared
   ;; per-core buffer the owner maps, with the same merge.
-  (define (make-mrg lc lz zop zctr shards) (vector lc lz zop zctr shards))
+  (define (make-mrg lc lz zop zctr shards owner) (vector lc lz zop zctr shards owner))
   (define (mrg-lc m)     (vector-ref m 0))   ; layer colour plane (a surface)
   (define (mrg-lz m)     (vector-ref m 1))   ; layer z plane (a surface; fill-rect stamps z)
   (define (mrg-zop m)    (vector-ref m 2))   ; the merged per-pixel topmost-opaque z (raw bytes)
   (define (mrg-zctr m)   (vector-ref m 3))   ; monotonic z counter (1-slot vector)
+  ;; The OWNER handle if this instance is a SHARD (its recomposite builds its layer
+  ;; then notifies the owner, which re-merges); #f if this IS the owner (its
+  ;; recomposite folds all shard layers + its own into the scanout). The one knob
+  ;; that makes start-compositor-service dual-role: a shard and the owner share the
+  ;; whole surface-table / handle-op / opaque-layer-build machinery and differ only
+  ;; in how recomposite finalises (notify vs merge) and how `connect` routes.
+  (define (mrg-owner m)  (vector-ref m 5))   ; owner handle (shard) or #f (owner)
   ;; Phase 7 cross-core: a 1-slot cell holding the list of REMOTE shard layers this
   ;; owner merges in. Each entry is (colour-view . z-view) -- the owner's mapped
   ;; views of a per-core shard's grant-shared (colour,z) layer planes (same
   ;; stride/np as the scanout). The opaque merge folds the z-pick over the owner's
   ;; own layer plus every shard layer; an empty list is the single-instance (N=1)
   ;; case (the SMP=1 / no-AP boot), so the owner-only path is unchanged.
-  (define (mrg-shards m) (vector-ref m 4))   ; 1-slot cell: list of (colour-view . z-view)
-  (define (shard-color s) (car s))
-  (define (shard-z s)     (cdr s))
+  (define (mrg-shards m) (vector-ref m 4))   ; 1-slot cell: list of shard records
+  ;; A shard record is (handle colour-view z-view): the shard's primary handle (the
+  ;; owner routes opaque clients to it) and the owner's mapped views of the shard's
+  ;; grant-shared (colour,z) layer planes (the merge folds them in).
+  (define (shard-handle s) (car s))
+  (define (shard-color s)  (cadr s))
+  (define (shard-z s)      (caddr s))
   ;; The z authority: a fresh top z-stamp. Real z starts at 1 (z==0 = empty layer px).
   (define (fresh-z mrg)
     (let ((c (mrg-zctr mrg)))
       (vector-set! c 0 (+ (vector-ref c 0) 1))
       (vector-ref c 0)))
+
+  ;; A SHARD config passed to start-compositor-service to put it in shard role: the
+  ;; owner handle, the grant-shared layer planes (colour + z surfaces) the shard
+  ;; composites its clients into, and a z BASE so shards occupy disjoint z bands
+  ;; (core i starts at i*Z-BAND) -- a deterministic cross-shard stacking without a
+  ;; per-window round-trip to the owner's z authority (true global z is a later
+  ;; refinement). #f for the owner instance (it allocates its own scratch layer).
+  (define Z-BAND 1000000)
+  (define (make-shard-cfg owner lc lz z-base) (vector owner lc lz z-base))
+  (define (scfg-owner c)  (vector-ref c 0))
+  (define (scfg-lc c)     (vector-ref c 1))
+  (define (scfg-lz c)     (vector-ref c 2))
+  (define (scfg-zbase c)  (vector-ref c 3))
 
   ;; Recomposite the whole scanout from the surface table via the phase-7 two-pass
   ;; merge. `surfaces` is stored top-first; reverse for back-to-front. Opaque windows
@@ -175,7 +199,15 @@
                   (blit lc (surf-src r ro go bo) (sf r SF-X) (sf r SF-Y))
                   (fill-rect lz (sf r SF-X) (sf r SF-Y) (sf r SF-W) (sf r SF-H) (sf r SF-Z)))
                 opaque)
-      ;; 2. merge: clear the scanout to the desktop bg and Zop to 0, then z-pick the
+      ;; A SHARD stops here: its lc/lz ARE the grant-shared layer the owner maps, so
+      ;; once the opaque layer is built it just notifies the owner, which re-merges
+      ;; every shard layer into the scanout. (Shards host only opaque clients --
+      ;; translucent is routed to the owner -- so there is nothing else to do.) The
+      ;; caller's present! is a no-op for a shard (its present cap is #f).
+      (if (mrg-owner mrg)
+          (send (mrg-owner mrg) (list 'layer-update))
+          (begin
+      ;; 2. merge (OWNER): clear the scanout to the desktop bg and Zop to 0, z-pick the
       ;; owner's opaque layer in, followed by every REMOTE shard's layer. A z-pick is
       ;; max-z per pixel and order-independent, so folding it over (own + shard0 +
       ;; shard1 + ...) yields the correct global opaque image + Zop regardless of how
@@ -195,7 +227,7 @@
                                   (surface-fb src) (surface-stride src)
                                   (surface-width src) (surface-height src)
                                   zop (sf r SF-Z))))
-                translu)))
+                translu)))))
 
   ;; --- surface-table helpers --------------------------------------------------
   ;; Does proper list `lst` have at least `n` elements? Walks safely (checks pair?
@@ -452,7 +484,11 @@
   ;; The PRIMARY mailbox loop. Demuxes the connect handshake, the handler-relayed
   ;; surface ops (`op`), input events from coreinput (`input`), and a test/debug
   ;; `probe-pixel` (reads the composited screen so an end-to-end test can assert).
-  (define (start-compositor-service screen caps)
+  ;; Start a compositor instance. `shard-cfg` #f => the OWNER (owns the scanout +
+  ;; the merge + routing + the z authority); a make-shard-cfg => a SHARD (composites
+  ;; its routed clients into the grant-shared layer it was handed and notifies the
+  ;; owner). The two share this whole serve loop and surface machinery.
+  (define (start-compositor-service screen caps shard-cfg)
     (let ((bg (rgb screen 28 30 44))
           ;; the screen's pixel format, advertised to clients so they draw into
           ;; their granted backing with the SAME channel layout the screen uses
@@ -461,18 +497,27 @@
           ;; ephemeral title-bar-drag state: #f, or (id offx offy) mid-drag. A
           ;; captured 1-slot cell rather than threaded `st` -- it is interaction
           ;; state, not part of the surface table, and the root is single-threaded.
-          (drag-state (make-vector 1 #f)))
+          (drag-state (make-vector 1 #f))
+          ;; round-robin cursor for routing opaque clients across shards (owner only).
+          (rr (make-vector 1 0)))
       ;; Phase 7: this instance's compositing buffers. The opaque layer (colour + z
       ;; planes) and the Zop plane are screen-sized and share the screen's stride, so
-      ;; the z-pick can run flat over the whole buffer. Allocated once and reused each
-      ;; recomposite (cleared, rebuilt). The z counter starts at 0 (fresh-z -> 1..).
+      ;; the z-pick can run flat over the whole buffer. The OWNER allocates scratch
+      ;; planes; a SHARD reuses the grant-shared planes it was handed (so the owner
+      ;; maps the very buffers the shard composites into). z counter starts at the
+      ;; shard's z-base (0 for the owner); fresh-z increments from there.
       (let* ((sw (surface-width screen)) (sh (surface-height screen))
              (stride (surface-stride screen)) (plane (* stride sh))
-             (lc (make-surface* (make-bytes plane) sw sh stride
-                                (surface-r-off screen) (surface-g-off screen)
-                                (surface-b-off screen) '()))
-             (lz (make-surface (make-bytes plane) sw sh stride))
-             (mrg (make-mrg lc lz (make-bytes plane) (make-vector 1 0) (make-vector 1 '()))))
+             (lc (if shard-cfg (scfg-lc shard-cfg)
+                     (make-surface* (make-bytes plane) sw sh stride
+                                    (surface-r-off screen) (surface-g-off screen)
+                                    (surface-b-off screen) '())))
+             (lz (if shard-cfg (scfg-lz shard-cfg)
+                     (make-surface (make-bytes plane) sw sh stride)))
+             (mrg (make-mrg lc lz (make-bytes plane)
+                            (make-vector 1 (if shard-cfg (scfg-zbase shard-cfg) 0))
+                            (make-vector 1 '())
+                            (if shard-cfg (scfg-owner shard-cfg) #f))))
       ;; Phase 4: paint the desktop background and push the whole screen once, so the
       ;; display shows the compositor's backdrop immediately (before any client) and
       ;; every later op only needs to flush its own damage rect.
@@ -483,16 +528,28 @@
         (lambda (st m)
           (cond
             ((not (pair? m)) st)
-            ;; (connect transparency? reply) -> spawn this client's handler. `reply`
-            ;; must be a context: it becomes the client's authenticated identity and
-            ;; the address every later reply is sent to, so a non-context here (which
-            ;; would abort the serve loop on the `send` below, since the VM has no
-            ;; try/catch) is rejected outright. The reply carries the screen `fmt` so
-            ;; the client packs pixels in the display's layout.
+            ;; (connect transparency? reply) -> establish the client. `reply` must be a
+            ;; context: it is the client's authenticated identity and the address every
+            ;; later reply goes to, so a non-context (which would abort the loop on the
+            ;; `send`) is rejected. ROUTING (phase 7): the OWNER sends an OPAQUE client
+            ;; to a shard (round-robin) so its windows composite on that shard's core;
+            ;; the shard spawns ITS handler and replies to the client directly. A
+            ;; TRANSLUCENT client (alpha must be composed centrally) and any client when
+            ;; there are no shards stay LOCAL -- spawn a handler here, reply `(connected
+            ;; handler fmt)`. A shard instance has no shards of its own, so it always
+            ;; hosts locally; thus the same code routes for the owner and hosts for a
+            ;; shard. The shard's reply carries ITS fmt (identical -- same scanout).
             ((and (eq? (car m) 'connect) (len>= m 3) (ctx? (caddr m)))
-             (let ((h (make-handler (self) (caddr m) (cadr m))))
-               (send (caddr m) (list 'connected h fmt))
-               st))
+             (let ((shards (vector-ref (mrg-shards mrg) 0)))
+               (if (and (not (cadr m)) (pair? shards))
+                   (let* ((n (length shards))
+                          (i (modulo (vector-ref rr 0) n))
+                          (sh (shard-handle (list-ref shards i))))
+                     (vector-set! rr 0 (+ (vector-ref rr 0) 1))
+                     (send sh (list 'connect (cadr m) (caddr m))))
+                   (let ((h (make-handler (self) (caddr m) (cadr m))))
+                     (send (caddr m) (list 'connected h fmt)))))
+             st)
             ;; (op client transparency? msg) -> a relayed surface op (incl. the
             ;; test-only probe-pixel; see handle-op for why it goes via the handler).
             ;; Sent only by a (trusted) handler, but length-guarded all the same.
@@ -515,20 +572,24 @@
              (send (cadr m) (list 'geom (surface-width screen) (surface-height screen)
                                   (surface-stride screen) fmt))
              st)
-            ;; (register-shard colour-grant z-grant) -> map this shard's grant-shared
-            ;; layer planes and add them to the merge set. The grants come from
-            ;; another core and are message data, so BOTH must be validated as real
-            ;; grants (grant?) before map-grant -- map-grant errors on a non-grant,
-            ;; which would kill this try/catch-less serve loop. A live grant maps to a
-            ;; view; a revoked one maps to #f -> skip it (no merge contribution). No
-            ;; recomposite here: the shard sends `layer-update` right after, which
-            ;; does the merge+flush once with the layer already populated.
-            ((and (eq? (car m) 'register-shard) (len>= m 3) (caps-map caps)
-                  (grant? (cadr m)) (grant? (caddr m)))
-             (let ((cv ((caps-map caps) (cadr m))) (zv ((caps-map caps) (caddr m))))
+            ;; (register-shard shard-handle colour-grant z-grant) -> record the shard:
+            ;; its primary handle (the owner routes opaque clients to it) and the owner's
+            ;; mapped views of its grant-shared layer planes (folded into the merge). The
+            ;; grants come from another core and are message data, so BOTH must be real
+            ;; grants (grant?) before map-grant -- map-grant errors on a non-grant, which
+            ;; would kill this try/catch-less serve loop. A live grant maps to a view; a
+            ;; revoked one maps to #f -> skip it. No recomposite here: the shard sends
+            ;; `layer-update` right after, which merges+flushes once.
+            ((and (eq? (car m) 'register-shard) (len>= m 4) (caps-map caps)
+                  (ctx? (cadr m)) (grant? (caddr m)) (grant? (cadddr m)))
+             (let ((cv ((caps-map caps) (caddr m))) (zv ((caps-map caps) (cadddr m))))
                (if (and cv zv)
                    (vector-set! (mrg-shards mrg) 0
-                                (cons (cons cv zv) (vector-ref (mrg-shards mrg) 0)))))
+                                (cons (list (cadr m) cv zv) (vector-ref (mrg-shards mrg) 0)))
+                   ;; a grant mapped to #f (revoked between the grant? check and here):
+                   ;; the shard is NOT registered (its content/clients won't appear).
+                   (begin (display "[corecompositor] register-shard: grant map failed; shard dropped")
+                          (newline))))
              st)
             ;; (layer-update . rects) -> a registered shard repainted its layer; re-
             ;; merge and flush. v1 flushes the whole screen (bounding the merge/flush
