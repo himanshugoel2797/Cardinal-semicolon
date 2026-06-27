@@ -30,6 +30,13 @@ cmake --build utils_build
 test -x utils_build/sign_exec/sign_exec || {
   echo "error: sign_exec was not produced" >&2; exit 1; }
 
+# --- 1b. Lisp syntax check -------------------------------------------------
+# Fail fast on a malformed .clp before the expensive target build + a QEMU boot.
+# This is the kernel's own reader rules (see scripts/check-lisp.py); a clean
+# pass here means the .clp files packaged into the initrd will at least lex.
+log "Checking Lisp syntax (lisp/**/*.clp)"
+python3 scripts/check-lisp.py -q
+
 # --- 2. target build -------------------------------------------------------
 log "Configuring target build (clang --target=x86_64-elf -> build/)"
 cmake -S . -B build -G "$GEN" \
