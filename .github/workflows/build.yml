@@ -37,6 +37,11 @@ jobs:
           ld.lld --version | head -1
           cmake --version | head -1
 
+      # Fail fast on a malformed .clp (the kernel reader's own rules) before the
+      # build + a QEMU boot would. python3 comes from the devenv conda env.
+      - name: Lisp syntax check
+        run: python3 scripts/check-lisp.py -q
+
       - name: Build host tools (sign_exec)
         run: |
           cmake -S utils -B utils_build -G Ninja -DCMAKE_BUILD_TYPE=Debug

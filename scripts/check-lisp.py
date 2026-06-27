@@ -19,6 +19,11 @@
 # imports, or evaluate. A balanced, well-formed file can still be semantically
 # wrong -- but it will not panic the reader.
 #
+# Known gap vs reader.c: a dotted vector literal #(a . b) is accepted here but
+# rejected by the reader (list_to_vector's "must be a proper list"), because that
+# is a post-parse semantic check with no single byte to blame. No .clp uses
+# #(...) literals, so this is theoretical; everything else matches byte-for-byte.
+#
 #   scripts/check-lisp.py                 # check every lisp/**/*.clp
 #   scripts/check-lisp.py a.clp b.clp     # check specific files
 #   scripts/check-lisp.py -               # check stdin (handy for a snippet)
@@ -82,6 +87,7 @@ class Reader:
         s, n = self.s, self.n
         open_pos = self.cur  # the opening quote
         c = self.cur + 1
+        count = 0  # decoded content bytes; reader.c caps these at its buf[1024]
         while c < n and s[c] != '"':
             ch = s[c]
             c += 1
@@ -89,6 +95,11 @@ class Reader:
                 if c >= n:
                     raise ReadError(open_pos, "unterminated escape in string")
                 c += 1  # the escaped char is consumed verbatim (value irrelevant here)
+            # Match reader.c's `if (n >= sizeof(buf))` BEFORE storing the byte: a
+            # string of >1024 decoded bytes is a read error, not silently accepted.
+            if count >= 1024:
+                raise ReadError(open_pos, "string literal too long")
+            count += 1
         if c >= n:
             raise ReadError(open_pos, "unterminated string (unclosed '\"')")
         c += 1  # closing quote
@@ -285,6 +296,12 @@ def main(argv):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         files = sorted(glob.glob(os.path.join(root, 'lisp', '**', '*.clp'),
                                  recursive=True))
+        # A clean exit on an empty glob would be a false "all OK" (e.g. run from
+        # the wrong dir, or lisp/ moved) -- fail loudly instead.
+        if not files:
+            print(f"error: no .clp files found under {os.path.join(root, 'lisp')}",
+                  file=sys.stderr)
+            return 1
 
     nfail = 0
     for f in files:
