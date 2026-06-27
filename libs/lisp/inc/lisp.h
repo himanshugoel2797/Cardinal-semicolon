@@ -585,7 +585,7 @@ void lisp_source_location(const char *base, const char *pos, int *line, int *col
 // also carrying "(line L, column C)") -- into `out` (NUL-terminated, capacity
 // `cap`; truncates rather than overflowing). Returns the number of forms
 // evaluated, or -1 if a reader error stopped the chunk. The serial shell is this
-// engine wired to a CSMUX channel; it is also unit-tested standalone.
+// engine wired to the raw serial line; it is also unit-tested standalone.
 int lisp_repl_eval(const char *in, size_t len, lisp_value env, char *out, size_t cap);
 
 // Like lisp_repl_eval but directs all evaluation allocation at the SYSTEM heap,

@@ -9,7 +9,7 @@
 // or errors) into a caller buffer. A reader error is reported WITH its source
 // location (line:column, via the reader's error cursor + lisp_source_location) --
 // the whole reason the reader was taught to track position. The serial shell
-// (modules/SysLisp) is then just this engine wired to a CSMUX channel.
+// (modules/SysLisp) is then just this engine wired to the raw serial line.
 
 #include <stddef.h>
 
