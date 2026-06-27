@@ -22,6 +22,7 @@
 (define-module usb-audio
   (export usb-audio-init)
   (import coreusb driver-util)
+  (define lg (make-logger 'usb-audio))
 
   ;; The format we synthesize + advertise (QEMU usb-audio's default; the universal
   ;; PC audio format). FRAME-SZ = 2 channels * 2 bytes.
@@ -133,18 +134,16 @@
           (set-iface alt)
           (set-rate SAMPLE-RATE)
           (send audio (list 'register name (self) (audio-endpoint-descs)))
-          (display "[usb-audio] registered ") (display name)
-          (display " (iface=") (display iface) (display " alt=") (display alt)
-          (display " ep=") (display ep-addr) (display " mps=") (display mps) (display ")") (newline)
+          (lg "registered " name " (iface=" iface " alt=" alt " ep=" ep-addr " mps=" mps ")")
           (play TONE-HZ TONE-AMP TONE-FRAMES)
-          (display "[usb-audio] bring-up tone done") (newline)
+          (lg "bring-up tone done")
 
           ;; --- serve coreaudio (the subset a UAC1 speaker supports) ---
           ;; `stopped` is checked at the top of each turn so a (stop) noted during a
           ;; transfer exits promptly; an idle (stop) is handled by its clause.
           (let serve-loop ()
             (if stopped
-                (begin (set-iface 0) (display "[usb-audio] stopped") (newline) 'stopped)
+                (begin (set-iface 0) (lg "stopped") 'stopped)
                 (let ((m (recv)))
                   (cond
                     ((eq? (car m) 'tone) (play TONE-HZ TONE-AMP TONE-FRAMES) (serve-loop))
@@ -152,7 +151,7 @@
                      (let ((freq (nth m 1)) (amp (nth m 2)) (frames (nth m 3)))
                        (if (and (> freq 0) (> amp 0) (< amp 32768) (> frames 0))
                            (play freq amp frames)
-                           (begin (display "[usb-audio] play: bad params, ignored") (newline))))
+                           (begin (lg "play: bad params, ignored"))))
                      (serve-loop))
                     ((eq? (car m) 'endpoints)       ; (endpoints reply)
                      (send (nth m 1) (audio-endpoint-descs)) (serve-loop))
@@ -162,7 +161,7 @@
                     ((eq? (car m) 'mute)       (serve-loop))
                     ((eq? (car m) 'get-status) (send (nth m 1) 'playing) (serve-loop))
                     ((eq? (car m) 'stop)            ; hot-remove while idle
-                     (set-iface 0) (display "[usb-audio] stopped") (newline) 'stopped)
+                     (set-iface 0) (lg "stopped") 'stopped)
                     (else (serve-loop))))))))))
 
   ;; A claimed device's name is usbaudioN (N from a monotonic counter, like the
@@ -170,18 +169,18 @@
   (define (audio-on-probe dev audio devs n)
     (let ((found (find-iso-out dev)))
       (if (not found)
-          (begin (display "[usb-audio] no iso OUT streaming endpoint; not claiming") (newline) devs)
+          (begin (lg "no iso OUT streaming endpoint; not claiming") devs)
           (let* ((name (string->symbol (string-append "usbaudio" (number->string n))))
                  (ctx (start-audio-card dev audio (nth found 0) (nth found 1)
                                         (nth found 2) (nth found 3) name)))
-            (display "[usb-audio] claimed audio device") (newline)
+            (lg "claimed audio device")
             (cons (cons (usb-dev-address dev) ctx) devs)))))
 
   (define (audio-on-remove addr devs)
     (let loop ((ds devs) (keep '()))
       (cond ((null? ds) keep)
             ((= (caar ds) addr) (send (cdar ds) (list 'stop))
-                                (display "[usb-audio] device removed") (newline)
+                                (lg "device removed")
                                 (loop (cdr ds) keep))
             (else (loop (cdr ds) (cons (car ds) keep))))))
 

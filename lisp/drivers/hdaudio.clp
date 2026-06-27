@@ -38,6 +38,7 @@
           set-endpoint-volume! set-endpoint-mute! ep-vol configure-input!
           poll-jacks! read-present)
   (import sys-mmio sys-pci driver-util)
+  (define lg (make-logger 'hdaudio))
 
 ;; --- the controllers we bind (matched by PCI class, not VID/DID) -------------
 ;; Every HD Audio controller advertises base class 0x04 (multimedia) subclass 0x03
@@ -299,8 +300,7 @@
     (if (and cl (not (= 0 (bitwise-and cl #x80))))
         ;; long-form (16-bit entries): bail rather than misparse them as 8-bit --
         ;; falling through would yield garbage NIDs and silently break the walk.
-        (begin (display "[hdaudio] warning: long-form connection list unsupported")
-               (newline)
+        (begin (lg "warning: long-form connection list unsupported")
                '())
         (let loop ((i 0) (acc '()))
           (if (>= i len)
@@ -682,8 +682,7 @@
          (bdl (dma-alloc-32 256)))            ; 16 BDL entries' worth (we use 2)
     (fill-tone! buf nframes freq amp)
     (stream-run! regs (out-sd-base regs) bdl buf nbytes STREAM-NUM)
-    (display "[hdaudio] playing ") (display freq) (display "Hz tone on stream ")
-    (display STREAM-NUM) (newline)
+    (lg "playing " freq "Hz tone on stream " STREAM-NUM)
     (list buf bdl)))
 
 ;; --- capture (input stream) --------------------------------------------------
@@ -724,8 +723,7 @@
          (buf (dma-alloc-32 nbytes))
          (bdl (dma-alloc-32 256)))
     (stream-run! regs (in-sd-base regs) bdl buf nbytes CAPTURE-STREAM)
-    (display "[hdaudio] capturing on stream ") (display CAPTURE-STREAM)
-    (display " pin=") (display (ep-pin ep)) (display " adc=") (display (ep-conv ep)) (newline)
+    (lg "capturing on stream " CAPTURE-STREAM " pin=" (ep-pin ep) " adc=" (ep-conv ep))
     (list buf bdl nbytes)))
 
 ;; The capture DMA position (bytes written into the ring so far, mod CBL).
@@ -757,10 +755,9 @@
 (define (log-endpoints eps)
   (for-each
    (lambda (e)
-     (display "[hdaudio]   endpoint ") (display (ep-id e))
-     (display " ") (display (ep-dir e)) (display " ") (display (ep-dev e))
-     (display " pin=") (display (ep-pin e)) (display " conv=") (display (ep-conv e))
-     (display (if (ep-present e) " present" " absent")) (newline))
+     (lg "  endpoint " (ep-id e) " " (ep-dir e) " " (ep-dev e)
+         " pin=" (ep-pin e) " conv=" (ep-conv e)
+         (if (ep-present e) " present" " absent")))
    eps))
 
 ;; --- jack-presence detection (plug / unplug) ---------------------------------
@@ -781,9 +778,8 @@
               (loop (cdr es) changes)
               (begin
                 (ep-present! e np)
-                (display "[hdaudio] jack ") (display (ep-dev e))
-                (display (if np " inserted" " removed"))
-                (display " (ep ") (display (ep-id e)) (display ")") (newline)
+                (lg "jack " (ep-dev e) (if np " inserted" " removed")
+                    " (ep " (ep-id e) ")")
                 (loop (cdr es) (cons (list (ep-id e) (ep-dev e) np) changes))))))))
 
 (define JACK-POLL-NS 1000000000)   ; poll pin sense once a second
@@ -873,14 +869,14 @@
          (let ((freq (nth m 1)) (amp (nth m 2)) (frames (nth m 3)))
            (if (and (> freq 0) (> amp 0) (< amp 32768) (> frames 0))
                (loop eps (play-tone! regs freq amp frames) cap)
-               (begin (display "[hdaudio] play: bad params, ignored") (newline)
+               (begin (lg "play: bad params, ignored")
                       (loop eps cur cap)))))
         ((eq? (car m) 'endpoints)       ; (endpoints reply)
          (send (nth m 1) (endpoint-descs eps)) (loop eps cur cap))
         ((eq? (car m) 'set-volume)      ; (set-volume ep-id vol)
          (let ((ep (ep-by-id eps (nth m 1))))
            (if ep (set-endpoint-volume! ep (nth m 2))
-               (begin (display "[hdaudio] set-volume: no endpoint ") (display (nth m 1)) (newline))))
+               (begin (lg "set-volume: no endpoint " (nth m 1)))))
          (loop eps cur cap))
         ((eq? (car m) 'get-volume)      ; (get-volume ep-id reply)
          (let ((ep (ep-by-id eps (nth m 1))))
@@ -892,8 +888,7 @@
          (let ((ep (ep-by-id eps (nth m 1))))
            (if (and ep (eq? (ep-dir ep) 'in))
                (loop eps cur (capture-start! regs ep))
-               (begin (display "[hdaudio] capture-start: no input endpoint ")
-                      (display (nth m 1)) (newline) (loop eps cur cap)))))
+               (begin (lg "capture-start: no input endpoint " (nth m 1)) (loop eps cur cap)))))
         ((eq? (car m) 'capture-read)    ; (capture-read reply) -> a copy of the ring, or #f
          (send (nth m 1) (if cap (copy-bytes (car cap) 0 (caddr cap)) #f))
          (loop eps cur cap))
@@ -922,7 +917,7 @@
 (define (hdaudio-bringup regs ecam audio name)
   ;; reset the controller
   (if (not (hda-reset! regs))
-      (begin (display "[hdaudio] controller reset timeout") (newline) 'fail)
+      (begin (lg "controller reset timeout") 'fail)
       (begin
         ;; codecs report presence on STATESTS shortly after CRST deassert; give
         ;; them a beat to settle. (~1ms covers the 521us spec wait.)
@@ -930,9 +925,7 @@
         (let* ((statests (r16 regs STATESTS))
                (corb-ent (ring-entcnt (szcap-of regs CORBSIZE)))
                (rirb-ent (ring-entcnt (szcap-of regs RIRBSIZE))))
-          (display "[hdaudio] reset OK statests=") (display statests)
-          (display " corb-ent=") (display corb-ent)
-          (display " rirb-ent=") (display rirb-ent) (newline)
+          (lg "reset OK statests=" statests " corb-ent=" corb-ent " rirb-ent=" rirb-ent)
           ;; enable codec wake/state-change reporting (wakeen=0xFFFF) so a codec
           ;; hot-add/remove raises the controller state-change interrupt.
           (w16! regs WAKEEN #xFFFF)
@@ -959,23 +952,20 @@
             ;; the watcher reconciles it, so the boot window is not a blind spot.
             (w16! regs STATESTS (r16 regs STATESTS))
             (let ((msi (pci-setup-msi ecam)))
-              (display "[hdaudio] msi=") (display msi) (newline)
+              (lg "msi=" msi)
               ;; Scan every codec, enumerate + configure all endpoints, register the
               ;; set with coreaudio. (rescan re-runs this on a codec-change.) Arm the
               ;; state-change watcher and play the bring-up tone if there is an
               ;; output -- then serve the card forever.
               (let* ((rescan (lambda ()
                                (let ((neps (scan-all-codecs regs ring rirb-off slot-cnt st)))
-                                 (display "[hdaudio] codec-change -> ") (display (length neps))
-                                 (display " endpoint(s)") (newline)
+                                 (lg "codec-change -> " (length neps) " endpoint(s)")
                                  (log-endpoints neps)
                                  neps)))
                      (eps (scan-all-codecs regs ring rirb-off slot-cnt st)))
                 (log-endpoints eps)
                 (send audio (list 'register name (self) (endpoint-descs eps)))
-                (display "[hdaudio] registered ") (display name)
-                (display " with coreaudio (") (display (length eps))
-                (display " endpoints)") (newline)
+                (lg "registered " name " with coreaudio (" (length eps) " endpoints)")
                 (start-codec-watcher regs msi (self))
                 (start-jack-poller (self))          ; jack plug/unplug detection
                 (hda-driver-loop
@@ -995,7 +985,7 @@
 
 (define (hdaudio-init audio name ecam)
   (if (not ecam)
-      (begin (display "[hdaudio] no device present") (newline) #f)
+      (begin (lg "no device present") #f)
       (let ((cfg (mmio-map ecam 4096)))
         (pci-enable-mem-bus-master! cfg)
         ;; HDA register block = BAR0. If firmware never configured it (base 0),
@@ -1005,7 +995,7 @@
                               (begin (pci-assign-bars ecam) (bar-base cfg HDA-BAR))
                               b))))
           (if (or (not bar-phys) (= bar-phys 0))
-              (begin (display "[hdaudio] no MMIO BAR") (newline) #f)
+              (begin (lg "no MMIO BAR") #f)
               ;; Map a full page: the global regs end at 0x180 only for ISS=OSS=4
               ;; (ICH9/ICH6); a controller with more streams puts output stream
               ;; descriptors past 0x180 (out-sd-base = 0x80 + iss*0x20), so size the

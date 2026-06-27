@@ -21,4 +21,5 @@
 (define-module ehci
   (export ehci-init)
   (import sys-mmio sys-pci driver-util coreusb)
+  (define lg (make-logger 'ehci))
   (include regs driver))
