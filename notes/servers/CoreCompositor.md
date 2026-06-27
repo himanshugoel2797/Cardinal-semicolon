@@ -661,9 +661,13 @@ after `coredisplay` + the display driver bind (it needs the driver's
      part is the expensive scanout push. Validated `cardinal.compositordamage` (a present
      that classifies the flush): a routed shard window's commit flushes `((60 60 40 40))`,
      not the 256×256 screen. (Per-changed-window damage, vs the union-of-all, is a further
-     refinement.) **Remaining follow-ups:** shard **de-register** (a dead shard leaves
-     stale manifest/layer); a defense-in-depth **sender check** on the owner-initiated
-     shard verbs.
+     refinement.) *(The two once-tracked shard follow-ups are now closed: shard
+     **de-register** is moot — a compositor-instance crash is an unrecoverable failure, so
+     there is never a live mesh with a dead shard to drain (a stale manifest/layer can't
+     arise in a healthy mesh); and the defense-in-depth **sender check** on the
+     owner-initiated verbs is subsumed by the mesh-key (`keyed?`) authentication —
+     `move-window`/`z` already require the unforgeable, identity-passed rendezvous ctx that
+     only mesh members hold, so a semi-trusted (key-less) client cannot forge them.)*
 
 ## Open / deferred
 
