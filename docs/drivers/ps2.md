@@ -1,6 +1,6 @@
 # ps2
 
-> All-Lisp i8042 PS/2 keyboard driver that uses a generic ISA-IRQ wake bridge to deliver scancode events to [coreinput](../servers/coreinput.md).
+> All-Lisp i8042 PS/2 keyboard + mouse driver that uses a generic ISA-IRQ wake bridge to deliver scancode and pointer events to [coreinput](../servers/coreinput.md).
 
 | | |
 |---|---|
@@ -24,13 +24,16 @@ context, which then drains the i8042's one-byte output buffer. Because the
 Output-Buffer-Full (OBF) bit gates the next IRQ, no byte is ever lost while the
 context is scheduled to drain — only throughput drops under load.
 
-**Keyboard only.** Port 2 (mouse) is disabled at controller init and never raises
-IRQ 12. Mouse support is a future refinement; port 2 is left quiet so stray IRQ 12
-events cannot desync the pump.
+**Keyboard and mouse.** `ps2-init` enables the auxiliary (mouse) port and
+initializes the mouse; the single pump drains both devices from port `0x60`,
+routing each byte to the keyboard or mouse path by the i8042 status mouse bit
+(`0x20`). The mouse path reassembles the standard 3-byte movement packet, keeps
+an accumulated absolute pointer position, and emits `(pointer x y down?)` events.
+If the mouse does not initialize the keyboard still comes up.
 
 The driver sits between the i8042 hardware and [coreinput](../servers/coreinput.md).
-No other context interacts with it directly; all keyboard input reaches userspace
-through the coreinput message protocol.
+No other context interacts with it directly; all keyboard and pointer input
+reaches userspace through the coreinput message protocol.
 
 ## Initialization
 
@@ -98,20 +101,34 @@ drain increments the counter and causes the next `irq-wait` to return immediatel
 (re-drain) instead of parking on a byte already sitting in the buffer. This
 pattern is safe against the race: the count-based wake never misses a delivery.
 
-Port 2 (mouse, IRQ 12) is never registered; mouse bytes that slip through (because
-the OBF/mouse status bit is set) are read from `0x60` and silently discarded.
+IRQ 12 (mouse) is also registered with `(irq-register 12)` so the aux line is
+routed and counted. There is one waiter per IRQ line and no `irq-wait-any`
+primitive, so the single pump parks on **IRQ 1** with a short bounded timeout
+(~8 ms): a keystroke wakes it immediately, and the timeout makes it re-drain the
+shared `0x60` port for mouse activity even when the keyboard is quiet.
 
-## Scancode pump
+## Scancode + mouse pump
 
-`(ps2-drain coreinput)` drains the i8042 output buffer in a loop, forwarding
-keyboard events to coreinput:
+`(ps2-drain coreinput state)` drains the i8042 output buffer in a loop, routing
+each byte by the i8042 status mouse bit (`0x20`) and forwarding events to
+coreinput. `state` is the mutable 3-byte mouse-packet framer.
 
 | Byte read | Action |
 |-----------|--------|
-| `0xFA` | ACK — ignore (leftover from init commands) |
-| `0xF0` | Set-2 break prefix — read the next byte; send a key-release event |
-| mouse byte (status bit 5 set) | Discard the byte; loop |
+| `0xFA` (keyboard) | ACK — ignore (leftover from init commands) |
+| `0xF0` (keyboard) | Set-2 break prefix — read the next byte; send a key-release event |
+| mouse byte (status bit 5 set) | Feed the 3-byte packet framer (`ps2-mouse-feed`); emit a pointer event on the 3rd byte |
 | any other make code | Send a key-press event |
+
+The mouse path reassembles a packet, updates the accumulated `(x y)` and left-
+button state, and emits:
+
+```scheme
+(send coreinput (list 'event (list 'pointer <x> <y> <left-down?>)))
+```
+
+where `left-down?` is `#t`/`#f` (the [compositor](../servers/corecompositor.md)
+requires a boolean for the pointer button, unlike the 1/0 key convention).
 
 Events sent to `coreinput`:
 
@@ -126,6 +143,28 @@ Events sent to `coreinput`:
 
 `<scancode>` is the raw byte read from port `0x60`. No translation or keysym
 mapping is applied; that is [coreinput](../servers/coreinput.md)'s responsibility.
+
+## Mouse
+
+`ps2-init` brings up the auxiliary device after the keyboard:
+
+1. Enable port 2 (controller command `0xA8`).
+2. `(ps2-mouse-init)` — write to the aux device via the `0xD4` prefix:
+   `0xFF` (reset; consumes the `0xFA` ACK + `0xAA` self-test-pass + `0x00`
+   device id), `0xF6` (set defaults), `0xF4` (enable data reporting); each gated
+   on the `0xFA` ACK through the bounded `ps2-read`. A missing/wedged mouse logs
+   `[ps2] no mouse (aux init failed); keyboard only` and leaves the aux IRQ
+   masked — the keyboard is unaffected.
+3. Re-read the config byte and set bit 1 (aux IRQ) **only if the mouse ACK'd**,
+   and clear bit 5 (aux-clock-disable) so port 2 is clocked.
+
+The standard 3-byte movement packet is `(flags, dx, dy)`: `flags` carries the
+button states (bit 0 left, 1 right, 2 middle), the X/Y sign bits (4/5), the
+overflow bits (6/7), and an always-1 bit (3) used for resync. `dx`/`dy` are
+reconstructed as 9-bit signed values; **`dy` is negated** because PS/2 reports
+positive-up while screen Y is positive-down. The driver maintains an accumulated
+absolute position over a fixed **1024×768** space (there is no screen-size source
+in the driver), clamped to `[0,1023] × [0,767]`, starting centred.
 
 ## Self-test / smoke-test
 
@@ -161,10 +200,22 @@ from a context that holds `sys-io` authority. See [Initialization](#initializati
 
 ### `(ps2-keyboard-driver coreinput)`
 
-The IRQ-driven keyboard pump. Takes a handle to the running
+The IRQ-driven keyboard + mouse pump. Takes a handle to the running
 [coreinput](../servers/coreinput.md) context. Registers as `'ps2-keyboard`,
-claims IRQ 1, runs the echo self-test, then loops forever delivering scancode
-events. Never returns under normal operation.
+claims IRQ 1 and IRQ 12, runs the echo self-test, then loops forever delivering
+scancode and pointer events. Never returns under normal operation.
+
+### Pure mouse helpers (host-testable)
+
+Exported so a host unit test (`libs/lisp/test/test_ps2_mouse.c`) can drive them
+over mock packet bytes without hardware:
+
+- `(ps2-mouse-decode flags b1 b2)` → `(dx dy left? right? middle?)` — 9-bit
+  signed reconstruction with the screen-Y negation and `#t`/`#f` buttons.
+- `(ps2-mouse-accum x y dx dy)` → `(new-x new-y)` — accumulate + clamp to
+  1024×768.
+- `(ps2-mouse-sync? flags)` — the byte-0 "always-1" (bit 3) resync check.
+- `(ps2-mouse-new-state)` — a fresh framer vector (pointer centred, button up).
 
 ## I/O port map
 
@@ -180,16 +231,13 @@ controller (IBF stuck set) cannot hang boot indefinitely.
 
 ## Notes / gotchas
 
-**QEMU does not deliver injected keystrokes to the PS/2 device.** Keys sent via
-QEMU's `sendkey` HMP command, the QMP `send-key` API, or VNC/RFB keyboard events
-are NOT routed through the emulated i8042. The only way to exercise the full
-interrupt path in a headless QEMU test is the `0xEE` echo self-test that
-`ps2-irq-selftest` runs automatically at boot.
-
-**Mouse is not implemented.** Port 2 is disabled at `ps2-init` time and IRQ 12 is
-never registered. The `PS2-STATUS-MOUSE` bit check in `ps2-drain` is purely
-defensive: mouse bytes that somehow appear in the output buffer are consumed and
-discarded rather than forwarded as spurious key events.
+**QEMU does not deliver injected keyboard *or mouse* input to the PS/2 device.**
+Keys sent via QEMU's `sendkey` HMP command, the QMP `send-key`/`input-send-event`
+APIs, or VNC/RFB events are NOT routed through the emulated i8042. So the live
+keyboard path is verified by the `0xEE` echo self-test, and the **mouse pointer
+path is verified only by the host unit test** (`test_ps2_mouse.c`, over mock
+packet bytes) and on real hardware — the i8042 aux *bring-up* does complete under
+QEMU (the emulated mouse ACKs), but no synthetic movement reaches it.
 
 **No keyboard reset (`0xFF`) at init.** Sending a BAT reset takes tens of
 milliseconds and produces a long ACK stream that can overrun the bounded waits and
