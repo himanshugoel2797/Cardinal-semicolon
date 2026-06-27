@@ -66,7 +66,9 @@ static const char *PROG =
     // present is the phase-4 driver seam; a host has no display, so #f (off-screen
     // RAM screen). The compositor still composites; it just flushes nothing.
     "(define screen (make-surface (make-bytes (* 64 64 4)) 64 64 (* 64 4)))"
-    "(define comp (start-compositor-service screen (make-compositor-caps falloc fmint frevoke #f #f) #f))"
+    // 6th cap = the shard-mesh key; #f here (no shard mesh in the host harness, so the
+    // keyed inter-instance verbs are never sent -- only the client path is exercised).
+    "(define comp (start-compositor-service screen (make-compositor-caps falloc fmint frevoke #f #f #f) #f))"
     "(define t (spawn (lambda ()"
     "  (define fails '())"
     "  (define (ck name got want)"

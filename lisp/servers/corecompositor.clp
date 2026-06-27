@@ -53,13 +53,26 @@
   ;;   view of its physical region. Used to map a per-core shard's grant-shared layer
   ;;   so the merge can read it. Injected (not imported) for the same host-loadable
   ;;   reason as the rest; #f on an instance that maps nothing (a pure shard).
-  (define (make-compositor-caps alloc mint revoke present map)
-    (list alloc mint revoke present map))
+  ;; key -> the SHARD-MESH CAPABILITY: an unforgeable token shared by the owner and
+  ;;   every shard (init injects the SAME value into both), and given to NO client.
+  ;;   The privileged inter-instance verbs (register-shard / layer-update / alloc-z /
+  ;;   move-window / z) all live on the owner's primary mailbox, which a semi-trusted
+  ;;   CLIENT also holds (it sends `connect` there) -- so without this any client
+  ;;   could forge a shard registration, a window manifest (stealing input focus), or
+  ;;   a move of another client's window. Each such verb carries `key` as its first
+  ;;   field and the receiver checks `(eq? key (caps-key caps))`; a client cannot
+  ;;   supply it. init uses the compositor rendezvous ctx as the token -- it is
+  ;;   root-created, handed only to mesh members, and a ctx handle passes by IDENTITY
+  ;;   (un-fabricable by a restricted context), so possessing it proves membership.
+  ;;   #f in the host harness (no shard mesh; the keyed verbs are never sent there).
+  (define (make-compositor-caps alloc mint revoke present map key)
+    (list alloc mint revoke present map key))
   (define (caps-alloc c)   (nth c 0))
   (define (caps-mint c)    (nth c 1))
   (define (caps-revoke c)  (nth c 2))
   (define (caps-present c) (nth c 3))
   (define (caps-map c)     (nth c 4))
+  (define (caps-key c)     (nth c 5))
 
   ;; --- the surface record (a mutable vector; lives only in the root) ----------
   ;; Two backings (double-buffered): the client draws into the buffer it is NOT
@@ -123,8 +136,17 @@
   ;; case of the sharded model: one instance owns one layer and merges it (a 1-layer
   ;; z-pick) into the scanout -- phase 7B-wiring promotes the layer to a grant-shared
   ;; per-core buffer the owner maps, with the same merge.
-  (define (make-mrg lc lz zop zctr shards owner windows prev-rects)
-    (vector lc lz zop zctr shards owner windows prev-rects))
+  (define (make-mrg lc lz zop zctr shards owner windows prev-rects key)
+    (vector lc lz zop zctr shards owner windows prev-rects key))
+  ;; The shard-mesh capability token (= caps-key); stamped on every privileged
+  ;; inter-instance message this instance SENDS and checked on every one it receives.
+  ;; See make-compositor-caps. Shared by the owner and all shards; never a client's.
+  ;; FAIL-CLOSED: every keyed arm guards on `(mrg-key mrg)` being truthy BEFORE the
+  ;; `(eq? ... (mrg-key mrg))` check, so a #f key (the host harness, which runs no
+  ;; shard mesh) rejects ALL privileged verbs rather than matching a forged `#f` field
+  ;; -- `(eq? #f #f)` is #t, so the eq? test alone would wave a `#f`-keyed forgery
+  ;; through. In the OS the key is always the rendezvous ctx (truthy + unforgeable).
+  (define (mrg-key m) (vector-ref m 8))
   ;; A SHARD's previous-frame visible window rects (1-slot cell). Its recomposite
   ;; reports DAMAGE = the union of these (the old positions) and the current rects
   ;; (the new positions) with each layer-update, so the owner can flush only the
@@ -184,7 +206,7 @@
     (if (mrg-owner mrg)
         (begin
           (if (= (sf r SF-Z) 0) (vector-set! r SF-Z (fresh-z mrg)))
-          (send (mrg-owner mrg) (list 'alloc-z (self) (sf r SF-ID))))
+          (send (mrg-owner mrg) (list 'alloc-z (mrg-key mrg) (self) (sf r SF-ID))))
         (vector-set! r SF-Z (fresh-z mrg))))
 
   ;; A SHARD config passed to start-compositor-service to put it in shard role: the
@@ -248,7 +270,7 @@
                  (damage (append (vector-ref (mrg-prev-rects mrg) 0) cur)))
             (vector-set! (mrg-prev-rects mrg) 0 cur)
             (send (mrg-owner mrg)
-                  (list 'layer-update (self)
+                  (list 'layer-update (mrg-key mrg) (self)
                         (map (lambda (r) (list (sf r SF-CLIENT) (sf r SF-X) (sf r SF-Y)
                                                (sf r SF-W) (sf r SF-H) (sf r SF-Z) (sf r SF-ID)))
                              vis)
@@ -588,7 +610,7 @@
                   ;; shard, which repositions it and re-merges (no local move).
                   (let ((shard (cadddr d)))
                     (if shard
-                        (send shard (list 'move-window (car d) (- x (cadr d)) (- y (caddr d))))
+                        (send shard (list 'move-window (mrg-key mrg) (car d) (- x (cadr d)) (- y (caddr d))))
                         (let ((r (find-surf (car d) surfaces)))
                           (if r (let ((old (surf-rect r)))
                                   (vector-set! r SF-X (- x (cadr d)))
@@ -673,7 +695,8 @@
                             (make-vector 1 '())
                             (if shard-cfg (scfg-owner shard-cfg) #f)
                             (make-vector 1 '())
-                            (make-vector 1 '()))))
+                            (make-vector 1 '())
+                            (caps-key caps))))
       ;; Phase 4: paint the desktop background and push the whole screen once, so the
       ;; display shows the compositor's backdrop immediately (before any client) and
       ;; every later op only needs to flush its own damage rect.
@@ -711,15 +734,18 @@
             ;; Sent only by a (trusted) handler, but length-guarded all the same.
             ((and (eq? (car m) 'op) (len>= m 4))
              (handle-op st (cadr m) (caddr m) (cadddr m) screen bg caps drag-state mrg))
-            ;; (move-window id x y) -> the OWNER relays a cross-shard drag to this
+            ;; (move-window KEY id x y) -> the OWNER relays a cross-shard drag to this
             ;; SHARD: reposition the window and re-merge (recomposite -> layer-update,
-            ;; so the owner re-merges + sees the new geometry). Owner-initiated only
-            ;; (the shard handle is known only to the owner), so trusted; type-guarded.
-            ((and (eq? (car m) 'move-window) (len>= m 4)
-                  (integer? (cadr m)) (integer? (caddr m)) (integer? (cadddr m)))
-             (let ((r (find-surf (cadr m) (cdr st))))
-               (if r (begin (vector-set! r SF-X (caddr m))
-                            (vector-set! r SF-Y (cadddr m))
+            ;; so the owner re-merges + sees the new geometry). Gated TWO ways: the
+            ;; mesh KEY must match (a client holding `comp` can't forge it -- see
+            ;; caps-key) and only a SHARD acts (`mrg-owner` set), since the owner never
+            ;; receives a legitimate move-window (it moves its own windows locally).
+            ((and (eq? (car m) 'move-window) (len>= m 5) (mrg-key mrg) (eq? (cadr m) (mrg-key mrg))
+                  (mrg-owner mrg)
+                  (integer? (caddr m)) (integer? (cadddr m)) (integer? (nth m 4)))
+             (let ((r (find-surf (caddr m) (cdr st))))
+               (if r (begin (vector-set! r SF-X (cadddr m))
+                            (vector-set! r SF-Y (nth m 4))
                             (recomposite screen bg (cdr st) mrg))))
              st)
             ;; (input ev) -> a coreinput event (the compositor is subscribed to the
@@ -727,24 +753,28 @@
             ;; inside handle-input, so a malformed event can't crash the root.
             ((and (eq? (car m) 'input) (pair? (cdr m)))
              (handle-input st (cadr m) screen bg caps drag-state mrg))
-            ;; (alloc-z reply surf-id) -> the owner is the global z authority; hand a
+            ;; (alloc-z KEY reply surf-id) -> the owner is the global z authority; hand a
             ;; shard a fresh global z for window `surf-id`, echoing the id back so the
             ;; shard applies it to the right surface (the request/reply is async, so the
             ;; id is the correlator -- no FIFO assumption, and a since-destroyed window
-            ;; is a safe no-op on the shard).
-            ((and (eq? (car m) 'alloc-z) (len>= m 3) (ctx? (cadr m)) (integer? (caddr m)))
-             (send (cadr m) (list 'z (fresh-z mrg) (caddr m)))
+            ;; is a safe no-op on the shard). KEY-gated: only a mesh member can request
+            ;; z, so a client can't pump the counter or make the owner reply to an
+            ;; arbitrary ctx.
+            ((and (eq? (car m) 'alloc-z) (len>= m 4) (mrg-key mrg) (eq? (cadr m) (mrg-key mrg))
+                  (not (mrg-owner mrg)) (ctx? (caddr m)) (integer? (cadddr m)))
+             (send (caddr m) (list 'z (mrg-key mrg) (fresh-z mrg) (cadddr m)))
              st)
-            ;; (z N surf-id) -> the owner's reply to a SHARD's alloc-z: set window
+            ;; (z KEY N surf-id) -> the owner's reply to a SHARD's alloc-z: set window
             ;; surf-id's global z and re-merge. Gated on (mrg-owner mrg) so ONLY a
             ;; shard ever processes it: otherwise a stray (z N id) sent to the owner
             ;; would find-surf the id over the OWNER's own table and corrupt that
             ;; window's z (ids are small integers shared by both) -- the owner never
-            ;; asks for z, so it must ignore the reply, not act on it.
-            ((and (mrg-owner mrg) (eq? (car m) 'z) (len>= m 3)
-                  (integer? (cadr m)) (integer? (caddr m)))
-             (let ((r (find-surf (caddr m) (cdr st))))
-               (if r (begin (vector-set! r SF-Z (cadr m))
+            ;; asks for z, so it must ignore the reply, not act on it. Also KEY-gated:
+            ;; a client can't forge a z reply to skew a shard window's stacking.
+            ((and (eq? (car m) 'z) (len>= m 4) (mrg-key mrg) (eq? (cadr m) (mrg-key mrg))
+                  (mrg-owner mrg) (integer? (caddr m)) (integer? (cadddr m)))
+             (let ((r (find-surf (cadddr m) (cdr st))))
+               (if r (begin (vector-set! r SF-Z (caddr m))
                             (recomposite screen bg (cdr st) mrg))))
              st)
             ;; (shard-count reply) -> how many shards have registered. A client uses
@@ -762,44 +792,46 @@
              (send (cadr m) (list 'geom (surface-width screen) (surface-height screen)
                                   (surface-stride screen) fmt))
              st)
-            ;; (register-shard shard-handle colour-grant z-grant) -> record the shard:
+            ;; (register-shard KEY shard-handle colour-grant z-grant) -> record the shard:
             ;; its primary handle (the owner routes opaque clients to it) and the owner's
             ;; mapped views of its grant-shared layer planes (folded into the merge). The
             ;; grants come from another core and are message data, so BOTH must be real
             ;; grants (grant?) before map-grant -- map-grant errors on a non-grant, which
             ;; would kill this try/catch-less serve loop. A live grant maps to a view; a
             ;; revoked one maps to #f -> skip it. No recomposite here: the shard sends
-            ;; `layer-update` right after, which merges+flushes once.
-            ((and (eq? (car m) 'register-shard) (len>= m 4) (caps-map caps)
-                  (ctx? (cadr m)) (grant? (caddr m)) (grant? (cadddr m)))
-             (let ((cv ((caps-map caps) (caddr m))) (zv ((caps-map caps) (cadddr m))))
+            ;; `layer-update` right after, which merges+flushes once. KEY-gated FIRST:
+            ;; this is the highest-value forgery target (a fake shard injects arbitrary
+            ;; pixels into the merge), so a client lacking the mesh key is rejected here.
+            ((and (eq? (car m) 'register-shard) (len>= m 5) (mrg-key mrg) (eq? (cadr m) (mrg-key mrg))
+                  (not (mrg-owner mrg)) (caps-map caps) (ctx? (caddr m)) (grant? (cadddr m)) (grant? (nth m 4)))
+             (let ((cv ((caps-map caps) (cadddr m))) (zv ((caps-map caps) (nth m 4))))
                (if (and cv zv)
                    (vector-set! (mrg-shards mrg) 0
-                                (cons (list (cadr m) cv zv) (vector-ref (mrg-shards mrg) 0)))
+                                (cons (list (caddr m) cv zv) (vector-ref (mrg-shards mrg) 0)))
                    ;; a grant mapped to #f (revoked between the grant? check and here):
                    ;; the shard is NOT registered (its content/clients won't appear).
                    (begin (display "[corecompositor] register-shard: grant map failed; shard dropped")
                           (newline))))
              st)
-            ;; (layer-update shard-handle window-list damage) -> a registered shard
+            ;; (layer-update KEY shard-handle window-list damage) -> a registered shard
             ;; repainted its layer: record its window manifest (for cross-shard input
             ;; routing), re-merge the whole back-buffer (cheap cached RAM), then FLUSH
             ;; only the shard's reported DAMAGE rects to the scanout (bounded; the
             ;; expensive part). With no/empty damage, fall back to a whole-screen flush.
-            ;; v1 trust: every holder of `comp` is a boot-time-trusted context, so the
-            ;; sender is not authenticated here (a future widely-shared `comp` would
-            ;; check the sender against the registered shards before recompositing).
-            ((eq? (car m) 'layer-update)
-             ;; record the shard's window manifest (sanitised inside update-windows);
-             ;; the shard-handle must be a ctx, the manifest any list (else ignored).
-             (if (and (len>= m 3) (ctx? (cadr m)))
-                 (update-windows mrg (cadr m) (caddr m)))
+            ;; KEY-gated: a forged layer-update could steal input focus (its manifest
+            ;; drives keyboard routing) or drive an arbitrary flush, so a sender lacking
+            ;; the mesh key is rejected -- only a real shard reaches the merge here. The
+            ;; full 5 fields (key + ctx shard-handle + manifest + damage) are required:
+            ;; a real shard always sends all of them, so a short message is a protocol
+            ;; error and falls through (no spurious recomposite/flush) rather than being
+            ;; half-processed. update-windows sanitises the manifest internally.
+            ((and (eq? (car m) 'layer-update) (len>= m 5) (mrg-key mrg) (eq? (cadr m) (mrg-key mrg))
+                  (not (mrg-owner mrg)) (ctx? (caddr m)))
+             (update-windows mrg (caddr m) (cadddr m))
              (recomposite screen bg (cdr st) mrg)
              (let ((p (caps-present caps)))
                (if p
-                   (let ((dmg (if (len>= m 4)
-                                  (sane-rects (cadddr m) (surface-width screen) (surface-height screen))
-                                  '())))
+                   (let ((dmg (sane-rects (nth m 4) (surface-width screen) (surface-height screen))))
                      (p (if (pair? dmg) dmg
                             (list (list 0 0 (surface-width screen) (surface-height screen))))))))
              st)

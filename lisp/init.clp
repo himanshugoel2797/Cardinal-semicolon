@@ -554,10 +554,14 @@
                          (lz (make-surface lzb w hh stride))
                          (cfg (make-shard-cfg owner lc lz 0))   ; z from the owner's global counter (alloc-z)
                          ;; shard caps: alloc/mint/revoke for client surface backings;
-                         ;; no present (the owner flushes), no map (the owner maps).
-                         (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke #f #f))
+                         ;; no present (the owner flushes), no map (the owner maps). The
+                         ;; last cap is the SHARD-MESH KEY (the rendezvous ctx -- shared
+                         ;; with the owner, never a client), stamped on this shard's
+                         ;; layer-update/alloc-z and checked on the owner's move-window/z.
+                         (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke #f #f
+                                                     compositor-rendezvous))
                          (shard (start-compositor-service lc caps cfg)))
-                    (send owner (list 'register-shard shard gc gz))
+                    (send owner (list 'register-shard compositor-rendezvous shard gc gz))
                     (display "[compositorshards] core ") (display id)
                     (display " shard instance up + registered") (newline))))))))
 
@@ -809,7 +813,12 @@
                                    (newline)))
                                 (target (cdr target))
                                 (else #f)))
-                 (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke present map-grant))
+                 ;; the 6th cap is the SHARD-MESH KEY: the rendezvous ctx, shared with
+                 ;; every shard (and with no client), so the owner can authenticate the
+                 ;; privileged inter-instance verbs (register-shard / layer-update /
+                 ;; alloc-z) against it -- a client holding `comp` can't forge it.
+                 (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke present map-grant
+                                             compositor-rendezvous))
                  (comp (start-compositor-service screen caps #f)))   ; #f -> owner role
             (send compositor-rendezvous (list 'set-owner comp))   ; publish to per-core shards
             ;; phase 6: the compositor owns focus, so it subscribes to the input

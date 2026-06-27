@@ -368,6 +368,26 @@ Window z is a global value, so the **owner is the z authority**: raise/lower ask
 the owner for a fresh top z-stamp (a monotonic counter). Light cross-instance
 messaging, no shared mutable z-list.
 
+### Shard-mesh authentication
+
+The privileged inter-instance verbs (`register-shard`, `layer-update`, `alloc-z`,
+`move-window`, `z`) all live on a compositor instance's **primary mailbox** — the
+same `comp` handle a semi-trusted **client** holds (it sends `connect` there). So
+without authentication a client could forge them: register a fake shard (inject
+arbitrary pixels into the merge), forge a window manifest (steal keyboard focus,
+which routes by the manifest's z), or move another client's window. The fix is a
+**shard-mesh capability key**: an unforgeable token shared by the owner and every
+shard and given to **no** client, carried as the first field of each privileged
+verb; the receiver checks `(eq? field key)` and ignores a mismatch. The token is
+the **rendezvous ctx** — root-created, handed only to mesh members, and a ctx
+handle passes by *identity* (un-fabricable by a restricted context), so possessing
+it proves membership. Checks **fail closed**: each arm guards the key is truthy
+before the `eq?`, so a `#f` key (the host harness, no mesh) rejects every keyed
+verb rather than matching a forged `#f`. The owner-only verbs additionally gate on
+`(not owner-role)` and the shard-only ones on `owner-role`, mirroring the existing
+`z` role guard. Ordinary client surface ops are unaffected — they already route
+through the per-client handler, which stamps the **authenticated** sender identity.
+
 ### Why this composes
 
 - Reuses **grant** shared memory (phase 1) for the layer buffers — no new sharing
