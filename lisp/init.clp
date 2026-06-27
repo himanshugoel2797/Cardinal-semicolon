@@ -665,7 +665,8 @@
                           (cmdline-has? "cardinal.compositorshardinput")
                           (cmdline-has? "cardinal.compositorshardpointer")
                           (cmdline-has? "cardinal.compositorsharddrag")
-                          (cmdline-has? "cardinal.compositorglobalz"))
+                          (cmdline-has? "cardinal.compositorglobalz")
+                          (cmdline-has? "cardinal.compositordamage"))
                       (spawn-restricted '() (lambda () (start-compositor-shard id))))))))))
     ;; Audio: start the service, capture its handle (formerly dropped), and bring
     ;; up the HD Audio controller feeding it. hdaudio-init is gated on pci-find, so
@@ -793,7 +794,21 @@
                  (cw 256) (ch 256)
                  (screen (if target (car target)
                              (make-surface (make-bytes (* cw ch 4)) cw ch (* cw 4))))
-                 (present (if target (cdr target) #f))
+                 ;; cardinal.compositordamage: a present that REPORTS the flush rects
+                 ;; so the test can confirm a shard's layer-update flushes only its
+                 ;; window's damage rect, not the whole screen. It doesn't push pixels
+                 ;; (the back-buffer already has them); it only classifies the flush.
+                 (present (cond ((cmdline-has? "cardinal.compositordamage")
+                                 (lambda (rects)
+                                   (if (and (pair? rects) (null? (cdr rects))
+                                            (= (nth (car rects) 0) 0) (= (nth (car rects) 1) 0)
+                                            (= (nth (car rects) 2) cw) (= (nth (car rects) 3) ch))
+                                       (display "[compositordamage] whole-screen flush")
+                                       (begin (display "[compositordamage] OK bounded flush ")
+                                              (display rects)))
+                                   (newline)))
+                                (target (cdr target))
+                                (else #f)))
                  (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke present map-grant))
                  (comp (start-compositor-service screen caps #f)))   ; #f -> owner role
             (send compositor-rendezvous (list 'set-owner comp))   ; publish to per-core shards
@@ -1150,6 +1165,34 @@
                                          (display "[compositorglobalz] FAIL window not raised above (timeout)")
                                          (newline))
                                         (else (sleep 100000000) (poll (+ tries 1)))))))))))))
+            ;; cardinal.compositordamage: validate LAYER-UPDATE DAMAGE BOUNDING. A
+            ;; client routed to a shard creates+commits a 40x40 window at (60,60); the
+            ;; shard's layer-update carries that damage rect, and the owner flushes ONLY
+            ;; it (not the whole 256x256 screen) -- the detecting `present` above prints
+            ;; "OK bounded flush ((60 60 40 40))" for it (vs the startup whole-screen).
+            (if (cmdline-has? "cardinal.compositordamage")
+                (spawn-restricted '(sys-shm)
+                  (lambda ()
+                    (import sys-shm)
+                    ;; only the SHARD layer-update path bounds the flush (the owner's own
+                    ;; ops already flush bounded); with no shards there's nothing to test.
+                    (if (<= (wait-for-shards comp) 0)
+                        (begin (display "[compositordamage] single core; shard flush path not exercised")
+                               (newline)))
+                    (send comp (list 'connect #f (self)))
+                    (let ((r (recv)))
+                      (if (and (pair? r) (eq? (car r) 'connected))
+                          (let* ((h (cadr r)) (fmt (caddr r))
+                                 (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt)))
+                            (send h (list 'create-surface 40 40))
+                            (let ((s (recv)))
+                              (if (and (pair? s) (eq? (car s) 'surface))
+                                  (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                                         (surf (make-surface* (map-grant g0) 40 40 stride ro go bo '())))
+                                    (clear surf (rgb surf 220 60 60))
+                                    (send h (list 'configure id 60 60 #t))
+                                    (send h (list 'commit id 0 '()))
+                                    (let loop () (recv) (loop)))))))))))   ; park
             (if (cmdline-has? "cardinal.compositorlayers")
                 (spawn-restricted '(sys-shm)
                   (lambda ()

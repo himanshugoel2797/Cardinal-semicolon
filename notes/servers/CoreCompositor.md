@@ -618,10 +618,18 @@ after `coredisplay` + the display driver bind (it needs the driver's
      re-merges. So a window on a low-id shard can now be raised ABOVE one on a high-id
      shard (impossible under the bands). Validated `cardinal.compositorglobalz`: two
      opaque clients on different shards overlap; raising the lower one (cross-shard) puts
-     it on top. **Remaining follow-ups:** `layer-update` **damage bounding** (every shard
-     op triggers a whole-screen owner recomposite + flush); shard **de-register** (a dead
-     shard leaves stale manifest/layer); a defense-in-depth **sender check** on the
-     owner-initiated shard verbs.
+     it on top.
+   - **7B wiring (layer-update damage bounding) — ✅ DONE.** A shard reports DAMAGE rects
+     with each `layer-update` — the union of this frame's visible window rects and last
+     frame's (so a moved/closed window's *vacated* area is repainted too) — and the owner
+     flushes ONLY those (sanitised + clamped) instead of the whole screen. The merge into
+     the cached back-buffer stays whole-screen (cheap RAM, per the design); the bounded
+     part is the expensive scanout push. Validated `cardinal.compositordamage` (a present
+     that classifies the flush): a routed shard window's commit flushes `((60 60 40 40))`,
+     not the 256×256 screen. (Per-changed-window damage, vs the union-of-all, is a further
+     refinement.) **Remaining follow-ups:** shard **de-register** (a dead shard leaves
+     stale manifest/layer); a defense-in-depth **sender check** on the owner-initiated
+     shard verbs.
 
 ## Open / deferred
 

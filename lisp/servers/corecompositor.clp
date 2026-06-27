@@ -123,8 +123,15 @@
   ;; case of the sharded model: one instance owns one layer and merges it (a 1-layer
   ;; z-pick) into the scanout -- phase 7B-wiring promotes the layer to a grant-shared
   ;; per-core buffer the owner maps, with the same merge.
-  (define (make-mrg lc lz zop zctr shards owner windows)
-    (vector lc lz zop zctr shards owner windows))
+  (define (make-mrg lc lz zop zctr shards owner windows prev-rects)
+    (vector lc lz zop zctr shards owner windows prev-rects))
+  ;; A SHARD's previous-frame visible window rects (1-slot cell). Its recomposite
+  ;; reports DAMAGE = the union of these (the old positions) and the current rects
+  ;; (the new positions) with each layer-update, so the owner can flush only the
+  ;; changed area -- bounding the per-frame scanout push -- instead of the whole
+  ;; screen, and a moved/closed window's vacated area is still repainted. (The merge
+  ;; into the cached back-buffer stays whole-screen; the FLUSH is what is bounded.)
+  (define (mrg-prev-rects m) (vector-ref m 7))  ; 1-slot cell: list of (x y w h)
   (define (mrg-lc m)     (vector-ref m 0))   ; layer colour plane (a surface)
   (define (mrg-lz m)     (vector-ref m 1))   ; layer z plane (a surface; fill-rect stamps z)
   (define (mrg-zop m)    (vector-ref m 2))   ; the merged per-pixel topmost-opaque z (raw bytes)
@@ -233,11 +240,19 @@
       ;; the owner can hit-test/focus/route input to a window hosted on this core
       ;; (`(self)` is this shard's serve handle = the one it registered).
       (if (mrg-owner mrg)
-          (send (mrg-owner mrg)
-                (list 'layer-update (self)
-                      (map (lambda (r) (list (sf r SF-CLIENT) (sf r SF-X) (sf r SF-Y)
-                                             (sf r SF-W) (sf r SF-H) (sf r SF-Z) (sf r SF-ID)))
-                           (filter (lambda (r) (sf r SF-VIS)) surfaces))))
+          ;; report the window MANIFEST + the DAMAGE rects (this frame's visible rects
+          ;; unioned with last frame's, so the owner flushes only what changed -- incl.
+          ;; the vacated area of a moved/closed window). Update prev-rects for next time.
+          (let* ((vis (filter (lambda (r) (sf r SF-VIS)) surfaces))
+                 (cur (map surf-rect vis))
+                 (damage (append (vector-ref (mrg-prev-rects mrg) 0) cur)))
+            (vector-set! (mrg-prev-rects mrg) 0 cur)
+            (send (mrg-owner mrg)
+                  (list 'layer-update (self)
+                        (map (lambda (r) (list (sf r SF-CLIENT) (sf r SF-X) (sf r SF-Y)
+                                               (sf r SF-W) (sf r SF-H) (sf r SF-Z) (sf r SF-ID)))
+                             vis)
+                        damage)))
           (begin
       ;; 2. merge (OWNER): clear the scanout to the desktop bg and Zop to 0, z-pick the
       ;; owner's opaque layer in, followed by every REMOTE shard's layer. A z-pick is
@@ -354,6 +369,24 @@
                             #f (car se) (nth w 6)))
                     (cdr se)))
              (vector-ref (mrg-windows mrg) 0)))))
+  ;; Sanitise a shard's reported DAMAGE rects (cross-core message data the owner
+  ;; passes to `present`): keep only well-formed (x y w h) integer rects, clamped to
+  ;; the screen, dropping anything malformed or empty. Guards on (pair? rects) before
+  ;; (car/cdr rects); an improper tail is treated as end-of-list.
+  (define (sane-rects rects sw sh)
+    (cond ((not (pair? rects)) '())
+          (else
+           (let ((r (car rects)) (rest (sane-rects (cdr rects) sw sh)))
+             (if (and (len>= r 4) (integer? (nth r 0)) (integer? (nth r 1))
+                      (integer? (nth r 2)) (integer? (nth r 3)))
+                 (let* ((rx (nth r 0)) (ry (nth r 1))
+                        (x  (if (< rx 0) 0 rx)) (y (if (< ry 0) 0 ry))
+                        (xe (+ rx (nth r 2))) (ye (+ ry (nth r 3)))
+                        (x2 (if (> xe sw) sw xe)) (y2 (if (> ye sh) sh ye)))
+                   (if (and (< x x2) (< y y2))
+                       (cons (list x y (- x2 x) (- y2 y)) rest)
+                       rest))
+                 rest)))))
   ;; The max-z entry of `wins` for which (pick? e) holds, or #f. The single hit/focus
   ;; primitive: keyboard passes a const-#t pick; pointer passes a contains-(x,y) pick.
   (define (top-window wins pick?)
@@ -639,6 +672,7 @@
                             (make-vector 1 (if shard-cfg (scfg-zbase shard-cfg) 0))
                             (make-vector 1 '())
                             (if shard-cfg (scfg-owner shard-cfg) #f)
+                            (make-vector 1 '())
                             (make-vector 1 '()))))
       ;; Phase 4: paint the desktop background and push the whole screen once, so the
       ;; display shows the compositor's backdrop immediately (before any client) and
@@ -747,10 +781,11 @@
                    (begin (display "[corecompositor] register-shard: grant map failed; shard dropped")
                           (newline))))
              st)
-            ;; (layer-update shard-handle window-list) -> a registered shard repainted
-            ;; its layer: record its window manifest (for cross-shard input routing),
-            ;; then re-merge and flush. v1 flushes the whole screen (bounding to the
-            ;; shard's damage is a later refinement). Sent cross-core.
+            ;; (layer-update shard-handle window-list damage) -> a registered shard
+            ;; repainted its layer: record its window manifest (for cross-shard input
+            ;; routing), re-merge the whole back-buffer (cheap cached RAM), then FLUSH
+            ;; only the shard's reported DAMAGE rects to the scanout (bounded; the
+            ;; expensive part). With no/empty damage, fall back to a whole-screen flush.
             ;; v1 trust: every holder of `comp` is a boot-time-trusted context, so the
             ;; sender is not authenticated here (a future widely-shared `comp` would
             ;; check the sender against the registered shards before recompositing).
@@ -761,7 +796,12 @@
                  (update-windows mrg (cadr m) (caddr m)))
              (recomposite screen bg (cdr st) mrg)
              (let ((p (caps-present caps)))
-               (if p (p (list (list 0 0 (surface-width screen) (surface-height screen))))))
+               (if p
+                   (let ((dmg (if (len>= m 4)
+                                  (sane-rects (cadddr m) (surface-width screen) (surface-height screen))
+                                  '())))
+                     (p (if (pair? dmg) dmg
+                            (list (list 0 0 (surface-width screen) (surface-height screen))))))))
              st)
             (else
              (display "[corecompositor] primary: ignoring malformed ")
