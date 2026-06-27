@@ -20,14 +20,14 @@
 (define-module coredisplay
   (export start-display-service parse-edid)
   (import driver-util)
+  (define lg (make-logger 'coredisplay))
 
   ;; --- the display registry ---------------------------------------------------
   (define (start-display-service)
     (serve '()
       (lambda (disps m)
         (cond ((eq? (car m) 'register)        ; (register name connection ctx)
-               (display "[coredisplay] display registered: ")
-               (display (cadr m)) (newline)
+               (lg "display registered: " (cadr m))
                (cons (cdr m) disps))
               (else disps)))))
 

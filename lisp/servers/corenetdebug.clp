@@ -17,6 +17,7 @@
 
 (define-module corenetdebug
   (export start-netdebug)
+  (define lg (make-logger 'corenetdebug))
 
   (define ECHO-PORT     1337)
   (define UPLOAD-PORT   1338)
@@ -54,15 +55,12 @@
                   (let ((m (recv)))
                     (if (eq? (car m) 'udp-rx)
                         (let ((payload (nth m 4)))
-                          (display "[corenetdebug] upload len=")
-                          (display (bytes-length payload))
-                          (display " digest=") (display (fnv1a payload))
-                          (newline)))
+                          (lg "upload len=" (bytes-length payload) " digest=" (fnv1a payload))))
                     (loop)))))))
       (send net (list 'udp-bind ECHO-PORT echo))
       (send net (list 'udp-bind UPLOAD-PORT upload))
       (start-tcp-echo net)
-      (display "[corenetdebug] enabled (udp echo 1337, digest 1338, tcp echo 7)") (newline)
+      (lg "enabled (udp echo 1337, digest 1338, tcp echo 7)")
       'netdbg-up))
 
   ;; A TCP echo server on port 7: a stream consumer of the CoreNetwork socket API.
@@ -78,8 +76,7 @@
                   (let ((m (recv)))
                     (cond
                       ((eq? (car m) 'tcp-accept)        ; (tcp-accept lport conn rip rport)
-                       (display "[corenetdebug] tcp connection accepted (conn ")
-                       (display (caddr m)) (display ")") (newline))
+                       (lg "tcp connection accepted (conn " (caddr m) ")"))
                       ((eq? (car m) 'tcp-rx)            ; (tcp-rx conn bytes) -> echo it back
                        (send net (list 'tcp-send (cadr m) (caddr m))))
                       ((eq? (car m) 'tcp-closed)        ; (tcp-closed conn) -> close our side
