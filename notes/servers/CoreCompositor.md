@@ -584,10 +584,21 @@ after `coredisplay` + the display driver bind (it needs the driver's
      input. Validated `cardinal.compositorshardinput`: an injected key reaches a
      shard-hosted (routed) client (SMP=4 cross-core; SMP=1 owner-hosted). `handle-input`
      is otherwise unchanged, so the owner-only path (`compositorinput`) still passes.
-     **Remaining follow-ups:** cross-shard POINTER routing + drag-move (still owner-side
-     — a shard window isn't in the owner's surface table for hit-testing, and a
-     cross-shard drag needs the owner to relay moves to the shard); a true global z
-     authority (replace the per-shard z-bands); `layer-update` damage-rect bounding.
+   - **7B wiring (cross-shard pointer routing) — ✅ DONE.** The per-shard focus
+     candidate generalised into a full per-shard **window manifest** (each window
+     `(client x y w h z)`, reported with every `layer-update`, *sanitised* on the way
+     in since it is cross-core message data the owner does arithmetic on). The owner
+     builds **one global window list** (`global-windows`: its own surfaces + every
+     shard's windows) and both keyboard focus (`global-focus-client`) and pointer
+     hit-testing (`window-at`) read it, so a window is treated the same wherever it is
+     hosted. A pointer press hit-tests globally and routes to the window's client in
+     window-local coords (an owner window also focus-raises + title-bar-drags as
+     before; a shard window's press is routed to its client). Validated
+     `cardinal.compositorshardpointer`: an injected body-click reaches a shard-hosted
+     client across cores. **Remaining follow-ups:** cross-shard **drag-move** (owner
+     relays moves to the shard — owner-window drag already works); a true global **z
+     authority** (replace the per-shard z-bands); `layer-update` **damage bounding**;
+     shard **de-register** (a dead shard leaves stale manifest/layer state).
 
 ## Open / deferred
 

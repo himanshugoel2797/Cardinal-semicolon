@@ -123,20 +123,21 @@
   ;; case of the sharded model: one instance owns one layer and merges it (a 1-layer
   ;; z-pick) into the scanout -- phase 7B-wiring promotes the layer to a grant-shared
   ;; per-core buffer the owner maps, with the same merge.
-  (define (make-mrg lc lz zop zctr shards owner focus)
-    (vector lc lz zop zctr shards owner focus))
+  (define (make-mrg lc lz zop zctr shards owner windows)
+    (vector lc lz zop zctr shards owner windows))
   (define (mrg-lc m)     (vector-ref m 0))   ; layer colour plane (a surface)
   (define (mrg-lz m)     (vector-ref m 1))   ; layer z plane (a surface; fill-rect stamps z)
   (define (mrg-zop m)    (vector-ref m 2))   ; the merged per-pixel topmost-opaque z (raw bytes)
   (define (mrg-zctr m)   (vector-ref m 3))   ; monotonic z counter (1-slot vector)
-  ;; Cross-shard input (phase 7): a 1-slot cell holding the per-shard FOCUS
-  ;; CANDIDATES the owner uses to route keyboard input to the globally-focused
-  ;; window even when it is hosted on another core. Each shard reports its
-  ;; top-most visible window's (client . z) with every layer-update; the owner
-  ;; keeps a list of (shard-handle client z) and routes a key to the max-z client
-  ;; across all shards + its own focus. (The shard knows nothing of global focus;
-  ;; the owner is the focus authority, as for z.) Owner instance only.
-  (define (mrg-focus m)  (vector-ref m 6))   ; 1-slot cell: list of (shard-handle client z)
+  ;; Cross-shard input (phase 7): a 1-slot cell holding the per-shard WINDOW
+  ;; MANIFEST the owner uses to route input to a window hosted on another core.
+  ;; Each shard reports its visible windows' geometry+client with every
+  ;; layer-update; the owner keeps an alist (shard-handle . window-list) where each
+  ;; window is (client x y w h z). From this + its own surface table the owner
+  ;; builds one GLOBAL window list (global-windows) and routes keyboard to the
+  ;; max-z window's client and pointer to the window under the cursor -- the owner
+  ;; is the input/focus authority, as for z. Owner instance only.
+  (define (mrg-windows m) (vector-ref m 6))  ; 1-slot cell: alist (shard-handle . window-list)
   ;; The OWNER handle if this instance is a SHARD (its recomposite builds its layer
   ;; then notifies the owner, which re-merges); #f if this IS the owner (its
   ;; recomposite folds all shard layers + its own into the scanout). The one knob
@@ -213,15 +214,15 @@
       ;; every shard layer into the scanout. (Shards host only opaque clients --
       ;; translucent is routed to the owner -- so there is nothing else to do.) The
       ;; caller's present! is a no-op for a shard (its present cap is #f). It also
-      ;; reports its FOCUS CANDIDATE -- its top-visible window's client+z -- so the
-      ;; owner can route keyboard input to a window hosted on this core (`(self)` is
-      ;; this shard's serve handle = the one it registered).
+      ;; reports its WINDOW MANIFEST -- its visible windows' (client x y w h z) -- so
+      ;; the owner can hit-test/focus/route input to a window hosted on this core
+      ;; (`(self)` is this shard's serve handle = the one it registered).
       (if (mrg-owner mrg)
-          (let ((f (focused surfaces)))
-            (send (mrg-owner mrg)
-                  (list 'layer-update (self)
-                        (if f (sf f SF-CLIENT) #f)
-                        (if f (sf f SF-Z) 0))))
+          (send (mrg-owner mrg)
+                (list 'layer-update (self)
+                      (map (lambda (r) (list (sf r SF-CLIENT) (sf r SF-X) (sf r SF-Y)
+                                             (sf r SF-W) (sf r SF-H) (sf r SF-Z)))
+                           (filter (lambda (r) (sf r SF-VIS)) surfaces))))
           (begin
       ;; 2. merge (OWNER): clear the scanout to the desktop bg and Zop to 0, z-pick the
       ;; owner's opaque layer in, followed by every REMOTE shard's layer. A z-pick is
@@ -291,28 +292,69 @@
            (car surfaces))
           (else (surf-at (cdr surfaces) x y))))
 
-  ;; --- cross-shard keyboard focus (phase 7) -----------------------------------
-  ;; Record a shard's reported focus candidate (its top-visible window's client+z,
-  ;; or client #f if it has none): replace this shard's prior entry. Owner only.
-  (define (update-focus mrg shard-handle client z)
-    (let* ((cell (mrg-focus mrg))
-           (without (filter (lambda (e) (not (eq? (car e) shard-handle)))
-                            (vector-ref cell 0))))
-      (vector-set! cell 0 (cons (list shard-handle client z) without))))
-  ;; The GLOBALLY focused window's client (max z across the owner's own top-visible
-  ;; window and every shard's focus candidate), or #f. This is where a key routes,
-  ;; whichever instance hosts it. (Shard windows live in high z bands, so a visible
-  ;; shard window outranks the owner's -- consistent with the layer merge.)
+  ;; --- cross-shard input: the global window manifest (phase 7) ----------------
+  ;; A global window ENTRY is (client x y w h z surf): surf is the owner SURFACE
+  ;; record for an owner-hosted window (so a press can drag it locally) or #f for a
+  ;; shard-hosted one (input is just routed to its client). Accessors:
+  (define (we-client e) (nth e 0)) (define (we-x e) (nth e 1)) (define (we-y e) (nth e 2))
+  (define (we-w e) (nth e 3))      (define (we-h e) (nth e 4)) (define (we-z e) (nth e 5))
+  (define (we-surf e)   (nth e 6))
+  ;; Record a shard's reported window manifest (its visible windows, each
+  ;; (client x y w h z)): replace this shard's prior entry. The list is cross-core
+  ;; MESSAGE DATA the owner later does arithmetic on (hit-test), and the serve loop
+  ;; has no try/catch, so SANITIZE it on the way in: walk safely (pair? before cdr),
+  ;; keep only well-formed entries (a ctx client + integer geometry), drop the rest.
+  ;; Owner only.
+  (define (sanitize-wins wins acc)
+    (cond ((not (pair? wins)) (reverse acc))
+          ((let ((w (car wins)))
+             (and (len>= w 6) (ctx? (nth w 0))
+                  (integer? (nth w 1)) (integer? (nth w 2)) (integer? (nth w 3))
+                  (integer? (nth w 4))
+                  ;; z must be a POSITIVE integer: z==0 is "empty" and would also beat
+                  ;; top-window's -1 sentinel, letting a z=0 entry steal focus/hit.
+                  (integer? (nth w 5)) (> (nth w 5) 0)))
+           (sanitize-wins (cdr wins) (cons (car wins) acc)))
+          (else (sanitize-wins (cdr wins) acc))))
+  (define (update-windows mrg shard-handle wins)
+    (let ((cell (mrg-windows mrg)))
+      (vector-set! cell 0
+        (cons (cons shard-handle (sanitize-wins wins '()))
+              (filter (lambda (e) (not (eq? (car e) shard-handle))) (vector-ref cell 0))))))
+  ;; The one GLOBAL list of visible window entries: the owner's own surfaces (carry
+  ;; their record for local drag) followed by every shard's reported windows (surf
+  ;; #f). Input routing/hit-testing/focus all read this, so a window is treated the
+  ;; same wherever it is hosted.
+  (define (global-windows surfaces mrg)
+    (append
+      (map (lambda (r) (list (sf r SF-CLIENT) (sf r SF-X) (sf r SF-Y)
+                             (sf r SF-W) (sf r SF-H) (sf r SF-Z) r))
+           (filter (lambda (r) (sf r SF-VIS)) surfaces))
+      (apply append
+        (map (lambda (se)               ; se = (shard-handle . window-list)
+               (map (lambda (w)         ; w  = (client x y w h z)
+                      (list (nth w 0) (nth w 1) (nth w 2) (nth w 3) (nth w 4) (nth w 5) #f))
+                    (cdr se)))
+             (vector-ref (mrg-windows mrg) 0)))))
+  ;; The max-z entry of `wins` for which (pick? e) holds, or #f. The single hit/focus
+  ;; primitive: keyboard passes a const-#t pick; pointer passes a contains-(x,y) pick.
+  (define (top-window wins pick?)
+    (let loop ((ws wins) (best #f) (bz -1))
+      (if (null? ws) best
+          (let ((e (car ws)))
+            (if (and (pick? e) (> (we-z e) bz))
+                (loop (cdr ws) e (we-z e))
+                (loop (cdr ws) best bz))))))
+  ;; The globally focused window's client (max z over all windows), or #f -- where a
+  ;; key routes, whichever core hosts it.
   (define (global-focus-client surfaces mrg)
-    (let ((own (focused surfaces)))
-      (let loop ((cands (vector-ref (mrg-focus mrg) 0))
-                 (bc (if own (sf own SF-CLIENT) #f))
-                 (bz (if own (sf own SF-Z) -1)))
-        (if (null? cands) bc
-            (let ((c (cadr (car cands))) (z (caddr (car cands))))
-              (if (and c (> z bz))
-                  (loop (cdr cands) c z)
-                  (loop (cdr cands) bc bz)))))))
+    (let ((e (top-window (global-windows surfaces mrg) (lambda (e) #t))))
+      (if e (we-client e) #f)))
+  ;; The top-most visible window under (x,y) across all instances, or #f.
+  (define (window-at surfaces mrg x y)
+    (top-window (global-windows surfaces mrg)
+                (lambda (e) (and (>= x (we-x e)) (< x (+ (we-x e) (we-w e)))
+                                 (>= y (we-y e)) (< y (+ (we-y e) (we-h e)))))))
 
   ;; --- the per-client handler (secondary channel; a relay) --------------------
   ;; Forwards the client's surface ops to the root tagged with the client identity
@@ -499,25 +541,35 @@
                         (vector-set! drag-state 0 #f)))
                   (vector-set! drag-state 0 #f))
               st)
-             ;; a fresh press: focus-follows-click (raise the hit window), then a
-             ;; title-bar press starts a drag, a body press routes to the client in
-             ;; window-local coordinates. A press on no window is ignored.
+             ;; a fresh press: hit-test the GLOBAL window list (owner + shards). On an
+             ;; OWNER window, focus-follows-click (raise) then title-bar = drag /
+             ;; body = route to the client in window-local coords (as before). On a
+             ;; SHARD window, route the press to its client in window-local coords --
+             ;; owner-side drag-move of a shard window is a follow-up (the client gets
+             ;; all its pointer input and can self-manage). No window -> ignored.
              (down?
-              (let ((r (surf-at surfaces x y)))
-                (if (not r) st
-                    ;; raise-surf re-lists the SAME surface vector `r` (no copy), so
-                    ;; mutating r's z here is seen by the recomposite over s2.
-                    (let ((s2 (raise-surf (sf r SF-ID) surfaces)))
-                      (vector-set! r SF-Z (fresh-z mrg))   ; focus-follows-click lifts it in z
-                      (recomposite screen bg s2 mrg)
-                      (present! (list (surf-rect r)))
-                      (if (< (- y (sf r SF-Y)) TITLE-H)
-                          (vector-set! drag-state 0
-                            (list (sf r SF-ID) (- x (sf r SF-X)) (- y (sf r SF-Y))))
-                          (send (sf r SF-CLIENT)
-                                (list 'input (list 'pointer (- x (sf r SF-X))
-                                                   (- y (sf r SF-Y)) #t))))
-                      (cons next-id s2)))))
+              (let ((e (window-at surfaces mrg x y)))
+                (cond
+                  ((not e) st)
+                  ((we-surf e)
+                   ;; raise-surf re-lists the SAME surface vector (no copy), so
+                   ;; mutating its z here is seen by the recomposite over s2.
+                   (let ((r (we-surf e)))
+                     (let ((s2 (raise-surf (sf r SF-ID) surfaces)))
+                       (vector-set! r SF-Z (fresh-z mrg))   ; focus-follows-click lifts it
+                       (recomposite screen bg s2 mrg)
+                       (present! (list (surf-rect r)))
+                       (if (< (- y (sf r SF-Y)) TITLE-H)
+                           (vector-set! drag-state 0
+                             (list (sf r SF-ID) (- x (sf r SF-X)) (- y (sf r SF-Y))))
+                           (send (sf r SF-CLIENT)
+                                 (list 'input (list 'pointer (- x (sf r SF-X))
+                                                    (- y (sf r SF-Y)) #t))))
+                       (cons next-id s2))))
+                  (else
+                   (send (we-client e)
+                         (list 'input (list 'pointer (- x (we-x e)) (- y (we-y e)) #t)))
+                   st))))
              ;; pointer motion with no button and no drag: no hover routing in v1.
              (else st))))
         (else st))))
@@ -633,18 +685,18 @@
                    (begin (display "[corecompositor] register-shard: grant map failed; shard dropped")
                           (newline))))
              st)
-            ;; (layer-update shard-handle focus-client focus-z) -> a registered shard
-            ;; repainted its layer: record its focus candidate (for cross-shard
-            ;; keyboard routing), then re-merge and flush. v1 flushes the whole screen
-            ;; (bounding to the shard's damage is a later refinement). Sent cross-core.
+            ;; (layer-update shard-handle window-list) -> a registered shard repainted
+            ;; its layer: record its window manifest (for cross-shard input routing),
+            ;; then re-merge and flush. v1 flushes the whole screen (bounding to the
+            ;; shard's damage is a later refinement). Sent cross-core.
             ;; v1 trust: every holder of `comp` is a boot-time-trusted context, so the
             ;; sender is not authenticated here (a future widely-shared `comp` would
             ;; check the sender against the registered shards before recompositing).
             ((eq? (car m) 'layer-update)
-             ;; integer? on the z: global-focus-client does (> z bz), so a non-integer
-             ;; z from a malformed layer-update would kill this try/catch-less loop.
-             (if (and (len>= m 4) (ctx? (cadr m)) (integer? (cadddr m)))
-                 (update-focus mrg (cadr m) (caddr m) (cadddr m)))
+             ;; record the shard's window manifest (sanitised inside update-windows);
+             ;; the shard-handle must be a ctx, the manifest any list (else ignored).
+             (if (and (len>= m 3) (ctx? (cadr m)))
+                 (update-windows mrg (cadr m) (caddr m)))
              (recomposite screen bg (cdr st) mrg)
              (let ((p (caps-present caps)))
                (if p (p (list (list 0 0 (surface-width screen) (surface-height screen))))))
