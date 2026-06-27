@@ -911,6 +911,57 @@
                                          (display "[compositorshards] FAIL window never reached the scanout (timeout)")
                                          (newline))
                                         (else (sleep 100000000) (poll (+ tries 1)))))))))))))
+            ;; cardinal.compositorshardinput: validate CROSS-SHARD KEYBOARD FOCUS. An
+            ;; opaque client is routed to a shard (SMP>1) and shows a window, so the
+            ;; shard reports it to the owner as its focus candidate. The owner (the
+            ;; coreinput subscriber + focus authority) must then route an INJECTED key
+            ;; to that client even though it lives on another core. The client parks on
+            ;; recv; an injector feeds keys into coreinput (repeated, to outlast the
+            ;; cross-core focus-report latency); receipt proves end-to-end cross-shard
+            ;; keyboard routing. (At SMP=1 the client is owner-hosted and it still works.)
+            (if (cmdline-has? "cardinal.compositorshardinput")
+                (begin
+                  (spawn-restricted '(sys-shm)
+                    (lambda ()
+                      (import sys-shm)
+                      (send comp (list 'connect #f (self)))
+                      (let ((r (recv)))
+                        (if (and (pair? r) (eq? (car r) 'connected))
+                            (let* ((h (cadr r)) (fmt (caddr r))
+                                   (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt)))
+                              (send h (list 'create-surface 40 40))
+                              (let ((s (recv)))
+                                (if (and (pair? s) (eq? (car s) 'surface))
+                                    (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                                           (surf (make-surface* (map-grant g0) 40 40 stride ro go bo '())))
+                                      (clear surf (rgb surf 220 60 60))
+                                      (send h (list 'configure id 60 60 #t))
+                                      (send h (list 'commit id 0 '()))
+                                      ;; wait for a key routed to us (we are the focus),
+                                      ;; with a deadline so a routing failure prints FAIL
+                                      ;; rather than hanging the CI run silently. Poll the
+                                      ;; mailbox (recv would block past the deadline).
+                                      (let loop ((deadline (+ (uptime-ns) 16000000000)))
+                                        (cond ((> (uptime-ns) deadline)
+                                               (display "[compositorshardinput] FAIL key never delivered (timeout)")
+                                               (newline))
+                                              ((%mailbox-empty?) (sleep 100000000) (loop deadline))
+                                              (else
+                                               (let ((m (%mailbox-pop)))
+                                                 (if (and (pair? m) (eq? (car m) 'input)
+                                                          (pair? (cadr m)) (eq? (car (cadr m)) 'key))
+                                                     (begin (display "[compositorshardinput] OK shard-hosted client received key")
+                                                            (newline))
+                                                     (loop deadline))))))))))))))
+                  (spawn-restricted '()
+                    (lambda ()
+                      ;; feed keys into coreinput repeatedly; the owner forwards each to
+                      ;; the focused window (this routes once the shard has reported it).
+                      (let loop ((n 0))
+                        (if (< n 20)
+                            (begin (sleep 600000000)
+                                   (send input (list 'event (list 'key 30 1)))
+                                   (loop (+ n 1)))))))))
             (if (cmdline-has? "cardinal.compositorlayers")
                 (spawn-restricted '(sys-shm)
                   (lambda ()

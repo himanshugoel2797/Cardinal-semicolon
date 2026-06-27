@@ -575,10 +575,19 @@ after `coredisplay` + the display driver bind (it needs the driver's
      round-trip (a true global z authority is the remaining refinement). Validated
      `cardinal.compositorshards`: an opaque client routed to a shard draws a window that
      reaches the scanout (SMP=4 cross-core; SMP=1 falls back to owner-hosted, still
-     passes). **Known limitation:** input routing is owner-side (the owner's focus only
-     sees its own surface table), so a window on a shard can't yet receive input —
-     cross-shard input routing + a true global z authority + `layer-update` damage
-     bounding are the follow-ups.
+     passes).
+   - **7B wiring (cross-shard keyboard focus) — ✅ DONE.** The owner is the global
+     focus authority: each shard reports its top-visible window's `(client . z)` with
+     every `layer-update`, the owner keeps those candidates (`mrg-focus`), and a key
+     routes to the **max-z client across the owner's own focus + all shard candidates**
+     (`global-focus-client`) — so a window hosted on another core receives keyboard
+     input. Validated `cardinal.compositorshardinput`: an injected key reaches a
+     shard-hosted (routed) client (SMP=4 cross-core; SMP=1 owner-hosted). `handle-input`
+     is otherwise unchanged, so the owner-only path (`compositorinput`) still passes.
+     **Remaining follow-ups:** cross-shard POINTER routing + drag-move (still owner-side
+     — a shard window isn't in the owner's surface table for hit-testing, and a
+     cross-shard drag needs the owner to relay moves to the shard); a true global z
+     authority (replace the per-shard z-bands); `layer-update` damage-rect bounding.
 
 ## Open / deferred
 

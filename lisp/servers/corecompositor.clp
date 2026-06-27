@@ -123,11 +123,20 @@
   ;; case of the sharded model: one instance owns one layer and merges it (a 1-layer
   ;; z-pick) into the scanout -- phase 7B-wiring promotes the layer to a grant-shared
   ;; per-core buffer the owner maps, with the same merge.
-  (define (make-mrg lc lz zop zctr shards owner) (vector lc lz zop zctr shards owner))
+  (define (make-mrg lc lz zop zctr shards owner focus)
+    (vector lc lz zop zctr shards owner focus))
   (define (mrg-lc m)     (vector-ref m 0))   ; layer colour plane (a surface)
   (define (mrg-lz m)     (vector-ref m 1))   ; layer z plane (a surface; fill-rect stamps z)
   (define (mrg-zop m)    (vector-ref m 2))   ; the merged per-pixel topmost-opaque z (raw bytes)
   (define (mrg-zctr m)   (vector-ref m 3))   ; monotonic z counter (1-slot vector)
+  ;; Cross-shard input (phase 7): a 1-slot cell holding the per-shard FOCUS
+  ;; CANDIDATES the owner uses to route keyboard input to the globally-focused
+  ;; window even when it is hosted on another core. Each shard reports its
+  ;; top-most visible window's (client . z) with every layer-update; the owner
+  ;; keeps a list of (shard-handle client z) and routes a key to the max-z client
+  ;; across all shards + its own focus. (The shard knows nothing of global focus;
+  ;; the owner is the focus authority, as for z.) Owner instance only.
+  (define (mrg-focus m)  (vector-ref m 6))   ; 1-slot cell: list of (shard-handle client z)
   ;; The OWNER handle if this instance is a SHARD (its recomposite builds its layer
   ;; then notifies the owner, which re-merges); #f if this IS the owner (its
   ;; recomposite folds all shard layers + its own into the scanout). The one knob
@@ -203,9 +212,16 @@
       ;; once the opaque layer is built it just notifies the owner, which re-merges
       ;; every shard layer into the scanout. (Shards host only opaque clients --
       ;; translucent is routed to the owner -- so there is nothing else to do.) The
-      ;; caller's present! is a no-op for a shard (its present cap is #f).
+      ;; caller's present! is a no-op for a shard (its present cap is #f). It also
+      ;; reports its FOCUS CANDIDATE -- its top-visible window's client+z -- so the
+      ;; owner can route keyboard input to a window hosted on this core (`(self)` is
+      ;; this shard's serve handle = the one it registered).
       (if (mrg-owner mrg)
-          (send (mrg-owner mrg) (list 'layer-update))
+          (let ((f (focused surfaces)))
+            (send (mrg-owner mrg)
+                  (list 'layer-update (self)
+                        (if f (sf f SF-CLIENT) #f)
+                        (if f (sf f SF-Z) 0))))
           (begin
       ;; 2. merge (OWNER): clear the scanout to the desktop bg and Zop to 0, z-pick the
       ;; owner's opaque layer in, followed by every REMOTE shard's layer. A z-pick is
@@ -274,6 +290,29 @@
                   (>= y (sf r SF-Y)) (< y (+ (sf r SF-Y) (sf r SF-H)))))
            (car surfaces))
           (else (surf-at (cdr surfaces) x y))))
+
+  ;; --- cross-shard keyboard focus (phase 7) -----------------------------------
+  ;; Record a shard's reported focus candidate (its top-visible window's client+z,
+  ;; or client #f if it has none): replace this shard's prior entry. Owner only.
+  (define (update-focus mrg shard-handle client z)
+    (let* ((cell (mrg-focus mrg))
+           (without (filter (lambda (e) (not (eq? (car e) shard-handle)))
+                            (vector-ref cell 0))))
+      (vector-set! cell 0 (cons (list shard-handle client z) without))))
+  ;; The GLOBALLY focused window's client (max z across the owner's own top-visible
+  ;; window and every shard's focus candidate), or #f. This is where a key routes,
+  ;; whichever instance hosts it. (Shard windows live in high z bands, so a visible
+  ;; shard window outranks the owner's -- consistent with the layer merge.)
+  (define (global-focus-client surfaces mrg)
+    (let ((own (focused surfaces)))
+      (let loop ((cands (vector-ref (mrg-focus mrg) 0))
+                 (bc (if own (sf own SF-CLIENT) #f))
+                 (bz (if own (sf own SF-Z) -1)))
+        (if (null? cands) bc
+            (let ((c (cadr (car cands))) (z (caddr (car cands))))
+              (if (and c (> z bz))
+                  (loop (cdr cands) c z)
+                  (loop (cdr cands) bc bz)))))))
 
   ;; --- the per-client handler (secondary channel; a relay) --------------------
   ;; Forwards the client's surface ops to the root tagged with the client identity
@@ -427,11 +466,13 @@
           (tag (if (pair? ev) (car ev) #f)))
       (define (present! rects) (let ((p (caps-present caps))) (if p (p rects))))
       (cond
-        ;; keyboard -> the focused window's client (the authenticated identity, not
-        ;; a message field), verbatim. No focused window -> dropped.
+        ;; keyboard -> the GLOBALLY focused window's client, wherever it is hosted:
+        ;; the max-z visible window across the owner's own surfaces AND every shard's
+        ;; reported focus candidate. So a window on another core still receives keys.
+        ;; No focused window anywhere -> dropped.
         ((and (eq? tag 'key) (len>= ev 3))
-         (let ((r (focused surfaces)))
-           (if r (send (sf r SF-CLIENT) (list 'input ev))))
+         (let ((target (global-focus-client surfaces mrg)))
+           (if target (send target (list 'input ev))))
          st)
         ;; pointer: drag in progress -> move/end; else a press hit-tests the stack.
         ;; `down?` MUST be a boolean: Scheme treats integer 0 as TRUE, so a driver
@@ -517,7 +558,8 @@
              (mrg (make-mrg lc lz (make-bytes plane)
                             (make-vector 1 (if shard-cfg (scfg-zbase shard-cfg) 0))
                             (make-vector 1 '())
-                            (if shard-cfg (scfg-owner shard-cfg) #f))))
+                            (if shard-cfg (scfg-owner shard-cfg) #f)
+                            (make-vector 1 '()))))
       ;; Phase 4: paint the desktop background and push the whole screen once, so the
       ;; display shows the compositor's backdrop immediately (before any client) and
       ;; every later op only needs to flush its own damage rect.
@@ -591,13 +633,18 @@
                    (begin (display "[corecompositor] register-shard: grant map failed; shard dropped")
                           (newline))))
              st)
-            ;; (layer-update . rects) -> a registered shard repainted its layer; re-
-            ;; merge and flush. v1 flushes the whole screen (bounding the merge/flush
-            ;; to the shard's reported rects is a later refinement). Sent cross-core.
+            ;; (layer-update shard-handle focus-client focus-z) -> a registered shard
+            ;; repainted its layer: record its focus candidate (for cross-shard
+            ;; keyboard routing), then re-merge and flush. v1 flushes the whole screen
+            ;; (bounding to the shard's damage is a later refinement). Sent cross-core.
             ;; v1 trust: every holder of `comp` is a boot-time-trusted context, so the
             ;; sender is not authenticated here (a future widely-shared `comp` would
             ;; check the sender against the registered shards before recompositing).
             ((eq? (car m) 'layer-update)
+             ;; integer? on the z: global-focus-client does (> z bz), so a non-integer
+             ;; z from a malformed layer-update would kill this try/catch-less loop.
+             (if (and (len>= m 4) (ctx? (cadr m)) (integer? (cadddr m)))
+                 (update-focus mrg (cadr m) (caddr m) (cadddr m)))
              (recomposite screen bg (cdr st) mrg)
              (let ((p (caps-present caps)))
                (if p (p (list (list 0 0 (surface-width screen) (surface-height screen))))))
