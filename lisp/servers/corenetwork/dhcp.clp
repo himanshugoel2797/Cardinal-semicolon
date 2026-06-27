@@ -202,10 +202,10 @@
   (if (> (dhcp-lease r) 0) (dhcp-lease r) default))
 
 (define (dhcp-log ack)
-  (display "[DHCP] bound ") (display (dhcp-yiaddr ack))
-  (display " gw ") (display (dhcp-gateway ack))
-  (display " mask ") (display (dhcp-netmask ack))
-  (display " lease ") (display (dhcp-lease ack)) (display "s") (newline))
+  (log "DHCP" "bound " (dhcp-yiaddr ack)
+       " gw " (dhcp-gateway ack)
+       " mask " (dhcp-netmask ack)
+       " lease " (dhcp-lease ack) "s"))
 
 ;; Tell the service to configure OUR interface (identified by mac) from the lease.
 (define (dhcp-set net mac r)

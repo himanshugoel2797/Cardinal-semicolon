@@ -20,6 +20,7 @@
           pwr-generic pwr-display pwr-audio-out pwr-audio-in
           pwr-hid pwr-camera pwr-processor)
   (import driver-util)
+  (define lg (make-logger 'corepower))
 
   ;; device_pwr_class bits (mirror servers/inc/CorePower/power.h exactly).
   (define pwr-generic   1)
@@ -44,8 +45,7 @@
     (serve '()
       (lambda (devs m)
         (cond ((eq? (car m) 'register)         ; (register name class ctx)
-               (display "[corepower] device registered: ")
-               (display (cadr m)) (newline)
+               (lg "device registered: " (cadr m))
                (cons (cdr m) devs))            ; store (name class ctx)
               ((eq? (car m) 'event-g)          ; (event-g class gstate pstate)
                (pwr-fanout devs (cadr m) (list 'pwr-g (caddr m) (cadddr m)))

@@ -142,7 +142,7 @@
         (send audio-service (list 'endpoints 'hda0 (self)))
         (let find ((es (recv)))
           (cond
-            ((null? es) (display "[mictest] no input endpoint") (newline))
+            ((null? es) (log "mictest" "no input endpoint"))
             ((eq? (cadr (car es)) 'in)
              (let ((id (car (car es))))
                (send audio-service (list 'capture-start 'hda0 id))
@@ -155,11 +155,7 @@
                    (send audio-service (list 'capture-read 'hda0 (self)))
                    (let ((buf (recv)))
                      (send audio-service (list 'capture-stop 'hda0))
-                     (display "[mictest] ep ") (display id)
-                     (display " pos ") (display p1) (display " -> ") (display p2)
-                     (display (if (and p1 p2 (not (= p1 p2))) " ADVANCING" " (no advance)"))
-                     (display " captured-bytes=") (display (if buf (bytes-length buf) 0))
-                     (newline))))))
+                     (log "mictest" "ep " id " pos " p1 " -> " p2 (if (and p1 p2 (not (= p1 p2))) " ADVANCING" " (no advance)") " captured-bytes=" (if buf (bytes-length buf) 0)))))))
             (else (find (cdr es))))))))
 
   ;; --- graphics demo (gated on cardinal.gfxdemo) ------------------------------
@@ -295,20 +291,15 @@
           (let ((t0 (uptime-ns)))
             (let loop ((i 0)) (if (< i 30) (begin (bytes-fill32! b 0 words #x223344) (loop (+ i 1)))))
             (mb-per-s (* sbytes 30) (- (uptime-ns) t0))))
-        (display "[gfx-bench] 1MB scratch store WB: ") (display (fill-bw sWB))
-        (display " | WC: ") (display (fill-bw sWC))
-        (display " | UC: ") (display (fill-bw sUC)) (display " MB/s") (newline))
+        (log "gfx-bench" "1MB scratch store WB: " (fill-bw sWB) " | WC: " (fill-bw sWC) " | UC: " (fill-bw sUC) " MB/s"))
       ;; 1) cached back-buffer compose -- real RAM, representative of any machine.
       (let ((t0 (uptime-ns)))
         (let loop ((i 0)) (if (< i 20) (begin (clear back bg) (loop (+ i 1)))))
         (let ((dt (- (uptime-ns) t0)))
-          (display "[gfx-bench] back-buffer compose (cached/WB): ")
-          (display (mb-per-s (* fbytes 20) dt)) (display " MB/s") (newline)))
+          (log "gfx-bench" "back-buffer compose (cached/WB): " (mb-per-s (* fbytes 20) dt) " MB/s")))
       ;; 2) flush bandwidth: WC vs UC mapping of the SAME scanout, identical copy.
       (let ((wc (time-copies wcfb fb 5)) (uc (time-copies ucfb fb 5)))
-        (display "[gfx-bench] flush WC: ") (display (mb-per-s (* fbytes 5) wc))
-        (display " MB/s | UC: ") (display (mb-per-s (* fbytes 5) uc))
-        (display " MB/s (tie under QEMU dirty-tracking; real HW WC ~6x UC)") (newline))
+        (log "gfx-bench" "flush WC: " (mb-per-s (* fbytes 5) wc) " MB/s | UC: " (mb-per-s (* fbytes 5) uc) " MB/s (tie under QEMU dirty-tracking; real HW WC ~6x UC)"))
       ;; 3) full UI frame: compose + WC flush. Report frame time + fps (x100 for
       ;; one decimal, since a trapped-VRAM frame is ~1 fps under the emulator).
       (let ((t0 (uptime-ns)))
@@ -316,10 +307,7 @@
           (if (< i 3) (begin (draw-demo-ui back fnt tf) (db-flush db) (loop (+ i 1)))))
         (let* ((dt (- (uptime-ns) t0))
                (cfps (if (= dt 0) 0 (quotient (* 300000000000 1) dt))))
-          (display "[gfx-bench] full UI frame (compose+WC flush): ")
-          (display (quotient dt (* 3 1000))) (display " us, ")
-          (display (quotient cfps 100)) (display ".") (display (modulo cfps 100))
-          (display " fps @ ") (display W) (display "x") (display H) (newline)))))
+          (log "gfx-bench" "full UI frame (compose+WC flush): " (quotient dt (* 3 1000)) " us, " (quotient cfps 100) "." (modulo cfps 100) " fps @ " W "x" H)))))
 
   ;; Benchmark rendering through the virtio-gpu driver -- the MODERN path that
   ;; sidesteps the trapped-framebuffer problem entirely. The driver's scanout
@@ -341,7 +329,7 @@
     (send gpu (list 'get-framebuffer (self)))
     (let ((r (recv)))                   ; (w h phys) for scanout 0, or #f
       (if (not (pair? r))
-          (begin (display "[gpu-bench] virtio-gpu returned no scanout") (newline))
+          (begin (log "gpu-bench" "virtio-gpu returned no scanout"))
           (let* ((w (car r)) (h (cadr r)) (phys (caddr r))
                  (stride (* w 4)) (fbytes (* stride h))
                  ;; the reply's fb bytes are a copy-on-send shadow (phys lost); map
@@ -352,32 +340,25 @@
                  ;; NOT the std-vga 0xRRGGBB (16/8/0). Verified by pixel sampling.
                  (surf (make-surface* wb w h stride 8 16 24 '()))
                  (bg   (rgb surf 28 30 44)))
-            (display "[gpu-bench] virtio-gpu scanout ") (display w) (display "x") (display h)
-            (display " backing WB-mapped") (newline)
+            (log "gpu-bench" "virtio-gpu scanout " w "x" h " backing WB-mapped")
             ;; 1) compose into the WB backing (real cached RAM -- representative).
             (let ((t0 (uptime-ns)))
               (let loop ((i 0)) (if (< i 20) (begin (clear surf bg) (loop (+ i 1)))))
               (let ((dt (- (uptime-ns) t0)))
-                (display "[gpu-bench] backing compose (WB): ")
-                (display (mb-per-s (* fbytes 20) dt)) (display " MB/s") (newline)))
+                (log "gpu-bench" "backing compose (WB): " (mb-per-s (* fbytes 20) dt) " MB/s")))
             ;; 2) synchronous flush round-trip, no compose: the per-frame device +
             ;; IPC cost (whole-frame transfer-2d + resource-flush + the ack barrier).
             (let ((t0 (uptime-ns)))
               (let loop ((i 0)) (if (< i 20) (begin (gpu-frame! gpu) (loop (+ i 1)))))
               (let* ((dt (- (uptime-ns) t0)))
-                (display "[gpu-bench] flush round-trip (no compose): ")
-                (display (quotient dt (* 20 1000))) (display " us/frame, ")
-                (display (mb-per-s (* fbytes 20) dt)) (display " MB/s") (newline)))
+                (log "gpu-bench" "flush round-trip (no compose): " (quotient dt (* 20 1000)) " us/frame, " (mb-per-s (* fbytes 20) dt) " MB/s")))
             ;; 3) full UI frame: compose + flush -> the real achievable fps.
             (let ((t0 (uptime-ns)))
               (let loop ((i 0))
                 (if (< i 10) (begin (draw-demo-ui surf fnt tf) (gpu-frame! gpu) (loop (+ i 1)))))
               (let* ((dt (- (uptime-ns) t0))
                      (cfps (if (= dt 0) 0 (quotient (* 100000000000 10) dt))))
-                (display "[gpu-bench] full UI frame (compose+flush): ")
-                (display (quotient dt (* 10 1000))) (display " us, ")
-                (display (quotient cfps 100)) (display ".") (display (modulo cfps 100))
-                (display " fps @ ") (display w) (display "x") (display h) (newline)))
+                (log "gpu-bench" "full UI frame (compose+flush): " (quotient dt (* 10 1000)) " us, " (quotient cfps 100) "." (modulo cfps 100) " fps @ " w "x" h)))
             ;; 4) dirty-rect: the SAME frame, but only the moving box is recomposed
             ;; and flushed each step -- the win when a UI changes a small region.
             (gpu-dirty-bench gpu surf fnt tf w h)
@@ -411,11 +392,7 @@
                   (loop (+ i 1) (if (> (+ nx bw) w) 40 nx) x)))
               (let* ((dt (- (uptime-ns) t0))
                      (cfps (if (= dt 0) 0 (quotient (* 100000000000 frames) dt))))
-                (display "[gpu-bench] dirty-rect anim (")
-                (display bw) (display "x") (display bh) (display " box): ")
-                (display (quotient dt (* frames 1000))) (display " us/frame, ")
-                (display (quotient cfps 100)) (display ".") (display (modulo cfps 100))
-                (display " fps") (newline)))))))
+                (log "gpu-bench" "dirty-rect anim (" bw "x" bh " box): " (quotient dt (* frames 1000)) " us/frame, " (quotient cfps 100) "." (modulo cfps 100) " fps")))))))
 
   ;; The virtio-gpu demo: compose into the WB-mapped scanout backing, benchmark the
   ;; render path, then redraw a stable frame. The caller gates this on a virtio-gpu
@@ -452,13 +429,9 @@
           (fontbytes (initrd-file FONT8X16-PATH))
           (ttfbytes (initrd-file TTF-FONT-PATH)))
       (if (not front)
-          (begin (display "[gfx-demo] no framebuffer") (newline))
+          (begin (log "gfx-demo" "no framebuffer"))
           (begin
-            (display "[gfx-demo] framebuffer ") (display (surface-width front)) (display "x")
-            (display (surface-height front)) (display " pitch ") (display (surface-stride front))
-            (display " (WC-mapped, double-buffered)")
-            (display " bitmap-font=") (display (if fontbytes (bytes-length fontbytes) 0))
-            (display " ttf=") (display (if ttfbytes (bytes-length ttfbytes) 0)) (newline)
+            (log "gfx-demo" "framebuffer " (surface-width front) "x" (surface-height front) " pitch " (surface-stride front) " (WC-mapped, double-buffered)" " bitmap-font=" (if fontbytes (bytes-length fontbytes) 0) " ttf=" (if ttfbytes (bytes-length ttfbytes) 0))
             (spawn-restricted '()
               (lambda ()
                 ;; the cached back-buffer (make-bytes) must live in THIS context's
@@ -470,10 +443,7 @@
                     (draw-demo-ui back fnt tf)
                     (db-flush db)
                     ;; self-check: read a pixel back from the cached back-buffer.
-                    (display "[gfx-demo] frame drawn; ")
-                    (display (if (= (get-pixel back 2 220) (rgb back 28 30 44))
-                                 "pixel-check OK" "pixel-check MISMATCH"))
-                    (newline)
+                    (log "gfx-demo" "frame drawn; " (if (= (get-pixel back 2 220) (rgb back 28 30 44)) "pixel-check OK" "pixel-check MISMATCH"))
                     (gfx-benchmark db fnt tf)
                     ;; redraw a stable frame for the screenshot, then repaint a few
                     ;; times to cover straggler kernel-debug text on the scanout.
@@ -540,14 +510,12 @@
     (send compositor-rendezvous (list 'get-owner (self)))
     (let ((om (recv)))
       (if (not (and (pair? om) (eq? (car om) 'owner) (ctx? (cadr om))))
-          (begin (display "[compositorshards] core ") (display id)
-                 (display " FAIL no owner from rendezvous") (newline))
+          (begin (log "compositorshards" "core " id " FAIL no owner from rendezvous"))
           (let ((owner (cadr om)))
             (send owner (list 'shard-geom (self)))
             (let ((g (recv)))                       ; (geom w h stride fmt)
               (if (not (and (pair? g) (eq? (car g) 'geom)))
-                  (begin (display "[compositorshards] core ") (display id)
-                         (display " FAIL no geom") (newline))
+                  (begin (log "compositorshards" "core " id " FAIL no geom"))
                   (let* ((w (nth g 1)) (hh (nth g 2)) (stride (nth g 3)) (fmt (nth g 4))
                          (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
                          (plane (* stride hh))
@@ -565,8 +533,7 @@
                                                      compositor-rendezvous))
                          (shard (start-compositor-service lc caps cfg)))
                     (send owner (list 'register-shard compositor-rendezvous shard gc gz))
-                    (display "[compositorshards] core ") (display id)
-                    (display " shard instance up + registered") (newline))))))))
+                    (log "compositorshards" "core " id " shard instance up + registered"))))))))
 
   ;; Wait until the compositor owner has at least one shard registered (so an opaque
   ;; client connecting after this is deterministically ROUTED to a shard), or a
@@ -602,7 +569,7 @@
             (send comp (list 'connect #f (self)))
             (let ((r (recv)))                            ; (connected handler fmt)
               (if (not (eq? (car r) 'connected))
-                  (begin (display "[compositor-demo] FAIL no connected reply") (newline))
+                  (begin (log "compositor-demo" "FAIL no connected reply"))
                   (let* ((handler (cadr r)) (fmt (caddr r))
                          (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt)))
                     (send handler (list 'create-surface w h))
@@ -619,8 +586,7 @@
                         (fill-circle surf (- w 110) 120 50 (col circ))
                         (send handler (list 'configure id x y #t))
                         (send handler (list 'commit id 0 '()))
-                        (display "[compositor-demo] window '") (display title)
-                        (display "' presented") (newline)))))))))))
+                        (log "compositor-demo" "window '" title "' presented")))))))))))
 
   ;; The system entry point: called once on the BSP after the scheduler is live.
   ;; Each Core* service is a long-lived context; bring up the ones that exist
@@ -659,17 +625,15 @@
                  (spawn-restricted '()
                    (lambda ()
                      (if (<= expected 0)
-                         (begin (display "[percoretest] single core; no APs to report") (newline))
+                         (begin (log "percoretest" "single core; no APs to report"))
                          ;; receive exactly one (core-hello id) per AP, then finish
                          ;; (the context terminates and leaves the BSP run queue).
                          (let loop ((got 0))
                            (let ((m (recv)))
                              (cond ((and (pair? m) (eq? (car m) 'core-hello))
-                                    (display "[percoretest] cross-core send OK: core ")
-                                    (display (cadr m)) (display " -> BSP collector") (newline)
+                                    (log "percoretest" "cross-core send OK: core " (cadr m) " -> BSP collector")
                                     (if (>= (+ got 1) expected)
-                                        (begin (display "[percoretest] all ") (display expected)
-                                               (display " AP(s) reported in") (newline))
+                                        (begin (log "percoretest" "all " expected " AP(s) reported in"))
                                         (loop (+ got 1))))
                                    (else (loop got)))))))) )
                #f)))
@@ -725,9 +689,7 @@
               (send audio-service (list 'poll-jacks 'hda0))
               (send audio-service (list 'endpoints 'hda0 (self)))
               (for-each (lambda (d)
-                          (display "[jacktest] ep ") (display (car d))
-                          (display " ") (display (nth d 2))
-                          (display (if (nth d 3) " present" " absent")) (newline))
+                          (log "jacktest" "ep " (car d) " " (nth d 2) (if (nth d 3) " present" " absent")))
                         (recv))))))
     (start-power-service)
     ;; Storage registry (the AHCI block driver AND the USB mass-storage class
@@ -827,10 +789,8 @@
                                    (if (and (pair? rects) (null? (cdr rects))
                                             (= (nth (car rects) 0) 0) (= (nth (car rects) 1) 0)
                                             (= (nth (car rects) 2) cw) (= (nth (car rects) 3) ch))
-                                       (display "[compositordamage] whole-screen flush")
-                                       (begin (display "[compositordamage] OK bounded flush ")
-                                              (display rects)))
-                                   (newline)))
+                                       (log "compositordamage" "whole-screen flush")
+                                       (log "compositordamage" "OK bounded flush " rects))))
                                 (target (cdr target))
                                 (else #f)))
                  ;; the 6th cap is the SHARD-MESH KEY: the rendezvous ctx, shared with
@@ -849,8 +809,7 @@
             ;; focused client. `input` is the service handle from setup-input above.
             (send input (list 'subscribe comp))
             (if (and compdemo? (not target))
-                (begin (display "[compositor-demo] no display present; nothing to show")
-                       (newline)))
+                (begin (log "compositor-demo" "no display present; nothing to show")))
             ;; phase-5 demo: TWO independent client contexts each draw their own
             ;; window onto the owned scanout. They overlap (Window Two is staggered
             ;; 400ms so it reliably connects second -> higher z -> on top in the
@@ -887,7 +846,7 @@
                     (send comp (list 'connect #f (self)))
                     (let ((r (recv)))                   ; (connected handler fmt)
                       (if (not (eq? (car r) 'connected))
-                          (begin (display "[compositorinput] FAIL no connected reply") (newline))
+                          (begin (log "compositorinput" "FAIL no connected reply"))
                           (let* ((h (cadr r)) (fmt (caddr r))
                                  (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
                                  (sw 120) (sh 90))
@@ -915,22 +874,13 @@
                                 (send input (list 'event (list 'pointer 90 85 #f))) ; release -> end drag
                                 (send input (list 'event (list 'key 30 1)))         ; key -> focused window
                                 (let ((ev (recv)))      ; BARRIER: the routed key echo
-                                  (display "[compositorinput] focus ")
-                                  (display (if (and (pair? ev) (eq? (car ev) 'input)
-                                                    (pair? (cadr ev)) (eq? (car (cadr ev)) 'key))
-                                               "OK key routed to focused window"
-                                               "FAIL key not routed"))
-                                  (newline))
+                                  (log "compositorinput" "focus " (if (and (pair? ev) (eq? (car ev) 'input) (pair? (cadr ev)) (eq? (car (cadr ev)) 'key)) "OK key routed to focused window" "FAIL key not routed")))
                                 ;; window moved (40,40)->(80,80); probe old vs new title pixel.
                                 (send h (list 'probe-pixel 50 45))   ; old title spot -> background
                                 (let ((oldpx (recv)))
                                   (send h (list 'probe-pixel 90 85)) ; new title spot -> title colour
                                   (let ((newpx (recv)))
-                                    (display "[compositorinput] move ")
-                                    (display (if (and (= oldpx bg-col) (= newpx title-col))
-                                                 "OK title-bar drag moved the window"
-                                                 "FAIL window did not move"))
-                                    (newline)))))))))))
+                                    (log "compositorinput" "move " (if (and (= oldpx bg-col) (= newpx title-col)) "OK title-bar drag moved the window" "FAIL window did not move"))))))))))))
             ;; cardinal.compositorlayers: validate the phase-7 layer/merge pipeline's
             ;; z-buffer occlusion + z authority. One opaque client creates two
             ;; OVERLAPPING windows with distinct solid colours; the later-created one
@@ -967,15 +917,14 @@
                                       (clear surf (rgb surf 220 60 60))
                                       (send h (list 'configure id 60 60 #t))
                                       (send h (list 'commit id 0 '()))
-                                      (display "[compositorshards] routed client committed a window")
-                                      (newline)))))))))
+                                      (log "compositorshards" "routed client committed a window")))))))))
                   ;; the translucent verifier (on the owner): poll the scanout for red.
                   (spawn-restricted '()
                     (lambda ()
                       (send comp (list 'connect #t (self)))
                       (let ((r (recv)))
                         (if (not (and (pair? r) (eq? (car r) 'connected)))
-                            (begin (display "[compositorshards] FAIL verifier not connected") (newline))
+                            (begin (log "compositorshards" "FAIL verifier not connected"))
                             (let* ((h (cadr r)) (fmt (caddr r))
                                    (cs (make-surface* (make-bytes 4) 1 1 4 (car fmt) (cadr fmt) (caddr fmt) '()))
                                    (red (rgb cs 220 60 60)))
@@ -983,11 +932,9 @@
                                 (send h (list 'probe-pixel 75 75))
                                 (let ((got (recv)))
                                   (cond ((and (integer? got) (= got red))
-                                         (display "[compositorshards] OK routed client window reached the scanout")
-                                         (newline))
+                                         (log "compositorshards" "OK routed client window reached the scanout"))
                                         ((>= tries 120)
-                                         (display "[compositorshards] FAIL window never reached the scanout (timeout)")
-                                         (newline))
+                                         (log "compositorshards" "FAIL window never reached the scanout (timeout)"))
                                         (else (sleep 100000000) (poll (+ tries 1)))))))))))))
             ;; cardinal.compositorshardinput: validate CROSS-SHARD KEYBOARD FOCUS. An
             ;; opaque client is routed to a shard (SMP>1) and shows a window, so the
@@ -1022,15 +969,13 @@
                                       ;; mailbox (recv would block past the deadline).
                                       (let loop ((deadline (+ (uptime-ns) 16000000000)))
                                         (cond ((> (uptime-ns) deadline)
-                                               (display "[compositorshardinput] FAIL key never delivered (timeout)")
-                                               (newline))
+                                               (log "compositorshardinput" "FAIL key never delivered (timeout)"))
                                               ((%mailbox-empty?) (sleep 100000000) (loop deadline))
                                               (else
                                                (let ((m (%mailbox-pop)))
                                                  (if (and (pair? m) (eq? (car m) 'input)
                                                           (pair? (cadr m)) (eq? (car (cadr m)) 'key))
-                                                     (begin (display "[compositorshardinput] OK shard-hosted client received key")
-                                                            (newline))
+                                                     (begin (log "compositorshardinput" "OK shard-hosted client received key"))
                                                      (loop deadline))))))))))))))
                   (spawn-restricted '()
                     (lambda ()
@@ -1068,15 +1013,13 @@
                                       (send h (list 'commit id 0 '()))
                                       (let loop ((deadline (+ (uptime-ns) 16000000000)))
                                         (cond ((> (uptime-ns) deadline)
-                                               (display "[compositorshardpointer] FAIL pointer never delivered (timeout)")
-                                               (newline))
+                                               (log "compositorshardpointer" "FAIL pointer never delivered (timeout)"))
                                               ((%mailbox-empty?) (sleep 100000000) (loop deadline))
                                               (else
                                                (let ((m (%mailbox-pop)))
                                                  (if (and (pair? m) (eq? (car m) 'input)
                                                           (pair? (cadr m)) (eq? (car (cadr m)) 'pointer))
-                                                     (begin (display "[compositorshardpointer] OK shard-hosted client received pointer")
-                                                            (newline))
+                                                     (begin (log "compositorshardpointer" "OK shard-hosted client received pointer"))
                                                      (loop deadline))))))))))))))
                   (spawn-restricted '()
                     (lambda ()
@@ -1136,11 +1079,9 @@
                                 (send h (list 'probe-pixel 130 130))   ; the moved window's centre
                                 (let ((got (recv)))
                                   (cond ((and (integer? got) (= got red))
-                                         (display "[compositorsharddrag] OK shard window dragged across the scanout")
-                                         (newline))
+                                         (log "compositorsharddrag" "OK shard window dragged across the scanout"))
                                         ((>= tries 200)
-                                         (display "[compositorsharddrag] FAIL window did not move (timeout)")
-                                         (newline))
+                                         (log "compositorsharddrag" "FAIL window did not move (timeout)"))
                                         (else (sleep 100000000) (poll (+ tries 1)))))))))))))
             ;; cardinal.compositorglobalz: validate TRUE GLOBAL Z across shards. Two
             ;; opaque clients route to DIFFERENT shards (round-robin) with OVERLAPPING
@@ -1200,11 +1141,9 @@
                                 (send h (list 'probe-pixel 90 90))   ; overlap of A and B
                                 (let ((got (recv)))
                                   (cond ((and (integer? got) (= got red))
-                                         (display "[compositorglobalz] OK cross-shard raise put the window on top")
-                                         (newline))
+                                         (log "compositorglobalz" "OK cross-shard raise put the window on top"))
                                         ((>= tries 250)
-                                         (display "[compositorglobalz] FAIL window not raised above (timeout)")
-                                         (newline))
+                                         (log "compositorglobalz" "FAIL window not raised above (timeout)"))
                                         (else (sleep 100000000) (poll (+ tries 1)))))))))))))
             ;; cardinal.compositordamage: validate LAYER-UPDATE DAMAGE BOUNDING. A
             ;; client routed to a shard creates+commits a 40x40 window at (60,60); the
@@ -1218,8 +1157,7 @@
                     ;; only the SHARD layer-update path bounds the flush (the owner's own
                     ;; ops already flush bounded); with no shards there's nothing to test.
                     (if (<= (wait-for-shards comp) 0)
-                        (begin (display "[compositordamage] single core; shard flush path not exercised")
-                               (newline)))
+                        (begin (log "compositordamage" "single core; shard flush path not exercised")))
                     (send comp (list 'connect #f (self)))
                     (let ((r (recv)))
                       (if (and (pair? r) (eq? (car r) 'connected))
@@ -1241,7 +1179,7 @@
                     (send comp (list 'connect #f (self)))
                     (let ((r (recv)))
                       (if (not (eq? (car r) 'connected))
-                          (begin (display "[compositorlayers] FAIL no connected reply") (newline))
+                          (begin (log "compositorlayers" "FAIL no connected reply"))
                           (let* ((h (cadr r)) (fmt (caddr r))
                                  (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt))
                                  (cs (make-surface* (make-bytes 4) 1 1 4 ro go bo '())) ; rgb in screen fmt
@@ -1250,7 +1188,7 @@
                                           (send h (list 'create-surface w hh))
                                           (let ((s (recv)))
                                             (if (not (and (pair? s) (eq? (car s) 'surface)))
-                                                (begin (display "[compositorlayers] FAIL create-surface") (newline) #f)
+                                                (begin (log "compositorlayers" "FAIL create-surface") #f)
                                                 (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
                                                        (surf (make-surface* (map-grant g0) w hh stride ro go bo '())))
                                                   (clear surf col)
@@ -1260,19 +1198,9 @@
                                  (probe (lambda (x y) (send h (list 'probe-pixel x y)) (recv))))
                             (let ((ida (mkwin 40 40 20 20 red))     ; z=1, [20,60)x[20,60)
                                   (idb (mkwin 40 40 40 40 green)))  ; z=2, [40,80)x[40,80) -> on top
-                              (display "[compositorlayers] zorder ")
-                              (display (if (and (= (probe 45 45) green)  ; overlap -> higher z
-                                                (= (probe 25 25) red)    ; A only
-                                                (= (probe 70 70) green)) ; B only
-                                           "OK higher-z window wins the overlap"
-                                           "FAIL z-buffer occlusion wrong"))
-                              (newline)
+                              (log "compositorlayers" "zorder " (if (and (= (probe 45 45) green) (= (probe 25 25) red) (= (probe 70 70) green)) "OK higher-z window wins the overlap" "FAIL z-buffer occlusion wrong"))
                               (send h (list 'raise ida))             ; A gets a fresh top z
-                              (display "[compositorlayers] raise ")
-                              (display (if (= (probe 45 45) red)
-                                           "OK raise lifts the window above in z"
-                                           "FAIL raise did not change occlusion"))
-                              (newline))))))))
+                              (log "compositorlayers" "raise " (if (= (probe 45 45) red) "OK raise lifts the window above in z" "FAIL raise did not change occlusion")))))))))
             ;; cardinal.compositortest: a real end-to-end surface round-trip under the
             ;; kernel scheduler -- connect, create a surface, map its grant (zero-copy),
             ;; draw a known colour, commit, then probe the composited screen. The client
@@ -1286,7 +1214,7 @@
                     (send comp (list 'connect #f (self)))
                     (let ((r (recv)))                   ; (connected handler fmt)
                       (if (not (eq? (car r) 'connected))
-                          (begin (display "[compositor-test] FAIL no connected reply") (newline))
+                          (begin (log "compositor-test" "FAIL no connected reply"))
                           (let ((h (cadr r)))
                             (send h (list 'create-surface 4 4))   ; reply comes to us
                             (let ((s (recv)))           ; (surface id g0 g1 stride)
@@ -1299,10 +1227,7 @@
                                 ;; probe via the handler so it is ordered after commit.
                                 (send h (list 'probe-pixel 10 10))
                                 (let ((px (recv)))
-                                  (display "[compositor-test] ")
-                                  (display (if (= px red) "OK surface created, drawn, composited"
-                                               "FAIL composited pixel mismatch"))
-                                  (newline))
+                                  (log "compositor-test" (if (= px red) "OK surface created, drawn, composited" "FAIL composited pixel mismatch")))
                                 ;; Use-after-revoke (the zero-page hardening): the
                                 ;; client still holds `surf` (its mapped g0 view). Read
                                 ;; it live (red), then destroy the surface -- which
@@ -1315,11 +1240,7 @@
                                   (send h (list 'destroy-surface id))
                                   (recv)                ; 'ok ack, sent after revoke
                                   (let ((dead-px (get-pixel surf 0 0)))
-                                    (display "[compositor-test] revoke ")
-                                    (display (if (and (= live-px red) (= dead-px 0))
-                                                 "OK use-after-revoke reads zero"
-                                                 "FAIL revoked view did not zero"))
-                                    (newline)))))))))))))))
+                                    (log "compositor-test" "revoke " (if (and (= live-px red) (= dead-px 0)) "OK use-after-revoke reads zero" "FAIL revoked view did not zero"))))))))))))))))
     ;; Bring up the network stack, then a NIC, which registers itself with the
     ;; stack and forwards frames to it. Prefer the proven virtio-net when present;
     ;; otherwise fall back to the rtl8139 (the `-device rtl8139` boot, where no
@@ -1347,7 +1268,7 @@
         (bring-up #x10ec #x8139 rtl8139-init)
         (bring-up #x8086 #x10d3 e1000e-init)   ; Intel 82574L (e1000e)
         (bring-up #x8086 #x100e e1000e-init)   ; Intel 82540EM (e1000)
-        (if (= nics 0) (begin (display "[init] no supported NIC") (newline))))
+        (if (= nics 0) (begin (log "init" "no supported NIC"))))
       ;; The register-nic each NIC sends sits ahead of these in the service mailbox,
       ;; so every interface exists before we address it. Static: assign the pinned
       ;; IP on a /24 to the primary interface (mac #f) and prime the gw who-has.
@@ -1375,8 +1296,7 @@
           (spawn-restricted '()
             (lambda ()
               (sleep 3000000000)
-              (display "[dnstest] example.com -> ")
-              (display (dns-resolve net "example.com")) (newline)))))
+              (log "dnstest" "example.com -> " (dns-resolve net "example.com"))))))
     'system-up))   ; close the (let ((input ...)) ...) that wraps the bring-up
 
   ;; The interactive serial REPL (started only under cardinal.repl). A root context
@@ -1392,7 +1312,7 @@
       (import sys-console sys-irq)
       (let ((irq (irq-register 4)))               ; COM1 receive = ISA IRQ 4
         (if (not irq)
-            (begin (display "[repl] irq-register failed") (newline))
+            (begin (log "repl" "irq-register failed"))
             (begin
               (console-arm-rx)                     ; enable COM1 RX IRQ now it is routed
               ;; Expose init's REPL command(s) in the REPL's persistent env so they
@@ -1403,8 +1323,9 @@
               ;; system-init / start-repl, which a stray REPL call could use to
               ;; re-run the whole boot or spawn a second REPL that steals COM1.
               (repl-eval "(import (init (only play-tone set-vol)))")
-              (display "[repl] serial REPL ready on COM1 -- try (play-tone)") (newline)
-              (console-flush)                        ; log is batched -- push the banner out now
+              ;; Announce on the serial line the REPL now OWNS (display is silenced
+              ;; post-takeover -- it goes to the in-memory log store, not serial).
+              (console-write "[repl] serial REPL ready on COM1 -- try (play-tone) or (log-sources)\n")
               (let loop ((seen (irq-count irq)))
                 (let ((in (console-poll)))
                   (if in

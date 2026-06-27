@@ -56,6 +56,7 @@
 (define-module cardfs
   (export start-cardfs)
   (import driver-util)
+  (define lg (make-logger 'cardfs))
 
   (define BS         512)                              ; block size (bytes)
   (define LOG-START  2)                                ; first log LBA (after 2 SB slots)
@@ -421,11 +422,9 @@
                            (if vol
                                (begin
                                  (hash-set! vols name vol)
-                                 (display "[cardfs] CARDLOG volume on ") (display name)
-                                 (display " (objs=") (display (hash-count (vol-index vol))) (display ")")
-                                 (newline)
+                                 (lg "CARDLOG volume on " name " (objs=" (hash-count (vol-index vol)) ")")
                                  (send stor (list 'claim name)))
-                               (begin (display "[cardfs] no cardlog on ") (display name) (newline)))))
+                               (begin (lg "no cardlog on " name)))))
                         ((eq? (car m) 'format)              ; (format storage name bcount reply)
                          (reply-to (nth m 4) (list 'complete (do-format (cadr m) (caddr m) (cadddr m)))))
                         ((eq? (car m) 'put)                 ; (put storage name key data reply)

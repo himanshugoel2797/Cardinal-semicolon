@@ -43,8 +43,7 @@
         (let ((cache2 (cache-put cache spa sha now))   ; learn sender regardless
               (tgt (iface-for-ip ifaces tpa)))         ; the interface this asks for, if any
           (if (= oper 2)                            ; a reply we solicited / observed
-              (begin (display "[corenetwork] arp learned ") (display spa)
-                     (display " -> ") (display sha) (newline)))
+              (begin (log "corenetwork" "arp learned " spa " -> " sha)))
           (if (and (= oper 1) tgt)
               (eth-tx (ig tgt I-TX) (ig tgt I-MAC) sha ETH-ARP
                       (build-arp 2 (ig tgt I-MAC) tpa sha spa) 28))

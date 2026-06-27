@@ -35,6 +35,7 @@
 (define-module coreaudio
   (export start-audio-service)
   (import driver-util)
+  (define lg (make-logger 'coreaudio))
 
   ;; A card record is (name . ctx). `cards` is a list of them. Endpoints are NOT
   ;; cached here -- the driver context is the source of truth (presence is live),
@@ -55,8 +56,7 @@
       (lambda (cards m)
         (cond
           ((eq? (car m) 'register)             ; (register name ctx endpoints)
-           (display "[coreaudio] card registered: ") (display (nth m 1))
-           (display " (") (display (length (nth m 3))) (display " endpoints)") (newline)
+           (lg "card registered: " (nth m 1) " (" (length (nth m 3)) " endpoints)")
            (cons (cons (nth m 1) (nth m 2)) cards))
           ((eq? (car m) 'tone)                 ; (tone name)
            (to-card (nth m 1) cards (list 'tone)) cards)

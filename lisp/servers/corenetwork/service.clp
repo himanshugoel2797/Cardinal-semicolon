@@ -11,6 +11,8 @@
 ;; routing table (route-egress). Interfaces are created by register-nic and
 ;; addressed by set-address (which also installs the interface's routes).
 
+(define lg (make-logger 'corenetwork))
+
 ;; State constructor, so the 5-tuple is built in one place.
 (define (mk-state ifaces routes cache binds tcp)
   (list ifaces routes cache binds tcp))
@@ -44,8 +46,7 @@
             (binds (nth st 3)) (tcp (nth st 4)))
         (cond
           ((eq? (car m) 'register-nic)         ; (register-nic mac tx-ctx)
-           (display "[corenetwork] nic registered as if") (display (length ifaces))
-           (display ", mac=") (display (cadr m)) (newline)
+           (lg "nic registered as if" (length ifaces) ", mac=" (cadr m))
            ;; Wrap the raw NIC tx in a per-interface tx engine (bounded queue +
            ;; one-in-flight backpressure); the engine becomes the interface's tx.
            (mk-state (append ifaces
@@ -78,8 +79,7 @@
            (reply-to (caddr m) (cache-get cache (cadr m) (uptime-ns)))
            st)
           ((eq? (car m) 'udp-bind)             ; (udp-bind port handler)
-           (display "[corenetwork] udp port bound: ")
-           (display (cadr m)) (newline)
+           (lg "udp port bound: " (cadr m))
            (mk-state ifaces routes cache (cons (cons (cadr m) (caddr m)) binds) tcp))
           ((eq? (car m) 'udp-unbind)           ; (udp-unbind port) -- drop the binding
            (mk-state ifaces routes cache
@@ -121,8 +121,7 @@
                  (begin
                    (is! i I-IP (caddr m)) (is! i I-MASK (cadddr m))
                    (is! i I-GW (nth m 4)) (is! i I-DNS (nth m 5))
-                   (display "[corenetwork] if") (display (ig i I-ID))
-                   (display " address set ") (display (caddr m)) (newline)
+                   (lg "if" (ig i I-ID) " address set " (caddr m))
                    (mk-state ifaces (routes-install routes i) cache binds tcp)))))
           ((eq? (car m) 'get-address)          ; (get-address reply) -> (ip nm gw dns) of primary
            (let ((i (primary-iface ifaces)))
@@ -150,7 +149,7 @@
           ;; --- TCP socket API (state mutated in place; the same st rides on) ---
           ((eq? (car m) 'tcp-listen)           ; (tcp-listen port owner)
            (tcp-do-listen tcp (cadr m) (caddr m))
-           (display "[corenetwork] tcp listening on ") (display (cadr m)) (newline)
+           (lg "tcp listening on " (cadr m))
            st)
           ((eq? (car m) 'tcp-connect)          ; (tcp-connect dst-ip dst-mac dport owner)
            (let ((i (egress-for ifaces routes (cadr m))))
@@ -176,17 +175,16 @@
            st)
           ((eq? (car m) 'tcp-test-loss)        ; (tcp-test-loss N) -- test fault injection
            (tcp-do-test-loss tcp (cadr m))
-           (display "[corenetwork] tcp test-loss: drop 1 in ")
-           (display (cadr m)) (newline)
+           (lg "tcp test-loss: drop 1 in " (cadr m))
            st)
           ;; --- inbound firewall config (fw mutated in place) ---
           ((eq? (car m) 'fw-policy)            ; (fw-policy allow|deny) -- default action
            (fw-set-policy! fw (eq? (cadr m) 'allow))
-           (display "[corenetwork] firewall default ") (display (cadr m)) (newline)
+           (lg "firewall default " (cadr m))
            st)
           ((eq? (car m) 'fw-add)               ; (fw-add action proto src-net src-len dport)
            (fw-add! fw (fw-rule (cadr m) (caddr m) (cadddr m) (nth m 4) (nth m 5)))
-           (display "[corenetwork] firewall rule added") (newline)
+           (lg "firewall rule added")
            st)
           ((eq? (car m) 'fw-clear)             ; (fw-clear) -- drop all rules
            (fw-clear! fw) st)

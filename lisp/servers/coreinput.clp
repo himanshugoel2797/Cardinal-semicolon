@@ -28,6 +28,7 @@
 (define-module coreinput
   (export start-input-service)
   (import driver-util)
+  (define lg (make-logger 'coreinput))
 
   ;; Spawn the input service; returns the handle drivers `send` to. State is
   ;; (devs . subs): the registered-device list and the subscriber contexts the
@@ -43,8 +44,7 @@
           ;; all input for the session).
           (cond ((or (not (pair? m)) (not (pair? (cdr m)))) st)
                 ((eq? (car m) 'register)
-                 (display "[coreinput] device registered: ")
-                 (display (cadr m)) (newline)
+                 (lg "device registered: " (cadr m))
                  (cons (cons (cadr m) devs) subs))
                 ;; (subscribe <ctx>): add a consumer of the event stream. ctx?-guard
                 ;; it -- a non-context would abort the later forwarding `send`, and

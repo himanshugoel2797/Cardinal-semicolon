@@ -40,6 +40,7 @@
 (define-module corecompositor
   (export start-compositor-service make-compositor-caps paint-windows make-shard-cfg)
   (import driver-util graphics)
+  (define lg (make-logger 'corecompositor))
 
   ;; --- injected capabilities --------------------------------------------------
   ;; (alloc nbytes) -> a phys-backed, zeroed DMA buffer (init: dma-alloc-wb);
@@ -604,7 +605,7 @@
              (send client (get-pixel screen (cadr m) (caddr m)))
              st)
             (else
-             (display "[corecompositor] handler op ignored: ") (display verb) (newline)
+             (lg "handler op ignored: " verb)
              st))))
 
       ;; --- input routing + drag-move (phase 6) ------------------------------------
@@ -815,8 +816,7 @@
                                 (cons (list (caddr m) cv zv) (mrg-shards mrg)))
                    ;; a grant mapped to #f (revoked between the grant? check and here):
                    ;; the shard is NOT registered (its content/clients won't appear).
-                   (begin (display "[corecompositor] register-shard: grant map failed; shard dropped")
-                          (newline))))
+                   (begin (lg "register-shard: grant map failed; shard dropped"))))
              st)
             ;; (layer-update KEY shard-handle window-list damage) -> a registered shard
             ;; repainted its layer: record its window manifest (for cross-shard input
@@ -838,6 +838,5 @@
                (present-rects caps (if (pair? dmg) dmg (full-screen-rect screen))))
              st)
             (else
-             (display "[corecompositor] primary: ignoring malformed ")
-             (display (car m)) (newline)
+             (lg "primary: ignoring malformed " (car m))
              st))))))))

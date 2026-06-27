@@ -19,6 +19,8 @@
 ;;   (disconnect-downstream <hci-ctx> <parent-addr> <port>)          ; hub driver
 ;; and, internally, the enumerator reports (enum-done ...) / (enum-failed <addr>).
 
+(define lg (make-logger 'coreusb))
+
 ;; ---- USB bus-address pool (1..127) -----------------------------------------
 ;; `used` is a list of in-use addresses; alloc hands out the lowest free one, so
 ;; a freed address is reused (matching alloc_address's lowest-free scan).
@@ -54,7 +56,7 @@
                                  (arithmetic-shift USB-DESC-DEVICE 8) 0 8)
                      #f 8 8)))
     (if (< (complete-n c) 8)
-        (begin (display "[coreusb] initial GET_DESCRIPTOR failed") (newline)
+        (begin (lg "initial GET_DESCRIPTOR failed")
                (send usb (list 'enum-failed addr)))
         (let* ((d8 (complete-data c))
                (mps0 (let ((m (bytes-u8-ref d8 7))) (if (= m 0) 8 m))))
@@ -63,7 +65,7 @@
                   (ctl-need hci 0 speed mps0
                             (make-setup USB-REQ-DIR-OUT USB-REQ-SET-ADDRESS addr 0 0)
                             #f 0 0)) 0)
-              (begin (display "[coreusb] SET_ADDRESS failed") (newline)
+              (begin (lg "SET_ADDRESS failed")
                      (send usb (list 'enum-failed addr)))
               (begin
                 (sleep 50000000)              ; >=2ms by spec; xHCI wants more (50ms)
@@ -76,20 +78,19 @@
                                  (arithmetic-shift USB-DESC-DEVICE 8) 0 18)
                      #f 18 18)))
     (if (< (complete-n c) 18)
-        (begin (display "[coreusb] device descriptor read failed") (newline)
+        (begin (lg "device descriptor read failed")
                (send usb (list 'enum-failed addr)))
         (let* ((dd (complete-data c))
                (vid (bytes-u16-ref dd 8)) (pid (bytes-u16-ref dd 10))
                (dclass (bytes-u8-ref dd 4)))
-          (display "[coreusb] enumerated device: vid=") (display vid)
-          (display " pid=") (display pid) (display " class=") (display dclass) (newline)
+          (lg "enumerated device: vid=" vid " pid=" pid " class=" dclass)
           ;; 4) config descriptor: 9-byte header for wTotalLength, then the whole.
           (let ((ch (ctl-need hci addr speed mps0
                               (make-setup USB-REQ-DIR-IN USB-REQ-GET-DESCRIPTOR
                                           (arithmetic-shift USB-DESC-CONFIG 8) 0 9)
                               #f 9 9)))
             (if (< (complete-n ch) 9)
-                (begin (display "[coreusb] config header read failed") (newline)
+                (begin (lg "config header read failed")
                        (send usb (list 'enum-failed addr)))
                 (let* ((total0 (bytes-u16-ref (complete-data ch) 2))
                        (total (if (> total0 512) 512 total0))
@@ -98,7 +99,7 @@
                                                  (arithmetic-shift USB-DESC-CONFIG 8) 0 total)
                                      #f total total)))
                   (if (< (complete-n cf) total)
-                      (begin (display "[coreusb] config (full) read failed") (newline)
+                      (begin (lg "config (full) read failed")
                              (send usb (list 'enum-failed addr)))
                       (let* ((config (complete-data cf))
                              (cfgval (bytes-u8-ref config 5))
@@ -108,7 +109,7 @@
                                 (ctl-need hci addr speed mps0
                                           (make-setup USB-REQ-DIR-OUT USB-REQ-SET-CONFIGURATION
                                                       cfgval 0 0) #f 0 0)) 0)
-                            (begin (display "[coreusb] SET_CONFIGURATION failed") (newline)
+                            (begin (lg "SET_CONFIGURATION failed")
                                    (send usb (list 'enum-failed addr)))
                             ;; 6) advisory: log device strings, then dispatch by
                             ;; class (interface class if present, else device).
@@ -119,12 +120,11 @@
                                    (cdrv (assq-ctx klass class-table)))
                               (if cdrv
                                   (begin
-                                    (display "[coreusb] dispatch to class ") (display klass) (newline)
+                                    (lg "dispatch to class " klass)
                                     (send cdrv (list 'probe dev))
                                     (send usb (list 'enum-done addr hci port parent klass)))
                                   (begin
-                                    (display "[coreusb] no class driver for class ")
-                                    (display klass) (newline)
+                                    (lg "no class driver for class " klass)
                                     (send usb (list 'enum-failed addr))))))))))))))))
 
 ;; Best-effort: read the device's manufacturer/product strings and log them, plus
@@ -135,13 +135,9 @@
   (let ((nconf (bytes-u8-ref dd 17))
         (iman (bytes-u8-ref dd 14)) (iprod (bytes-u8-ref dd 15)))
     (if (> nconf 1)
-        (begin (display "[coreusb]   ") (display nconf)
-               (display " configurations present (using configuration 0)") (newline)))
+        (begin (lg "  " nconf " configurations present (using configuration 0)")))
     (if (or (> iman 0) (> iprod 0))
-        (let ((lang (usb-langid dev)))
-          (display "[coreusb]   mfr=\"") (display (usb-string dev iman lang))
-          (display "\" product=\"") (display (usb-string dev iprod lang)) (display "\"")
-          (newline)))))
+        (let ((lang (usb-langid dev))) (lg "  mfr=\"" (usb-string dev iman lang) "\" product=\"" (usb-string dev iprod lang) "\"")))))
 
 (define (assq-ctx k table)
   (cond ((null? table) #f)
@@ -186,8 +182,7 @@
       (let ((classes (car state)) (used (cadr state)) (recs (caddr state)) (me (self)))
         (cond
           ((eq? (car m) 'register-class)            ; (... class ctx)
-           (display "[coreusb] class driver registered for class ")
-           (display (cadr m)) (newline)
+           (lg "class driver registered for class " (cadr m))
            (list (cons (cons (cadr m) (caddr m)) classes) used recs))
 
           ((eq? (car m) 'port-connected)            ; (... hci port speed)
@@ -229,7 +224,7 @@
 (define (start-enum me classes used recs hci parent port speed)
   (let ((addr (addr-alloc used)))
     (if (not addr)
-        (begin (display "[coreusb] out of USB bus addresses") (newline)
+        (begin (lg "out of USB bus addresses")
                (list classes used recs))
         (begin
           (spawn-restricted '()

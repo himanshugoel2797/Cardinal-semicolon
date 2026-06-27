@@ -113,7 +113,7 @@
     (and (> n 0) (not synf)
          (begin (cs! tcp T-CTR (+ (cg tcp T-CTR) 1))
                 (if (= 0 (modulo (cg tcp T-CTR) n))
-                    (begin (display "[tcp-test] dropped inbound segment") (newline) #t)
+                    (begin (log "tcp-test" "dropped inbound segment") #t)
                     #f)))))
 (define (tcp-do-test-loss tcp n) (cs! tcp T-LOSS n))
 (define (tcp-tuple lport rip rport) (list lport rip rport))
