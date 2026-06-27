@@ -20,6 +20,7 @@
           corenetwork
           corenetdebug coreusb ps2 virtio-net rtl8139 rtl8169 virtio-gpu lfb ahci
           cardfs hdaudio uhci xhci ehci usb-hid usb-hub usb-storage usb-audio
+          nvme e1000e virtio-blk virtio-input virtio-rng virtio-console
           graphics font ttf sys-pci sys-cmdline sys-initrd sys-mmio sys-reg
           sys-shm-mint)
 
@@ -630,6 +631,16 @@
     ;; `input` is bound here because the USB-HID class driver feeds the same
     ;; coreinput service the ps2 keyboard does; the whole bring-up runs in its scope.
     (let ((input (setup-input)))
+    ;; Pointer + keyboard over virtio-input (tablet = absolute pointer, keyboard,
+    ;; mouse) -- the clean VM input path. Plus two misc virtio devices: an entropy
+    ;; source (virtio-rng) and a serial console (virtio-console, banner on bring-up).
+    ;; All pci-find-gated, so a boot without the device just no-ops. The rng/console
+    ;; handles are fire-and-forget for now (no in-OS consumer wired yet).
+    (for-each (lambda (ecam) (virtio-input-init input ecam)) (pci-find-all #x1af4 #x1052))
+    (for-each (lambda (ecam) (rng-init ecam)) (pci-find-all #x1af4 #x1044))     ; modern
+    (for-each (lambda (ecam) (rng-init ecam)) (pci-find-all #x1af4 #x1005))     ; transitional
+    (for-each (lambda (ecam) (console-init ecam)) (pci-find-all #x1af4 #x1043)) ; modern
+    (for-each (lambda (ecam) (console-init ecam)) (pci-find-all #x1af4 #x1003)) ; transitional
     ;; Create the compositor owner rendezvous in the ROOT (only the root eval may
     ;; set! a module global) and BEFORE the APs go live, so the per-core shard hook
     ;; can reach it. The bring-up later sends it the owner handle. (set! from here is
@@ -729,6 +740,11 @@
           (usb (start-usb-service)))
       (start-cardfs storage)
       (ahci-init storage)
+      ;; NVMe (PCI class 01h/08h) and virtio-blk register block devices with
+      ;; corestorage exactly as ahci does; pci-gated, so absent -> "no device".
+      (for-each (lambda (ecam) (nvme-init storage ecam)) (pci-find-class-all #x01 #x08))
+      (for-each (lambda (ecam) (virtio-blk-init storage ecam)) (pci-find-all #x1af4 #x1042))
+      (for-each (lambda (ecam) (virtio-blk-init storage ecam)) (pci-find-all #x1af4 #x1001))
       ;; Register the USB class drivers FIRST -- coreusb processes these
       ;; register-class messages (sent synchronously here) ahead of any later
       ;; port-connect, so the class table is populated when the first device
@@ -1329,6 +1345,8 @@
         (bring-up #x1af4 #x1041 virtio-net-init)
         (bring-up #x10ec #x8168 rtl8169-init)
         (bring-up #x10ec #x8139 rtl8139-init)
+        (bring-up #x8086 #x10d3 e1000e-init)   ; Intel 82574L (e1000e)
+        (bring-up #x8086 #x100e e1000e-init)   ; Intel 82540EM (e1000)
         (if (= nics 0) (begin (display "[init] no supported NIC") (newline))))
       ;; The register-nic each NIC sends sits ahead of these in the service mailbox,
       ;; so every interface exists before we address it. Static: assign the pinned
