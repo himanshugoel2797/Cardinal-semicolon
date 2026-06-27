@@ -25,11 +25,12 @@ that wants full system authority — which:
    calls `(repl-eval <input>)` — the read-eval-print engine in `libs/lisp/src/repl.c` — and
    writes the transcript back over the serial link.
 
-**CSMUX framing.**  Once `cardinal.repl` is active, the kernel switches COM1 into a framed
-multiplexed protocol: the kernel debug log rides channel 0, and the REPL rides channel 2.  A
-raw terminal therefore sees byte-stuffed binary.  The host-side script `scripts/csmux-repl.py`
-demultiplexes the stream, prints the log to your terminal, and frames whatever you type onto
-channel 2.
+**Raw serial, no framing.**  Once `cardinal.repl` is active, the REPL takes COM1.  There is no
+framing protocol: the wire is a plain 115200-8N1 serial line.  Before `start-repl` runs, the
+boot log streams raw to COM1 exactly as a normal boot does.  After `start-repl` completes,
+component logs no longer go to the serial line — they are captured in an in-memory
+**per-source log store** (`modules/SysDebug/src/logstore.c`) and read back at the REPL with the
+`log-*` primitives (see Step 4a below).
 
 **Persistent environment.**  `repl-eval` accumulates `define`s across calls (bindings are
 stored in the system heap so they survive the REPL context's own garbage collection).  Every
@@ -52,11 +53,11 @@ cmake --build build --target repl-image
 
 ## Step 2 — Launch the REPL terminal
 
-`scripts/csmux-repl.py` boots the REPL ISO under QEMU, connects over a UNIX-socket serial
-link, and gives you a line-oriented terminal:
+`scripts/serial-repl.py` boots the REPL ISO under QEMU, connects over a UNIX-socket serial
+link, and gives you a raw line-oriented terminal:
 
 ```bash
-python3 scripts/csmux-repl.py
+python3 scripts/serial-repl.py
 ```
 
 The script defaults to `build/ISO/os-repl.iso`, `q35` machine, KVM acceleration (falls back
@@ -64,10 +65,10 @@ to TCG), 512 MiB RAM, and 2 vCPUs.  Override with env vars matching the options 
 `run-qemu.sh`:
 
 ```bash
-MEM=256 SMP=1 ACCEL=tcg python3 scripts/csmux-repl.py
+MEM=256 SMP=1 ACCEL=tcg python3 scripts/serial-repl.py
 ```
 
-You will see the QEMU launch line on stderr, followed by the unframed pre-CSMUX boot log as
+You will see the QEMU launch line on stderr, followed by the raw boot log as
 the OS initialises.  Once `start-repl` finishes arming the IRQ you will see:
 
 ```
@@ -79,7 +80,7 @@ press Enter, and the transcript comes back.  Press Ctrl-C to quit.
 
 !!! note "Real hardware"
     On a physical machine, pass `--serial-device /dev/ttyUSB0` (or whichever adapter you
-    have).  The script handles the same CSMUX framing over the tty.
+    have).  The script relays bytes raw over the tty.
 
 ---
 
@@ -311,6 +312,57 @@ done
 
 ---
 
+## Step 4a — Reading component logs with `log-*`
+
+Once the REPL owns COM1, driver and server output no longer streams to serial.  Instead it
+goes to an in-memory **per-source log store** (a 2 KiB ring per source name, kept in C for
+synchronous, allocation-free capture).  Four global primitives let you read it back:
+
+| Primitive | Description |
+|-----------|-------------|
+| `(log-sources)` | Newline-separated string listing every source that has logged something |
+| `(log-dump "src")` | Full buffered content for `src`, oldest-first, as a string |
+| `(log-tail "src" n)` | Last `n` lines from `src` as a string |
+| `(log-clear "src")` | Discard `src`'s buffer |
+
+These are global primitives — no `import` needed, available in any context.
+
+### Typical workflow
+
+```scheme
+; Find out which sources exist:
+(display (log-sources))
+; ahci
+; corenetwork
+; hdaudio
+; nvme
+; ...
+
+; Dump the ahci driver's log since boot:
+(display (log-dump "ahci"))
+; ahci: controller at ECAM 0x...
+; ahci: port 0: device present, sig=0x00000101
+; ahci: port 0: identify ok, 2097152 sectors
+
+; Tail the last 10 lines of the network stack's log:
+(display (log-tail "corenetwork" 10))
+
+; Clear a noisy source to start fresh:
+(log-clear "hdaudio")
+```
+
+Drivers write to the store with `(log "src" arg...)` (variadic; strings rendered bare,
+numbers/symbols/lists via the printer) or with a `make-logger` closure:
+
+```scheme
+; In a driver module:
+(define lg (make-logger 'mydriver))
+(lg "initialised, base=" base-addr " irq=" irq)
+; appends one line to the "mydriver" ring
+```
+
+---
+
 ## Step 5 — Sending a message to a running server
 
 The REPL context is root and carries its own Lisp environment, so you can `send` messages
@@ -361,7 +413,7 @@ no-audio
     ```bash
     AUDIO_WAV=/tmp/tone.wav \
     QEMU_EXTRA="-audiodev wav,id=snd0,path=/tmp/tone.wav -device ich9-intel-hda,id=hda0 -device hda-output,bus=hda0.0,audiodev=snd0" \
-    python3 scripts/csmux-repl.py
+    python3 scripts/serial-repl.py
     ```
 
     After calling `(play-tone 440)`, the WAV file will contain a non-silent burst — the
@@ -406,12 +458,12 @@ For the full message protocol of each Core* service, see the individual server p
 
 ## Step 6 — Using --exec for non-interactive evaluation
 
-`csmux-repl.py` supports a scripted mode: it waits for the ready banner, sends each
+`serial-repl.py` supports a scripted mode: it waits for the ready banner, sends each
 `--exec` expression, prints the output, and exits once the REPL goes quiet.  Useful for
 one-shot probes from a CI job or a shell script:
 
 ```bash
-python3 scripts/csmux-repl.py \
+python3 scripts/serial-repl.py \
   --exec "(+ 1 2)" \
   --exec "(define x 99)" \
   --exec "x"

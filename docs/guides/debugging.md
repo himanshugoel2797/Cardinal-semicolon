@@ -1,22 +1,20 @@
 # Debug the OS
 
-*A practical guide to the four debug surfaces in Cardinal; — from boot-log
-triage to GDB breakpoints in kernel C.*
+*A practical guide to the three debug surfaces in Cardinal; — from boot-log
+triage to live context inspection.*
 
-Cardinal; provides four complementary debug surfaces. Understanding which one
+Cardinal; provides three complementary debug surfaces. Understanding which one
 to reach for first saves time:
 
 | Surface | What it covers | When to use it |
 |---------|---------------|----------------|
 | **COM1 boot log / `DEBUG_PRINT`** | Kernel + C module output, baked-in traces | First look: boot panics, module load order, early driver state |
-| **Interactive Lisp REPL on COM1** | Live Lisp evaluation in the running OS | Prod drivers and services while the OS runs; call exported server commands |
+| **Interactive Lisp REPL on COM1** | Live Lisp evaluation in the running OS; component log query via `log-*` prims | Prod drivers and services while the OS runs; read per-source logs with `(log-dump "src")` |
 | **`sys-debug` context inspector** | Pause, step, and inspect Lisp contexts | Track down a spinning or wedged Lisp server; single-step Lisp code |
-| **SysGdb GDB stub on COM2** | Full register/memory/source-level debug of C kernel code | Break in kernel C, inspect modules, step through interrupt handlers |
 
-The REPL and the GDB stub share the same physical COM port only if you remap
-them deliberately — by default COM1 carries `DEBUG_PRINT` output (and the
-REPL, which claims the RX side of COM1) while the GDB stub lives exclusively
-on COM2.
+All three surfaces share COM1. The boot log streams raw until the REPL starts;
+once the REPL takes COM1, component logs go to an in-memory per-source store
+and are read back at the REPL with `log-*` primitives.
 
 ---
 
@@ -83,21 +81,23 @@ boots with `cardinal.repl`, `system-init` in `lisp/init.clp` calls
 5. Parks in an IRQ-driven loop — `(console-poll)` for input, `(irq-wait …)`
    between keystrokes — so the BSP idles when nothing is typed (no busy-poll).
 
-### The serial link is framed CSMUX, not a raw console
+### The serial link is raw — no framing
 
-Under `cardinal.repl`, SysLisp multiplexes the single COM1 link with **CSMUX**
-framing: the debug log rides channel 0 and the REPL rides channel 2
-(`modules/SysDebug/src/csmux.c`). A raw terminal therefore sees byte-stuffed
-garbage — you must demultiplex the stream with the host tool
-`scripts/csmux-repl.py`, which prints the log and REPL output and frames
-whatever you type onto the REPL channel.
+Under `cardinal.repl`, once `start-repl` runs, the REPL takes COM1. There is
+no framing protocol: the wire is a plain 115200-8N1 serial line. Before the
+REPL starts, the boot log streams raw to COM1 exactly as a normal boot does.
+After `start-repl` completes, component logs no longer go to the serial line —
+they are written to an **in-memory per-source log store** (`modules/SysDebug/src/logstore.c`)
+and read back at the REPL with the `log-*` primitives (see below).
 
-Build the REPL ISO with the `repl-image` CMake target, then launch the demuxer
-(it boots `build/ISO/os-repl.iso` under QEMU by default):
+### Launching the REPL with `serial-repl.py`
+
+Build the REPL ISO with the `repl-image` CMake target, then launch the raw
+serial terminal (it boots `build/ISO/os-repl.iso` under QEMU by default):
 
 ```bash
 cmake --build build --target repl-image   # -> build/ISO/os-repl.iso
-python3 scripts/csmux-repl.py             # launches QEMU + demuxes COM1
+python3 scripts/serial-repl.py            # launches QEMU, relays COM1 raw
 # ... boot log scrolls by ...
 # [repl] serial REPL ready on COM1 -- try (play-tone)
 (+ 1 2)
@@ -111,13 +111,13 @@ Drive the REPL non-interactively (for tests) with `--exec` (repeatable) or
 print the output, and exit:
 
 ```bash
-python3 scripts/csmux-repl.py --exec '(+ 1 2)' --exec '(play-tone)'
+python3 scripts/serial-repl.py --exec '(+ 1 2)' --exec '(play-tone)'
 ```
 
 On real hardware, point the same tool at the adapter instead of QEMU:
 
 ```bash
-python3 scripts/csmux-repl.py --serial-device /dev/ttyUSB0
+python3 scripts/serial-repl.py --serial-device /dev/ttyUSB0
 ```
 
 Because the spawned context has full (root) import authority, you can
@@ -127,6 +127,55 @@ primitives described in the next section.
 !!! warning "REPL authority"
     The REPL context has root authority — it can `(import sys-pci)` and reach
     new hardware. Do not boot production images with `cardinal.repl`.
+
+### Per-source log store
+
+Once the REPL owns COM1, every `(log "src" ...)` call from a driver or server
+appends to a ring buffer keyed by source name (`modules/SysDebug/src/logstore.c`).
+The REPL provides four global primitives to read them back:
+
+| Primitive | Description |
+|-----------|-------------|
+| `(log-sources)` | Newline-separated string of all known source names |
+| `(log-dump "src")` | Full buffered log for `src`, oldest-first, as a string |
+| `(log-tail "src" n)` | Last `n` lines of `src` as a string |
+| `(log-clear "src")` | Discard the buffer for `src` |
+
+**Worked example — reading the nvme driver's log:**
+
+```scheme
+; 1. Boot with cardinal.repl, wait for the ready banner, then:
+(display (log-sources))
+; ahci
+; nvme
+; corenetwork
+; ...
+
+; 2. Dump everything logged by the nvme driver since boot:
+(display (log-dump "nvme"))
+; nvme: BAR0 phys=0xd0000000 size=0x4000
+; nvme: CC.EN=0 -> 1 (controller reset)
+; nvme: CSTS.RDY within 50ms
+; nvme: identify ctrl ok, nn=1
+; nvme: ns1: 2097152 sectors (1 GiB)
+
+; 3. Only the last 5 lines:
+(display (log-tail "nvme" 5))
+```
+
+Each module uses `(log "src" arg...)` directly (args rendered display-style:
+strings bare, other values via the printer), or gets a convenience closure via
+`make-logger`:
+
+```scheme
+(define lg (make-logger 'nvme))
+(lg "found " n " queues")
+; equivalent to: (log "nvme" "found " n " queues")
+```
+
+`log` and `make-logger` are global (available in any context, including
+restricted drivers, just like `display`). The `log-*` query primitives are
+also global — call them at the REPL without any `import`.
 
 ---
 
@@ -217,78 +266,7 @@ capability grant of its maker (no escalation).
 
 ---
 
-## 4. GDB over COM2 (C and kernel-level)
-
-`SysGdb` (`modules/SysGdb`) is a GDB Remote Serial Protocol stub that lets
-you attach GDB to the **running kernel** over COM2.  It handles `#BP` (vector
-3) and `#DB` (vector 1), talks RSP, and clears `CR0.WP` so software
-breakpoints can be written into read-only kernel text.
-
-### What works
-
-- Read/write registers (`info registers`, `$rax = value`).
-- Read/write arbitrary memory (`x/32xb addr`, `set {int}addr = value`).
-- Software breakpoints + single-step + continue.
-- Source-level backtrace with symbols (`bt`) — provided GDB can find the
-  unstripped `kernel.bin`.
-- **Async Ctrl-C**: GDB sends `0x03` over COM2; the UART RX IRQ catches it
-  and halts the running OS.
-
-### QEMU invocation
-
-COM1 carries `DEBUG_PRINT` output; COM2 carries the GDB stub.  Map them as
-follows — **pull the exact flags from `notes/debugging-gdb.md`**:
-
-```bash
-qemu-system-x86_64 \
-  -machine q35 -m 512 -smp 2 \
-  -cdrom build/ISO/os.iso -boot d \
-  -accel kvm -cpu host \
-  -serial file:debug.log \                    # COM1 -> file
-  -serial tcp:127.0.0.1:1234,server,nowait    # COM2 -> TCP socket
-```
-
-Then in a second terminal:
-
-```bash
-gdb build/kernel/kernel.bin -ex 'target remote :1234'
-```
-
-GDB connects over the TCP socket and the RSP handshake completes.  You can
-now set breakpoints, inspect registers, and continue.
-
-### Stopping at boot to wait for GDB
-
-Add `CALL:gdb_stub_wait` to `loadscript.txt` at the point you want the OS to
-halt and wait.  The stub raises a breakpoint and then parks until GDB attaches
-and sends `continue`.  Alternatively, call `gdb_stub_wait()` directly from C
-code you control, or use `int3` for a one-shot halt.
-
-### Module-relocation caveat
-
-The kernel itself links at a fixed high virtual address and its symbols are
-stable — `gdb build/kernel/kernel.bin` gives you reliable source-level debug.
-**Loadable modules** (the `.celf` files) are **relocatable ELFs** that the
-kernel places at addresses determined at boot.  GDB does not know where they
-landed.  Practical workarounds:
-
-- Add a `DEBUG_PRINT` in the module's `module_init` to emit its own text
-  address, then use `add-symbol-file module.elf <text_addr>` in GDB.
-- Set a breakpoint in kernel code that calls into the module after load, step
-  into the module, and derive the load address from the PC.
-
-### On hardware without a native serial port
-
-The old FTDI USB-serial GDB transport (`drivers/usb_serial`) was removed with
-the rest of the C USB stack, so `SysGdb` now speaks only over a real COM2.
-On a board without a second UART, the in-OS Lisp REPL is the interactive debug
-path: it runs over the single COM1 link (framed CSMUX, see Section 2) and
-`scripts/csmux-repl.py` reaches it over a USB-serial adapter with
-`--serial-device`. See `notes/debugging-gdb.md` for the COM2 GDB recipes.
-
----
-
-## 5. Interrupt-delivery / "nothing is firing" debugging
+## 4. Interrupt-delivery / "nothing is firing" debugging
 
 If an interrupt handler never runs or an MSI-triggered callback is silent,
 the most common root causes are:
@@ -338,7 +316,7 @@ for the driver-side checklist.
 
 ---
 
-## 6. KVM vs TCG
+## 5. KVM vs TCG
 
 Most bugs reproduce under both accelerators.  A few categories are
 accelerator-specific:
@@ -376,8 +354,8 @@ seconds.
 
 ## See also
 
-- `notes/debugging-gdb.md` — complete GDB-over-serial recipes and the USB-serial transport
 - `libs/lisp/src/debug.c` — `sys-debug` primitive implementations and their contracts
+- `modules/SysDebug/src/logstore.c` — the per-source ring-buffer log store
 - `lisp/init.clp` — `start-repl` and `system-init` (the boot policy and REPL spawn)
 - `scripts/run-qemu.sh` — all QEMU knobs documented inline
 - `notes/AUDIT.md` — known stubs and intentionally unfinished areas (check here before assuming something is broken)

@@ -27,7 +27,7 @@ That discipline is not just about cleanliness. Every line in the kernel is trust
   │  SysPhysicalMemory / SysVirtualMemory / SysMemory         │
   │  SysInterrupts / SysMP / SysTimer / SysFP                │
   │  SysObj / SysReg / SysUser / SysTaskMgr                  │
-  │  SysDebug / SysGdb                                        │
+  │  SysDebug                                                  │
   ├─────────────────────────────────────────────────────────┤
   │  Microkernel                                              │
   │  ELF loader + module verifier + initrd parser             │
@@ -50,7 +50,7 @@ The `Sys*` modules (`modules/`) are **kernel-privileged**: they link against and
 - **SysObj / SysReg** — the object model and the hierarchical key/value registry (ACPI tables, PCI device tree, runtime configuration).
 - **SysUser** — the syscall-table mechanism (register-based `syscallq`).
 - **SysTaskMgr** — per-core scheduler infrastructure: brings up the per-core scheduler threads, then returns so `SysLisp` can take over.
-- **SysDebug / SysGdb** — COM1 debug output; GDB remote-serial-protocol stub over COM2.
+- **SysDebug** — COM1 serial debug output (raw, pre-REPL) and the per-source in-memory log store (`logstore.c`); the interactive Lisp REPL takes COM1 once `start-repl` runs, and logs after that point are read back via the `log-*` primitives.
 
 Once this layer completes, `loadscript.txt` ends with `LOAD:./SysLisp.celf` then `CALL:lisp_scheduler_enter`. The boot thread becomes the per-core Lisp scheduler loop and never returns.
 

@@ -230,9 +230,7 @@ device" and move on. That is expected.
 
 The interactive Lisp REPL is opt-in. It requires a separate ISO (built from the
 same binaries with a different GRUB config that passes `cardinal.repl` on the
-kernel command line) and a host-side demultiplexer, because once the REPL comes
-up the OS switches COM1 into a framed CSMUX protocol (debug log on channel 0,
-REPL on channel 2).
+kernel command line).
 
 Build the REPL ISO:
 
@@ -240,15 +238,15 @@ Build the REPL ISO:
 cmake --build build --target repl-image
 ```
 
-This produces `build/ISO/os-repl.iso`. Launch it through the host demultiplexer:
+This produces `build/ISO/os-repl.iso`. Launch the raw serial terminal:
 
 ```bash
-python3 scripts/csmux-repl.py
+python3 scripts/serial-repl.py
 ```
 
-`csmux-repl.py` launches QEMU internally (booting `build/ISO/os-repl.iso` by
-default), demultiplexes the CSMUX stream, prints the OS log to your terminal,
-and connects your stdin/stdout to the REPL channel. When the OS prints:
+`serial-repl.py` launches QEMU internally (booting `build/ISO/os-repl.iso` by
+default) and relays COM1 bytes raw — the boot log streams to your terminal
+until the REPL starts, then your input goes to the REPL. When the OS prints:
 
 ```
 [repl] serial REPL ready on COM1 -- try (play-tone)
@@ -268,12 +266,10 @@ from `init` for interactive audio testing. The OS continues scheduling all other
 contexts normally while you type — the REPL parks on COM1 RX (ISA IRQ 4) and
 only runs when a byte arrives.
 
-!!! note "Why CSMUX?"
-    A raw terminal and the debug log share one physical UART. Without muxing,
-    your expressions and the OS's log output would interleave on the wire and
-    neither side could parse the other's framing. CSMUX adds a thin framing
-    layer (`0x7E | chan | len | payload | crc16 | 0x7E`) so the two streams
-    stay independent over a single link.
+Once the REPL starts, component logs no longer stream to serial: they go to the
+in-memory per-source log store and are read back with `(log-sources)`,
+`(log-dump "src")`, and `(log-tail "src" n)`. See
+[Your first REPL session](first-repl-session.md) for a worked example.
 
 ---
 

@@ -76,7 +76,7 @@ C drivers were removed).
 | Path | Role |
 |------|------|
 | `kernel/` | The tiny core: ELF/relocatable loader, initrd (tar) parsing, boot-script interpreter, bootstrap allocator, symbol DB, DWARF. Linked at a fixed high virtual address. |
-| `modules/` | `Sys*` kernel-privileged modules: memory (`SysPhysicalMemory`, `SysVirtualMemory`, `SysMemory`), `SysInterrupts`, `SysMP`, `SysTimer`, `SysFP`, `SysObj` (object model), `SysReg` (registry), `SysUser` (syscalls), `SysTaskMgr` (scheduler), `SysDebug`, `SysGdb` (GDB remote-serial-protocol stub — debug the OS over serial/USB-serial; see `notes/debugging-gdb.md`). |
+| `modules/` | `Sys*` kernel-privileged modules: memory (`SysPhysicalMemory`, `SysVirtualMemory`, `SysMemory`), `SysInterrupts`, `SysMP`, `SysTimer`, `SysFP`, `SysObj` (object model), `SysReg` (registry), `SysUser` (syscalls), `SysTaskMgr` (scheduler), `SysDebug` (serial I/O, the per-source log store read by the REPL's `log-*` prims, and the panic path). |
 | `lisp/` | The OS above the `Sys*` core is **Lisp**, run by the kernel-resident bytecode VM (`libs/lisp`, compiled into `modules/SysLisp`). `lisp/servers/*.clp` are the `Core*` services (`coreinput`, `coreaudio`, `corepower`, `corestorage` + `cardfs`, `coredisplay`, `corenetwork` — ARP/ICMP/IPv4 + UDP + the reliable `RDT` transport — `corenetdebug`, `coreusb`); `lisp/drivers/*.clp` are the drivers (`ps2`, `rtl8139`, `virtio-net`, `virtio-gpu`, `lfb`, `ahci`, `hdaudio`, `rtl8169`, the USB stack `uhci`/`xhci` + `usb-{hid,hub,storage}`); `lisp/lib/` is the prelude/substrate; **`lisp/init.clp`** is the boot policy and sole device binder (it `pci-find`s hardware and calls each driver's init). The old C `servers/` tree and the C `CoreDriver`/`devices.txt` binder were deleted. |
 | `drivers/` | Only `tarfs` remains in C (a stub). Every actively-bound driver is Lisp under `lisp/drivers/` (see the `lisp/` row); the orphaned C drivers (`rtl8169`/`intel_wifi`/`intel_gfx`/`hdaudio`/`ehci`/`usb_*`/`uhci`/`xhci`, plus the now-Lisp `virtio`/`rtl8139`/`lfb`/`ahci`/`ps2`/`cardfs`) were removed. |
 | `libs/` | Static libs linked into modules: `crypto` (sha256/hmac), `miniz`, `module_lib` (CELF header build/verify), `kvs`, `ubsan_handlers`, plus header-only `pci/` and `syscalls/`. `pci/` holds `pci.h` (config space, BAR scan), `pci_irq.h` (MSI/MSI-X setup), `pci_alloc.h` (BAR + bridge-window self-assignment for firmware-unconfigured devices), `pci_debug.h` (`pci_msix_debug_dump`). |
@@ -234,8 +234,8 @@ before invoking it, since the handler may reply.
   the *userspace* socket API still TODO; the USB stack (now Lisp) enumerates over
   UHCI/xHCI with HID/hub/mass-storage class drivers). Check it before assuming
   something is broken vs. intentionally unfinished.
-- **Boot timing knobs that bit recent work** (all detailed in `notes/AUDIT.md` /
-  `notes/debugging-gdb.md`): `task_sleep` itself is now fixed and reliable for
+- **Boot timing knobs that bit recent work** (detailed in `notes/AUDIT.md`):
+  `task_sleep` itself is now fixed and reliable for
   normal delays (it actually deschedules — see AUDIT), but it can't be used by
   code already holding `cli()` (e.g. AHCI init), which still busy-spins via
   the TSC-calibrated `SysTimer` waits; the boot-script files
@@ -244,10 +244,17 @@ before invoking it, since the handler may reply.
 
 ## Debugging
 
-`SysGdb` is a GDB remote-serial-protocol stub: attach GDB over COM2. (The FTDI
-USB-serial GDB transport `drivers/usb_serial` was removed with the rest of the C
-USB stack; the in-OS serial REPL over COM1 — see `lisp/init.clp` `start-repl` —
-is the interactive debug path now.) See **`notes/debugging-gdb.md`** for the QEMU
-recipes and how to break
-in. The full boot now also works under `-accel kvm` (fast) thanks to the
-APIC-timer ordering fix; before that it booted only under TCG.
+The interactive debug path is the **in-OS serial Lisp REPL** over COM1 (the old
+`SysGdb` GDB-over-serial stub was removed in favour of it). Boot with the
+`cardinal.repl` cmdline flag (the `repl-image` CMake target → `build/ISO/os-repl.iso`)
+and drive it with **`scripts/serial-repl.py`** (interactive, or `--exec "<lisp>"`
+to script it). Without `cardinal.repl` the boot log streams raw to COM1 as usual
+(what CI and the boot smoke-tests read); with it, once `start-repl`
+(`lisp/init.clp`) runs, the REPL **takes** COM1 and component logs move to the
+in-memory **log store** — read them back with `(log-sources)` / `(log-dump
+"<source>")` / `(log-tail "<source>" n)`. Each module logs under its own source
+via `(log "src" …)` or a `(make-logger 'src)` closure; the store is C
+(`SysDebug/logstore.c`) for synchronous, allocation-free capture. The REPL also
+imports the reflective debugger (`sys-debug`: `ctx-list`/`ctx-pause`/`ctx-step`/…)
+to inspect and single-step live contexts. The full boot works under `-accel kvm`
+(fast) thanks to the APIC-timer ordering fix; before that it booted only under TCG.
