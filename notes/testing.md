@@ -103,14 +103,11 @@ CI) every death test is reported `# SKIP (harness only)`.
 
 ### How it works
 
-- **CSMUX** (`modules/SysDebug/src/csmux.c`, `<SysDebug/csmux.h>`): a tiny
-  HDLC-style framing layer that multiplexes several logical channels over the one
-  COM1 serial link — `ch0` debug log, `ch1` test control, `ch2` tunneled GDB.
-  It is dormant on a normal boot (`print_str` writes raw text); it only switches
-  on when the kernel is booted with the extra `cardinal.harness` cmdline token,
-  and the host harness then demuxes the channels apart. This is what lets GDB
-  keep working over the same single wire during a harness run (`ch2`; on real
-  hardware that one wire is all you may have).
+- **Serial transport (raw COM1)**: the test harness reads COM1 raw — there is no
+  framing layer. CSMUX and the GDB tunnel over `ch2` were removed; `modules/SysDebug/src/csmux.c`
+  and `<SysDebug/csmux.h>` no longer exist. The serial line carries: raw boot log before
+  the REPL starts; raw test output (`TAP`-style lines) in `cardinal.test` mode; raw harness
+  control in `cardinal.harness` mode. The host harness simply reads lines — no demuxing.
 - **Reboot**: a death during an armed death test is caught in the fault path
   (`interrupt_set_death_hook`, SysInterrupts) and the PANIC path
   (`debug_set_trap_hook`, SysDebug); the hook reports `DIED vec=<n>` on `ch1` and
@@ -148,47 +145,31 @@ cmake --build build --target harness-image   # -> build/ISO/os-harness.iso
 `run-deathtests.sh` / `systest-harness.py` env knobs: `ACCEL` (default `tcg`;
 `kvm` is much faster if available), `MACHINE`, `MEM`, `SMP`, `TIMEOUT` (overall),
 `DEATH_TIMEOUT` (per-test), `LOG`, `GDB_PORT`. To debug a paused guest mid-run,
-attach GDB to the tunneled `ch2` (see `notes/debugging-gdb.md`).
+use the interactive serial REPL (`cardinal.repl`) with `scripts/serial-repl.py` and
+the `sys-debug` reflective primitives (see `docs/guides/debugging.md`).
 
-### Which serial link the mux rides (auto-detected)
+### Serial link for the harness
 
-CSMUX has a pluggable byte transport (`csmux_set_transport`, `<SysDebug/csmux.h>`).
-It defaults to **COM1**, but on real hardware the only link is often a USB-serial
-(FTDI) adapter. In harness mode, `drivers/usb_serial` detects the `cardinal.harness`
-token and, on binding an FTDI adapter, registers it as the CSMUX transport — so the
-whole mux rides that one link. The SysTest runner waits briefly for such a link to
-enumerate before the handshake, then uses it; if none appears it stays on COM1.
-Link selection is automatic; the only knob is the `cardinal.harness` token.
+The harness communicates over COM1 (raw, no framing). On real hardware with only a
+USB-serial adapter, pass `--serial-device /dev/ttyUSB0` to `systest-harness.py`:
 
-All three channels — log (ch0), control (ch1), GDB (ch2) — ride the one link, so
-a board whose only serial is a USB-to-serial dongle gets everything over it. The
-debug log is high-volume, so it is **coalesced**: log bytes are buffered and
-flushed as a few large CH_LOG frames (auto-flush when full, before any control/GDB
-frame, and via `csmux_log_flush`) instead of one USB transfer per line. Without
-that, the per-transfer latency of a line-per-frame log over USB starves the
-low-rate control channel and the handshake never completes.
+```bash
+python3 scripts/systest-harness.py --serial-device /dev/ttyUSB0 --baud 115200
+```
 
-Drive it from the host either against QEMU's emulated FTDI:
+Against QEMU (the default for `run-deathtests.sh`), COM1 is mapped to a unix socket.
+The `LINK=ftdi` option attaches a QEMU emulated USB-serial device instead:
 
 ```bash
 LINK=ftdi ./scripts/run-deathtests.sh
 # or: python3 scripts/systest-harness.py --link ftdi ...
 ```
 
-…or against a real adapter (no QEMU; boot the target with
-`cardinal.test cardinal.harness`):
-
-```bash
-python3 scripts/systest-harness.py --serial-device /dev/ttyUSB0 --baud 115200
-```
-
-**Known QEMU limitation:** with QEMU's `-device usb-serial`, the mux-over-FTDI
-handshake + first death work end-to-end, but the emulated adapter does not
-re-enumerate after the guest's `0xCF9` platform reset, so subsequent death tests
-fall back to COM1 within one QEMU session. A real platform reset re-signals USB
-connect, so multi-death FTDI runs are expected to work on real hardware (the host
-`--serial-device` mode is the path for that); over QEMU, use the COM1 link
-(`run-deathtests.sh` default) for the full multi-death sweep.
+**Known QEMU limitation:** QEMU's `-device usb-serial` does not re-enumerate after
+a `0xCF9` platform reset, so multi-death tests over FTDI fall back to COM1 after
+the first death within one QEMU session. Use the COM1 link (the default) for a
+full multi-death sweep under QEMU; `--serial-device` on real hardware handles it
+correctly.
 
 CI runs this as a separate `test` job in `.github/workflows/build.yml` — the
 first gate that actually boots the OS rather than only checking that artifacts

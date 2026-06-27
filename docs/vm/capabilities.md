@@ -225,4 +225,4 @@ Only available when `cardinal.repl` is on the kernel command line.
 
 The `sys-console` module is registered only when the kernel boots with
 `cardinal.repl`; see [Debug the OS](../guides/debugging.md) for the REPL access
-path (the link is framed CSMUX, driven by `scripts/csmux-repl.py`).
+path (raw serial, driven by `scripts/serial-repl.py`); see [Debug the OS](../guides/debugging.md).
