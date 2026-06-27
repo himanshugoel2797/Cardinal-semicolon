@@ -607,9 +607,21 @@ after `coredisplay` + the display driver bind (it needs the driver's
      connected *before* the per-core shards registered, so they were owner-hosted and
      never exercised the cross-shard path — they now sleep until shards register (and
      the per-core hook spawns shards for the input gates), so keyboard/pointer/drag are
-     all genuinely validated routed-to-a-shard. **Remaining follow-ups:** a true global
-     **z authority** (replace the per-shard z-bands); `layer-update` **damage
-     bounding**; shard **de-register** (a dead shard leaves stale manifest/layer).
+     all genuinely validated routed-to-a-shard.
+   - **7B wiring (true global z authority) — ✅ DONE.** The static per-shard z-bands are
+     gone: the OWNER holds the single global z counter and EVERY window (its own + every
+     shard's) draws from it, so z is globally comparable. The owner stamps its own
+     windows synchronously; a SHARD can't request z synchronously (single-mailbox demux),
+     so `stamp-z` asks ASYNC — it keeps/sets a temporary local z, sends `(alloc-z self
+     surf-id)`, and the owner replies `(z N surf-id)` (the id is the correlator — no FIFO
+     assumption, a since-destroyed window is a safe no-op), which the shard applies and
+     re-merges. So a window on a low-id shard can now be raised ABOVE one on a high-id
+     shard (impossible under the bands). Validated `cardinal.compositorglobalz`: two
+     opaque clients on different shards overlap; raising the lower one (cross-shard) puts
+     it on top. **Remaining follow-ups:** `layer-update` **damage bounding** (every shard
+     op triggers a whole-screen owner recomposite + flush); shard **de-register** (a dead
+     shard leaves stale manifest/layer); a defense-in-depth **sender check** on the
+     owner-initiated shard verbs.
 
 ## Open / deferred
 

@@ -529,8 +529,9 @@
   ;; clients' windows composite on THIS core, into a grant-shared (colour,z) LAYER the
   ;; owner maps and folds into its scanout. Bring-up: rendezvous for the owner handle,
   ;; ask the scanout geometry, dma-alloc-wb a matching layer, mint rw grants, start the
-  ;; shard-role service over that layer (z-base = id*1e6 so shards occupy disjoint z
-  ;; bands), then register its handle + grants with the owner. It holds no caps --
+  ;; shard-role service over that layer (z-base 0 -- all windows draw their z from the
+  ;; owner's global counter via alloc-z), then register its handle + grants with the
+  ;; owner. It holds no caps --
   ;; dma-alloc-wb / grant-mint are captured prims that work in any context.
   (define (start-compositor-shard id)
     (send compositor-rendezvous (list 'get-owner (self)))
@@ -551,7 +552,7 @@
                          (gc (grant-mint lcb 'rw)) (gz (grant-mint lzb 'rw))
                          (lc (make-surface* lcb w hh stride ro go bo '()))
                          (lz (make-surface lzb w hh stride))
-                         (cfg (make-shard-cfg owner lc lz (* id Z-BAND)))   ; disjoint z band
+                         (cfg (make-shard-cfg owner lc lz 0))   ; z from the owner's global counter (alloc-z)
                          ;; shard caps: alloc/mint/revoke for client surface backings;
                          ;; no present (the owner flushes), no map (the owner maps).
                          (caps (make-compositor-caps dma-alloc-wb grant-mint grant-revoke #f #f))
@@ -663,7 +664,8 @@
                   (if (or (cmdline-has? "cardinal.compositorshards")
                           (cmdline-has? "cardinal.compositorshardinput")
                           (cmdline-has? "cardinal.compositorshardpointer")
-                          (cmdline-has? "cardinal.compositorsharddrag"))
+                          (cmdline-has? "cardinal.compositorsharddrag")
+                          (cmdline-has? "cardinal.compositorglobalz"))
                       (spawn-restricted '() (lambda () (start-compositor-shard id))))))))))
     ;; Audio: start the service, capture its handle (formerly dropped), and bring
     ;; up the HD Audio controller feeding it. hdaudio-init is gated on pci-find, so
@@ -1082,6 +1084,70 @@
                                          (newline))
                                         ((>= tries 200)
                                          (display "[compositorsharddrag] FAIL window did not move (timeout)")
+                                         (newline))
+                                        (else (sleep 100000000) (poll (+ tries 1)))))))))))))
+            ;; cardinal.compositorglobalz: validate TRUE GLOBAL Z across shards. Two
+            ;; opaque clients route to DIFFERENT shards (round-robin) with OVERLAPPING
+            ;; windows: A (red) created first, B (green) created later -> B on top. Then
+            ;; A RAISES -- with the old static per-shard z-bands A (on a lower-id shard)
+            ;; could NEVER rise above B, but with the owner's global z counter A's raise
+            ;; gives it the highest z and it goes on top. A translucent verifier polls
+            ;; the overlap (90,90) for RED (A on top after the raise).
+            (if (cmdline-has? "cardinal.compositorglobalz")
+                (begin
+                  (spawn-restricted '(sys-shm)        ; A (red) -> shard 0; raises after B is up
+                    (lambda ()
+                      (import sys-shm)
+                      (wait-for-shards comp)
+                      (send comp (list 'connect #f (self)))
+                      (let ((r (recv)))
+                        (if (and (pair? r) (eq? (car r) 'connected))
+                            (let* ((h (cadr r)) (fmt (caddr r)) (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt)))
+                              (send h (list 'create-surface 60 60))
+                              (let ((s (recv)))
+                                (if (and (pair? s) (eq? (car s) 'surface))
+                                    (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                                           (surf (make-surface* (map-grant g0) 60 60 stride ro go bo '())))
+                                      (clear surf (rgb surf 220 60 60))
+                                      (send h (list 'configure id 50 50 #t))
+                                      (send h (list 'commit id 0 '()))
+                                      (sleep 5000000000)             ; let B come up (higher z) first
+                                      (send h (list 'raise id))      ; cross-shard raise above B
+                                      (let loop () (recv) (loop))))))))))
+                  (spawn-restricted '(sys-shm)        ; B (green) -> shard 1 (connects after A)
+                    (lambda ()
+                      (import sys-shm)
+                      (wait-for-shards comp)
+                      (sleep 2000000000)
+                      (send comp (list 'connect #f (self)))
+                      (let ((r (recv)))
+                        (if (and (pair? r) (eq? (car r) 'connected))
+                            (let* ((h (cadr r)) (fmt (caddr r)) (ro (car fmt)) (go (cadr fmt)) (bo (caddr fmt)))
+                              (send h (list 'create-surface 60 60))
+                              (let ((s (recv)))
+                                (if (and (pair? s) (eq? (car s) 'surface))
+                                    (let* ((id (cadr s)) (g0 (caddr s)) (stride (nth s 4))
+                                           (surf (make-surface* (map-grant g0) 60 60 stride ro go bo '())))
+                                      (clear surf (rgb surf 70 170 110))
+                                      (send h (list 'configure id 80 80 #t))
+                                      (send h (list 'commit id 0 '()))
+                                      (let loop () (recv) (loop))))))))))
+                  (spawn-restricted '()               ; verifier: overlap pixel must become RED
+                    (lambda ()
+                      (send comp (list 'connect #t (self)))
+                      (let ((r (recv)))
+                        (if (and (pair? r) (eq? (car r) 'connected))
+                            (let* ((h (cadr r)) (fmt (caddr r))
+                                   (cs (make-surface* (make-bytes 4) 1 1 4 (car fmt) (cadr fmt) (caddr fmt) '()))
+                                   (red (rgb cs 220 60 60)))
+                              (let poll ((tries 0))
+                                (send h (list 'probe-pixel 90 90))   ; overlap of A and B
+                                (let ((got (recv)))
+                                  (cond ((and (integer? got) (= got red))
+                                         (display "[compositorglobalz] OK cross-shard raise put the window on top")
+                                         (newline))
+                                        ((>= tries 250)
+                                         (display "[compositorglobalz] FAIL window not raised above (timeout)")
                                          (newline))
                                         (else (sleep 100000000) (poll (+ tries 1)))))))))))))
             (if (cmdline-has? "cardinal.compositorlayers")

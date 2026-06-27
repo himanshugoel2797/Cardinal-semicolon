@@ -38,7 +38,7 @@
 ;; root context because they are captured lexically, not acquired by `import`.
 
 (define-module corecompositor
-  (export start-compositor-service make-compositor-caps paint-windows make-shard-cfg Z-BAND)
+  (export start-compositor-service make-compositor-caps paint-windows make-shard-cfg)
   (import driver-util graphics)
 
   ;; --- injected capabilities --------------------------------------------------
@@ -159,18 +159,33 @@
   (define (shard-color s)  (cadr s))
   (define (shard-z s)      (caddr s))
   ;; The z authority: a fresh top z-stamp. Real z starts at 1 (z==0 = empty layer px).
+  ;; The OWNER holds the single global counter; ALL windows (its own + every shard's)
+  ;; draw from it, so z is globally comparable -- true global stacking, not static
+  ;; per-shard bands.
   (define (fresh-z mrg)
     (let ((c (mrg-zctr mrg)))
       (vector-set! c 0 (+ (vector-ref c 0) 1))
       (vector-ref c 0)))
+  ;; Assign a window its GLOBAL z on create/raise. The OWNER stamps it synchronously
+  ;; (it owns the counter). A SHARD can't request z synchronously without the
+  ;; single-mailbox demux problem, so it asks ASYNC: it stamps a temporary local z if
+  ;; the window has none yet (so a new window renders immediately) -- a raise keeps
+  ;; its current z so it doesn't drop -- then sends (alloc-z self surf-id); the owner
+  ;; replies (z N surf-id), which the shard applies by id and re-merges. So a shard
+  ;; window briefly holds a local z, then snaps to its real global z (a round-trip).
+  (define (stamp-z r mrg)
+    (if (mrg-owner mrg)
+        (begin
+          (if (= (sf r SF-Z) 0) (vector-set! r SF-Z (fresh-z mrg)))
+          (send (mrg-owner mrg) (list 'alloc-z (self) (sf r SF-ID))))
+        (vector-set! r SF-Z (fresh-z mrg))))
 
   ;; A SHARD config passed to start-compositor-service to put it in shard role: the
   ;; owner handle, the grant-shared layer planes (colour + z surfaces) the shard
-  ;; composites its clients into, and a z BASE so shards occupy disjoint z bands
-  ;; (core i starts at i*Z-BAND) -- a deterministic cross-shard stacking without a
-  ;; per-window round-trip to the owner's z authority (true global z is a later
-  ;; refinement). #f for the owner instance (it allocates its own scratch layer).
-  (define Z-BAND 1000000)
+  ;; composites its clients into, and a z-base that seeds the shard's LOCAL temporary
+  ;; z counter (now 0 -- the real z is the owner's global counter, requested via
+  ;; alloc-z; see stamp-z). #f for the owner instance (it allocates its own scratch
+  ;; layer).
   (define (make-shard-cfg owner lc lz z-base) (vector owner lc lz z-base))
   (define (scfg-owner c)  (vector-ref c 0))
   (define (scfg-lc c)     (vector-ref c 1))
@@ -419,7 +434,7 @@
                     (b0 ((caps-alloc caps) sz)) (b1 ((caps-alloc caps) sz))
                     (g0 ((caps-mint caps) b0 'rw)) (g1 ((caps-mint caps) b1 'rw))
                     (r (make-surf next-id client g0 g1 b0 b1 w h stride transparency?)))
-               (vector-set! r SF-Z (fresh-z mrg))   ; a fresh top z-stamp (z authority)
+               (stamp-z r mrg)   ; a fresh GLOBAL top z (sync on owner, async on a shard)
                (send client (list 'surface next-id g0 g1 stride))
                (cons (+ next-id 1) (cons r surfaces)))))   ; prepend = top of stack
         ;; (configure id x y visible): place + show/hide, then recomposite. Fire-
@@ -456,7 +471,7 @@
          (let ((r0 (owned (cadr m))))
            (if r0
              (let ((s2 (raise-surf (cadr m) surfaces)))
-               (vector-set! r0 SF-Z (fresh-z mrg))   ; fresh top z so the z-buffer lifts it
+               (stamp-z r0 mrg)   ; a fresh GLOBAL top z so the z-buffer lifts it (cross-shard)
                (recomposite screen bg s2 mrg)
                (if (sf r0 SF-VIS) (present! (list (surf-rect r0))))
                (cons next-id s2))
@@ -678,10 +693,25 @@
             ;; inside handle-input, so a malformed event can't crash the root.
             ((and (eq? (car m) 'input) (pair? (cdr m)))
              (handle-input st (cadr m) screen bg caps drag-state mrg))
-            ;; (alloc-z reply) -> the owner is the global z authority; hand a shard a
-            ;; fresh top z-stamp so its windows order correctly against everyone's.
-            ((and (eq? (car m) 'alloc-z) (len>= m 2) (ctx? (cadr m)))
-             (send (cadr m) (list 'z (fresh-z mrg)))
+            ;; (alloc-z reply surf-id) -> the owner is the global z authority; hand a
+            ;; shard a fresh global z for window `surf-id`, echoing the id back so the
+            ;; shard applies it to the right surface (the request/reply is async, so the
+            ;; id is the correlator -- no FIFO assumption, and a since-destroyed window
+            ;; is a safe no-op on the shard).
+            ((and (eq? (car m) 'alloc-z) (len>= m 3) (ctx? (cadr m)) (integer? (caddr m)))
+             (send (cadr m) (list 'z (fresh-z mrg) (caddr m)))
+             st)
+            ;; (z N surf-id) -> the owner's reply to a SHARD's alloc-z: set window
+            ;; surf-id's global z and re-merge. Gated on (mrg-owner mrg) so ONLY a
+            ;; shard ever processes it: otherwise a stray (z N id) sent to the owner
+            ;; would find-surf the id over the OWNER's own table and corrupt that
+            ;; window's z (ids are small integers shared by both) -- the owner never
+            ;; asks for z, so it must ignore the reply, not act on it.
+            ((and (mrg-owner mrg) (eq? (car m) 'z) (len>= m 3)
+                  (integer? (cadr m)) (integer? (caddr m)))
+             (let ((r (find-surf (caddr m) (cdr st))))
+               (if r (begin (vector-set! r SF-Z (cadr m))
+                            (recomposite screen bg (cdr st) mrg))))
              st)
             ;; (shard-count reply) -> how many shards have registered. A client uses
             ;; this to wait until shards exist before connecting, so an opaque client
