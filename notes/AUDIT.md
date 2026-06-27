@@ -83,12 +83,17 @@ Two gotchas a real UI must handle (the demo works around both):
   reach the scanout. The drawing context must `mmio-map` the framebuffer itself (the
   demo maps `HW/BOOTINFO/FRAMEBUFFER` directly). lfb gained a `paint?` flag to skip
   its bring-up gradient when a UI is taking over.
-- **SysDebug shares the LFB.** `sysdebug_install_lfb` mirrors the COM1 debug log to
-  the same framebuffer (`render_char`), so any `(display ...)` overwrites UI pixels.
-  There is no hook yet to hand the framebuffer to a UI / silence the LFB console —
-  a real compositor will want one. The demo repaints a few times to cover straggler
-  debug text. Also: a 24bpp boot mode mis-strides (lib + lfb assume 4-byte pixels);
-  the demo forces `gfxmode=...x32`.
+- **[FIXED] SysDebug shares the LFB.** `sysdebug_install_lfb` mirrors the COM1 debug
+  log into the same framebuffer (`render_char`), so kernel log text overwrites UI
+  pixels. There is now a hook: `sysdebug_fb_log_off()` (the `(fb-log-off)` prim)
+  gates `print_str`'s framebuffer render behind `g_fb_log`, and `lisp/init.clp`
+  calls it from the compositor-owner bring-up once the compositor claims a live
+  display (`target` non-`#f`). The log still goes to serial + the in-memory store;
+  only the on-screen render stops. The panic shell renders directly (`print_stream`)
+  and is unaffected, so a post-takeover panic still shows on screen. (Verified: under
+  `cardinal.compositordemo` the framebuffer top-left — the kernel-text origin — shows
+  desktop background, not scribbled text.) Also: a 24bpp boot mode mis-strides (lib +
+  lfb assume 4-byte pixels); the demo forces `gfxmode=...x32`.
 
 ### TrueType text (stb_truetype) (added)
 `libs/ttf/` wraps **stb_truetype** (`libs/stb/stb_truetype.h`, public domain) as a
@@ -497,6 +502,24 @@ temporary self-test (`task_sleep(self, 100ms)` measured 100ms elapsed under
 (it yields, which is illegal under `cli()`); those paths (AHCI init bounded polled
 spins, **UHCI init** `uhci_delay_ns` wall-clock busy-wait) remain on busy-waits by
 design.
+
+### [DONE] Debug logging: per-source store + serial/REPL handoff (CSMUX & GDB stub removed)
+The single COM1 debug log was framed together with the interactive REPL over a
+CSMUX channel, and there was no per-component log. Reworked:
+- **CSMUX removed** (`modules/SysDebug/src/csmux.{c,h}`). The boot log streams RAW
+  to COM1; **without** `cardinal.repl` it streams forever (the CI / boot-smoke-test
+  path — unchanged). **With** `cardinal.repl`, the REPL TAKES COM1
+  (`serial_repl_takeover`) and component logs stop streaming to serial.
+- **Per-source log store** (`modules/SysDebug/src/logstore.c`) — kept in C for
+  synchronous, allocation-free capture (a line survives even if the context then
+  wedges; a shared store across shared-nothing contexts would otherwise be an async
+  server). Each module logs under its own name via `(log "src" …)` / a
+  `(make-logger 'src)` closure; the REPL reads each source back with `(log-sources)`
+  / `(log-dump)` / `(log-tail)` / `(log-clear)`. All ~250 Lisp log sites (init +
+  every server + every driver) migrated off `(display "[tag] …")`.
+- The dead **`SysGdb`** GDB-over-serial stub (header + `notes/debugging-gdb.md`) was
+  removed; the serial REPL + the `sys-debug` reflective context debugger are the
+  interactive debug path. `scripts/csmux-repl.py` → `scripts/serial-repl.py` (raw).
 
 ### [INCOMPLETE] Stubs / TODOs (tracked, not bugs)
 - ~~`kernel/src/bootstrap_alloc.c` `realloc` → `PANIC("unimplemented")`.~~
