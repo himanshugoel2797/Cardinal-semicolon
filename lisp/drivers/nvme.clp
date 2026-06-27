@@ -391,11 +391,8 @@
            (c (make-ctrl bar dstrd
                          (mk-q asq AQ-DEPTH 64) (mk-q acq AQ-DEPTH 16)
                          (mk-q iosq IO-DEPTH 64) (mk-q iocq IO-DEPTH 16))))
-      ;; Initialise the ring trackers: tails/heads = 0, expected phase = 1.
-      (cell-set! (c-cid c) 0)
-      (cell-set! (c-aphase c) 1)  (cell-set! (c-iophase c) 1)
-      (cell-set! (c-atail c) 0)   (cell-set! (c-itail c) 0)
-      (cell-set! (c-ahead c) 0)   (cell-set! (c-ihead c) 0)
+      ;; The ring trackers are initialised by make-ctrl (cid/tails/heads = 0,
+      ;; expected phase = 1); no second init needed here.
       (if (not (ctrl-disable! bar))
           (begin (display "[nvme] disable timeout") (newline) 'fail)
           (begin

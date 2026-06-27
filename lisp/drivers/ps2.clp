@@ -108,11 +108,22 @@
 ;; first ACK and we return #f (keyboard is unaffected). On 0xFF (reset) the
 ;; device replies 0xFA, then 0xAA (self-test pass), then 0x00 (device id) -- we
 ;; consume both extra bytes after the ACK.
+;; After a reset (0xFF) the mouse runs its Battery-Acceptance-Test, which can take
+;; up to ~500 ms on real hardware -- far longer than ps2-read's ~1 ms bounded spin.
+;; Poll for the 0xAA self-test-pass byte with short sleeps so a slow mouse is not
+;; falsely reported absent (and so its late 0xAA does not desync the F6/F4 ACKs).
+(define (ps2-wait-bat)
+  (let loop ((tries 0))
+    (let ((b (ps2-read)))
+      (cond ((= b #xAA) #t)
+            ((>= tries 50) #f)               ; ~500 ms cap
+            (else (sleep 10000000) (loop (+ tries 1)))))))
+
 (define (ps2-mouse-init)
   (if (not (ps2-aux-cmd #xFF))               ; reset; expect ACK
       #f
       (begin
-        (ps2-read)                           ; 0xAA self-test result
+        (ps2-wait-bat)                       ; 0xAA self-test result (BAT-tolerant)
         (ps2-read)                           ; 0x00 device id
         (and (ps2-aux-cmd #xF6)              ; set defaults (sample 100Hz, res, scale 1:1)
              (ps2-aux-cmd #xF4)))))          ; enable data reporting
