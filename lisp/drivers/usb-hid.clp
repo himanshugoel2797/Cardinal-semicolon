@@ -16,6 +16,7 @@
 (define-module usb-hid
   (export usb-hid-init)
   (import coreusb driver-util)
+  (define lg (make-logger 'usb-hid))
 
   (define HID-PROTO-KEYBOARD 1)
   (define HID-PROTO-MOUSE    2)
@@ -41,7 +42,7 @@
       (if (< i 8)
           (let ((k (bytes-u8-ref rpt i)))
             (if (and (not (= k 0)) (not (in-report? last k)))
-                (begin (display "[usb-hid] key down usage=") (display k) (newline)
+                (begin (lg "key down usage=" k)
                        (send input (list 'event (list 'kbd-down k)))))
             (loop (+ i 1)))))
     (let loop ((i 2))                                   ; released
@@ -86,7 +87,7 @@
               (list 'control (usb-dev-address dev) (usb-dev-speed dev) 8 setup #f 0 (self)))
         (await))
       (define (clear-halt)
-        (display "[usb-hid] clearing endpoint halt") (newline)
+        (lg "clearing endpoint halt")
         (ctl0 (make-setup USB-REQ-RECIP-ENDPOINT USB-REQ-CLEAR-FEATURE
                           USB-FEATURE-ENDPOINT-HALT ep 0)))
       (let loop ((last (make-bytes 8)) (fails 0))
@@ -110,22 +111,22 @@
   (define (hid-on-probe dev input devs)
     (let ((ep (usb-find-endpoint dev USB-XFER-INTERRUPT #t)))
       (if (not ep)
-          (begin (display "[usb-hid] no interrupt IN endpoint; not claiming") (newline) devs)
+          (begin (lg "no interrupt IN endpoint; not claiming") devs)
           (let* ((proto (usb-iface-protocol dev))
                  (iface (let ((i (usb-iface-number dev))) (if (< i 0) 0 i)))
                  (addr (usb-dev-address dev))
                  (epaddr (car ep))
                  (mps (let ((m (cadr ep))) (if (> m 0) m 8))))
-            (display "[usb-hid] claimed ") (display (proto-name proto)) (newline)
+            (lg "claimed " (proto-name proto))
             ;; SET_PROTOCOL boot (wValue 0) and SET_IDLE (wValue 0); best-effort.
             (usb-control-out dev HID-IFACE-REQ HID-REQ-SET-PROTOCOL 0 iface #f 0)
             (usb-control-out dev HID-IFACE-REQ HID-REQ-SET-IDLE 0 iface #f 0)
             (if (= proto HID-PROTO-KEYBOARD)
                 (begin (send input (list 'register "USB Keyboard"))
-                       (display "[usb-hid] registered keyboard with coreinput") (newline)))
+                       (lg "registered keyboard with coreinput")))
             (let ((poll (spawn-restricted '()
                           (lambda () (hid-poll dev epaddr mps proto input)))))
-              (display "[usb-hid] polling started") (newline)
+              (lg "polling started")
               (cons (cons addr poll) devs))))))
 
   (define (hid-on-remove addr devs)
@@ -133,7 +134,7 @@
       (cond ((null? ds) keep)
             ((= (caar ds) addr)
              (send (cdar ds) (list 'stop))    ; a list, so the poll's (car m) is valid
-             (display "[usb-hid] device removed") (newline)
+             (lg "device removed")
              (loop (cdr ds) keep))
             (else (loop (cdr ds) (cons (car ds) keep))))))
 

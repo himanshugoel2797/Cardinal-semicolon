@@ -17,6 +17,7 @@
 (define-module lfb
   (export lfb-init pack-rgb lfb-register-msg)
   (import sys-reg sys-mmio driver-util)
+  (define lg (make-logger 'lfb))
 
   (define FB-PATH "HW/BOOTINFO/FRAMEBUFFER")
   (define BYTES-PER-PIXEL 4)
@@ -163,13 +164,12 @@
   (define (lfb-init display-svc paint?)
     (let ((p (fb-params)))
       (if (not p)
-          (begin (display "[lfb] no boot framebuffer; not registering") (newline) #f)
+          (begin (lg "no boot framebuffer; not registering") #f)
           (let ((phys   (nth p 0)) (pitch  (nth p 1))
                 (width  (nth p 2)) (height (nth p 3))
                 (r-off  (nth p 4)) (g-off  (nth p 5)) (b-off  (nth p 6)))
             (let ((fb (map-fb phys pitch height)))
-              (display "[lfb] up: ") (display width) (display "x") (display height)
-              (display " @ pitch ") (display pitch) (newline)
+              (lg "up: " width "x" height " @ pitch " pitch)
               (spawn-restricted '()
                 (lambda ()
                   (lfb-driver-loop display-svc fb width height pitch
