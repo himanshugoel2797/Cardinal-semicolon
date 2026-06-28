@@ -19,6 +19,7 @@
 #include "callind.wasm.h"
 #include "hostimp.wasm.h"
 #include "f64ops.wasm.h"
+#include "fpops.wasm.h"
 
 static int g_checks = 0, g_fails = 0;
 
@@ -194,6 +195,79 @@ static void test_f64(void) {
     wasm_module_free(m_);
 }
 
+// Run a started single-result call to completion, return the f64 result.
+static double run_f64(wasm_instance_t *inst) {
+    for (;;) {
+        wasm_run_status_t s = wasm_resume(inst, 1000000);
+        if (s == WASM_RUN_FUEL) continue;
+        CHECK(s == WASM_RUN_DONE, "fp run did not complete: status=%d", s);
+        break;
+    }
+    wasm_value_t out[1];
+    wasm_results(inst, out, 1);
+    return out[0].f64;
+}
+
+// Exercises the freestanding IEEE-754 helpers (wm_floor/ceil/trunc/nearest/
+// sqrt/copysign) through real opcodes. Edge cases: ties-to-even, -0.0
+// preservation, negatives.
+static void test_fpops(void) {
+    wasm_instance_t *inst = load(fpops_wasm, sizeof(fpops_wasm), NULL, 0);
+    if (!inst) return;
+
+    struct { const char *fn; double in; double want; } c1[] = {
+        { "floor",   2.7,  2.0 }, { "floor",  -2.3, -3.0 },
+        { "ceil",    2.3,  3.0 }, { "ceil",   -2.7, -2.0 },
+        { "trunc",   2.7,  2.0 }, { "trunc",  -2.7, -2.0 },
+        // round-half-to-even: 0.5->0, 1.5->2, 2.5->2, 3.5->4, -2.5->-2
+        { "nearest", 0.5,  0.0 }, { "nearest", 1.5,  2.0 },
+        { "nearest", 2.5,  2.0 }, { "nearest", 3.5,  4.0 },
+        { "nearest", -2.5, -2.0 }, { "nearest", -3.5, -4.0 },
+        { "sqrt",    16.0, 4.0 }, { "sqrt",    2.0, 1.4142135623730951 },
+    };
+    for (size_t i = 0; i < sizeof(c1)/sizeof(c1[0]); i++) {
+        wasm_value_t a = { .f64 = c1[i].in };
+        CHECK(wasm_call(inst, c1[i].fn, &a, 1) == WASM_OK, "call %s", c1[i].fn);
+        double r = run_f64(inst);
+        CHECK(r == c1[i].want, "%s(%g) = %g, want %g", c1[i].fn, c1[i].in, r, c1[i].want);
+    }
+
+    // floor(-0.0) must preserve the sign bit (-> -0.0, not +0.0).
+    {
+        wasm_value_t a = { .f64 = -0.0 };
+        wasm_call(inst, "floor", &a, 1);
+        double r = run_f64(inst);
+        CHECK(r == 0.0 && (1.0 / r) < 0.0, "floor(-0.0) lost the sign");
+    }
+    // copysign(3.0, -1.0) = -3.0
+    {
+        wasm_value_t a[2] = { { .f64 = 3.0 }, { .f64 = -1.0 } };
+        wasm_call(inst, "copysign", a, 2);
+        CHECK(run_f64(inst) == -3.0, "copysign(3,-1) != -3");
+    }
+    // f32 paths: ffloor(-2.3f) = -3, fnearest(2.5f) = 2 (ties to even)
+    {
+        wasm_value_t a = { .f32 = -2.3f };
+        wasm_call(inst, "ffloor", &a, 1);
+        for (;;) { wasm_run_status_t s = wasm_resume(inst, 1000000);
+            if (s == WASM_RUN_FUEL) continue; break; }
+        wasm_value_t out[1]; wasm_results(inst, out, 1);
+        CHECK(out[0].f32 == -3.0f, "ffloor(-2.3) != -3");
+    }
+    {
+        wasm_value_t a = { .f32 = 2.5f };
+        wasm_call(inst, "fnearest", &a, 1);
+        for (;;) { wasm_run_status_t s = wasm_resume(inst, 1000000);
+            if (s == WASM_RUN_FUEL) continue; break; }
+        wasm_value_t out[1]; wasm_results(inst, out, 1);
+        CHECK(out[0].f32 == 2.0f, "fnearest(2.5) != 2 (ties-to-even)");
+    }
+
+    wasm_module_t *m_ = wasm_instance_module(inst);
+    wasm_instance_free(inst);
+    wasm_module_free(m_);
+}
+
 // ---- Validation ---------------------------------------------------------
 //
 // The valid fixtures must pass wasm_module_validate; a set of modules that are
@@ -255,6 +329,7 @@ static void test_validation(void) {
     check_valid_fixture(callind_wasm, sizeof(callind_wasm), "callind");
     check_valid_fixture(hostimp_wasm, sizeof(hostimp_wasm), "hostimp");
     check_valid_fixture(f64ops_wasm, sizeof(f64ops_wasm), "f64ops");
+    check_valid_fixture(fpops_wasm, sizeof(fpops_wasm), "fpops");
     // (b) ill-typed-but-decodable modules are rejected
     check_invalid(inv_addf64, sizeof(inv_addf64), "i32.add on f64");
     check_invalid(inv_setimm, sizeof(inv_setimm), "global.set immutable");
@@ -408,6 +483,7 @@ int main(void) {
     test_import_sync();
     test_import_suspend();
     test_f64();
+    test_fpops();
     test_validation();
     // Interpreter memory-safety regressions (run WITHOUT validation).
     test_oob_local_index();

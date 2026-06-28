@@ -7,7 +7,21 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <types.h>
+
+void *WEAK calloc(size_t nmemb, size_t size) {
+    // Overflow-checked allocate-and-zero. SIZE_MAX is not provided by
+    // common/inc/stdint.h, so use (size_t)-1 as the maximum value.
+    if (nmemb && size && nmemb > ((size_t)-1) / size)
+        return NULL;
+
+    size_t total = nmemb * size;
+    void *p = malloc(total);
+    if (p)
+        memset(p, 0, total);
+    return p;
+}
 
 char *WEAK itoa(int val, char *dst, int base) {
     char *iter = dst;

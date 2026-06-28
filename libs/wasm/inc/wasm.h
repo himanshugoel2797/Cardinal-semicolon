@@ -20,8 +20,12 @@
 #ifndef CARDINAL_WASM_H
 #define CARDINAL_WASM_H
 
-#include <stddef.h>
+// stdint before stddef: the kernel's common/ headers re-process types.h on each,
+// and including stdint first keeps CUR_ENDIAN defined so the second include
+// reproduces identical macros (avoids a -Wmacro-redefined under -Werror). See
+// the same ordering note in libs/lisp/src/prelude.c.
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
