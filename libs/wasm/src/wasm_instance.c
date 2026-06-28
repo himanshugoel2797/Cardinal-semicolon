@@ -324,6 +324,8 @@ uint32_t wasm_results(const wasm_instance_t *inst, wasm_value_t *out, uint32_t c
 
 wasm_trap_t wasm_trap(const wasm_instance_t *inst) { return inst->trap; }
 
+wasm_module_t *wasm_instance_module(const wasm_instance_t *inst) { return inst->module; }
+
 uint8_t *wasm_memory(wasm_instance_t *inst, size_t *len_out) {
     if (len_out) *len_out = inst->mem_size;
     return inst->mem;

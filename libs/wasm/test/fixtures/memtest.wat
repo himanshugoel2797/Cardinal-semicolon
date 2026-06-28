@@ -1,0 +1,6 @@
+(module (memory 1)
+  (data (i32.const 16) "\11\22\33\44")
+  (func (export "rw") (param i32 i32) (result i32)
+    (i32.store (local.get 0) (local.get 1))
+    (i32.load (local.get 0)))
+  (func (export "rdata") (result i32) (i32.load (i32.const 16))))
