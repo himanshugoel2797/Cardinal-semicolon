@@ -181,6 +181,33 @@ uint32_t wasm_results(const wasm_instance_t *inst, wasm_value_t *out, uint32_t c
 // When WASM_RUN_TRAPPED: the trap kind.
 wasm_trap_t wasm_trap(const wasm_instance_t *inst);
 
+// Param valtypes of an exported function, so a host (the SysLisp glue) can coerce
+// each Lisp argument to the correct wasm_value_t field (i32/i64/f32/f64). Fills
+// out[0..min(count,cap)) with the param valtypes and returns the param count, or
+// 0xFFFFFFFF if `export` names no exported function.
+uint32_t wasm_export_param_types(wasm_instance_t *inst, const char *export,
+                                 wasm_valtype_t *out, uint32_t cap);
+
+// Result valtypes of the completed top-level call (the entry export's results),
+// so the host can map each wasm_results() slot to the correct Lisp value kind
+// (a fixnum for i32/i64, a flonum for f32/f64) instead of guessing i32. Fills
+// out[0..min(count,cap)) and returns the result count, or 0 if there is no
+// staged entry call / its signature can't be resolved.
+uint32_t wasm_result_types(wasm_instance_t *inst, wasm_valtype_t *out, uint32_t cap);
+
+// Param valtypes of the currently-suspended import (valid when the last
+// wasm_resume() returned WASM_RUN_SUSPENDED): the types of the args the guest
+// passed, so the host maps each pending arg to the right Lisp kind. Fills
+// out[0..min(count,cap)) and returns the count, or 0 if not suspended / the
+// signature can't be resolved.
+uint32_t wasm_pending_arg_types(wasm_instance_t *inst, wasm_valtype_t *out, uint32_t cap);
+
+// Result valtypes the host must wasm_provide() for the suspended import (valid
+// when suspended), so the host coerces each provided Lisp value to the right
+// wasm_value_t field. Fills out[0..min(count,cap)) and returns the count, or 0
+// if not suspended / the signature can't be resolved.
+uint32_t wasm_pending_result_types(wasm_instance_t *inst, wasm_valtype_t *out, uint32_t cap);
+
 // ---- Linear memory (zero-copy host access) ------------------------------
 
 // Current linear memory base + length in bytes. The pointer is stable for the

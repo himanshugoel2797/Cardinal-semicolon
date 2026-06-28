@@ -48,6 +48,7 @@
 #include "pci/pci_alloc.h"  // pci_assign_bars (BARs for firmware-unconfigured devices)
 #include <stdlib.h>  // itoa
 #include "ttf.h"     // libs/ttf: stb_truetype glyph rasterization (sys-ttf module)
+#include "wasm.h"    // libs/wasm: the WebAssembly guest interpreter (sys-wasm module)
 
 // Kernel services resolved at module-load time (this module is already verified).
 // SysLisp no longer depends on the native task API (task_create/yield/monitor):
@@ -1091,6 +1092,487 @@ static lisp_value prim_ttf_vmetrics(lisp_value *a, int n, const char **e) {
     return lisp_cons(lisp_fixnum(asc), lst);
 }
 
+// --- WebAssembly guests: the sys-wasm capability (libs/wasm) -----------------
+//
+// Exposes the Cardinal; Wasm interpreter to Lisp under a POLL/RESUME model: a
+// guest is instantiated, then driven with a fuel budget by (wasm-resume). Every
+// import is host-serviced -- a call to one suspends the VM back to Lisp carrying
+// the import's host_id and arguments, the Lisp host services it and (wasm-provide)s
+// the results, then resumes. This is exactly the cooperative-yield shape the rest
+// of the OS rides on, so a guest never needs ring-3 / scheduler machinery.
+//
+// A `wasm_box` owns the instance, the module, and the malloc'd import-name storage
+// as ONE unit, reached through a finalizer-bearing Lisp handle. The instance
+// BORROWS the name pointers (wasm_instantiate keeps them, and wasm_pending returns
+// them), so the box must outlive the instance and free the names with it. Every
+// prim re-validates the handle (right tag + non-NULL ptr) so a stale/destroyed or
+// foreign handle can't be dereferenced.
+#define WASM_HANDLE_TAG 0x7761736D  /* 'wasm' */
+#define WASM_MAX_IMPORTS 256        // cap import-list length (defensive)
+
+typedef struct {
+    wasm_instance_t *inst;
+    wasm_module_t *mod;
+    char **names;       // 2*n_names malloc'd C strings (module,field per import)
+    uint32_t n_names;   // number of allocated name strings
+    // A grant minted lazily on the first (wasm-mem) call and stamped (by index +
+    // generation) onto every memory view this box hands out, so the views are
+    // REVOCABLE: (wasm-destroy) revokes it and all outstanding views go "dead"
+    // (read as a zero page, refuse writes) instead of aliasing the freed linear
+    // memory -- the use-after-destroy hardening (M1). The grant's phys/len are
+    // unused (a wasm-mem view is a heap buffer, not phys-backed); only its (index,
+    // generation) liveness matters to lisp_bytes_grant_dead. mem_grant == LISP_EMPTY
+    // until first use. The grant object lives in the (frozen) system heap, so it is
+    // a permanent root and never collected from under an outstanding view.
+    lisp_value mem_grant;
+    uint32_t mem_grant_index, mem_grant_gen;
+} wasm_box;
+
+// Revoke the box's memory grant (if minted) so every outstanding (wasm-mem) view
+// goes dead the instant the backing linear memory is freed. lisp_grant_revoke is
+// idempotent and takes only the runtime lock briefly (no Lisp allocation), so it
+// is safe from both the explicit (wasm-destroy) and the GC finalizer paths.
+static void wasm_box_revoke_mem(wasm_box *box) {
+    if (box->mem_grant != LISP_EMPTY) {
+        lisp_grant_revoke(box->mem_grant);
+        box->mem_grant = LISP_EMPTY;  // idempotent; never double-revoke
+    }
+}
+
+// free()-only (plus an idempotent, allocation-free grant revoke), so it is safe to
+// run from the GC finalizer (no Lisp allocation). Tolerates partially-built boxes
+// (NULL members).
+static void wasm_box_finalize(void *p) {
+    wasm_box *box = (wasm_box *)p;
+    if (!box) return;
+    wasm_box_revoke_mem(box);  // dead-stamp any views before the memory is freed
+    if (box->inst) wasm_instance_free(box->inst);
+    if (box->mod) wasm_module_free(box->mod);
+    if (box->names) {
+        for (uint32_t i = 0; i < box->n_names; i++)
+            free(box->names[i]);
+        free(box->names);
+    }
+    free(box);
+}
+
+// Verify a[0] is a live wasm handle; returns the box or NULL (sets *e). A NULL
+// ptr means the handle was already (wasm-destroy)ed.
+static wasm_box *wasm_arg_box(lisp_value v, const char **e) {
+    if (!lisp_is_handle(v) || lisp_handle_tag(v) != WASM_HANDLE_TAG ||
+        lisp_handle_ptr(v) == NULL) {
+        *e = "wasm: expects a live wasm instance handle";
+        return NULL;
+    }
+    return (wasm_box *)lisp_handle_ptr(v);
+}
+
+// Copy a Lisp string into a fresh malloc'd NUL-terminated C string, or NULL on
+// OOM. (Lisp strings are not NUL-terminated and may embed NULs; a wasm import
+// name with an embedded NUL simply won't match, which is fine.)
+static char *wasm_strdup_lisp(lisp_value s) {
+    size_t len = lisp_string_len(s);
+    char *out = (char *)malloc(len + 1);
+    if (!out) return NULL;
+    memcpy(out, lisp_string_data(s), len);
+    out[len] = '\0';
+    return out;
+}
+
+// Map a wasm_value_t to a Lisp value by its valtype: i32/i64 -> exact fixnum,
+// f32/f64 -> inexact flonum. SysLisp builds with SSE re-enabled (see CMakeLists),
+// so flonum conversion is now first-class -- it is the same hardware-double path
+// the rest of the runtime uses. NOTE: an i64 whose magnitude exceeds the 62-bit
+// fixnum range still truncates at the Lisp fixnum boundary (documented; acceptable
+// -- the runtime has no bignum), but i64 is read as an i64, never mis-read as i32.
+static lisp_value wasm_value_to_lisp(wasm_value_t v, wasm_valtype_t t) {
+    switch (t) {
+        case WASM_F32: return lisp_make_flonum((double)v.f32);
+        case WASM_F64: return lisp_make_flonum(v.f64);
+        case WASM_I64: return lisp_fixnum((int64_t)v.i64);
+        case WASM_I32:
+        default:       return lisp_fixnum((int64_t)v.i32);
+    }
+}
+
+// (wasm-instantiate bytes imports) -> handle | error
+//   bytes:   a Lisp bytes object holding the .wasm image.
+//   imports: a list of (module-name field-name id) triples; module/field are
+//            strings, id a fixnum (the host_id surfaced on suspend). Every import
+//            is host-serviced (fn = NULL) -- a call to it suspends to Lisp.
+static lisp_value prim_wasm_instantiate(lisp_value *a, int n, const char **e) {
+    if (n != 2 || !lisp_is_bytes(a[0]))
+        return (*e = "wasm-instantiate: expects (bytes imports)"), LISP_UNDEF;
+
+    // Count + shape-check the imports list first (a 3-list of string,string,fixnum).
+    uint32_t n_imports = 0;
+    for (lisp_value p = a[1]; p != LISP_EMPTY; p = lisp_cdr(p)) {
+        if (!lisp_is_pair(p))
+            return (*e = "wasm-instantiate: imports must be a proper list"), LISP_UNDEF;
+        lisp_value triple = lisp_car(p);
+        if (!lisp_is_pair(triple) || !lisp_is_pair(lisp_cdr(triple)) ||
+            !lisp_is_pair(lisp_cdr(lisp_cdr(triple))) ||
+            lisp_cdr(lisp_cdr(lisp_cdr(triple))) != LISP_EMPTY)
+            return (*e = "wasm-instantiate: each import must be (module field id)"), LISP_UNDEF;
+        lisp_value mn = lisp_car(triple);
+        lisp_value fn = lisp_car(lisp_cdr(triple));
+        lisp_value id = lisp_car(lisp_cdr(lisp_cdr(triple)));
+        if (!lisp_is_string(mn) || !lisp_is_string(fn) || !lisp_is_fixnum(id))
+            return (*e = "wasm-instantiate: import is (string string fixnum)"), LISP_UNDEF;
+        if (++n_imports > WASM_MAX_IMPORTS)
+            return (*e = "wasm-instantiate: too many imports"), LISP_UNDEF;
+    }
+
+    // Decode + validate.
+    wasm_result_t err = WASM_OK;
+    wasm_module_t *mod = wasm_module_decode((const uint8_t *)lisp_bytes_data(a[0]),
+                                            lisp_bytes_len(a[0]), &err);
+    if (!mod)
+        return (*e = "wasm: decode failed"), LISP_UNDEF;
+    if (wasm_module_validate(mod) != WASM_OK) {
+        wasm_module_free(mod);
+        return (*e = "wasm: validation failed"), LISP_UNDEF;
+    }
+
+    // Allocate the persistent name storage (2 strings per import) and a temporary
+    // def array. wasm_instantiate BORROWS the def name pointers, so they must come
+    // from names[] (which the box keeps), not the freed def array.
+    char **names = NULL;
+    wasm_import_def_t *defs = NULL;
+    if (n_imports > 0) {
+        names = (char **)calloc((size_t)n_imports * 2, sizeof(char *));
+        defs = (wasm_import_def_t *)calloc(n_imports, sizeof(wasm_import_def_t));
+        if (!names || !defs) {
+            free(names);
+            free(defs);
+            wasm_module_free(mod);
+            return (*e = "wasm-instantiate: out of memory"), LISP_UNDEF;
+        }
+    }
+    uint32_t i = 0;
+    for (lisp_value p = a[1]; p != LISP_EMPTY; p = lisp_cdr(p), i++) {
+        lisp_value triple = lisp_car(p);
+        char *mn = wasm_strdup_lisp(lisp_car(triple));
+        char *fn = wasm_strdup_lisp(lisp_car(lisp_cdr(triple)));
+        names[i * 2] = mn;
+        names[i * 2 + 1] = fn;
+        if (!mn || !fn) {  // free everything we built so far (names freed below)
+            for (uint32_t j = 0; j < n_imports * 2; j++) free(names[j]);
+            free(names);
+            free(defs);
+            wasm_module_free(mod);
+            return (*e = "wasm-instantiate: out of memory"), LISP_UNDEF;
+        }
+        defs[i].module_name = mn;
+        defs[i].field_name = fn;
+        defs[i].fn = NULL;   // host-serviced: a call suspends to Lisp
+        defs[i].user = NULL;
+        defs[i].host_id = (uint32_t)lisp_fixnum_val(
+            lisp_car(lisp_cdr(lisp_cdr(triple))));
+    }
+
+    wasm_instance_t *inst = wasm_instantiate(mod, defs, n_imports, &err);
+    free(defs);  // the names live on in names[]/the box; the def array does not
+    if (!inst) {
+        if (names) {
+            for (uint32_t j = 0; j < n_imports * 2; j++) free(names[j]);
+            free(names);
+        }
+        wasm_module_free(mod);
+        return (*e = "wasm: instantiate failed"), LISP_UNDEF;
+    }
+
+    wasm_box *box = (wasm_box *)malloc(sizeof(wasm_box));
+    if (!box) {
+        wasm_instance_free(inst);
+        if (names) {
+            for (uint32_t j = 0; j < n_imports * 2; j++) free(names[j]);
+            free(names);
+        }
+        wasm_module_free(mod);
+        return (*e = "wasm-instantiate: out of memory"), LISP_UNDEF;
+    }
+    box->inst = inst;
+    box->mod = mod;
+    box->names = names;
+    box->n_names = n_imports * 2;
+    box->mem_grant = LISP_EMPTY;  // grant minted lazily on first (wasm-mem)
+    box->mem_grant_index = 0;
+    box->mem_grant_gen = 0;
+
+    lisp_value h = lisp_make_handle(box, wasm_box_finalize, WASM_HANDLE_TAG);
+    if (h == LISP_UNDEF) {  // OOM minting the handle: free the box by hand
+        wasm_box_finalize(box);
+        return (*e = "wasm-instantiate: out of memory"), LISP_UNDEF;
+    }
+    return h;
+}
+
+// (wasm-call inst export args) -> #t | error
+//   export: string. args: list of values, each coerced to the export's matching
+//   PARAM type: a fixnum for an i32/i64 param, a flonum for an f32/f64 param. A
+//   Lisp value of the wrong kind for the param valtype is an error (no silent
+//   coercion). Stages the call; (wasm-resume) drives it.
+static lisp_value prim_wasm_call(lisp_value *a, int n, const char **e) {
+    if (n != 3)
+        return (*e = "wasm-call: expects (inst export args)"), LISP_UNDEF;
+    wasm_box *box = wasm_arg_box(a[0], e);
+    if (!box) return LISP_UNDEF;
+    if (!lisp_is_string(a[1]))
+        return (*e = "wasm-call: export must be a string"), LISP_UNDEF;
+
+    char *export = wasm_strdup_lisp(a[1]);
+    if (!export)
+        return (*e = "wasm-call: out of memory"), LISP_UNDEF;
+
+    wasm_valtype_t ptypes[16];
+    uint32_t n_params = wasm_export_param_types(box->inst, export, ptypes, 16);
+    if (n_params == 0xFFFFFFFFu) {
+        free(export);
+        return (*e = "wasm-call: no such exported function"), LISP_UNDEF;
+    }
+    if (n_params > 16) {
+        free(export);
+        return (*e = "wasm-call: too many parameters"), LISP_UNDEF;
+    }
+
+    wasm_value_t vals[16];
+    uint32_t argc = 0;
+    for (lisp_value p = a[2]; p != LISP_EMPTY; p = lisp_cdr(p), argc++) {
+        if (!lisp_is_pair(p)) {
+            free(export);
+            return (*e = "wasm-call: args must be a proper list"), LISP_UNDEF;
+        }
+        if (argc >= n_params) {
+            free(export);
+            return (*e = "wasm-call: too many arguments for export"), LISP_UNDEF;
+        }
+        lisp_value v = lisp_car(p);
+        wasm_value_t wv;
+        wv.bits = 0;
+        switch (ptypes[argc]) {
+            case WASM_I32:
+                if (!lisp_is_fixnum(v)) { free(export); return (*e = "wasm-call: i32 param needs an integer"), LISP_UNDEF; }
+                wv.i32 = (int32_t)lisp_fixnum_val(v);
+                break;
+            case WASM_I64:
+                if (!lisp_is_fixnum(v)) { free(export); return (*e = "wasm-call: i64 param needs an integer"), LISP_UNDEF; }
+                wv.i64 = (int64_t)lisp_fixnum_val(v);
+                break;
+            case WASM_F32:
+                if (!lisp_is_flonum(v)) { free(export); return (*e = "wasm-call: f32 param needs a flonum"), LISP_UNDEF; }
+                wv.f32 = (float)lisp_flonum_val(v);
+                break;
+            case WASM_F64:
+                if (!lisp_is_flonum(v)) { free(export); return (*e = "wasm-call: f64 param needs a flonum"), LISP_UNDEF; }
+                wv.f64 = lisp_flonum_val(v);
+                break;
+            default:
+                free(export);
+                return (*e = "wasm-call: unsupported param type"), LISP_UNDEF;
+        }
+        vals[argc] = wv;
+    }
+    if (argc != n_params) {
+        free(export);
+        return (*e = "wasm-call: wrong argument count for export"), LISP_UNDEF;
+    }
+
+    wasm_result_t r = wasm_call(box->inst, export, vals, argc);
+    free(export);
+    if (r != WASM_OK)
+        return (*e = "wasm-call: call setup failed"), LISP_UNDEF;
+    return LISP_TRUE;
+}
+
+// (wasm-resume inst fuel) -> result, one of:
+//   'fuel                                  -- fuel exhausted; resume to continue
+//   (cons 'done (results...))              -- top-level returned; results mapped
+//   (list 'suspend id arg0 arg1 ...)       -- blocked on a host import (host_id id)
+//   (list 'trapped trap-code)              -- a trap occurred (trap-code = wasm_trap_t)
+// Each result/suspend-arg is mapped by its ACTUAL valtype (queried from the lib):
+// i32/i64 -> fixnum, f32/f64 -> flonum. This fixes the old i64->i32 truncation and
+// the float mis-mapping that came from a hardcoded WASM_I32. (An i64 beyond the
+// 62-bit fixnum range still saturates at the Lisp fixnum boundary -- documented in
+// wasm_value_to_lisp -- but i64 is no longer mis-read as i32.)
+static lisp_value prim_wasm_resume(lisp_value *a, int n, const char **e) {
+    if (n != 2)
+        return (*e = "wasm-resume: expects (inst fuel)"), LISP_UNDEF;
+    wasm_box *box = wasm_arg_box(a[0], e);
+    if (!box) return LISP_UNDEF;
+    if (!lisp_is_fixnum(a[1]))
+        return (*e = "wasm-resume: fuel must be an integer"), LISP_UNDEF;
+
+    wasm_run_status_t st = wasm_resume(box->inst, (int64_t)lisp_fixnum_val(a[1]));
+    switch (st) {
+        case WASM_RUN_FUEL:
+            return lisp_make_symbol("fuel", 4);
+        case WASM_RUN_DONE: {
+            wasm_value_t out[16];
+            uint32_t cnt = wasm_results(box->inst, out, 16);
+            // Map each result by the entry export's actual result valtype (not a
+            // hardcoded i32). rtypes[] is filled in parallel; a query failure
+            // (cnt==0 has no results anyway) leaves them defaulting to i32.
+            wasm_valtype_t rtypes[16];
+            for (uint32_t i = 0; i < 16; i++) rtypes[i] = WASM_I32;
+            wasm_result_types(box->inst, rtypes, 16);
+            // Build the list in reverse so it comes out in call order.
+            lisp_value lst = LISP_EMPTY;
+            for (int i = (int)cnt - 1; i >= 0; i--)
+                lst = lisp_cons(wasm_value_to_lisp(out[i], rtypes[i]), lst);
+            return lisp_cons(lisp_make_symbol("done", 4), lst);
+        }
+        case WASM_RUN_SUSPENDED: {
+            const wasm_pending_t *pend = wasm_pending(box->inst);
+            // Map each suspend-arg by the suspended import's actual param valtype
+            // (the H1 fix: an i64 arg was previously truncated to i32).
+            wasm_valtype_t atypes[16];
+            for (uint32_t i = 0; i < 16; i++) atypes[i] = WASM_I32;
+            wasm_pending_arg_types(box->inst, atypes, 16);
+            // (list 'suspend id arg0 arg1 ...) built in reverse, then prepended.
+            lisp_value lst = LISP_EMPTY;
+            for (int i = (int)pend->n_args - 1; i >= 0; i--)
+                lst = lisp_cons(wasm_value_to_lisp(pend->args[i], atypes[i]), lst);
+            lst = lisp_cons(lisp_fixnum((int64_t)pend->host_id), lst);
+            return lisp_cons(lisp_make_symbol("suspend", 7), lst);
+        }
+        case WASM_RUN_TRAPPED: {
+            lisp_value lst = lisp_cons(lisp_fixnum((int64_t)wasm_trap(box->inst)), LISP_EMPTY);
+            return lisp_cons(lisp_make_symbol("trapped", 7), lst);
+        }
+        default:
+            return (*e = "wasm-resume: unknown status"), LISP_UNDEF;
+    }
+}
+
+// (wasm-provide inst results) -> #t | error
+//   results: a list of values that satisfy the currently-suspended import, each
+//   coerced to that import's matching RESULT valtype: a fixnum for an i32/i64
+//   result, a flonum for an f32/f64 result. A Lisp value of the wrong kind is an
+//   error (no silent coercion). wasm_provide itself checks the count matches the
+//   pending import's n_results.
+static lisp_value prim_wasm_provide(lisp_value *a, int n, const char **e) {
+    if (n != 2)
+        return (*e = "wasm-provide: expects (inst results)"), LISP_UNDEF;
+    wasm_box *box = wasm_arg_box(a[0], e);
+    if (!box) return LISP_UNDEF;
+
+    // Result valtypes the suspended import expects, so each provided value maps to
+    // the right wasm_value_t field (not a blanket .i64). Defaults to i32 if not
+    // suspended; wasm_provide then rejects the arity/state anyway.
+    wasm_valtype_t rtypes[16];
+    for (uint32_t i = 0; i < 16; i++) rtypes[i] = WASM_I32;
+    wasm_pending_result_types(box->inst, rtypes, 16);
+
+    wasm_value_t vals[16];
+    uint32_t cnt = 0;
+    for (lisp_value p = a[1]; p != LISP_EMPTY; p = lisp_cdr(p), cnt++) {
+        if (!lisp_is_pair(p))
+            return (*e = "wasm-provide: results must be a proper list"), LISP_UNDEF;
+        if (cnt >= 16)
+            return (*e = "wasm-provide: too many results"), LISP_UNDEF;
+        lisp_value v = lisp_car(p);
+        wasm_value_t wv;
+        wv.bits = 0;
+        switch (rtypes[cnt]) {
+            case WASM_I32:
+                if (!lisp_is_fixnum(v)) return (*e = "wasm-provide: i32 result needs an integer"), LISP_UNDEF;
+                wv.i32 = (int32_t)lisp_fixnum_val(v);
+                break;
+            case WASM_I64:
+                if (!lisp_is_fixnum(v)) return (*e = "wasm-provide: i64 result needs an integer"), LISP_UNDEF;
+                wv.i64 = (int64_t)lisp_fixnum_val(v);
+                break;
+            case WASM_F32:
+                if (!lisp_is_flonum(v)) return (*e = "wasm-provide: f32 result needs a flonum"), LISP_UNDEF;
+                wv.f32 = (float)lisp_flonum_val(v);
+                break;
+            case WASM_F64:
+                if (!lisp_is_flonum(v)) return (*e = "wasm-provide: f64 result needs a flonum"), LISP_UNDEF;
+                wv.f64 = lisp_flonum_val(v);
+                break;
+            default:
+                return (*e = "wasm-provide: unsupported result type"), LISP_UNDEF;
+        }
+        vals[cnt] = wv;
+    }
+    if (wasm_provide(box->inst, vals, cnt) != WASM_OK)
+        return (*e = "wasm-provide: arity mismatch or bad state"), LISP_UNDEF;
+    return LISP_TRUE;
+}
+
+// (wasm-mem inst) -> bytes | #f. A foreign byte view that ALIASES the guest's live
+// linear memory (zero-copy), #f if the module declares no memory.
+//
+// The view is REVOCABLE (M1): it is stamped with the box's memory grant, so once
+// (wasm-destroy) frees the linear memory and revokes that grant, every outstanding
+// view goes "dead" -- reads see a zero page, writes are refused -- instead of a
+// use-after-free against the freed buffer. The grant is software-only here (its
+// phys/len are unused; only its index+generation liveness matters), enforced at the
+// bytes layer exactly like a revoked map-grant view -- airtight in the sandbox,
+// where a guest reaches the memory only through these bytes prims.
+//
+// The view length is the memory's CURRENT size (cur_pages, not the reserved max).
+// memory.grow grows that size IN PLACE (the base never moves, since memory is
+// reserved at max), so the length here is the size as of this call -- the host MUST
+// re-call (wasm-mem) after any (wasm-resume) that might have grown memory to obtain
+// a view spanning the newly-committed pages.
+static lisp_value prim_wasm_mem(lisp_value *a, int n, const char **e) {
+    if (n != 1)
+        return (*e = "wasm-mem: expects (inst)"), LISP_UNDEF;
+    wasm_box *box = wasm_arg_box(a[0], e);
+    if (!box) return LISP_UNDEF;
+    size_t len = 0;
+    uint8_t *mem = wasm_memory(box->inst, &len);
+    if (!mem)
+        return LISP_FALSE;
+    // Mint the box's memory grant on first use. phys/len are placeholders (a heap
+    // view, not a phys region); only the grant's (index, generation) liveness is
+    // consulted by lisp_bytes_grant_dead, and (wasm-destroy) revokes it.
+    if (box->mem_grant == LISP_EMPTY) {
+        lisp_value g = lisp_grant_mint(0, len, 1);  // 1 = read-write (the view is RW)
+        if (g == LISP_UNDEF)
+            return (*e = "wasm-mem: grant table full"), LISP_UNDEF;
+        box->mem_grant = g;
+        lisp_grant_handle(g, &box->mem_grant_index, &box->mem_grant_gen);
+    }
+    lisp_value b = lisp_make_bytes_foreign(mem, len, 0);
+    if (b == LISP_UNDEF)
+        return (*e = "wasm-mem: out of memory"), LISP_UNDEF;
+    lisp_bytes_set_grant(b, box->mem_grant_index, box->mem_grant_gen);
+    return b;
+}
+
+// (wasm-destroy inst) -> unspecified. Frees the instance, module, import names, AND
+// the box itself NOW, and disarms the GC finalizer (lisp_handle_clear) so it cannot
+// double-free. lisp_handle_clear NULLs both the finalizer (so it never runs) and the
+// handle's ptr -- the GC therefore never touches the box again, so freeing it here is
+// safe (M3: no longer leaked). A second wasm-destroy (or any other prim) sees the
+// cleared handle (NULL ptr) and reports the dead handle via wasm_arg_box, so no path
+// dereferences the freed box. The memory grant is revoked first, so any outstanding
+// (wasm-mem) view goes dead before its backing linear memory is freed.
+static lisp_value prim_wasm_destroy(lisp_value *a, int n, const char **e) {
+    if (n != 1)
+        return (*e = "wasm-destroy: expects (inst)"), LISP_UNDEF;
+    wasm_box *box = wasm_arg_box(a[0], e);
+    if (!box) return LISP_UNDEF;
+    lisp_handle_clear(a[0]);  // disarm the finalizer + NULL the ptr: GC won't touch box,
+                              // and future prims see a dead handle -- so freeing box is safe
+    wasm_box_revoke_mem(box);  // outstanding wasm-mem views go dead before mem is freed
+    if (box->inst) { wasm_instance_free(box->inst); box->inst = NULL; }
+    if (box->mod) { wasm_module_free(box->mod); box->mod = NULL; }
+    if (box->names) {
+        for (uint32_t i = 0; i < box->n_names; i++)
+            free(box->names[i]);
+        free(box->names);
+        box->names = NULL;
+    }
+    box->n_names = 0;
+    free(box);  // M3: the box is no longer leaked -- the handle is cleared, so nothing
+                // else references it
+    return LISP_UNDEF;
+}
+
 // The capability-bearing driver primitives, grouped into named modules instead
 // of dumped into the global env. A Lisp driver gains an authority only by
 // importing its module -- (import sys-mmio) to map device memory, (import sys-io)
@@ -1142,6 +1624,18 @@ static const lisp_builtin_export sys_shm_exports[] = {
 static const lisp_builtin_export sys_shm_mint_exports[] = {
     {"grant-mint", prim_grant_mint}, {"grant-revoke", prim_grant_revoke},
 };
+// The WebAssembly guest interpreter (libs/wasm). A context gains the authority to
+// instantiate + drive a guest only by (import sys-wasm); the guest itself runs in
+// the importer's context with no further authority of its own (host-serviced
+// imports suspend back to the importer, which decides what to service).
+static const lisp_builtin_export sys_wasm_exports[] = {
+    {"wasm-instantiate", prim_wasm_instantiate},
+    {"wasm-call", prim_wasm_call},
+    {"wasm-resume", prim_wasm_resume},
+    {"wasm-provide", prim_wasm_provide},
+    {"wasm-mem", prim_wasm_mem},
+    {"wasm-destroy", prim_wasm_destroy},
+};
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -1161,6 +1655,7 @@ static void register_driver_modules(lisp_value env) {
         {"sys-ttf", sys_ttf_exports, ARRAY_LEN(sys_ttf_exports)},
         {"sys-shm", sys_shm_exports, ARRAY_LEN(sys_shm_exports)},
         {"sys-shm-mint", sys_shm_mint_exports, ARRAY_LEN(sys_shm_mint_exports)},
+        {"sys-wasm", sys_wasm_exports, ARRAY_LEN(sys_wasm_exports)},
     };
     for (size_t i = 0; i < ARRAY_LEN(mods); i++)
         // Only OOM can fail this, and only at boot with a fresh heap -- but a

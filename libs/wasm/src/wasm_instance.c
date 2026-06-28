@@ -248,6 +248,10 @@ void wasm_instance_free(wasm_instance_t *inst) {
 
 static const wasm_functype_t *func_signature(wasm_module_t *m, uint32_t func_index) {
     uint32_t ti;
+    // Defense in depth (item 4): reject a function index outside the combined
+    // import + defined range before indexing m->funcs[], even if decode/validate
+    // somehow let one through.
+    if (func_index >= m->n_imported_funcs + m->n_funcs) return NULL;
     if (func_index < m->n_imported_funcs) {
         // imported function: signature carried on the import decl
         uint32_t seen = 0;
@@ -304,6 +308,54 @@ wasm_result_t wasm_call(wasm_instance_t *inst, const char *export_name,
     inst->status = WASM_RUN_FUEL;   // ready to run
     inst->n_results = 0;
     return WASM_OK;
+}
+
+uint32_t wasm_export_param_types(wasm_instance_t *inst, const char *export,
+                                 wasm_valtype_t *out, uint32_t cap) {
+    wasm_module_t *m = inst->module;
+    uint32_t func_index = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < m->n_exports; i++)
+        if (m->exports[i].kind == WASM_EXTERN_FUNC &&
+            strcmp(m->exports[i].name, export) == 0) {
+            func_index = m->exports[i].index;
+            break;
+        }
+    if (func_index == 0xFFFFFFFFu) return 0xFFFFFFFFu;
+    const wasm_functype_t *sig = func_signature(m, func_index);
+    if (!sig) return 0xFFFFFFFFu;
+    uint32_t n = sig->n_params < cap ? sig->n_params : cap;
+    for (uint32_t i = 0; i < n; i++) out[i] = sig->params[i];
+    return sig->n_params;
+}
+
+// Copy out[0..min(n,cap)) of `n` valtypes from `src` and return n. Shared tail of
+// the three type-query helpers below.
+static uint32_t copy_valtypes(const wasm_valtype_t *src, uint32_t n,
+                              wasm_valtype_t *out, uint32_t cap) {
+    uint32_t k = n < cap ? n : cap;
+    for (uint32_t i = 0; i < k; i++) out[i] = src[i];
+    return n;
+}
+
+uint32_t wasm_result_types(wasm_instance_t *inst, wasm_valtype_t *out, uint32_t cap) {
+    if (!inst->started) return 0;   // no entry call staged
+    const wasm_functype_t *sig = func_signature(inst->module, inst->entry_func);
+    if (!sig) return 0;
+    return copy_valtypes(sig->results, sig->n_results, out, cap);
+}
+
+uint32_t wasm_pending_arg_types(wasm_instance_t *inst, wasm_valtype_t *out, uint32_t cap) {
+    if (inst->status != WASM_RUN_SUSPENDED) return 0;
+    const wasm_functype_t *sig = func_signature(inst->module, inst->pending_func_index);
+    if (!sig) return 0;
+    return copy_valtypes(sig->params, sig->n_params, out, cap);
+}
+
+uint32_t wasm_pending_result_types(wasm_instance_t *inst, wasm_valtype_t *out, uint32_t cap) {
+    if (inst->status != WASM_RUN_SUSPENDED) return 0;
+    const wasm_functype_t *sig = func_signature(inst->module, inst->pending_func_index);
+    if (!sig) return 0;
+    return copy_valtypes(sig->results, sig->n_results, out, cap);
 }
 
 wasm_run_status_t wasm_resume(wasm_instance_t *inst, int64_t fuel) {
