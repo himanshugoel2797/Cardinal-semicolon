@@ -22,7 +22,7 @@
           cardfs hdaudio uhci xhci ehci usb-hid usb-hub usb-storage usb-audio
           nvme e1000e virtio-blk virtio-input virtio-rng virtio-console
           graphics font ttf sys-pci sys-cmdline sys-initrd sys-mmio sys-reg
-          sys-shm-mint)
+          sys-shm-mint wasm-doom)
 
   ;; Parse a dotted-quad "A.B.C.D" into (A B C D), or #f if malformed. Used for
   ;; the cardinal.ip= static-address override (digits/dots only, exactly 4 octets,
@@ -767,11 +767,14 @@
         (lambda ()
           (import sys-shm)   ; map-grant: the owner maps per-core shards' layer grants
           (let* ((compdemo? (cmdline-has? "cardinal.compositordemo"))
+                 ;; The Doom guest (cardinal.doom) is also a real compositor
+                 ;; client, so it too needs the compositor to own the live scanout.
+                 (scanout? (or compdemo? (cmdline-has? "cardinal.doom")))
                  ;; phase 4: own the real scanout for the demo. Otherwise an
                  ;; off-screen RAM screen (the phase-3 posture: composites but
                  ;; displays nothing, inert until a client connects), which also
                  ;; keeps the headless compositortest working.
-                 (target (if compdemo?
+                 (target (if scanout?
                              (begin (sleep 800000000)        ; let virtio-gpu bring-up finish
                                     (if (pci-find #x1af4 #x1050)
                                         (compositor-gpu-target gpu)
@@ -1303,6 +1306,21 @@
             (lambda ()
               (sleep 3000000000)
               (log "dnstest" "example.com -> " (dns-resolve net "example.com"))))))
+    ;; cardinal.doom: run the Doom WASM guest (notes/core/wasm-guests.md, Phase 5).
+    ;; A trusted first-party app, so it runs in an UNRESTRICTED context (like the
+    ;; REPL) -- it needs sys-wasm + sys-shm together. It blocks on the compositor
+    ;; rendezvous for the owner, so it can launch now even though the owner is
+    ;; published from a later-spawned context. Gated on the assets being present
+    ;; in the initrd (doom.wasm is committed; the WAD is not -- drop doom1.wad in
+    ;; lisp/data/ and rebuild to enable it), so a normal boot is unaffected.
+    (if (cmdline-has? "cardinal.doom")
+        (let ((wad   (initrd-file "./lisp/data/doom1.wad"))
+              (guest (initrd-file "./lisp/data/doom.wasm")))
+          (if (and wad guest)
+              (spawn (lambda ()
+                       (run-doom compositor-rendezvous wad guest
+                                 (list "doom" "-iwad" "/doom1.wad"))))
+              (log "doom" "cardinal.doom set but doom.wasm/doom1.wad missing from initrd"))))
     'system-up))   ; close the (let ((input ...)) ...) that wraps the bring-up
 
   ;; The interactive serial REPL (started only under cardinal.repl). A root context

@@ -7,7 +7,8 @@
 
 # Running non-Lisp guests as WebAssembly, hosted by Lisp
 
-Status: **design proposal** (nothing built yet). The way to run foreign code
+Status: **IMPLEMENTED — Doom runs in-kernel** (see "Status (all phases DONE)"
+below). The way to run foreign code
 (a ported C program such as Doom, a language runtime, an untrusted blob) in
 Cardinal; **without** reaching for ring-3 / the MMU / the native scheduler.
 Supersedes [`native-sandbox.md`](native-sandbox.md), which used hardware
@@ -213,6 +214,49 @@ and arguably off-ethos. Interpret for now.
    from a host Lisp app; blit from linear memory, forward input, pace with sleep.
 
 Phases 1–2 are the bulk and are fully host-testable before anything boots.
+
+## Status (all phases DONE)
+
+Phases 1–5 are implemented and verified in-OS. **Doom runs in-kernel**: booted
+with `cardinal.doom`, doomgeneric (compiled `wasm32-wasi`) loads its IWAD off the
+initrd through the Lisp WASI layer and plays E1M1, composited to the framebuffer
+via the window compositor — all on the from-scratch interpreter, no ring-3 / MMU
+/ scheduler changes.
+
+- `libs/wasm/` — the interpreter (decode/validate/exec/instance). Handles the MVP
+  opcode set plus the `0xFC` bulk-memory family (`memory.copy`/`fill`,
+  `trunc_sat`) that real wasi-libc emits. Host suite: `sh
+  libs/wasm/test/build-and-run.sh` (245 checks). The decoder/validator were run
+  differentially against wabt and on the real 443 KB doom.wasm under ASan/UBSan
+  (which caught an i64-LEB signed-shift UB, now fixed).
+- `lisp/lib/wasm-host.clp` — WASI host: console + a read-only in-memory FS (a
+  preopen over an alist of `(path . bytes)`, `path_open`/`fd_read`/`fd_seek`/
+  `fd_close`/`fd_fdstat_get`/prestat) + argv. `make-wasi-state`/`wasi-dispatch`/
+  `run-guest` are the reusable pieces a specialised host composes with.
+- `lisp/lib/wasm-doom.clp` — the Doom host: connects to the compositor, maps the
+  double-buffered surface grants, and services the `cardinal` import module
+  (`present`/`poll_key`/`ticks_ms`/`sleep_ms`). present is a single bulk
+  `bytes-copy!` when the surface is XRGB (the LFB path); other formats take a slow
+  per-pixel repack (run Doom on the LFB / std-vga path).
+- `guests/doom/` — `doomgeneric_cardinal.c` (the backend) + `build.sh` (clones
+  upstream doomgeneric into git-ignored `upstream/`, builds
+  `lisp/data/doom.wasm`). The IWAD is `lisp/data/doom1.wad` (git-ignored — drop a
+  shareware `doom1.wad` there and rebuild the initrd to enable Doom).
+- Boot it: `cmake --build build && cmake --build build --target doom-image`, then
+  `ISO=build/ISO/os-doom.iso GPU=none ACCEL=kvm SCREENSHOT=out.ppm
+  SCREENSHOT_DELAY=160 ./scripts/run-qemu.sh`. The WAD load + R_Init precache do
+  thousands of `fd_read`/`fd_seek` import round-trips, so the first frame is ~2
+  min in; once in the game loop it runs the attract demo.
+
+GOTCHAS specific to the guest layer:
+- **Real wasi-libc is not pure-MVP** — needs the `0xFC` bulk-memory ops (baked
+  into the prebuilt libc even with `-mcpu=mvp`). Doom needs no passive segments
+  (`memory.init`/`data.drop`) — checked with `wasm-objdump`.
+- **The host context must yield for the compositor to flush** — Doom's
+  `sleep_ms` between frames is the yield point; without it the screen never
+  updates. (`yield` exists if a future guest never sleeps.)
+- **proc_exit / void imports return `(list)`** to `wasm-provide` (arity must
+  match `n_results`); a non-list return (e.g. a stray symbol) kills the context.
 
 ## Open items
 
