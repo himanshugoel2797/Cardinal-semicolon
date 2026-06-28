@@ -231,6 +231,9 @@ static bool decode_import_section(wasm_module_t *m, const uint8_t *buf,
         switch (kind) {
             case WASM_EXTERN_FUNC: {
                 if (!wasm_read_u32(buf, len, pc, &im->type_index)) return false;
+                // The signature index must reference a declared type (item 8);
+                // the type section precedes imports, so n_types is final here.
+                if (im->type_index >= m->n_types) return false;
                 m->n_imported_funcs++;
                 break;
             }
@@ -352,7 +355,8 @@ static bool decode_global_section(wasm_module_t *m, const uint8_t *buf,
 }
 
 static bool decode_export_section(wasm_module_t *m, const uint8_t *buf,
-                                  uint32_t len, uint32_t *pc, bool *oom) {
+                                  uint32_t len, uint32_t *pc,
+                                  uint32_t n_defined_funcs, bool *oom) {
     uint32_t n;
     if (!wasm_read_u32(buf, len, pc, &n)) return false;
     m->exports = (wasm_export_t *)xcalloc(n, sizeof(wasm_export_t));
@@ -361,6 +365,9 @@ static bool decode_export_section(wasm_module_t *m, const uint8_t *buf,
         return false;
     }
     m->n_exports = n;
+    // Total function-index space = imported funcs (counted by the import section)
+    // + defined funcs (the func-section count, known before the export section).
+    uint64_t n_total_funcs = (uint64_t)m->n_imported_funcs + n_defined_funcs;
     for (uint32_t i = 0; i < n; i++) {
         wasm_export_t *ex = &m->exports[i];
         if (!read_name(buf, len, pc, &ex->name, oom)) return false;
@@ -368,12 +375,17 @@ static bool decode_export_section(wasm_module_t *m, const uint8_t *buf,
         if (!wasm_read_byte(buf, len, pc, &kind) || kind > 3) return false;
         ex->kind = (wasm_externkind_t)kind;
         if (!wasm_read_u32(buf, len, pc, &ex->index)) return false;
+        // Validate a function export's index is within the function-index space
+        // (item 6); an out-of-range export would let wasm_call enter garbage.
+        if (ex->kind == WASM_EXTERN_FUNC && ex->index >= n_total_funcs)
+            return false;
     }
     return true;
 }
 
 static bool decode_elem_section(wasm_module_t *m, const uint8_t *buf,
-                                uint32_t len, uint32_t *pc, bool *oom) {
+                                uint32_t len, uint32_t *pc,
+                                uint32_t n_defined_funcs, bool *oom) {
     uint32_t n;
     if (!wasm_read_u32(buf, len, pc, &n)) return false;
     m->elem = (wasm_elem_seg_t *)xcalloc(n, sizeof(wasm_elem_seg_t));
@@ -382,6 +394,7 @@ static bool decode_elem_section(wasm_module_t *m, const uint8_t *buf,
         return false;
     }
     m->n_elem = n;
+    uint64_t n_total_funcs = (uint64_t)m->n_imported_funcs + n_defined_funcs;
     for (uint32_t i = 0; i < n; i++) {
         wasm_elem_seg_t *e = &m->elem[i];
         uint32_t flag;
@@ -404,6 +417,9 @@ static bool decode_elem_section(wasm_module_t *m, const uint8_t *buf,
         e->n = cnt;
         for (uint32_t j = 0; j < cnt; j++) {
             if (!wasm_read_u32(buf, len, pc, &e->func_indices[j])) return false;
+            // Reject seeding the table with an out-of-range function index
+            // (item 7); otherwise call_indirect would read it and index garbage.
+            if (e->func_indices[j] >= n_total_funcs) return false;
         }
     }
     return true;
@@ -617,7 +633,8 @@ wasm_module_t *wasm_decode_impl(const uint8_t *buf, size_t len, wasm_result_t *e
                 ok = decode_global_section(m, buf, ulen, &spc, &oom);
                 break;
             case SEC_EXPORT:
-                ok = decode_export_section(m, buf, ulen, &spc, &oom);
+                ok = decode_export_section(m, buf, ulen, &spc, n_func_typeidx,
+                                           &oom);
                 break;
             case SEC_START: {
                 ok = wasm_read_u32(buf, ulen, &spc, &m->start_func);
@@ -625,7 +642,8 @@ wasm_module_t *wasm_decode_impl(const uint8_t *buf, size_t len, wasm_result_t *e
                 break;
             }
             case SEC_ELEM:
-                ok = decode_elem_section(m, buf, ulen, &spc, &oom);
+                ok = decode_elem_section(m, buf, ulen, &spc, n_func_typeidx,
+                                         &oom);
                 break;
             case SEC_CODE:
                 ok = decode_code_section(m, buf, ulen, &spc, m->image, 0,

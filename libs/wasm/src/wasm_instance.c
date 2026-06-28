@@ -38,6 +38,7 @@ bool wasm_read_u64(const uint8_t *buf, uint32_t len, uint32_t *pc, uint64_t *out
 bool wasm_read_u32(const uint8_t *buf, uint32_t len, uint32_t *pc, uint32_t *out) {
     uint64_t v;
     if (!wasm_read_u64(buf, len, pc, &v)) return false;
+    if (v > 0xFFFFFFFFu) return false;   // reject overlong / over-32-bit LEB
     *out = (uint32_t)v;
     return true;
 }
@@ -61,6 +62,7 @@ bool wasm_read_s64(const uint8_t *buf, uint32_t len, uint32_t *pc, int64_t *out)
 bool wasm_read_s32(const uint8_t *buf, uint32_t len, uint32_t *pc, int32_t *out) {
     int64_t v;
     if (!wasm_read_s64(buf, len, pc, &v)) return false;
+    if (v < INT32_MIN || v > INT32_MAX) return false;  // must fit a 32-bit int
     *out = (int32_t)v;
     return true;
 }
@@ -78,7 +80,7 @@ void wasm_push(wasm_instance_t *inst, wasm_value_t v) {
 
 wasm_value_t wasm_pop(wasm_instance_t *inst) {
     if (inst->vsp == 0) {
-        inst->trap = WASM_TRAP_STACK_OVERFLOW;
+        inst->trap = WASM_TRAP_STACK_UNDERFLOW;
         inst->status = WASM_RUN_TRAPPED;
         wasm_value_t z = {0};
         return z;
@@ -119,8 +121,8 @@ wasm_module_t *wasm_module_decode(const uint8_t *buf, size_t len, wasm_result_t 
 }
 
 wasm_result_t wasm_module_validate(wasm_module_t *m) {
-    (void)m;
-    return WASM_OK;   // v1 foundation: structural/type validation lands in phase 2
+    if (!m) return WASM_ERR_VALIDATE;
+    return wasm_validate_impl(m);
 }
 
 void wasm_module_free(wasm_module_t *m) {
@@ -265,6 +267,12 @@ got:
 wasm_result_t wasm_call(wasm_instance_t *inst, const char *export_name,
                         const wasm_value_t *args, uint32_t n_args) {
     wasm_module_t *m = inst->module;
+    // Reject re-entry while a run is in progress (suspended/fuel-paused). Only an
+    // idle instance (never started, or a finished/trapped run) may be re-staged;
+    // clobbering a live run's stacks would corrupt the suspended guest state.
+    if (inst->started && inst->status != WASM_RUN_DONE &&
+        inst->status != WASM_RUN_TRAPPED)
+        return WASM_ERR_RUNTIME;
     // Locate the exported function.
     uint32_t func_index = 0xFFFFFFFFu;
     for (uint32_t i = 0; i < m->n_exports; i++)
@@ -275,6 +283,9 @@ wasm_result_t wasm_call(wasm_instance_t *inst, const char *export_name,
         }
     if (func_index == 0xFFFFFFFFu) return WASM_ERR_RUNTIME;
     if (func_index < m->n_imported_funcs) return WASM_ERR_RUNTIME; // no body to enter
+    // Defense in depth: even if decode/validation missed it, never enter a
+    // function index outside the defined-function range.
+    if (func_index >= m->n_imported_funcs + m->n_funcs) return WASM_ERR_RUNTIME;
 
     const wasm_functype_t *sig = func_signature(m, func_index);
     if (!sig || sig->n_params != n_args || n_args > 16) return WASM_ERR_RUNTIME;
@@ -310,6 +321,9 @@ const wasm_pending_t *wasm_pending(const wasm_instance_t *inst) {
 
 wasm_result_t wasm_provide(wasm_instance_t *inst, const wasm_value_t *results, uint32_t n) {
     if (n > 16) return WASM_ERR_RUNTIME;
+    // The guest expects exactly pending.n_results values pushed; a mismatch would
+    // leave the operand stack short (guest reads stale/uninit slots) or long.
+    if (n != inst->pending.n_results) return WASM_ERR_RUNTIME;
     for (uint32_t i = 0; i < n; i++) inst->provided[i] = results[i];
     inst->n_provided = n;
     inst->has_provided = true;

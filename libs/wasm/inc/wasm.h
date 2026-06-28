@@ -85,6 +85,7 @@ typedef enum {
     WASM_TRAP_UNINIT_ELEMENT,
     WASM_TRAP_CALL_STACK_EXHAUSTED,
     WASM_TRAP_STACK_OVERFLOW,
+    WASM_TRAP_STACK_UNDERFLOW,  // value stack underflow (pop/peek with empty stack)
     WASM_TRAP_HOST,       // a host import signalled an error
 } wasm_trap_t;
 

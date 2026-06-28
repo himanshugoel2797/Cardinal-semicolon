@@ -224,6 +224,9 @@ uint32_t wasm_mem_grow(wasm_instance_t *inst, uint32_t delta);
 wasm_module_t *wasm_decode_impl(const uint8_t *buf, size_t len, wasm_result_t *err);
 void wasm_module_free_impl(wasm_module_t *m);   // frees what decode allocated
 
+// Implemented in wasm_validate.c:
+wasm_result_t wasm_validate_impl(wasm_module_t *m);   // type-checks the module
+
 // Implemented in wasm_exec.c. Runs the current frames for up to `fuel`
 // reductions, updating inst->status/trap/results. Called by wasm_resume().
 void wasm_exec_run(wasm_instance_t *inst, int64_t fuel);
@@ -231,7 +234,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel);
 // Implemented in wasm_exec.c. Build the control-flow side table (wasm_func_t.cf)
 // for one function; called lazily at first entry. Returns false on malformed
 // control structure.
-bool wasm_exec_prepare_func(wasm_func_t *f, wasm_result_t *err);
+bool wasm_exec_prepare_func(wasm_module_t *m, wasm_func_t *f, wasm_result_t *err);
 
 // Implemented in wasm_exec.c. Free the control-flow side table owned by exec
 // (wasm_func_t.cf). Called by wasm_module_free_impl for each function.

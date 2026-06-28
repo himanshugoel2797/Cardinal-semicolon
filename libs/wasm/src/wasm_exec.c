@@ -160,15 +160,12 @@ static bool skip_immediates(const uint8_t *code, uint32_t code_len, uint32_t *pc
     }
 }
 
-bool wasm_exec_prepare_func(wasm_func_t *f, wasm_result_t *err) {
-    // We need the module to resolve s33 multi-value blocktypes, but the prepass
-    // is called with only the func. Multi-value blocktypes index module->types;
-    // since prepare is invoked lazily from wasm_exec_run (which has the module),
-    // we stash the module pointer through a thread-unsafe-but-single-context
-    // channel below. To keep the signature frozen, the module is supplied via
-    // the static set by wasm_exec_run before calling us.
-    extern wasm_module_t *wasm_exec_cur_module;   // defined below
-    wasm_module_t *m = wasm_exec_cur_module;
+bool wasm_exec_prepare_func(wasm_module_t *m, wasm_func_t *f, wasm_result_t *err) {
+    // `m` resolves s33 multi-value blocktypes (which index module->types). The
+    // module is passed in directly (not via a global) so the prepass is reentrant
+    // and SMP-safe with NO thread-local storage -- the kernel module loader has
+    // no ELF-TLS runtime, so __thread is unavailable here. Two cores can prepare
+    // functions of two instances concurrently; cf is written once then read-only.
 
     const uint8_t *code = f->code;
     uint32_t code_len = f->code_len;
@@ -263,14 +260,6 @@ bool wasm_exec_prepare_func(wasm_func_t *f, wasm_result_t *err) {
     return true;
 }
 
-// ---- Module channel for the prepass ------------------------------------
-// wasm_exec_run sets this immediately before calling wasm_exec_prepare_func so
-// the prepass can resolve s33 multi-value blocktypes against module->types.
-// The interpreter runs one instance per Lisp context with no internal
-// concurrency, so a file-scope pointer is sufficient (and is only read inside
-// the synchronous prepare call).
-wasm_module_t *wasm_exec_cur_module = NULL;
-
 // ---- Float helpers ------------------------------------------------------
 
 static float f32_nearest(float x) {
@@ -356,11 +345,18 @@ static bool enter_defined(wasm_instance_t *inst, uint32_t func_index,
         inst->status = WASM_RUN_TRAPPED;
         return false;
     }
+    // Bounds-check the function index before indexing m->funcs[] (item 4). A
+    // crafted call / call_indirect can name an index past the defined functions.
+    if (func_index < m->n_imported_funcs ||
+        func_index >= m->n_imported_funcs + m->n_funcs) {
+        inst->trap = WASM_TRAP_UNREACHABLE;
+        inst->status = WASM_RUN_TRAPPED;
+        return false;
+    }
     wasm_func_t *f = &m->funcs[func_index - m->n_imported_funcs];
     if (!f->cf) {
         wasm_result_t e = WASM_OK;
-        wasm_exec_cur_module = m;
-        if (!wasm_exec_prepare_func(f, &e)) {
+        if (!wasm_exec_prepare_func(m, f, &e)) {
             inst->trap = WASM_TRAP_UNREACHABLE;   // malformed body -> trap
             inst->status = WASM_RUN_TRAPPED;
             return false;
@@ -477,11 +473,18 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
 
     // ---- ENTRY: build frame 0 from the staged entry call. ----
     if (inst->entry_pending) {
+        // Bounds-check the staged entry index before indexing m->funcs[] (item 4,
+        // defense in depth -- wasm_call already validates, but never trust it).
+        if (inst->entry_func < m->n_imported_funcs ||
+            inst->entry_func >= m->n_imported_funcs + m->n_funcs) {
+            inst->trap = WASM_TRAP_UNREACHABLE;
+            inst->status = WASM_RUN_TRAPPED;
+            return;
+        }
         wasm_func_t *f = &m->funcs[inst->entry_func - m->n_imported_funcs];
         if (!f->cf) {
             wasm_result_t e = WASM_OK;
-            wasm_exec_cur_module = m;
-            if (!wasm_exec_prepare_func(f, &e)) {
+            if (!wasm_exec_prepare_func(m, f, &e)) {
                 inst->trap = WASM_TRAP_UNREACHABLE;
                 inst->status = WASM_RUN_TRAPPED;
                 return;
@@ -490,6 +493,13 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
         const wasm_functype_t *sig = sig_of(m, inst->entry_func);
         uint32_t n_params = f->n_params;
         uint32_t n_locals = f->n_locals;
+        // Cap the local frame to the value-stack capacity (item 5). enter_defined
+        // checks this; the entry path must too, or a huge n_locals overruns vstack.
+        if (n_locals > WASM_VSTACK_CAP) {
+            inst->trap = WASM_TRAP_STACK_OVERFLOW;
+            inst->status = WASM_RUN_TRAPPED;
+            return;
+        }
         // entry args already at vstack[0..entry_nargs); entry_nargs == n_params.
         for (uint32_t i = n_params; i < n_locals; i++) {
             wasm_value_t z = {0};
@@ -641,6 +651,9 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             if (!wasm_read_u32(frame->code, frame->code_len, &frame->pc, &def))
                 TRAP(WASM_TRAP_UNREACHABLE);
             br_depth = have ? chosen : def;
+            // Charge fuel proportional to the table width scanned (item 13) so a
+            // pathologically wide br_table cannot run unbounded without fuel cost.
+            inst->fuel -= (int64_t)n;
             goto do_branch;
         }
 
@@ -748,12 +761,18 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             uint32_t idx;
             if (!wasm_read_u32(frame->code, frame->code_len, &frame->pc, &idx))
                 TRAP(WASM_TRAP_UNREACHABLE);
+            // n_locals for the running frame == operand_base - locals_base
+            // (item 1: bounds-check before indexing vstack).
+            if (idx >= frame->operand_base - frame->locals_base)
+                TRAP(WASM_TRAP_UNREACHABLE);
             wasm_push(inst, inst->vstack[frame->locals_base + idx]);
             break;
         }
         case OP_LOCAL_SET: {
             uint32_t idx;
             if (!wasm_read_u32(frame->code, frame->code_len, &frame->pc, &idx))
+                TRAP(WASM_TRAP_UNREACHABLE);
+            if (idx >= frame->operand_base - frame->locals_base)   // item 1
                 TRAP(WASM_TRAP_UNREACHABLE);
             wasm_value_t v = wasm_pop(inst);
             if (inst->status == WASM_RUN_TRAPPED) return;
@@ -764,6 +783,9 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             uint32_t idx;
             if (!wasm_read_u32(frame->code, frame->code_len, &frame->pc, &idx))
                 TRAP(WASM_TRAP_UNREACHABLE);
+            if (idx >= frame->operand_base - frame->locals_base)   // item 1
+                TRAP(WASM_TRAP_UNREACHABLE);
+            if (inst->vsp == 0) TRAP(WASM_TRAP_STACK_UNDERFLOW);   // item 2: peek guard
             wasm_value_t v = inst->vstack[inst->vsp - 1];   // peek
             inst->vstack[frame->locals_base + idx] = v;
             break;
@@ -772,6 +794,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             uint32_t idx;
             if (!wasm_read_u32(frame->code, frame->code_len, &frame->pc, &idx))
                 TRAP(WASM_TRAP_UNREACHABLE);
+            if (idx >= inst->n_globals) TRAP(WASM_TRAP_UNREACHABLE);   // item 3
             wasm_push(inst, inst->globals[idx]);
             break;
         }
@@ -779,6 +802,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             uint32_t idx;
             if (!wasm_read_u32(frame->code, frame->code_len, &frame->pc, &idx))
                 TRAP(WASM_TRAP_UNREACHABLE);
+            if (idx >= inst->n_globals) TRAP(WASM_TRAP_UNREACHABLE);   // item 3
             wasm_value_t v = wasm_pop(inst);
             if (inst->status == WASM_RUN_TRAPPED) return;
             inst->globals[idx] = v;
