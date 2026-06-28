@@ -44,18 +44,21 @@ bool wasm_read_u32(const uint8_t *buf, uint32_t len, uint32_t *pc, uint32_t *out
 }
 
 bool wasm_read_s64(const uint8_t *buf, uint32_t len, uint32_t *pc, int64_t *out) {
-    int64_t result = 0;
+    // Accumulate unsigned: a malformed module can place a full 0x7F byte at
+    // shift 63, and a signed `<<63` (or negating INT64_MIN for the sign bit) is
+    // UB. Unsigned shifts wrap cleanly, and the final cast is value-preserving.
+    uint64_t result = 0;
     int shift = 0;
     uint8_t b;
     do {
         if (*pc >= len || shift >= 64) return false;
         b = buf[(*pc)++];
-        result |= (int64_t)(b & 0x7F) << shift;
+        result |= (uint64_t)(b & 0x7F) << shift;
         shift += 7;
     } while (b & 0x80);
     if (shift < 64 && (b & 0x40))
-        result |= -((int64_t)1 << shift);   // sign-extend
-    *out = result;
+        result |= ~(uint64_t)0 << shift;   // sign-extend
+    *out = (int64_t)result;
     return true;
 }
 

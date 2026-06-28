@@ -75,6 +75,16 @@ COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-compositordemo.iso" "I
 COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
 DEPENDS image)
 
+# ISO that boots with "cardinal.doom": runs the Doom WASM guest on the in-OS
+# interpreter, presenting through the compositor (notes/core/wasm-guests.md phase
+# 5). Requires lisp/data/doom1.wad present in the initrd. Capture with:
+#   ISO=build/ISO/os-doom.iso GPU=none SCREENSHOT=out.ppm TIMEOUT=40 ./scripts/run-qemu.sh
+add_custom_target(doom-image
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub_doom.cfg" "ISO/isodir/boot/grub/grub.cfg"
+COMMAND grub-mkrescue -d /usr/lib/grub/i386-pc -o "ISO/os-doom.iso" "ISO/isodir"
+COMMAND cp "${CMAKE_CURRENT_SOURCE_DIR}/platform/x86_64/pc/grub.cfg" "ISO/isodir/boot/grub/grub.cfg"
+DEPENDS image)
+
 add_custom_target(disk.img
     COMMAND qemu-img create -f raw disk.img 128M)
 
