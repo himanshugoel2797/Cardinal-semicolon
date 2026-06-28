@@ -18,7 +18,7 @@
 #include "wasm_internal.h"
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
+#include <stdint.h>
 
 // ---- Control-flow side table -------------------------------------------
 //
@@ -260,38 +260,167 @@ bool wasm_exec_prepare_func(wasm_module_t *m, wasm_func_t *f, wasm_result_t *err
     return true;
 }
 
+// ---- Freestanding IEEE-754 math -----------------------------------------
+//
+// The kernel build is -ffreestanding with no libm, so we implement every
+// float primitive the interpreter needs here from bit ops and the SSE2 sqrt
+// instruction. The SAME code is used in the host build (no #ifdef split) so
+// the host suite exercises it. The semantics below are exactly what Wasm
+// requires (round-toward-zero trunc, round-to-{-inf,+inf} floor/ceil,
+// round-to-nearest-ties-to-even for `nearest`, sign-bit fabs/copysign).
+//
+// Pattern mirrors libs/ttf/ttf.c's minimal libm.
+
+// sqrt via the bare SSE instruction (NOT __builtin_sqrt: at -O0 the builtin
+// lowers to a CALL to `sqrt`, a missing symbol freestanding). Requires -msse2.
+static inline double wm_sqrt(double x) {
+    double r;
+    __asm__("sqrtsd %1, %0" : "=x"(r) : "x"(x));
+    return r;
+}
+static inline float wm_sqrtf(float x) {
+    float r;
+    __asm__("sqrtss %1, %0" : "=x"(r) : "x"(x));
+    return r;
+}
+
+// Bit punning helpers (exact, no aliasing UB: copy through memcpy).
+static inline uint64_t wm_d2b(double x) { uint64_t b; memcpy(&b, &x, 8); return b; }
+static inline double   wm_b2d(uint64_t b) { double x; memcpy(&x, &b, 8); return x; }
+static inline uint32_t wm_f2b(float x)  { uint32_t b; memcpy(&b, &x, 4); return b; }
+static inline float    wm_b2f(uint32_t b) { float x; memcpy(&x, &b, 4); return x; }
+
+// NaN constants built from bits (no NAN macro under -ffreestanding).
+static inline double wm_nan(void)  { return wm_b2d(0x7FF8000000000000ull); }
+static inline float  wm_nanf(void) { return wm_b2f(0x7FC00000u); }
+
+static inline int wm_isnan(double x)  { return x != x; }
+static inline int wm_isnanf(float x)  { return x != x; }
+
+// signbit: top bit of the bit pattern (correct for -0.0 and NaN too).
+static inline int wm_signbit(double x)  { return (int)(wm_d2b(x) >> 63); }
+static inline int wm_signbitf(float x)  { return (int)(wm_f2b(x) >> 31); }
+
+// fabs / copysign via the sign bit.
+static inline double wm_fabs(double x)  { return wm_b2d(wm_d2b(x) & 0x7FFFFFFFFFFFFFFFull); }
+static inline float  wm_fabsf(float x)  { return wm_b2f(wm_f2b(x) & 0x7FFFFFFFu); }
+static inline double wm_copysign(double a, double b) {
+    return wm_b2d((wm_d2b(a) & 0x7FFFFFFFFFFFFFFFull) | (wm_d2b(b) & 0x8000000000000000ull));
+}
+static inline float wm_copysignf(float a, float b) {
+    return wm_b2f((wm_f2b(a) & 0x7FFFFFFFu) | (wm_f2b(b) & 0x80000000u));
+}
+
+// |x| >= 2^52 (f64) / 2^23 (f32) means x is already an exact integer; this
+// magnitude test also catches +/-inf (whose magnitude exceeds the threshold)
+// and lets NaN fall through to the explicit isnan check. For everything else
+// we round-trip through int64 (toward zero) and adjust per rounding mode,
+// re-applying x's sign with copysign so -0.0 and small negatives are exact.
+
+static double wm_trunc(double x) {
+    if (wm_isnan(x) || wm_fabs(x) >= 4503599627370496.0) return x; // 2^52 / inf / nan
+    double t = (double)(int64_t)x;                                  // toward zero
+    return wm_copysign(t, x);                                       // keep -0.0
+}
+static float wm_truncf(float x) {
+    if (wm_isnanf(x) || wm_fabsf(x) >= 8388608.0f) return x;        // 2^23 / inf / nan
+    float t = (float)(int32_t)x;
+    return wm_copysignf(t, x);
+}
+
+static double wm_floor(double x) {
+    if (wm_isnan(x) || wm_fabs(x) >= 4503599627370496.0) return x;
+    double t = wm_trunc(x);
+    if (t > x) t -= 1.0;
+    return wm_copysign(t, x);   // floor(-0.0) = -0.0
+}
+static float wm_floorf(float x) {
+    if (wm_isnanf(x) || wm_fabsf(x) >= 8388608.0f) return x;
+    float t = wm_truncf(x);
+    if (t > x) t -= 1.0f;
+    return wm_copysignf(t, x);
+}
+
+static double wm_ceil(double x) {
+    if (wm_isnan(x) || wm_fabs(x) >= 4503599627370496.0) return x;
+    double t = wm_trunc(x);
+    if (t < x) t += 1.0;
+    return wm_copysign(t, x);   // ceil(-0.0) = -0.0
+}
+static float wm_ceilf(float x) {
+    if (wm_isnanf(x) || wm_fabsf(x) >= 8388608.0f) return x;
+    float t = wm_truncf(x);
+    if (t < x) t += 1.0f;
+    return wm_copysignf(t, x);
+}
+
+// Round to nearest, ties to even (IEEE roundTiesToEven == Wasm `nearest`).
+static double wm_nearbyint(double x) {
+    if (wm_isnan(x) || wm_fabs(x) >= 4503599627370496.0) return x;
+    double t = wm_trunc(x);          // integer part toward zero
+    double d = wm_fabs(x - t);       // fractional magnitude in [0,1)
+    if (d < 0.5) return wm_copysign(t, x);
+    if (d > 0.5) {
+        double a = wm_fabs(t) + 1.0;
+        return wm_copysign(a, x);
+    }
+    // exactly halfway: pick the even neighbour
+    int64_t ti = (int64_t)t;
+    if (ti & 1) {                    // t is odd -> step away from zero to even
+        double a = wm_fabs(t) + 1.0;
+        return wm_copysign(a, x);
+    }
+    return wm_copysign(t, x);        // t already even
+}
+static float wm_nearbyintf(float x) {
+    if (wm_isnanf(x) || wm_fabsf(x) >= 8388608.0f) return x;
+    float t = wm_truncf(x);
+    float d = wm_fabsf(x - t);
+    if (d < 0.5f) return wm_copysignf(t, x);
+    if (d > 0.5f) {
+        float a = wm_fabsf(t) + 1.0f;
+        return wm_copysignf(a, x);
+    }
+    int32_t ti = (int32_t)t;
+    if (ti & 1) {
+        float a = wm_fabsf(t) + 1.0f;
+        return wm_copysignf(a, x);
+    }
+    return wm_copysignf(t, x);
+}
+
 // ---- Float helpers ------------------------------------------------------
 
 static float f32_nearest(float x) {
     // round-half-to-even (Wasm "nearest")
-    float r = nearbyintf(x);
-    return r == 0.0f ? copysignf(0.0f, x) : r;
+    float r = wm_nearbyintf(x);
+    return r == 0.0f ? wm_copysignf(0.0f, x) : r;
 }
 static double f64_nearest(double x) {
-    double r = nearbyint(x);
-    return r == 0.0 ? copysign(0.0, x) : r;
+    double r = wm_nearbyint(x);
+    return r == 0.0 ? wm_copysign(0.0, x) : r;
 }
-static float f32_trunc(float x) { return truncf(x); }
-static double f64_trunc(double x) { return trunc(x); }
+static float f32_trunc(float x) { return wm_truncf(x); }
+static double f64_trunc(double x) { return wm_trunc(x); }
 
 static float wasm_f32_min(float a, float b) {
-    if (isnan(a) || isnan(b)) return NAN;
-    if (a == 0.0f && b == 0.0f) return signbit(a) ? a : b; // -0 < +0
+    if (wm_isnanf(a) || wm_isnanf(b)) return wm_nanf();
+    if (a == 0.0f && b == 0.0f) return wm_signbitf(a) ? a : b; // -0 < +0
     return a < b ? a : b;
 }
 static float wasm_f32_max(float a, float b) {
-    if (isnan(a) || isnan(b)) return NAN;
-    if (a == 0.0f && b == 0.0f) return signbit(a) ? b : a;
+    if (wm_isnanf(a) || wm_isnanf(b)) return wm_nanf();
+    if (a == 0.0f && b == 0.0f) return wm_signbitf(a) ? b : a;
     return a > b ? a : b;
 }
 static double wasm_f64_min(double a, double b) {
-    if (isnan(a) || isnan(b)) return NAN;
-    if (a == 0.0 && b == 0.0) return signbit(a) ? a : b;
+    if (wm_isnan(a) || wm_isnan(b)) return wm_nan();
+    if (a == 0.0 && b == 0.0) return wm_signbit(a) ? a : b;
     return a < b ? a : b;
 }
 static double wasm_f64_max(double a, double b) {
-    if (isnan(a) || isnan(b)) return NAN;
-    if (a == 0.0 && b == 0.0) return signbit(a) ? b : a;
+    if (wm_isnan(a) || wm_isnan(b)) return wm_nan();
+    if (a == 0.0 && b == 0.0) return wm_signbit(a) ? b : a;
     return a > b ? a : b;
 }
 
@@ -1170,35 +1299,35 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             wasm_value_t r; r.FIELD = (EXPR); wasm_push(inst, r);          \
         } while (0)
 
-        case OP_F32_ABS:   F_UN(f32, fabsf(a.f32)); break;
+        case OP_F32_ABS:   F_UN(f32, wm_fabsf(a.f32)); break;
         case OP_F32_NEG:   F_UN(f32, -a.f32); break;
-        case OP_F32_CEIL:  F_UN(f32, ceilf(a.f32)); break;
-        case OP_F32_FLOOR: F_UN(f32, floorf(a.f32)); break;
+        case OP_F32_CEIL:  F_UN(f32, wm_ceilf(a.f32)); break;
+        case OP_F32_FLOOR: F_UN(f32, wm_floorf(a.f32)); break;
         case OP_F32_TRUNC: F_UN(f32, f32_trunc(a.f32)); break;
         case OP_F32_NEAREST: F_UN(f32, f32_nearest(a.f32)); break;
-        case OP_F32_SQRT:  F_UN(f32, sqrtf(a.f32)); break;
+        case OP_F32_SQRT:  F_UN(f32, wm_sqrtf(a.f32)); break;
         case OP_F32_ADD:   F_BIN(f32, a.f32 + b.f32); break;
         case OP_F32_SUB:   F_BIN(f32, a.f32 - b.f32); break;
         case OP_F32_MUL:   F_BIN(f32, a.f32 * b.f32); break;
         case OP_F32_DIV:   F_BIN(f32, a.f32 / b.f32); break;
         case OP_F32_MIN:   F_BIN(f32, wasm_f32_min(a.f32, b.f32)); break;
         case OP_F32_MAX:   F_BIN(f32, wasm_f32_max(a.f32, b.f32)); break;
-        case OP_F32_COPYSIGN: F_BIN(f32, copysignf(a.f32, b.f32)); break;
+        case OP_F32_COPYSIGN: F_BIN(f32, wm_copysignf(a.f32, b.f32)); break;
 
-        case OP_F64_ABS:   F_UN(f64, fabs(a.f64)); break;
+        case OP_F64_ABS:   F_UN(f64, wm_fabs(a.f64)); break;
         case OP_F64_NEG:   F_UN(f64, -a.f64); break;
-        case OP_F64_CEIL:  F_UN(f64, ceil(a.f64)); break;
-        case OP_F64_FLOOR: F_UN(f64, floor(a.f64)); break;
+        case OP_F64_CEIL:  F_UN(f64, wm_ceil(a.f64)); break;
+        case OP_F64_FLOOR: F_UN(f64, wm_floor(a.f64)); break;
         case OP_F64_TRUNC: F_UN(f64, f64_trunc(a.f64)); break;
         case OP_F64_NEAREST: F_UN(f64, f64_nearest(a.f64)); break;
-        case OP_F64_SQRT:  F_UN(f64, sqrt(a.f64)); break;
+        case OP_F64_SQRT:  F_UN(f64, wm_sqrt(a.f64)); break;
         case OP_F64_ADD:   F_BIN(f64, a.f64 + b.f64); break;
         case OP_F64_SUB:   F_BIN(f64, a.f64 - b.f64); break;
         case OP_F64_MUL:   F_BIN(f64, a.f64 * b.f64); break;
         case OP_F64_DIV:   F_BIN(f64, a.f64 / b.f64); break;
         case OP_F64_MIN:   F_BIN(f64, wasm_f64_min(a.f64, b.f64)); break;
         case OP_F64_MAX:   F_BIN(f64, wasm_f64_max(a.f64, b.f64)); break;
-        case OP_F64_COPYSIGN: F_BIN(f64, copysign(a.f64, b.f64)); break;
+        case OP_F64_COPYSIGN: F_BIN(f64, wm_copysign(a.f64, b.f64)); break;
 
         // ---- Conversions ----
         case OP_I32_WRAP_I64: F_UN(i32, (int32_t)(a.u64 & 0xFFFFFFFFu)); break;
@@ -1208,7 +1337,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             wasm_value_t a = wasm_pop(inst);
             if (inst->status == WASM_RUN_TRAPPED) return;
             float x = a.f32;
-            if (isnan(x)) TRAP(WASM_TRAP_INVALID_CONVERSION);
+            if (x != x) TRAP(WASM_TRAP_INVALID_CONVERSION);  // NaN
             if (!(x >= -2147483648.0f && x < 2147483648.0f)) TRAP(WASM_TRAP_INVALID_CONVERSION);
             wasm_value_t r; r.i32 = (int32_t)x; wasm_push(inst, r);
             break;
@@ -1217,7 +1346,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             wasm_value_t a = wasm_pop(inst);
             if (inst->status == WASM_RUN_TRAPPED) return;
             float x = a.f32;
-            if (isnan(x)) TRAP(WASM_TRAP_INVALID_CONVERSION);
+            if (x != x) TRAP(WASM_TRAP_INVALID_CONVERSION);  // NaN
             if (!(x > -1.0f && x < 4294967296.0f)) TRAP(WASM_TRAP_INVALID_CONVERSION);
             wasm_value_t r; r.u32 = (uint32_t)x; wasm_push(inst, r);
             break;
@@ -1226,7 +1355,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             wasm_value_t a = wasm_pop(inst);
             if (inst->status == WASM_RUN_TRAPPED) return;
             double x = a.f64;
-            if (isnan(x)) TRAP(WASM_TRAP_INVALID_CONVERSION);
+            if (x != x) TRAP(WASM_TRAP_INVALID_CONVERSION);  // NaN
             if (!(x >= -2147483648.0 && x < 2147483648.0)) TRAP(WASM_TRAP_INVALID_CONVERSION);
             wasm_value_t r; r.i32 = (int32_t)x; wasm_push(inst, r);
             break;
@@ -1235,7 +1364,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             wasm_value_t a = wasm_pop(inst);
             if (inst->status == WASM_RUN_TRAPPED) return;
             double x = a.f64;
-            if (isnan(x)) TRAP(WASM_TRAP_INVALID_CONVERSION);
+            if (x != x) TRAP(WASM_TRAP_INVALID_CONVERSION);  // NaN
             if (!(x > -1.0 && x < 4294967296.0)) TRAP(WASM_TRAP_INVALID_CONVERSION);
             wasm_value_t r; r.u32 = (uint32_t)x; wasm_push(inst, r);
             break;
@@ -1246,7 +1375,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             wasm_value_t a = wasm_pop(inst);
             if (inst->status == WASM_RUN_TRAPPED) return;
             float x = a.f32;
-            if (isnan(x)) TRAP(WASM_TRAP_INVALID_CONVERSION);
+            if (x != x) TRAP(WASM_TRAP_INVALID_CONVERSION);  // NaN
             if (!(x >= -9223372036854775808.0f && x < 9223372036854775808.0f)) TRAP(WASM_TRAP_INVALID_CONVERSION);
             wasm_value_t r; r.i64 = (int64_t)x; wasm_push(inst, r);
             break;
@@ -1255,7 +1384,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             wasm_value_t a = wasm_pop(inst);
             if (inst->status == WASM_RUN_TRAPPED) return;
             float x = a.f32;
-            if (isnan(x)) TRAP(WASM_TRAP_INVALID_CONVERSION);
+            if (x != x) TRAP(WASM_TRAP_INVALID_CONVERSION);  // NaN
             if (!(x > -1.0f && x < 18446744073709551616.0f)) TRAP(WASM_TRAP_INVALID_CONVERSION);
             wasm_value_t r; r.u64 = (uint64_t)x; wasm_push(inst, r);
             break;
@@ -1264,7 +1393,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             wasm_value_t a = wasm_pop(inst);
             if (inst->status == WASM_RUN_TRAPPED) return;
             double x = a.f64;
-            if (isnan(x)) TRAP(WASM_TRAP_INVALID_CONVERSION);
+            if (x != x) TRAP(WASM_TRAP_INVALID_CONVERSION);  // NaN
             if (!(x >= -9223372036854775808.0 && x < 9223372036854775808.0)) TRAP(WASM_TRAP_INVALID_CONVERSION);
             wasm_value_t r; r.i64 = (int64_t)x; wasm_push(inst, r);
             break;
@@ -1273,7 +1402,7 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
             wasm_value_t a = wasm_pop(inst);
             if (inst->status == WASM_RUN_TRAPPED) return;
             double x = a.f64;
-            if (isnan(x)) TRAP(WASM_TRAP_INVALID_CONVERSION);
+            if (x != x) TRAP(WASM_TRAP_INVALID_CONVERSION);  // NaN
             if (!(x > -1.0 && x < 18446744073709551616.0)) TRAP(WASM_TRAP_INVALID_CONVERSION);
             wasm_value_t r; r.u64 = (uint64_t)x; wasm_push(inst, r);
             break;
