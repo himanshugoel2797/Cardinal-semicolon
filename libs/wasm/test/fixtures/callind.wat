@@ -1,0 +1,7 @@
+(module (table 2 funcref)
+  (type $bin (func (param i32 i32) (result i32)))
+  (func $add (param i32 i32) (result i32) (i32.add (local.get 0) (local.get 1)))
+  (func $sub (param i32 i32) (result i32) (i32.sub (local.get 0) (local.get 1)))
+  (elem (i32.const 0) $add $sub)
+  (func (export "apply") (param i32 i32 i32) (result i32)
+    (call_indirect (type $bin) (local.get 0) (local.get 1) (local.get 2))))

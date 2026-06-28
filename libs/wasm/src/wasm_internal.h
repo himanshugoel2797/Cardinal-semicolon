@@ -233,6 +233,10 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel);
 // control structure.
 bool wasm_exec_prepare_func(wasm_func_t *f, wasm_result_t *err);
 
+// Implemented in wasm_exec.c. Free the control-flow side table owned by exec
+// (wasm_func_t.cf). Called by wasm_module_free_impl for each function.
+void wasm_exec_free_func(wasm_func_t *f);
+
 // ---- MVP opcodes --------------------------------------------------------
 enum {
     OP_UNREACHABLE = 0x00, OP_NOP = 0x01,

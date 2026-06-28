@@ -149,6 +149,10 @@ wasm_instance_t *wasm_instantiate(wasm_module_t *m,
 
 void wasm_instance_free(wasm_instance_t *inst);
 
+// The module an instance was created from (the instance does not own it; free
+// the module separately, after the instance).
+wasm_module_t *wasm_instance_module(const wasm_instance_t *inst);
+
 // ---- Execution ----------------------------------------------------------
 
 // Begin a call to an exported function. Arguments are taken from args[0..n_args).
