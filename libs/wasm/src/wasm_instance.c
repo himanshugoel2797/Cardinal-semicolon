@@ -168,11 +168,17 @@ wasm_instance_t *wasm_instantiate(wasm_module_t *m,
         }
     }
 
-    // Linear memory: reserve max so the base never moves.
+    // Linear memory: reserve the declared max up front so the base never moves
+    // (which keeps wasm-mem views valid until destroy and lets memory.grow be a
+    // pointer-free bump). But an unbounded memory decodes to a 65536-page (4 GiB)
+    // max, which must NOT be reserved -- clamp to a sane in-kernel cap. A module
+    // whose *initial* size exceeds the cap is rejected rather than OOM-crashing.
     if (m->has_mem) {
         uint32_t maxp = m->mem_max_pages;
         if (maxp < m->mem_min_pages) maxp = m->mem_min_pages;
         if (maxp == 0) maxp = m->mem_min_pages;
+        if (maxp > WASM_MAX_RESERVE_PAGES) maxp = WASM_MAX_RESERVE_PAGES;
+        if (m->mem_min_pages > maxp) { e = WASM_ERR_OOM; goto fail; }
         inst->max_pages = maxp;
         inst->cur_pages = m->mem_min_pages;
         inst->mem_size = (size_t)inst->cur_pages * WASM_PAGE_SIZE;

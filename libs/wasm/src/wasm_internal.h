@@ -27,6 +27,10 @@
 #define WASM_CTRL_CAP     4096          // active control labels
 #define WASM_FRAME_CAP    1024          // call depth
 #define WASM_PAGE_SIZE    (64 * 1024)   // Wasm linear-memory page
+// Cap on linear memory RESERVED per instance (base-never-moves => grow fits in
+// the reserve). An unbounded memory decodes to a 4 GiB max; this bounds the
+// in-kernel calloc. 1024 pages = 64 MiB (enough for a Doom-class guest).
+#define WASM_MAX_RESERVE_PAGES 1024
 
 // ---- Section / extern kinds --------------------------------------------
 typedef enum {
