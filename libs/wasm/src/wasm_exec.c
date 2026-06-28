@@ -577,6 +577,7 @@ static bool do_call_import(wasm_instance_t *inst, uint32_t func_index) {
 
     // Host-serviced: suspend. pc is already advanced past the call.
     for (uint32_t i = 0; i < n_params; i++) inst->pending_args[i] = args[i];
+    inst->pending_func_index = func_index;  // so wasm_pending_*_types can recover the signature
     inst->pending.host_id = ri->host_id;
     inst->pending.module_name = ri->module_name;
     inst->pending.field_name = ri->field_name;

@@ -165,6 +165,8 @@ struct wasm_instance {
 
     // suspended-import bookkeeping
     wasm_pending_t pending;
+    uint32_t pending_func_index;  // func-index of the suspended import (for its
+                                  // signature: pending arg/result valtypes)
     wasm_value_t pending_args[16];
     wasm_value_t provided[16];
     uint32_t n_provided;
