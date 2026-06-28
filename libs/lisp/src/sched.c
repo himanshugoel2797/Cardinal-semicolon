@@ -125,6 +125,15 @@ static lisp_value deep_copy(lisp_value v, int depth, const char **err) {
             // GC-safe for the same reason as a context: minted in the system heap
             // (grant.c make_grant_obj), external to every per-context collector.
             return v;
+        case LISP_OBJ_HANDLE:
+            // A finalizer-bearing handle OWNS an opaque C resource freed exactly
+            // once when its heap reclaims it. Unlike a grant/context (passed by
+            // identity), a handle cannot be shared: copying it (or aliasing it)
+            // would let TWO heaps finalize the same `ptr` -> double free, and a
+            // handle a per-context collector frees in one heap would leave a stale
+            // pointer in the other. So it is identity-only AND non-transferable:
+            // reject it rather than corrupt the resource's ownership.
+            return prim_err(err, "send: cannot transfer a handle");
         case LISP_OBJ_STRING:
             return lisp_make_string(lisp_string_data(v), lisp_string_len(v));
         case LISP_OBJ_FLONUM:

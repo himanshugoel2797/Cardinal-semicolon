@@ -375,7 +375,32 @@ static void trace(lisp_value v) {
             lbc_closure_trace(v);
             break;
         default:
-            break;  // symbol / keyword / string / flonum are leaves
+            // symbol / keyword / string / flonum / grant / HANDLE are leaves.
+            // A HANDLE has no Lisp-value children -- it owns only an opaque C
+            // pointer -- so it needs no trace case; its finalizer (gc_finalize)
+            // runs in the sweep / teardown path, not here.
+            break;
+    }
+}
+
+// --- finalization (LISP_OBJ_HANDLE) -----------------------------------------
+//
+// A handle owns an opaque C resource freed by `fin(ptr)`. The finalizer runs
+// when the handle's slot is about to vanish -- in the sweep reclaim path, or at
+// heap teardown -- exactly once. Run-once is guaranteed by clearing `fin` after
+// the call (a slot reaches gc_finalize at most twice only on the OOM-during-grow
+// path where a heap is both swept and later torn down; the clear makes the second
+// call a no-op). The finalizer must touch only libc memory (free), never the Lisp
+// heap: it runs mid-sweep, with the heap's invariants suspended.
+static void gc_finalize(gc_obj *o) {
+    lisp_header *h = (lisp_header *)(o + 1);  // the payload begins right after gc_obj
+    if (LISP_HDR_TYPE(h) != LISP_OBJ_HANDLE)
+        return;
+    lisp_handle *hd = (lisp_handle *)h;
+    if (hd->fin != NULL) {
+        void (*fin)(void *) = hd->fin;
+        hd->fin = NULL;  // run-once: a later gc_finalize on this slot is a no-op
+        fin(hd->ptr);
     }
 }
 
@@ -484,6 +509,7 @@ static void collect_heap_locked(struct lisp_heap *h) {
             link = &o->next;
         } else {
             *link = next;
+            gc_finalize(o);  // run a HANDLE's finalizer before the slot is reused
             if (o->cls == GC_CLS_LARGE) {
                 free(o);  // individually malloc'd
             } else {
@@ -707,9 +733,13 @@ void lisp_heap_free(struct lisp_heap *h) {
         g_alloc_heap[lisp_rt_core()] = NULL;
     // Pooled objects (live or free-listed) are backed by the slabs, so freeing
     // the slabs reclaims them all at once; only the large (individually malloc'd)
-    // objects still on the all-list need an individual free.
+    // objects still on the all-list need an individual free. Run any HANDLE's
+    // finalizer first, so a context heap freed at teardown still frees the C
+    // resources its live handles own (gc_finalize clears `fin`, so a slot already
+    // finalized in an earlier sweep is not finalized again).
     for (gc_obj *o = h->all; o != NULL;) {
         gc_obj *next = o->next;
+        gc_finalize(o);
         if (o->cls == GC_CLS_LARGE)
             free(o);
         o = next;

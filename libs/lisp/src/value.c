@@ -141,3 +141,37 @@ lisp_value lisp_make_flonum(double x) {
     f->val = x;
     return lisp_from_obj(f);
 }
+
+// Finalizer-bearing handle owning an opaque C resource (see lisp_handle in
+// lisp.h). Allocated like any other object via the GC; the collector calls `fin`
+// (if set) exactly once when this handle is reclaimed (gc.c gc_finalize), so the
+// resource is freed automatically. A GC leaf -- no Lisp children to trace.
+lisp_value lisp_make_handle(void *ptr, void (*fin)(void *), uint32_t tag) {
+    lisp_handle *hd = (lisp_handle *)lisp_gc_alloc(sizeof(lisp_handle));
+    if (hd == NULL)
+        return LISP_UNDEF;
+    hd->h.header = LISP_MK_HEADER(LISP_OBJ_HANDLE, 0);
+    hd->ptr = ptr;
+    hd->fin = fin;
+    hd->tag = tag;
+    return lisp_from_obj(hd);
+}
+
+void *lisp_handle_ptr(lisp_value v) {
+    return lisp_is_handle(v) ? ((lisp_handle *)lisp_obj(v))->ptr : NULL;
+}
+
+uint32_t lisp_handle_tag(lisp_value v) {
+    return lisp_is_handle(v) ? ((lisp_handle *)lisp_obj(v))->tag : 0;
+}
+
+// Disarm a handle so its finalizer will NOT run -- used by an explicit destroy
+// that has already freed (or transferred ownership of) the resource itself.
+// Clearing both ptr and fin makes a subsequent gc_finalize a no-op.
+void lisp_handle_clear(lisp_value v) {
+    if (!lisp_is_handle(v))
+        return;
+    lisp_handle *hd = (lisp_handle *)lisp_obj(v);
+    hd->ptr = NULL;
+    hd->fin = NULL;
+}

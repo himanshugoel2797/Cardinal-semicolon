@@ -85,6 +85,7 @@ typedef enum {
     LISP_OBJ_BCCLOSURE = 13, // a compiled closure: a bytecode chunk + captured cells (lbc.c)
     LISP_OBJ_HASHTABLE = 14, // a mutable equal?-keyed hash table (chained buckets)
     LISP_OBJ_GRANT = 15,     // a shared-memory grant: an unforgeable, revocable capability to map a phys region (compositor surfaces)
+    LISP_OBJ_HANDLE = 16,    // a finalizer-bearing handle owning an opaque C resource (e.g. a Wasm instance), freed when the GC reclaims it
     // reserved for later phases: BYTEVECTOR, BOX, ...
 } lisp_objtype;
 
@@ -180,6 +181,24 @@ typedef struct {
     uint32_t generation;
 } lisp_grant;
 
+// A finalizer-bearing GC handle: a Lisp value that OWNS an opaque C resource
+// (a Wasm instance/module, or any malloc-backed native object). `ptr` is the
+// resource; `fin`, if non-NULL, is called exactly once with `ptr` when the GC
+// reclaims the handle (or when its heap is torn down) -- the single point that
+// frees the resource. `tag` is a caller-chosen discriminator (which kind of
+// resource this is) so a holder can sanity-check before casting `ptr`. A handle
+// is identity-only: it is REJECTED by deep_copy (send), because copying it would
+// let two heaps finalize the same `ptr` -> double free. A GC leaf -- it has no
+// Lisp-value children; only the finalizer makes it special. The finalizer runs
+// during sweep / teardown and must touch only libc memory (free), never the
+// Lisp heap (no allocation, no re-entry into the collector).
+typedef struct {
+    lisp_header h;
+    void *ptr;
+    void (*fin)(void *);
+    uint32_t tag;
+} lisp_handle;
+
 // --- Tag predicates ---------------------------------------------------------
 
 static inline unsigned lisp_tag(lisp_value v) { return (unsigned)(v & LISP_TAG_MASK); }
@@ -229,6 +248,7 @@ static inline bool lisp_is_hashtable(lisp_value v) { return lisp_is_objtype(v, L
 static inline bool lisp_is_flonum(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_FLONUM); }
 static inline bool lisp_is_bytes(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_BYTES); }
 static inline bool lisp_is_grant(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_GRANT); }
+static inline bool lisp_is_handle(lisp_value v) { return lisp_is_objtype(v, LISP_OBJ_HANDLE); }
 // A callable: a C primitive, a tree-walker closure, or a compiled (bytecode)
 // closure. Anything that checks "is this a procedure" must accept all three.
 static inline bool lisp_is_procedure(lisp_value v) {
@@ -319,6 +339,18 @@ int lisp_grant_revoke(lisp_value g);   // 0 = revoked, -1 = not a live grant (id
 int lisp_grant_resolve(lisp_value g, uint64_t *phys, size_t *len, uint32_t *perms);  // 0 = live, -1 = revoked/stale
 int lisp_grant_is_live(uint32_t index, uint32_t generation);            // 1 = slot live + generation matches (grant-backed bytes re-check)
 int lisp_grant_handle(lisp_value g, uint32_t *index, uint32_t *generation);  // read a grant's (index, generation); -1 if not a grant
+
+// Finalizer-bearing GC handles (see lisp_handle). lisp_make_handle wraps an
+// opaque C resource `ptr`: when the GC reclaims the handle, `fin(ptr)` runs
+// exactly once (NULL `fin` = no finalizer). `tag` is a caller discriminator.
+// lisp_handle_clear nulls ptr+fin so finalization will NOT run -- the explicit
+// destroy path (after a caller frees the resource itself, it clears the handle so
+// the GC does not double-free). Accessors yield LISP_UNDEF's payload (NULL/0) for
+// a non-handle value, so a confused caller gets a benign result, not a wild cast.
+lisp_value lisp_make_handle(void *ptr, void (*fin)(void *), uint32_t tag);
+void *lisp_handle_ptr(lisp_value v);
+uint32_t lisp_handle_tag(lisp_value v);
+void lisp_handle_clear(lisp_value v);
 
 const char *lisp_named_name(lisp_value v);  // symbol/keyword name (NUL-terminated)
 size_t lisp_named_len(lisp_value v);
