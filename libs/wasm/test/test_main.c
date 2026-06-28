@@ -20,6 +20,7 @@
 #include "hostimp.wasm.h"
 #include "f64ops.wasm.h"
 #include "fpops.wasm.h"
+#include "bulkmem.wasm.h"
 
 static int g_checks = 0, g_fails = 0;
 
@@ -268,6 +269,158 @@ static void test_fpops(void) {
     wasm_module_free(m_);
 }
 
+// Run a started call with no result to completion.
+static void run_void(wasm_instance_t *inst) {
+    for (;;) {
+        wasm_run_status_t s = wasm_resume(inst, 1000000);
+        if (s == WASM_RUN_FUEL) continue;
+        CHECK(s == WASM_RUN_DONE, "void run did not complete: status=%d trap=%d",
+              s, wasm_trap(inst));
+        break;
+    }
+}
+
+// Run a started single-result call to completion, return the i64 result.
+static int64_t run_i64(wasm_instance_t *inst) {
+    for (;;) {
+        wasm_run_status_t s = wasm_resume(inst, 1000000);
+        if (s == WASM_RUN_FUEL) continue;
+        CHECK(s == WASM_RUN_DONE, "i64 run did not complete: status=%d", s);
+        break;
+    }
+    wasm_value_t out[1];
+    wasm_results(inst, out, 1);
+    return out[0].i64;
+}
+
+// Exercises the 0xFC bulk-memory subops (memory.copy / memory.fill) and the
+// saturating float->int truncations.
+static void test_bulkmem(void) {
+    wasm_instance_t *inst = load(bulkmem_wasm, sizeof(bulkmem_wasm), NULL, 0);
+    if (!inst) return;
+
+    // memory.fill: fill [8, 8+5) with 0xAB, then read back a couple bytes.
+    {
+        wasm_value_t a[3] = { { .i32 = 8 }, { .i32 = 0xAB }, { .i32 = 5 } };
+        wasm_call(inst, "fill", a, 3);
+        run_void(inst);
+        for (int off = 8; off < 13; off++) {
+            wasm_value_t r = { .i32 = off };
+            wasm_call(inst, "load8", &r, 1);
+            CHECK((uint32_t)run_i32(inst) == 0xAB, "fill byte @%d != 0xAB", off);
+        }
+        // byte just past the filled region is untouched (still 0).
+        wasm_value_t r = { .i32 = 13 };
+        wasm_call(inst, "load8", &r, 1);
+        CHECK(run_i32(inst) == 0, "fill overran into byte 13");
+    }
+
+    // val is truncated to the low 8 bits.
+    {
+        wasm_value_t a[3] = { { .i32 = 20 }, { .i32 = 0x1234 }, { .i32 = 1 } };
+        wasm_call(inst, "fill", a, 3);
+        run_void(inst);
+        wasm_value_t r = { .i32 = 20 };
+        wasm_call(inst, "load8", &r, 1);
+        CHECK((uint32_t)run_i32(inst) == 0x34, "fill val not masked to 8 bits");
+    }
+
+    // memory.copy, NON-overlapping: write a marker at 30..32, copy to 40.
+    {
+        for (int i = 0; i < 3; i++) {
+            wasm_value_t s[2] = { { .i32 = 30 + i }, { .i32 = 0x10 + i } };
+            wasm_call(inst, "store8", s, 2);
+            run_void(inst);
+        }
+        wasm_value_t a[3] = { { .i32 = 40 }, { .i32 = 30 }, { .i32 = 3 } };
+        wasm_call(inst, "copy", a, 3);
+        run_void(inst);
+        for (int i = 0; i < 3; i++) {
+            wasm_value_t r = { .i32 = 40 + i };
+            wasm_call(inst, "load8", &r, 1);
+            CHECK((uint32_t)run_i32(inst) == (uint32_t)(0x10 + i),
+                  "copy byte %d mismatch", i);
+        }
+    }
+
+    // memory.copy, OVERLAPPING (dst > src, regions overlap): must be memmove-safe.
+    // Seed [50..56) = {1,2,3,4,5,6}; copy 6 bytes from 50 to 52 (overlap).
+    {
+        for (int i = 0; i < 6; i++) {
+            wasm_value_t s[2] = { { .i32 = 50 + i }, { .i32 = i + 1 } };
+            wasm_call(inst, "store8", s, 2);
+            run_void(inst);
+        }
+        wasm_value_t a[3] = { { .i32 = 52 }, { .i32 = 50 }, { .i32 = 6 } };
+        wasm_call(inst, "copy", a, 3);
+        run_void(inst);
+        // Expected after memmove: bytes 52..58 = {1,2,3,4,5,6}.
+        int want[6] = {1,2,3,4,5,6};
+        for (int i = 0; i < 6; i++) {
+            wasm_value_t r = { .i32 = 52 + i };
+            wasm_call(inst, "load8", &r, 1);
+            CHECK((uint32_t)run_i32(inst) == (uint32_t)want[i],
+                  "overlapping copy byte %d = %d, want %d", i,
+                  run_i32(inst), want[i]);
+        }
+    }
+
+    // memory.fill out of bounds traps (offset+n > size). Page size = 64KiB.
+    {
+        wasm_value_t a[3] = { { .i32 = 65535 }, { .i32 = 0 }, { .i32 = 2 } };
+        wasm_call(inst, "fill", a, 3);
+        wasm_run_status_t s;
+        for (;;) { s = wasm_resume(inst, 1000000); if (s != WASM_RUN_FUEL) break; }
+        CHECK(s == WASM_RUN_TRAPPED && wasm_trap(inst) == WASM_TRAP_OOB_MEMORY,
+              "OOB fill did not trap (status=%d)", s);
+    }
+
+    // trunc_sat: in-range, NaN -> 0, overflow -> saturated to type extremes.
+    {
+        // i32.trunc_sat_f32_s
+        struct { const char *fn; float in; int32_t want; } cs[] = {
+            { "sat_i32_f32_s", 3.9f, 3 },
+            { "sat_i32_f32_s", -3.9f, -3 },
+            { "sat_i32_f32_s", 1e30f, INT32_MAX },     // overflow -> max
+            { "sat_i32_f32_s", -1e30f, INT32_MIN },    // -overflow -> min
+        };
+        for (size_t i = 0; i < sizeof(cs)/sizeof(cs[0]); i++) {
+            wasm_value_t a = { .f32 = cs[i].in };
+            wasm_call(inst, cs[i].fn, &a, 1);
+            CHECK(run_i32(inst) == cs[i].want, "%s(%g) wrong", cs[i].fn, cs[i].in);
+        }
+        // NaN -> 0
+        wasm_value_t nanv = { .u32 = 0x7FC00000u };   // f32 NaN bit pattern
+        wasm_call(inst, "sat_i32_f32_s", &nanv, 1);
+        CHECK(run_i32(inst) == 0, "trunc_sat f32_s NaN -> 0 failed");
+
+        // i32.trunc_sat_f32_u: negatives saturate to 0; big -> UINT32_MAX.
+        wasm_value_t neg = { .f32 = -5.0f };
+        wasm_call(inst, "sat_i32_f32_u", &neg, 1);
+        CHECK((uint32_t)run_i32(inst) == 0, "trunc_sat f32_u neg -> 0 failed");
+        wasm_value_t big = { .f32 = 1e30f };
+        wasm_call(inst, "sat_i32_f32_u", &big, 1);
+        CHECK((uint32_t)run_i32(inst) == UINT32_MAX, "trunc_sat f32_u big -> max");
+
+        // i32.trunc_sat_f64_s
+        wasm_value_t d = { .f64 = 1e30 };
+        wasm_call(inst, "sat_i32_f64_s", &d, 1);
+        CHECK(run_i32(inst) == INT32_MAX, "trunc_sat f64_s overflow -> max");
+
+        // i64.trunc_sat_f64_s
+        wasm_value_t d2 = { .f64 = 1e30 };
+        wasm_call(inst, "sat_i64_f64_s", &d2, 1);
+        CHECK(run_i64(inst) == INT64_MAX, "trunc_sat i64 f64_s overflow -> max");
+        wasm_value_t d3 = { .f64 = -42.7 };
+        wasm_call(inst, "sat_i64_f64_s", &d3, 1);
+        CHECK(run_i64(inst) == -42, "trunc_sat i64 f64_s in-range");
+    }
+
+    wasm_module_t *m_ = wasm_instance_module(inst);
+    wasm_instance_free(inst);
+    wasm_module_free(m_);
+}
+
 // ---- Validation ---------------------------------------------------------
 //
 // The valid fixtures must pass wasm_module_validate; a set of modules that are
@@ -291,6 +444,13 @@ static const unsigned char inv_loadnomem[] = {
 static const unsigned char inv_brdepth[] = {
     0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,7,5,1,1,102,0,0,
     10,9,1,7,0,2,64,12,5,11,11};
+// i_meminit : a function body using memory.init (0xFC 0x08) -- a bulk-memory
+// op that needs passive data segments, NOT in v1. Decodes cleanly (no DataCount
+// section); our validator must reject the FC subop. wabt accepts it under
+// --enable-bulk-memory; we deliberately do not.
+static const unsigned char inv_meminit[] = {
+    0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,5,3,1,0,1,
+    10,14,1,12,0,65,0,65,0,65,0,252,8,0,0,11};
 
 // Validate a decoded module from raw bytes; *out_decoded set true if decode
 // succeeded. Returns the validate result (only meaningful when decoded).
@@ -330,11 +490,13 @@ static void test_validation(void) {
     check_valid_fixture(hostimp_wasm, sizeof(hostimp_wasm), "hostimp");
     check_valid_fixture(f64ops_wasm, sizeof(f64ops_wasm), "f64ops");
     check_valid_fixture(fpops_wasm, sizeof(fpops_wasm), "fpops");
+    check_valid_fixture(bulkmem_wasm, sizeof(bulkmem_wasm), "bulkmem");
     // (b) ill-typed-but-decodable modules are rejected
     check_invalid(inv_addf64, sizeof(inv_addf64), "i32.add on f64");
     check_invalid(inv_setimm, sizeof(inv_setimm), "global.set immutable");
     check_invalid(inv_loadnomem, sizeof(inv_loadnomem), "load without memory");
     check_invalid(inv_brdepth, sizeof(inv_brdepth), "br out-of-range depth");
+    check_invalid(inv_meminit, sizeof(inv_meminit), "memory.init (bulk, not v1)");
 }
 
 // Smoke: malformed bytes are rejected, not crashed.
@@ -484,6 +646,7 @@ int main(void) {
     test_import_suspend();
     test_f64();
     test_fpops();
+    test_bulkmem();
     test_validation();
     // Interpreter memory-safety regressions (run WITHOUT validation).
     test_oob_local_index();

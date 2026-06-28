@@ -698,6 +698,50 @@ static bool check_body(vctx *c) {
         case OP_I64_EXTEND8_S: case OP_I64_EXTEND16_S: case OP_I64_EXTEND32_S:
             if (!unop(c, WASM_I64, WASM_I64)) return false; break;
 
+        // ---- 0xFC-prefixed subopcodes ----
+        case OP_PREFIX_FC: {
+            uint32_t sub;
+            RD_U32(sub);
+            switch (sub) {
+            // Saturating float->int: same operand/result types as the trapping
+            // trunc, no immediates.
+            case FC_I32_TRUNC_SAT_F32_S: case FC_I32_TRUNC_SAT_F32_U:
+                if (!unop(c, WASM_F32, WASM_I32)) return false; break;
+            case FC_I32_TRUNC_SAT_F64_S: case FC_I32_TRUNC_SAT_F64_U:
+                if (!unop(c, WASM_F64, WASM_I32)) return false; break;
+            case FC_I64_TRUNC_SAT_F32_S: case FC_I64_TRUNC_SAT_F32_U:
+                if (!unop(c, WASM_F32, WASM_I64)) return false; break;
+            case FC_I64_TRUNC_SAT_F64_S: case FC_I64_TRUNC_SAT_F64_U:
+                if (!unop(c, WASM_F64, WASM_I64)) return false; break;
+
+            case FC_MEMORY_COPY: {
+                // dst memidx + src memidx; both must be 0 in v1.
+                uint32_t dst_mem, src_mem;
+                RD_U32(dst_mem);
+                RD_U32(src_mem);
+                if (!m->has_mem || dst_mem != 0 || src_mem != 0) FAIL();
+                POP(WASM_I32);   // n
+                POP(WASM_I32);   // src
+                POP(WASM_I32);   // dst
+                break;
+            }
+            case FC_MEMORY_FILL: {
+                uint32_t mem;
+                RD_U32(mem);
+                if (!m->has_mem || mem != 0) FAIL();
+                POP(WASM_I32);   // n
+                POP(WASM_I32);   // val
+                POP(WASM_I32);   // dst
+                break;
+            }
+
+            default:
+                // memory.init / data.drop / table.* etc. -- not in v1.
+                FAIL();
+            }
+            break;
+        }
+
         default:
             FAIL();     // unknown opcode -> invalid
         }

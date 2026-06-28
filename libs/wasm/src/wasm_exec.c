@@ -153,6 +153,19 @@ static bool skip_immediates(const uint8_t *code, uint32_t code_len, uint32_t *pc
     case OP_MEMORY_GROW:
         return wasm_read_u32(code, code_len, pc, &u);   // mem index (0x00)
 
+    case OP_PREFIX_FC: {
+        // 0xFC <subop:u32 LEB> [immediates]. Immediate byte counts: trunc_sat
+        // (0x00..0x07) none; memory.copy (0x0A) two memidx; memory.fill (0x0B)
+        // one memidx. Unknown subops carry no immediates here -- the validator
+        // (which runs before exec) rejects them, so the prepass only needs to
+        // keep block/end matching correct.
+        uint32_t sub;
+        if (!wasm_read_u32(code, code_len, pc, &sub)) return false;
+        if (sub == FC_MEMORY_COPY) { *pc += 2; return *pc <= code_len; }
+        if (sub == FC_MEMORY_FILL) { *pc += 1; return *pc <= code_len; }
+        return true;   // trunc_sat / unknown: no extra immediates
+    }
+
     default:
         // No immediates (arithmetic, comparisons, conversions, nop, end, else,
         // return, drop, select, unreachable, ...).
@@ -1433,6 +1446,148 @@ void wasm_exec_run(wasm_instance_t *inst, int64_t fuel) {
         case OP_I64_EXTEND8_S:  F_UN(i64, (int64_t)(int8_t)(a.u64 & 0xFF)); break;
         case OP_I64_EXTEND16_S: F_UN(i64, (int64_t)(int16_t)(a.u64 & 0xFFFF)); break;
         case OP_I64_EXTEND32_S: F_UN(i64, (int64_t)(int32_t)(a.u64 & 0xFFFFFFFF)); break;
+
+        // ---- 0xFC-prefixed subopcodes ----
+        case OP_PREFIX_FC: {
+            uint32_t sub;
+            if (!wasm_read_u32(frame->code, frame->code_len, &frame->pc, &sub))
+                TRAP(WASM_TRAP_UNREACHABLE);
+            switch (sub) {
+
+            // Saturating float->int truncations. NaN -> 0, out-of-range clamps to
+            // the target type's min/max. The threshold compares are in float
+            // space; once inside range a plain C cast (round-toward-zero) is exact.
+            case FC_I32_TRUNC_SAT_F32_S: {
+                wasm_value_t a = wasm_pop(inst);
+                if (inst->status == WASM_RUN_TRAPPED) return;
+                float x = a.f32; int32_t r;
+                if (x != x) r = 0;
+                else if (x <= -2147483648.0f) r = INT32_MIN;
+                else if (x >= 2147483648.0f) r = INT32_MAX;
+                else r = (int32_t)x;
+                wasm_value_t v; v.i32 = r; wasm_push(inst, v);
+                break;
+            }
+            case FC_I32_TRUNC_SAT_F32_U: {
+                wasm_value_t a = wasm_pop(inst);
+                if (inst->status == WASM_RUN_TRAPPED) return;
+                float x = a.f32; uint32_t r;
+                if (x != x || x <= 0.0f) r = 0;
+                else if (x >= 4294967296.0f) r = UINT32_MAX;
+                else r = (uint32_t)x;
+                wasm_value_t v; v.u32 = r; wasm_push(inst, v);
+                break;
+            }
+            case FC_I32_TRUNC_SAT_F64_S: {
+                wasm_value_t a = wasm_pop(inst);
+                if (inst->status == WASM_RUN_TRAPPED) return;
+                double x = a.f64; int32_t r;
+                if (x != x) r = 0;
+                else if (x <= -2147483648.0) r = INT32_MIN;
+                else if (x >= 2147483648.0) r = INT32_MAX;
+                else r = (int32_t)x;
+                wasm_value_t v; v.i32 = r; wasm_push(inst, v);
+                break;
+            }
+            case FC_I32_TRUNC_SAT_F64_U: {
+                wasm_value_t a = wasm_pop(inst);
+                if (inst->status == WASM_RUN_TRAPPED) return;
+                double x = a.f64; uint32_t r;
+                if (x != x || x <= 0.0) r = 0;
+                else if (x >= 4294967296.0) r = UINT32_MAX;
+                else r = (uint32_t)x;
+                wasm_value_t v; v.u32 = r; wasm_push(inst, v);
+                break;
+            }
+            case FC_I64_TRUNC_SAT_F32_S: {
+                wasm_value_t a = wasm_pop(inst);
+                if (inst->status == WASM_RUN_TRAPPED) return;
+                float x = a.f32; int64_t r;
+                if (x != x) r = 0;
+                else if (x <= -9223372036854775808.0f) r = INT64_MIN;
+                else if (x >= 9223372036854775808.0f) r = INT64_MAX;
+                else r = (int64_t)x;
+                wasm_value_t v; v.i64 = r; wasm_push(inst, v);
+                break;
+            }
+            case FC_I64_TRUNC_SAT_F32_U: {
+                wasm_value_t a = wasm_pop(inst);
+                if (inst->status == WASM_RUN_TRAPPED) return;
+                float x = a.f32; uint64_t r;
+                if (x != x || x <= 0.0f) r = 0;
+                else if (x >= 18446744073709551616.0f) r = UINT64_MAX;
+                else r = (uint64_t)x;
+                wasm_value_t v; v.u64 = r; wasm_push(inst, v);
+                break;
+            }
+            case FC_I64_TRUNC_SAT_F64_S: {
+                wasm_value_t a = wasm_pop(inst);
+                if (inst->status == WASM_RUN_TRAPPED) return;
+                double x = a.f64; int64_t r;
+                if (x != x) r = 0;
+                else if (x <= -9223372036854775808.0) r = INT64_MIN;
+                else if (x >= 9223372036854775808.0) r = INT64_MAX;
+                else r = (int64_t)x;
+                wasm_value_t v; v.i64 = r; wasm_push(inst, v);
+                break;
+            }
+            case FC_I64_TRUNC_SAT_F64_U: {
+                wasm_value_t a = wasm_pop(inst);
+                if (inst->status == WASM_RUN_TRAPPED) return;
+                double x = a.f64; uint64_t r;
+                if (x != x || x <= 0.0) r = 0;
+                else if (x >= 18446744073709551616.0) r = UINT64_MAX;
+                else r = (uint64_t)x;
+                wasm_value_t v; v.u64 = r; wasm_push(inst, v);
+                break;
+            }
+
+            // memory.copy: two memidx immediates (both 0). Pops n, src, dst.
+            // Overlap-safe (memmove). Both ranges bounds-checked.
+            case FC_MEMORY_COPY: {
+                uint32_t dst_mem, src_mem;
+                if (!wasm_read_u32(frame->code, frame->code_len, &frame->pc, &dst_mem))
+                    TRAP(WASM_TRAP_UNREACHABLE);
+                if (!wasm_read_u32(frame->code, frame->code_len, &frame->pc, &src_mem))
+                    TRAP(WASM_TRAP_UNREACHABLE);
+                if (dst_mem != 0 || src_mem != 0) TRAP(WASM_TRAP_UNREACHABLE);
+                wasm_value_t n_v = wasm_pop(inst);
+                wasm_value_t src_v = wasm_pop(inst);
+                wasm_value_t dst_v = wasm_pop(inst);
+                if (inst->status == WASM_RUN_TRAPPED) return;
+                uint32_t n = n_v.u32, src = src_v.u32, dst = dst_v.u32;
+                // Bounds-check both ranges (n==0 is a no-op but still checked).
+                uint8_t *dp = wasm_mem_ea(inst, dst, n);
+                if (!dp) return;
+                uint8_t *sp = wasm_mem_ea(inst, src, n);
+                if (!sp) return;
+                if (n) memmove(dp, sp, n);
+                break;
+            }
+            // memory.fill: one memidx immediate (0). Pops n, val, dst.
+            case FC_MEMORY_FILL: {
+                uint32_t mem;
+                if (!wasm_read_u32(frame->code, frame->code_len, &frame->pc, &mem))
+                    TRAP(WASM_TRAP_UNREACHABLE);
+                if (mem != 0) TRAP(WASM_TRAP_UNREACHABLE);
+                wasm_value_t n_v = wasm_pop(inst);
+                wasm_value_t val_v = wasm_pop(inst);
+                wasm_value_t dst_v = wasm_pop(inst);
+                if (inst->status == WASM_RUN_TRAPPED) return;
+                uint32_t n = n_v.u32, dst = dst_v.u32;
+                uint8_t *dp = wasm_mem_ea(inst, dst, n);
+                if (!dp) return;
+                if (n) memset(dp, (int)(val_v.u32 & 0xFF), n);
+                break;
+            }
+
+            default:
+                // memory.init / data.drop / table.* etc. -- not in v1. The
+                // validator rejects these before exec; trap defensively.
+                TRAP(WASM_TRAP_UNREACHABLE);
+            }
+            break;
+        }
 
         default:
             // Unknown / unimplemented opcode.

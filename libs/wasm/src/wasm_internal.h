@@ -311,6 +311,25 @@ enum {
 
     OP_I32_EXTEND8_S = 0xC0, OP_I32_EXTEND16_S = 0xC1,
     OP_I64_EXTEND8_S = 0xC2, OP_I64_EXTEND16_S = 0xC3, OP_I64_EXTEND32_S = 0xC4,
+
+    // The 0xFC prefix introduces a second opcode space (a u32 LEB "subopcode").
+    OP_PREFIX_FC = 0xFC,
+};
+
+// ---- 0xFC-prefixed subopcodes ------------------------------------------
+// Only the practical subset clang-emitted wasi-libc binaries need is honoured;
+// the rest (memory.init/data.drop/table.*) are rejected by the validator.
+enum {
+    // saturating float->int truncations (no immediates).
+    FC_I32_TRUNC_SAT_F32_S = 0, FC_I32_TRUNC_SAT_F32_U = 1,
+    FC_I32_TRUNC_SAT_F64_S = 2, FC_I32_TRUNC_SAT_F64_U = 3,
+    FC_I64_TRUNC_SAT_F32_S = 4, FC_I64_TRUNC_SAT_F32_U = 5,
+    FC_I64_TRUNC_SAT_F64_S = 6, FC_I64_TRUNC_SAT_F64_U = 7,
+    // bulk memory (require passive data segments -> rejected in v1):
+    FC_MEMORY_INIT = 8,         // not implemented
+    FC_DATA_DROP   = 9,         // not implemented
+    FC_MEMORY_COPY = 10,        // two memidx immediate bytes (both 0)
+    FC_MEMORY_FILL = 11,        // one memidx immediate byte (0)
 };
 
 #endif // CARDINAL_WASM_INTERNAL_H
